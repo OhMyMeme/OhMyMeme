@@ -1,0 +1,16 @@
+# OhMyMeme 依赖
+# 核心依赖
+Pillow>=10.0.0              # 图片处理
+pywebview>=6.0.0            # WebView 现代化 UI
+pystray>=0.19.0             # 系统托盘
+pyperclip>=1.8.2            # 剪贴板
+bottle>=0.13.0              # HTTP 服务器（pywebview 依赖，也用于本地路由）
+
+# 全局快捷键
+keyboard>=0.13.5
+
+# 加密（可选，不装则使用降级加密）
+cryptography>=41.0.0
+
+# 打包
+# pyinstaller>=6.0.0

@@ -1,0 +1,30 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+dist/
+build/
+*.spec
+
+# OhMyMeme 本地数据
+config.json
+*.db
+cache/
+thumbnails/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# OS
+.DS_Store
+Thumbs.db
+
+# 打包输出
+*.exe
+*.AppImage
+*.deb
+*.rpm
+*.dmg
