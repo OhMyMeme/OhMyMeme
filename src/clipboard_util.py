@@ -133,13 +133,14 @@ def _set_clipboard_dib(dib_data: bytes) -> bool:
 
 
 def _copy_gif_windows(gif_path: str) -> bool:
-    """复制 GIF 到剪贴板（保留动画）"""
-    # 方案1: 使用 ctypes 注册 GIF 格式写入原始字节
+    """复制 GIF 到剪贴板，供 QQ/微信等应用粘贴动图"""
     try:
         import ctypes
         from ctypes import wintypes
 
         GMEM_MOVEABLE = 0x0002
+        CF_DIB = 8
+        CF_HDROP = 15
         user32 = ctypes.windll.user32
         kernel32 = ctypes.windll.kernel32
 
@@ -156,36 +157,111 @@ def _copy_gif_windows(gif_path: str) -> bool:
         user32.SetClipboardData.argtypes = [wintypes.UINT, wintypes.HANDLE]
 
         with open(gif_path, "rb") as f:
-            raw = f.read()
+            raw_gif = f.read()
 
+        abspath = os.path.abspath(gif_path)
+
+        # ── 1) CF_DIB: 第一帧转 BMP（静态回退） ──
+        dib_data = None
+        if HAS_PIL:
+            try:
+                img = PILImage.open(gif_path)
+                output = io.BytesIO()
+                img.convert("RGB").save(output, format="BMP")
+                dib_data = output.getvalue()[14:]
+                output.close()
+            except Exception as e:
+                logger.warning(f"_copy_gif_windows PIL->DIB: {e}")
+
+        # ── 2) 构建 CF_HDROP 数据（文件拖放，QQ/微信用这个） ──
+        path_utf16 = (abspath + "\0").encode("utf-16-le")
+        dropfile_size = 20  # sizeof(DROPFILES) = 5 * 4
+        hdrop_data = (
+            struct.pack("<IiiII", dropfile_size, 0, 0, 0, 1)  # pFiles, pt.x/y, fNC=0, fWide=1
+            + path_utf16
+            + b"\0\0"  # double null terminator
+        )
+
+        # ── 3) 注册自定义 GIF 格式 ──
         gif_fmt = user32.RegisterClipboardFormatW("GIF")
         if not gif_fmt:
             raise OSError("RegisterClipboardFormatW failed")
 
-        size = len(raw)
-        h_mem = kernel32.GlobalAlloc(GMEM_MOVEABLE, size)
-        if not h_mem:
-            raise OSError("GlobalAlloc failed")
+        # ── 分配全局内存：GIF 字节 ──
+        h_gif = kernel32.GlobalAlloc(GMEM_MOVEABLE, len(raw_gif))
+        if not h_gif:
+            raise OSError("GlobalAlloc failed for GIF")
+        p_gif = kernel32.GlobalLock(h_gif)
+        if not p_gif:
+            kernel32.GlobalFree(h_gif)
+            raise OSError("GlobalLock failed for GIF")
+        ctypes.memmove(p_gif, raw_gif, len(raw_gif))
+        kernel32.GlobalUnlock(h_gif)
 
-        p_mem = kernel32.GlobalLock(h_mem)
-        if not p_mem:
-            kernel32.GlobalFree(h_mem)
-            raise OSError("GlobalLock failed")
+        # ── 分配全局内存：CF_DIB ──
+        h_dib = None
+        if dib_data:
+            h_dib = kernel32.GlobalAlloc(GMEM_MOVEABLE, len(dib_data))
+            if h_dib:
+                p_dib = kernel32.GlobalLock(h_dib)
+                if p_dib:
+                    ctypes.memmove(p_dib, dib_data, len(dib_data))
+                    kernel32.GlobalUnlock(h_dib)
+                else:
+                    kernel32.GlobalFree(h_dib)
+                    h_dib = None
 
-        ctypes.memmove(p_mem, raw, size)
-        kernel32.GlobalUnlock(h_mem)
+        # ── 分配全局内存：CF_HDROP ──
+        h_hdrop = kernel32.GlobalAlloc(GMEM_MOVEABLE, len(hdrop_data))
+        if not h_hdrop:
+            kernel32.GlobalFree(h_gif)
+            if h_dib:
+                kernel32.GlobalFree(h_dib)
+            raise OSError("GlobalAlloc failed for HDROP")
+        p_hdrop = kernel32.GlobalLock(h_hdrop)
+        if not p_hdrop:
+            kernel32.GlobalFree(h_gif)
+            kernel32.GlobalFree(h_hdrop)
+            if h_dib:
+                kernel32.GlobalFree(h_dib)
+            raise OSError("GlobalLock failed for HDROP")
+        ctypes.memmove(p_hdrop, hdrop_data, len(hdrop_data))
+        kernel32.GlobalUnlock(h_hdrop)
 
+        # ── 打开剪贴板，设置所有格式 ──
         if not user32.OpenClipboard(None):
-            kernel32.GlobalFree(h_mem)
+            kernel32.GlobalFree(h_gif)
+            kernel32.GlobalFree(h_hdrop)
+            if h_dib:
+                kernel32.GlobalFree(h_dib)
             raise OSError("OpenClipboard failed")
 
         user32.EmptyClipboard()
-        result = user32.SetClipboardData(gif_fmt, h_mem)
+        ok = False
+
+        # 自定义 GIF 格式
+        if user32.SetClipboardData(gif_fmt, h_gif):
+            ok = True
+        else:
+            kernel32.GlobalFree(h_gif)
+
+        # CF_HDROP — QQ/微信通过此格式读取文件路径
+        if user32.SetClipboardData(CF_HDROP, h_hdrop):
+            ok = True
+        else:
+            kernel32.GlobalFree(h_hdrop)
+
+        # CF_DIB — 静态回退
+        if h_dib:
+            if user32.SetClipboardData(CF_DIB, h_dib):
+                ok = True
+            else:
+                kernel32.GlobalFree(h_dib)
+
         user32.CloseClipboard()
 
-        if not result:
-            kernel32.GlobalFree(h_mem)
-            raise OSError("SetClipboardData failed")
+        if not ok:
+            raise OSError("SetClipboardData failed for all formats")
         return True
     except Exception as e:
         logger.warning(f"_copy_gif_windows ctypes: {e}")
