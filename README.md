@@ -99,7 +99,7 @@ python -m src
 
 依赖 Nuitka 2.0+。
 
-**Windows**: 需安装 MSVC（Visual Studio Build Tools）和 [InnoSetup 7](https://jrsoftware.org/isdl.php)（制作安装包）。建议从 [LLVM Releases](https://github.com/llvm/llvm-project/releases) 独立安装 LLVM 以获得更稳定的编译体验（`--clang` 模式）。
+**Windows**: 需安装 MSVC（Visual Studio Build Tools）和 [InnoSetup 6](https://jrsoftware.org/isdl.php)（制作安装包）。建议从 [LLVM Releases](https://github.com/llvm/llvm-project/releases) 独立安装 LLVM 以获得更稳定的编译体验（`--clang` 模式）。
 
 > ⚠️ **杀毒软件**: 构建前请在 Windows Defender 及任何杀毒软件中将项目目录和 `dist/` 输出目录添加排除/信任目录。Nuitka 生成大量临时 C 文件和可执行文件，杀毒软件实时扫描会拖慢编译速度甚至导致资源写入失败。
 >
