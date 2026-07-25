@@ -23,8 +23,6 @@
 
 从 [Releases](https://github.com/TNTXZ/ohmymeme/releases) 下载对应系统的安装包或可执行文件，直接运行。
 
-> 如果你使用 **火绒** 或 **Microsoft Defender**，建议下载文件名带 `-no-icon` 的无图标版本，避免误报。
-
 ### 从源码运行
 
 **环境要求**: Python 3.10+
@@ -103,8 +101,6 @@ python -m src
 
 > ⚠️ **杀毒软件**: 构建前请在 Windows Defender 及任何杀毒软件中将项目目录和 `dist/` 输出目录添加排除/信任目录。Nuitka 生成大量临时 C 文件和可执行文件，杀毒软件实时扫描会拖慢编译速度甚至导致资源写入失败。
 >
-> 嵌入图标会增加杀毒软件误报概率。目前仅 **火绒** 和 **Microsoft Defender** 会误报，其他杀毒软件（360、卡巴斯基、Avast 等）均正常。若编译后的 exe 被杀软拦截，可尝试 `--no-icon` 参数构建无图标版本。
-
 **Linux**: 需安装 C 编译器（gcc 或 clang）。
 
 ```bash
@@ -119,9 +115,6 @@ python scripts/build.py --linux            # Linux 目标
 
 # 使用 Clang 编译器
 python scripts/build.py --clang
-
-# 无图标构建（减少杀毒软件误报）
-python scripts/build.py --no-icon
 
 # 仅 Nuitka 打包，跳过安装包
 python scripts/build.py --nuitka-only

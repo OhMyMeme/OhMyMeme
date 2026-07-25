@@ -74,7 +74,7 @@ def clean():
         shutil.rmtree(dist_src, ignore_errors=True)
 
 
-def build_nuitka(onefile=False, use_clang=False, no_icon=False, target=None):
+def build_nuitka(onefile=False, use_clang=False, target=None):
     check_nuitka()
     clean()
 
@@ -85,20 +85,18 @@ def build_nuitka(onefile=False, use_clang=False, no_icon=False, target=None):
     platform_opts = []
 
     if target == "Windows":
+        icon_file = str(SRC_DIR / "resources" / "icon.ico")
         platform_opts = [
             "--windows-console-mode=disable",
+            "--windows-icon-from-ico=" + icon_file,
             "--msvc=latest",
         ]
-        if not no_icon:
-            icon_file = str(SRC_DIR / "resources" / "icon.ico")
-            platform_opts.append("--windows-icon-from-ico=" + icon_file)
         if use_clang:
             platform_opts.append("--clang")
     elif target == "Linux":
-        if not no_icon:
-            icon_path = SRC_DIR / "resources" / "icon.png"
-            if icon_path.exists():
-                platform_opts.append("--linux-icon=" + str(icon_path))
+        icon_path = SRC_DIR / "resources" / "icon.png"
+        if icon_path.exists():
+            platform_opts.append("--linux-icon=" + str(icon_path))
         if use_clang:
             platform_opts.append("--clang")
     elif target == "Darwin":
@@ -179,7 +177,7 @@ def build_nuitka(onefile=False, use_clang=False, no_icon=False, target=None):
     return version
 
 
-def build_installer(version, no_icon=False):
+def build_installer(version):
     """使用 InnoSetup 制作 Windows 安装包"""
     system = platform.system()
     if system != "Windows":
@@ -219,12 +217,6 @@ def build_installer(version, no_icon=False):
         'OutputDir=..\\..\\dist',
         'OutputDir=%s' % str(BUILD_DIR.resolve()),
     )
-    if no_icon:
-        iss_content = iss_content.replace(
-            'OutputBaseFilename=OhMyMeme-{#MyAppVersion}-setup',
-            'OutputBaseFilename=OhMyMeme-{#MyAppVersion}-no-icon-setup',
-        )
-
     iss_temp = BUILD_DIR / "ohmy meme.iss"
     iss_temp.write_text(iss_content, encoding="utf-8")
 
@@ -239,8 +231,7 @@ def build_installer(version, no_icon=False):
     if iss_temp.exists():
         iss_temp.unlink()
 
-    no_icon_suffix = "-no-icon" if no_icon else ""
-    output_name = "%s-%s%s-setup.exe" % (APP_NAME, version, no_icon_suffix)
+    output_name = "%s-%s-setup.exe" % (APP_NAME, version)
     installer = BUILD_DIR / output_name
     if installer.exists():
         print("安装包制作完成: %s" % installer)
@@ -261,14 +252,12 @@ if __name__ == "__main__":
                         help="仅制作安装包（假设 Nuitka 已构建）")
     parser.add_argument("--clang", action="store_true", dest="use_clang",
                         help="使用 Clang 编译器")
-    parser.add_argument("--no-icon", action="store_true", dest="no_icon",
-                        help="不嵌入图标（部分杀软会因图标误报）")
     target_group = parser.add_mutually_exclusive_group()
     target_group.add_argument("--windows", action="store_true", dest="target_windows",
                               help="构建 Windows 目标")
     target_group.add_argument("--linux", action="store_true", dest="target_linux",
                               help="构建 Linux 目标")
-    parser.set_defaults(onefile=False, use_clang=False, no_icon=False, target_windows=False, target_linux=False)
+    parser.set_defaults(onefile=False, use_clang=False, target_windows=False, target_linux=False)
     args = parser.parse_args()
 
     if args.target_windows:
@@ -282,9 +271,9 @@ if __name__ == "__main__":
         if target is not None and target != "Windows":
             print("错误: --installer-only 仅支持 Windows 目标")
             sys.exit(1)
-        build_installer(get_version(), no_icon=args.no_icon)
+        build_installer(get_version())
     else:
-        version = build_nuitka(onefile=args.onefile, use_clang=args.use_clang, no_icon=args.no_icon, target=target)
+        version = build_nuitka(onefile=args.onefile, use_clang=args.use_clang, target=target)
         make_installer = not args.nuitka_only and (target is None or target == "Windows")
         if make_installer:
-            build_installer(version, no_icon=args.no_icon)
+            build_installer(version)
