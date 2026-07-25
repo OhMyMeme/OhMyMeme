@@ -12,7 +12,7 @@ APP_NAME = "OhMyMeme"
 # ~~~ 加密字段列表 ~~~（写入前自动加密，读取时自动解密）
 _SECRET_KEYS = {
     "s3_access_key", "s3_secret_key",
-    "r2_access_key", "r2_secret_key",
+    "r2_access_key_id", "r2_secret_access_key",
     "ftp_password",
 }
 
@@ -50,25 +50,32 @@ class Config:
         # 缓存设置
         "cache_max_size_mb": 500,
         "thumbnail_size": 150,
-        # 同步模式: "manual" | "on_startup" | "scheduled"
-        "sync_mode": "manual",
+        # 云端同步
+        "sync_auto_fetch_index": False,
+        "sync_auto_sync": False,
+        "sync_type": "",  # "ftp" | "s3" | "r2" | ""
         "sync_interval_minutes": 60,
-        # 云端存储（加密存储）
-        "storage_type": "",  # "s3" | "r2" | "ftp" | ""
-        "s3_endpoint": "",
-        "s3_region": "",
-        "s3_bucket": "",
-        "s3_access_key": "",
-        "s3_secret_key": "",
-        "r2_endpoint": "",
-        "r2_bucket": "",
-        "r2_access_key": "",
-        "r2_secret_key": "",
+        "sync_delete_remote": False,  # 上传时删除远端文件
+        "sync_remove_local": False,  # 下载时删除本地多余文件
+        "sync_hide_upload_warning": False,  # 不再提醒上传警告
+        # FTP
         "ftp_host": "",
         "ftp_port": 21,
         "ftp_user": "",
         "ftp_password": "",
         "ftp_path": "/",
+        # S3（待实现）
+        "s3_endpoint": "",
+        "s3_region": "",
+        "s3_bucket": "",
+        "s3_access_key": "",
+        "s3_secret_key": "",
+        # R2
+        "r2_account_id": "",
+        "r2_access_key_id": "",
+        "r2_secret_access_key": "",
+        "r2_bucket": "",
+        "r2_path": "",
         # UI
         "theme": "dark",
         "window_width": 700,

@@ -1,0 +1,626 @@
+<!DOCTYPE html>
+<html lang="zh-CN" style="background:#0d0d0f">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>设置 - OhMyMeme</title>
+<style>
+*, *::before, *::after { margin: 0; padding: 0; box-sizing: border-box; }
+:root {
+  --bg: #0d0d0f; --surface: #151517; --surface-2: #1a1a1d;
+  --card: #1e1e22; --card-hover: #25252a;
+  --border: #2a2a2f; --border-light: #333338;
+  --fg: #e4e4e7; --fg-secondary: #a1a1aa; --muted: #71717a;
+  --accent: #3b82f6; --accent-hover: #60a5fa;
+  --accent-muted: rgba(59,130,246,.1);
+  --radius-sm: 6px; --radius: 8px; --radius-lg: 12px;
+  --shadow: 0 1px 3px rgba(0,0,0,.3), 0 1px 2px rgba(0,0,0,.2);
+  --shadow-lg: 0 4px 24px rgba(0,0,0,.5);
+  --transition: 150ms cubic-bezier(0.4,0,0.2,1);
+}
+html { font-size: 14px; }
+body {
+  font-family: -apple-system, BlinkMacSystemFont, "SF Pro Text", "Segoe UI", Roboto, Oxygen, Ubuntu, sans-serif;
+  background: var(--bg); color: var(--fg);
+  height: 100vh; overflow: hidden;
+  -webkit-font-smoothing: antialiased;
+}
+#app { display: flex; flex-direction: column; height: 100vh; }
+#titlebar {
+  display: flex; align-items: center; gap: 4px;
+  padding: 10px 12px 8px; flex-shrink: 0; cursor: move;
+  -webkit-user-select: none; user-select: none;
+}
+#titlebar .logo {
+  font-size: 14px; font-weight: 600; letter-spacing: -0.02em;
+  color: var(--fg); cursor: move;
+}
+#titlebar .logo span { color: var(--accent); }
+#titlebar .spacer { flex: 1; cursor: move; }
+.title-btn {
+  background: transparent; border: none; color: var(--muted);
+  font-size: 12.5px; cursor: pointer; padding: 5px 12px;
+  border-radius: var(--radius-sm); transition: all var(--transition);
+  font-family: inherit; letter-spacing: 0.01em;
+}
+.title-btn:hover { background: var(--surface-2); color: var(--fg); }
+.title-btn:active { background: var(--card); transform: scale(0.97); }
+
+#body {
+  flex: 1; overflow-y: auto; padding: 0 16px 20px;
+  scrollbar-width: thin; scrollbar-color: var(--border) transparent;
+}
+
+/* Form elements */
+label { display: block; font-size: 12px; font-weight: 500; color: var(--fg-secondary); margin-bottom: 6px; }
+input, select {
+  width: 100%; padding: 8px 12px;
+  border: 1px solid var(--border); border-radius: var(--radius-sm);
+  background: var(--card); color: var(--fg);
+  font-size: 13px; outline: none; font-family: inherit;
+  transition: border-color var(--transition);
+}
+input:focus, select:focus { border-color: var(--accent); }
+input::placeholder { color: var(--muted); }
+input[readonly] { cursor: pointer; }
+
+/* Custom select arrow */
+select {
+  appearance: none;
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='12' viewBox='0 0 24 24' fill='none' stroke='%2371717a' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpolyline points='6 9 12 15 18 9'%3E%3C/polyline%3E%3C/svg%3E");
+  background-repeat: no-repeat; background-position: right 10px center;
+  background-size: 14px; padding-right: 32px; cursor: pointer;
+}
+select:hover { border-color: var(--border-light); }
+
+/* Checkbox */
+.check-row {
+  display: flex; align-items: center; gap: 10px;
+  cursor: pointer; font-size: 12.5px; color: var(--fg-secondary); font-weight: 500;
+  padding: 4px 0;
+}
+.check-row input[type="checkbox"] {
+  width: 16px; height: 16px; accent-color: var(--accent); cursor: pointer;
+  flex-shrink: 0;
+}
+.check-row:hover { color: var(--fg); }
+
+/* Buttons */
+.btn {
+  display: inline-flex; align-items: center; justify-content: center; gap: 6px;
+  padding: 7px 18px; font-size: 12.5px; font-family: inherit;
+  border-radius: var(--radius-sm); cursor: pointer; line-height: 1.4;
+  transition: all var(--transition); user-select: none;
+  border: 1px solid transparent; background: transparent; color: var(--fg);
+  white-space: nowrap; text-decoration: none; outline: none;
+}
+.btn:active { transform: scale(0.96); }
+.btn:disabled { opacity: .45; cursor: not-allowed; pointer-events: none; }
+.btn-primary { background: var(--accent); color: #fff; border-color: var(--accent); }
+.btn-primary:hover { background: var(--accent-hover); border-color: var(--accent-hover); }
+.btn-primary:focus-visible { box-shadow: 0 0 0 2px var(--bg), 0 0 0 4px var(--accent); }
+.btn-secondary { background: transparent; color: var(--fg); border-color: var(--border); }
+.btn-secondary:hover { background: var(--card); border-color: var(--border-light); }
+.btn-secondary:focus-visible { box-shadow: 0 0 0 2px var(--bg), 0 0 0 4px var(--border-light); }
+.btn-ghost { background: transparent; color: var(--muted); border-color: transparent; }
+.btn-ghost:hover { background: var(--surface-2); color: var(--fg); }
+.btn-ghost:focus-visible { box-shadow: 0 0 0 2px var(--bg), 0 0 0 4px var(--border-light); }
+.btn-sm { padding: 6px 12px; font-size: 12px; }
+.btn-flex { flex: 1; }
+
+.section {
+  padding: 16px 0; border-top: 1px solid var(--border);
+}
+.section:first-of-type { border-top: none; padding-top: 4px; }
+.section-title {
+  font-size: 13px; font-weight: 600; color: var(--fg); margin-bottom: 12px;
+}
+
+/* Bottom bar */
+#bottom {
+  display: flex; align-items: center; gap: 8px;
+  padding: 12px 16px; border-top: 1px solid var(--border);
+  flex-shrink: 0;
+}
+
+/* Sync status */
+#s-sync-status { font-size: 11.5px; color: var(--muted); margin-top: 6px; }
+.ftp-row { display: flex; gap: 8px; }
+.ftp-row > * { flex: 1; }
+.form-group { margin-bottom: 10px; }
+.form-group:last-child { margin-bottom: 0; }
+
+/* Toast */
+#toast {
+  position: fixed; bottom: 64px; left: 50%; transform: translateX(-50%) translateY(20px);
+  background: var(--surface); color: var(--fg); padding: 9px 22px;
+  border-radius: var(--radius); font-size: 13px;
+  border: 1px solid var(--border-light);
+  box-shadow: var(--shadow-lg); pointer-events: none; z-index: 999;
+  opacity: 0; transition: all 250ms cubic-bezier(0.4,0,0.2,1);
+  white-space: nowrap;
+}
+#toast.show { opacity: 1; transform: translateX(-50%) translateY(0); }
+</style>
+</head>
+<body>
+<div id="app">
+  <div id="titlebar">
+    <div class="logo">OhMy<span>Meme</span> 设置</div>
+    <span class="spacer"></span>
+    <button class="title-btn" onclick="closeSettings()">x</button>
+  </div>
+
+  <div id="body">
+    <div class="section">
+      <div class="form-group">
+        <label>全局快捷键</label>
+        <input id="s-hotkey" readonly onclick="startHotkeyCapture(this)">
+      </div>
+    </div>
+
+    <div class="section">
+      <div class="section-title">GIF 动图</div>
+      <label class="check-row">
+        <input id="s-gif" type="checkbox">GIF 动图自动播放
+      </label>
+    </div>
+
+    <div class="section">
+      <div class="section-title">云端同步</div>
+
+      <label class="check-row">
+        <input id="s-sync-fetch" type="checkbox">启动时自动获取远端索引
+      </label>
+      <label class="check-row" style="margin-bottom:12px">
+        <input id="s-sync-auto" type="checkbox">启动时自动同步
+      </label>
+
+      <div class="form-group">
+        <label>存储类型</label>
+        <select id="s-sync-type" onchange="toggleSyncType()">
+          <option value="">无</option>
+          <option value="ftp">FTP</option>
+          <option value="s3">S3 兼容存储</option>
+          <option value="r2">Cloudflare R2</option>
+        </select>
+      </div>
+
+      <div id="s-sync-options" style="display:none">
+        <label class="check-row">
+          <input id="s-delete-remote" type="checkbox">上传时删除远端文件
+        </label>
+        <label class="check-row">
+          <input id="s-remove-local" type="checkbox">下载时删除本地多余文件
+        </label>
+        <label class="check-row" style="margin-bottom:12px">
+          <input id="s-hide-upload-warn" type="checkbox">上传前不再提醒</label>
+      </div>
+
+      <div id="s-sync-ftp" style="display:none">
+        <div class="form-group">
+          <label>FTP 服务器</label>
+          <input id="s-ftp-host" placeholder="ftp.example.com">
+        </div>
+        <div class="ftp-row">
+          <div class="form-group">
+            <label>端口</label>
+            <input id="s-ftp-port" value="21">
+          </div>
+          <div class="form-group">
+            <label>用户名</label>
+            <input id="s-ftp-user" placeholder="anonymous">
+          </div>
+        </div>
+        <div class="form-group">
+          <label>密码</label>
+          <input id="s-ftp-pass" type="password">
+        </div>
+        <div class="form-group">
+          <label>远程路径</label>
+          <input id="s-ftp-path" value="/">
+        </div>
+      </div>
+      <div id="s-sync-s3" style="display:none">
+        <div class="form-group">
+          <label>Endpoint URL</label>
+          <input id="s3-endpoint" placeholder="https://s3.amazonaws.com">
+        </div>
+        <div class="ftp-row">
+          <div class="form-group">
+            <label>Region</label>
+            <input id="s3-region" placeholder="us-east-1">
+          </div>
+          <div class="form-group">
+            <label>Bucket</label>
+            <input id="s3-bucket" placeholder="my-bucket">
+          </div>
+        </div>
+        <div class="form-group">
+          <label>Access Key</label>
+          <input id="s3-access-key">
+        </div>
+        <div class="form-group">
+          <label>Secret Key</label>
+          <input id="s3-secret-key" type="password">
+        </div>
+        <div class="form-group">
+          <label>路径前缀（可选）</label>
+          <input id="s3-path" placeholder="ohmy meme">
+        </div>
+      </div>
+      <div id="s-sync-r2" style="display:none">
+        <div class="form-group">
+          <label>Cloudflare Account ID</label>
+          <input id="r2-account-id" placeholder="32 位十六进制字符串">
+        </div>
+        <div class="form-group">
+          <label>R2 Access Key ID</label>
+          <input id="r2-access-key-id">
+        </div>
+        <div class="form-group">
+          <label>R2 Secret Access Key</label>
+          <input id="r2-secret-access-key" type="password">
+        </div>
+        <div class="form-group">
+          <label>Bucket 名称</label>
+          <input id="r2-bucket" placeholder="my-bucket">
+        </div>
+        <div class="form-group">
+          <label>路径前缀（可选）</label>
+          <input id="r2-path" placeholder="ohmy meme">
+        </div>
+      </div>
+      <div id="s-sync-buttons" style="display:none">
+        <div style="display:flex;gap:8px;margin-top:14px">
+          <button id="btn-ftp-test" class="btn btn-secondary btn-sm btn-flex" onclick="testSync()">测试连接</button>
+          <button id="btn-sync-push" class="btn btn-primary btn-sm btn-flex" onclick="syncPush()">上传到远端</button>
+          <button id="btn-sync-pull" class="btn btn-primary btn-sm btn-flex" onclick="syncPull()">从远端下载</button>
+        </div>
+        <div id="s-sync-status" style="margin-top:6px"></div>
+      </div>
+    </div>
+  </div>
+
+  <div id="bottom">
+    <button class="btn btn-ghost btn-sm" onclick="resetSettings()">恢复默认</button>
+    <span class="spacer" style="flex:1"></span>
+    <button class="btn btn-secondary" onclick="closeSettings()">取消</button>
+    <button class="btn btn-primary" onclick="saveSettings()">保存</button>
+  </div>
+</div>
+
+<div id="toast"></div>
+
+<script>
+/* API helper */
+function api(method, ...args) {
+  if (typeof pywebview === 'undefined' || !pywebview.api || typeof pywebview.api[method] !== 'function') {
+    return null;
+  }
+  try { return pywebview.api[method](...args); }
+  catch(e) { console.error('api error', method, e); return null; }
+}
+
+/* Close settings window */
+function closeSettings() {
+  try { pywebview.api.close_settings(); } catch(e) {}
+}
+
+/* Hotkey capture */
+let hotkeyCapturing = false;
+function startHotkeyCapture(input) {
+  if (hotkeyCapturing) return;
+  hotkeyCapturing = true;
+  input.value = '';
+  input.placeholder = '按下快捷键...';
+  input.style.borderColor = 'var(--accent)';
+  const handler = (e) => {
+    e.preventDefault(); e.stopPropagation();
+    const parts = [];
+    if (e.ctrlKey) parts.push('Ctrl');
+    if (e.altKey) parts.push('Alt');
+    if (e.shiftKey) parts.push('Shift');
+    if (e.metaKey) parts.push('Win');
+    const key = e.key;
+    if (['Control','Alt','Shift','Meta'].includes(key)) return;
+    let mk = key;
+    if (mk === ' ') mk = 'Space';
+    if (mk.length === 1) mk = mk.toUpperCase();
+    parts.push(mk);
+    input.value = parts.join('+');
+    input.placeholder = '';
+    input.style.borderColor = 'var(--border)';
+    hotkeyCapturing = false;
+    document.removeEventListener('keydown', handler, true);
+  };
+  document.addEventListener('keydown', handler, true);
+}
+
+/* Load settings */
+async function getSettings() {
+  const s = await api('get_settings');
+  if (!s) return false;
+  const hk = document.getElementById('s-hotkey');
+  const gif = document.getElementById('s-gif');
+  if (hk && s.hotkey) hk.value = s.hotkey;
+  if (gif) gif.checked = s.auto_play_gif !== false;
+  const ff = document.getElementById('s-sync-fetch');
+  const sa = document.getElementById('s-sync-auto');
+  const st = document.getElementById('s-sync-type');
+  if (ff) ff.checked = s.sync_auto_fetch_index === true;
+  if (sa) sa.checked = s.sync_auto_sync === true;
+  if (st) { st.value = s.sync_type || ''; toggleSyncType(); }
+  document.getElementById('s-ftp-host').value = s.ftp_host || '';
+  document.getElementById('s-ftp-port').value = s.ftp_port || 21;
+  document.getElementById('s-ftp-user').value = s.ftp_user || '';
+  document.getElementById('s-ftp-pass').value = s.ftp_password || '';
+  document.getElementById('s-ftp-path').value = s.ftp_path || '/';
+  document.getElementById('s3-endpoint').value = s.s3_endpoint || '';
+  document.getElementById('s3-region').value = s.s3_region || '';
+  document.getElementById('s3-bucket').value = s.s3_bucket || '';
+  document.getElementById('s3-access-key').value = s.s3_access_key || '';
+  document.getElementById('s3-secret-key').value = s.s3_secret_key || '';
+  document.getElementById('s3-path').value = s.s3_path || '';
+  document.getElementById('r2-account-id').value = s.r2_account_id || '';
+  document.getElementById('r2-access-key-id').value = s.r2_access_key_id || '';
+  document.getElementById('r2-secret-access-key').value = s.r2_secret_access_key || '';
+  document.getElementById('r2-bucket').value = s.r2_bucket || '';
+  document.getElementById('r2-path').value = s.r2_path || '';
+  const kr = document.getElementById('s-delete-remote');
+  const rl = document.getElementById('s-remove-local');
+  const hw = document.getElementById('s-hide-upload-warn');
+  if (kr) kr.checked = s.sync_delete_remote === true;
+  if (rl) rl.checked = s.sync_remove_local === true;
+  if (hw) hw.checked = s.sync_hide_upload_warning === true;
+  return true;
+}
+
+function toggleSyncType() {
+  const t = document.getElementById('s-sync-type')?.value;
+  const f = document.getElementById('s-sync-ftp');
+  const s3 = document.getElementById('s-sync-s3');
+  const r2 = document.getElementById('s-sync-r2');
+  const o = document.getElementById('s-sync-options');
+  const b = document.getElementById('s-sync-buttons');
+  if (f) f.style.display = t === 'ftp' ? 'block' : 'none';
+  if (s3) s3.style.display = t === 's3' ? 'block' : 'none';
+  if (r2) r2.style.display = t === 'r2' ? 'block' : 'none';
+  if (o) o.style.display = t ? 'block' : 'none';
+  if (b) b.style.display = t ? 'block' : 'none';
+}
+
+function collectSyncSettings() {
+  return {
+    sync_auto_fetch_index: document.getElementById('s-sync-fetch')?.checked === true,
+    sync_auto_sync: document.getElementById('s-sync-auto')?.checked === true,
+    sync_type: document.getElementById('s-sync-type')?.value || '',
+    sync_delete_remote: document.getElementById('s-delete-remote')?.checked === true,
+    sync_remove_local: document.getElementById('s-remove-local')?.checked === true,
+    sync_hide_upload_warning: document.getElementById('s-hide-upload-warn')?.checked === true,
+    ftp_host: document.getElementById('s-ftp-host')?.value || '',
+    ftp_port: parseInt(document.getElementById('s-ftp-port')?.value) || 21,
+    ftp_user: document.getElementById('s-ftp-user')?.value || '',
+    ftp_password: document.getElementById('s-ftp-pass')?.value || '',
+    ftp_path: document.getElementById('s-ftp-path')?.value || '/',
+    s3_endpoint: document.getElementById('s3-endpoint')?.value || '',
+    s3_region: document.getElementById('s3-region')?.value || '',
+    s3_bucket: document.getElementById('s3-bucket')?.value || '',
+    s3_access_key: document.getElementById('s3-access-key')?.value || '',
+    s3_secret_key: document.getElementById('s3-secret-key')?.value || '',
+    s3_path: document.getElementById('s3-path')?.value || '',
+    r2_account_id: document.getElementById('r2-account-id')?.value || '',
+    r2_access_key_id: document.getElementById('r2-access-key-id')?.value || '',
+    r2_secret_access_key: document.getElementById('r2-secret-access-key')?.value || '',
+    r2_bucket: document.getElementById('r2-bucket')?.value || '',
+    r2_path: document.getElementById('r2-path')?.value || '',
+  };
+}
+
+function validateSync(sync) {
+  if (sync.sync_type === 'ftp') {
+    if (!sync.ftp_host.trim()) {
+      showToast('请输入 FTP 服务器地址');
+      return false;
+    }
+    const port = parseInt(sync.ftp_port);
+    if (!port || port < 1 || port > 65535) {
+      showToast('端口号无效（1-65535）');
+      return false;
+    }
+  }
+  if (sync.sync_type === 's3') {
+    if (!sync.s3_endpoint.trim()) {
+      showToast('请输入 Endpoint URL');
+      return false;
+    }
+    if (!sync.s3_bucket.trim()) {
+      showToast('请输入 Bucket 名称');
+      return false;
+    }
+  }
+  if (sync.sync_type === 'r2') {
+    if (!sync.r2_account_id.trim()) {
+      showToast('请输入 Cloudflare Account ID');
+      return false;
+    }
+    if (!sync.r2_bucket.trim()) {
+      showToast('请输入 Bucket 名称');
+      return false;
+    }
+  }
+  return true;
+}
+
+async function saveSettings() {
+  const hotkey = document.getElementById('s-hotkey')?.value || 'Ctrl+Alt+M';
+  const gif = document.getElementById('s-gif')?.checked !== false;
+  const sync = collectSyncSettings();
+  if (!validateSync(sync)) return;
+  await api('save_settings', { hotkey, auto_play_gif: gif, ...sync });
+  showToast('设置已保存');
+}
+
+async function resetSettings() {
+  const s = await api('reset_settings');
+  if (s) {
+    const hk = document.getElementById('s-hotkey');
+    const gif = document.getElementById('s-gif');
+    if (hk) hk.value = s.hotkey;
+    if (gif) gif.checked = s.auto_play_gif !== false;
+    const ff = document.getElementById('s-sync-fetch');
+    const sa = document.getElementById('s-sync-auto');
+    const st = document.getElementById('s-sync-type');
+    if (ff) ff.checked = false;
+    if (sa) sa.checked = false;
+    if (st) { st.value = ''; toggleSyncType(); }
+    document.getElementById('s-ftp-host').value = '';
+    document.getElementById('s-ftp-port').value = '21';
+    document.getElementById('s-ftp-user').value = '';
+    document.getElementById('s-ftp-pass').value = '';
+    document.getElementById('s-ftp-path').value = '/';
+    document.getElementById('s3-endpoint').value = '';
+    document.getElementById('s3-region').value = '';
+    document.getElementById('s3-bucket').value = '';
+    document.getElementById('s3-access-key').value = '';
+    document.getElementById('s3-secret-key').value = '';
+    document.getElementById('s3-path').value = '';
+    document.getElementById('r2-account-id').value = '';
+    document.getElementById('r2-access-key-id').value = '';
+    document.getElementById('r2-secret-access-key').value = '';
+    document.getElementById('r2-bucket').value = '';
+    document.getElementById('r2-path').value = '';
+    const kr = document.getElementById('s-delete-remote');
+    const rl = document.getElementById('s-remove-local');
+    const hw = document.getElementById('s-hide-upload-warn');
+    if (kr) kr.checked = false;
+    if (rl) rl.checked = false;
+    if (hw) hw.checked = false;
+    showToast('已恢复默认设置');
+  }
+}
+
+async function testSync() {
+  const sync = collectSyncSettings();
+  if (!validateSync(sync)) return;
+  const btn = document.getElementById('btn-ftp-test');
+  const status = document.getElementById('s-sync-status');
+  btn.disabled = true; btn.textContent = '连接中...'; status.textContent = '';
+  await api('save_settings', sync);
+  const r = await api('sync_test');
+  btn.disabled = false; btn.textContent = '测试连接';
+  status.textContent = r === 'ok' ? '连接成功' : '连接失败: ' + r;
+}
+
+async function showUploadWarning() {
+  const sync = collectSyncSettings();
+  if (!sync.sync_delete_remote) return true;
+  if (sync.sync_hide_upload_warning) return true;
+  return new Promise(resolve => {
+    const overlay = document.createElement('div');
+    overlay.style.cssText = 'position:fixed;inset:0;background:rgba(0,0,0,.55);display:flex;align-items:center;justify-content:center;z-index:200;animation:fadeIn .15s';
+    overlay.onclick = (e) => { if (e.target === overlay) { overlay.remove(); resolve(false); } };
+    const box = document.createElement('div');
+    box.style.cssText = 'background:var(--surface);border-radius:var(--radius-lg);padding:24px 28px;width:380px;border:1px solid var(--border);box-shadow:var(--shadow-lg)';
+    box.innerHTML = '<div style="margin-bottom:14px"><h2 style="font-size:15px;font-weight:600;color:var(--fg);margin-bottom:8px">上传确认</h2>'
+      + '<p style="font-size:13px;color:var(--fg-secondary);line-height:1.6">上传会将本地的完整状态同步到远端，包括新增、更新和删除操作。远程文件将被覆盖，建议先下载备份。</p></div>'
+      + '<label style="display:flex;align-items:center;gap:8px;cursor:pointer;font-size:12.5px;color:var(--muted);margin-bottom:16px;user-select:none">'
+      + '<input id="supload-warn-hide" type="checkbox" style="width:15px;height:15px;accent-color:var(--accent);cursor:pointer">不再提醒</label>'
+      + '<div style="display:flex;gap:8px;justify-content:flex-end">'
+      + '<button id="supload-modal-cancel" class="btn btn-secondary">取消</button>'
+      + '<button id="supload-modal-confirm" class="btn btn-primary">继续上传</button></div>';
+    overlay.appendChild(box);
+    document.body.appendChild(overlay);
+    document.getElementById('supload-modal-confirm').focus();
+    const cleanup = () => { overlay.remove(); };
+    document.getElementById('supload-modal-confirm').onclick = async () => {
+      const hide = document.getElementById('supload-warn-hide').checked;
+      if (hide) await api('save_settings', { sync_hide_upload_warning: true });
+      cleanup(); resolve(true);
+    };
+    document.getElementById('supload-modal-cancel').onclick = () => { cleanup(); resolve(false); };
+    overlay.onkeydown = (e) => { if (e.key === 'Escape') { cleanup(); resolve(false); } };
+  });
+}
+
+async function syncPush() {
+  const sync = collectSyncSettings();
+  if (!validateSync(sync)) return;
+  const ok = await showUploadWarning();
+  if (!ok) return;
+  const btn = document.getElementById('btn-sync-push');
+  const status = document.getElementById('s-sync-status');
+  btn.disabled = true; btn.textContent = '上传中...'; status.textContent = '';
+  await api('save_settings', sync);
+  const r = await api('sync_push');
+  btn.disabled = false; btn.textContent = '上传到远端';
+  if (r.ok) status.textContent = '上传完成: ' + (r.uploaded||0) + ' 个文件';
+  else status.textContent = '上传失败: ' + (r.error||'');
+}
+
+async function syncPull() {
+  const sync = collectSyncSettings();
+  if (!validateSync(sync)) return;
+  const btn = document.getElementById('btn-sync-pull');
+  const status = document.getElementById('s-sync-status');
+  btn.disabled = true; btn.textContent = '下载中...'; status.textContent = '';
+  await api('save_settings', sync);
+  const r = await api('sync_pull');
+  btn.disabled = false; btn.textContent = '从远端下载';
+  if (r.ok) {
+    status.textContent = '下载完成: ' + (r.downloaded||0) + ' 个文件';
+  } else status.textContent = '下载失败: ' + (r.error||'');
+}
+
+/* Toast */
+let toastTimer;
+function showToast(msg) {
+  const el = document.getElementById('toast');
+  el.textContent = msg;
+  el.classList.add('show');
+  clearTimeout(toastTimer);
+  toastTimer = setTimeout(() => el.classList.remove('show'), 1600);
+}
+
+/* Window Drag */
+let dragState = null;
+const titlebar = document.getElementById('titlebar');
+titlebar.addEventListener('mousedown', (e) => {
+  if (e.target.closest('.title-btn')) return;
+  dragState = { sx: e.screenX, sy: e.screenY };
+  e.preventDefault();
+});
+document.addEventListener('mousemove', (e) => {
+  if (!dragState) return;
+  const dx = e.screenX - dragState.sx, dy = e.screenY - dragState.sy;
+  if (dx !== 0 || dy !== 0) {
+    api('move_window', dx, dy);
+    dragState.sx = e.screenX; dragState.sy = e.screenY;
+  }
+});
+document.addEventListener('mouseup', () => { dragState = null; });
+
+/* Keyboard shortcuts */
+document.addEventListener('keydown', (e) => {
+  if (e.key === 'Escape') closeSettings();
+  if (e.key === 'Enter' && e.ctrlKey) saveSettings();
+});
+
+/* Init */
+let initRetries = 0;
+async function initSettings() {
+  const s = await getSettings();
+  if (s) {
+    document.getElementById('s-hotkey')?.focus();
+    return;
+  }
+  // pywebview bridge not ready yet, retry
+  initRetries++;
+  if (initRetries < 20) {
+    setTimeout(initSettings, 200);
+  }
+}
+document.addEventListener('DOMContentLoaded', initSettings);
+</script>
+</body>
+</html>

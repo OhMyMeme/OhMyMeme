@@ -1,4 +1,4 @@
-.PHONY: install run build clean test lint
+.PHONY: install run build build-windows build-linux build-installer clean test lint
 
 # 开发命令
 install:
@@ -17,19 +17,18 @@ lint:
 format:
 	black src/
 
-# 打包命令
+# 打包命令 (Nuitka)
 build:
-	python scripts/build.py --onefile
+	python scripts/build.py
 
-build-dir:
-	python scripts/build.py --onedir
-
-build-windows-installer:
-	# 需要 Inno Setup (iscc) 在 PATH 中
-	iscc scripts/installer/windows.iss
+build-windows:
+	python scripts/build.py --windows
 
 build-linux:
-	bash scripts/installer/linux/build.sh all
+	python scripts/build.py --linux
+
+build-installer:
+	python scripts/build.py --installer-only
 
 # 清理
 clean:

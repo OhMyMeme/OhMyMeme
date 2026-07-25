@@ -30,6 +30,8 @@ except ImportError:
 from .config import get_config
 from .database import get_db
 from .clipboard_util import copy_image_to_clipboard
+from .manifest import build as build_manifest
+from . import sync as sync_module
 
 logger = logging.getLogger(__name__)
 
@@ -81,6 +83,49 @@ class JsApi:
     def get_tags(self) -> list:
         return self._db.get_all_tags()
 
+    def get_init_data(self) -> dict:
+        """批返回初始化所需数据，减少 JS bridge 往返"""
+        q = ""
+        tags = None
+        collection_id = None
+        fav_only = False
+        rows = self._db.search(keyword=q, tags=tags,
+                               collection_id=collection_id, favorite_only=fav_only, limit=200)
+        favorited_ids = set()
+        try:
+            conn = self._db._get_conn()
+            fav_rows = conn.execute("SELECT meme_id FROM favorites").fetchall()
+            favorited_ids = {r[0] for r in fav_rows}
+        except Exception:
+            pass
+        auto_gif = self._cfg.get("auto_play_gif", True)
+        memes = []
+        for r in rows:
+            thumb_b64 = self._webui.get_thumbnail_base64(r["id"], r["filename"])
+            is_gif = r.get("mime_type", "").endswith("gif") or r["filename"].lower().endswith(".gif")
+            memes.append({
+                "id": r["id"],
+                "filename": r["filename"],
+                "file_hash": r.get("file_hash", ""),
+                "width": r.get("width", 0),
+                "height": r.get("height", 0),
+                "mime_type": r.get("mime_type", ""),
+                "is_gif": is_gif,
+                "favorited": r["id"] in favorited_ids,
+                "auto_play_gif": auto_gif,
+                "thumb_b64": thumb_b64 or "",
+            })
+        collections_raw = self._db.get_collections()
+        collections = [{"id": -1, "name": "收藏夹", "count": self._db.count(favorite_only=True)}]
+        for cid, name in collections_raw:
+            cnt = self._db.count(collection_id=cid)
+            collections.append({"id": cid, "name": name, "count": cnt})
+        return {
+            "memes": memes,
+            "tags": self._db.get_all_tags(),
+            "collections": collections,
+        }
+
     def copy_meme(self, meme_id: int) -> bool:
         row = self._db.get_by_id(meme_id)
         if not row:
@@ -113,10 +158,7 @@ class JsApi:
         try:
             os.rename(old_path, new_path)
             self._db.update_meme(meme_id, filename=new_filename)
-            # 缩略图重命名
-            cache_dir = self._cfg.cache_dir
-            for f in cache_dir.parent.rglob(f"*{row['filename']}"):
-                pass
+            build_manifest()
             return True
         except Exception as e:
             logging.getLogger(__name__).error(f"rename error: {e}")
@@ -142,6 +184,7 @@ class JsApi:
             except Exception:
                 pass
         self._db.delete_meme(meme_id)
+        build_manifest()
         return True
 
     def get_collections(self) -> list:
@@ -167,6 +210,48 @@ class JsApi:
         self._webui.scan_cache()
         return True
 
+    def sync_push(self) -> dict:
+        try:
+            r = sync_module.push()
+            r["ok"] = True
+            return r
+        except Exception as e:
+            return {"ok": False, "error": str(e)}
+
+    def sync_pull(self) -> dict:
+        try:
+            r = sync_module.pull()
+            r["ok"] = True
+            return r
+        except Exception as e:
+            return {"ok": False, "error": str(e)}
+
+    def run_auto_sync(self) -> dict:
+        """启动时自动同步：根据配置拉取远端索引和/或全量同步"""
+        result = {"fetched": False, "synced": False, "error": ""}
+        sync_type = self._cfg.get("sync_type", "")
+        if not sync_type:
+            return result
+        try:
+            if self._cfg.get("sync_auto_fetch_index", False):
+                from .sync import download_index
+                data = download_index()
+                result["fetched"] = data is not None
+            if self._cfg.get("sync_auto_sync", False):
+                from .sync import pull
+                r = pull()
+                result["synced"] = r.get("downloaded", 0) > 0
+        except Exception as e:
+            result["error"] = str(e)
+        return result
+
+    def sync_test(self) -> str:
+        try:
+            from .sync import sync_test as _test
+            return _test()
+        except Exception as e:
+            return str(e)
+
     def import_memes(self) -> bool:
         # 通过系统文件对话框选择导入
         try:
@@ -181,12 +266,36 @@ class JsApi:
         self._webui._do_import(result)
         return True
 
+    def open_settings(self):
+        self._webui.open_settings()
+
     def get_settings(self) -> dict:
         d = self._cfg.to_dict()
         return {
             "hotkey": d.get("hotkey", "Ctrl+Alt+M"),
-            "sync_mode": d.get("sync_mode", "manual"),
             "auto_play_gif": d.get("auto_play_gif", True),
+            "sync_auto_fetch_index": d.get("sync_auto_fetch_index", False),
+            "sync_auto_sync": d.get("sync_auto_sync", False),
+            "sync_type": d.get("sync_type", ""),
+            "sync_delete_remote": d.get("sync_delete_remote", False),
+            "sync_remove_local": d.get("sync_remove_local", False),
+            "sync_hide_upload_warning": d.get("sync_hide_upload_warning", False),
+            "ftp_host": d.get("ftp_host", ""),
+            "ftp_port": d.get("ftp_port", 21),
+            "ftp_user": d.get("ftp_user", ""),
+            "ftp_password": d.get("ftp_password", ""),
+            "ftp_path": d.get("ftp_path", "/"),
+            "s3_endpoint": d.get("s3_endpoint", ""),
+            "s3_region": d.get("s3_region", ""),
+            "s3_bucket": d.get("s3_bucket", ""),
+            "s3_access_key": d.get("s3_access_key", ""),
+            "s3_secret_key": d.get("s3_secret_key", ""),
+            "s3_path": d.get("s3_path", ""),
+            "r2_account_id": d.get("r2_account_id", ""),
+            "r2_access_key_id": d.get("r2_access_key_id", ""),
+            "r2_secret_access_key": d.get("r2_secret_access_key", ""),
+            "r2_bucket": d.get("r2_bucket", ""),
+            "r2_path": d.get("r2_path", ""),
         }
 
     def save_settings(self, settings: dict):
@@ -201,8 +310,32 @@ class JsApi:
         self._cfg.save()
         hotkey = self._cfg.get("hotkey", "Ctrl+Alt+M")
         self._webui._on_hotkey_change(hotkey)
-        return {"hotkey": hotkey, "sync_mode": self._cfg.get("sync_mode", "manual"),
-                "auto_play_gif": self._cfg.get("auto_play_gif", True)}
+        return {
+            "hotkey": hotkey,
+            "auto_play_gif": self._cfg.get("auto_play_gif", True),
+            "sync_auto_fetch_index": False,
+            "sync_auto_sync": False,
+            "sync_type": "",
+            "sync_delete_remote": False,
+            "sync_remove_local": False,
+            "sync_hide_upload_warning": False,
+            "ftp_host": "",
+            "ftp_port": 21,
+            "ftp_user": "",
+            "ftp_password": "",
+            "ftp_path": "/",
+            "s3_endpoint": "",
+            "s3_region": "",
+            "s3_bucket": "",
+            "s3_access_key": "",
+            "s3_secret_key": "",
+            "s3_path": "",
+            "r2_account_id": "",
+            "r2_access_key_id": "",
+            "r2_secret_access_key": "",
+            "r2_bucket": "",
+            "r2_path": "",
+        }
 
     def move_window(self, dx: int, dy: int):
         w = self._webui._window
@@ -223,15 +356,135 @@ class JsApi:
         return ""
 
 
+class SettingsApi:
+    """暴露给设置窗口的 JS API（仅设置相关方法）"""
+
+    def __init__(self, webui):
+        self._webui = webui
+        self._cfg = get_config()
+
+    def get_settings(self) -> dict:
+        d = self._cfg.to_dict()
+        return {
+            "hotkey": d.get("hotkey", "Ctrl+Alt+M"),
+            "auto_play_gif": d.get("auto_play_gif", True),
+            "sync_auto_fetch_index": d.get("sync_auto_fetch_index", False),
+            "sync_auto_sync": d.get("sync_auto_sync", False),
+            "sync_type": d.get("sync_type", ""),
+            "sync_delete_remote": d.get("sync_delete_remote", False),
+            "sync_remove_local": d.get("sync_remove_local", False),
+            "sync_hide_upload_warning": d.get("sync_hide_upload_warning", False),
+            "ftp_host": d.get("ftp_host", ""),
+            "ftp_port": d.get("ftp_port", 21),
+            "ftp_user": d.get("ftp_user", ""),
+            "ftp_password": d.get("ftp_password", ""),
+            "ftp_path": d.get("ftp_path", "/"),
+            "s3_endpoint": d.get("s3_endpoint", ""),
+            "s3_region": d.get("s3_region", ""),
+            "s3_bucket": d.get("s3_bucket", ""),
+            "s3_access_key": d.get("s3_access_key", ""),
+            "s3_secret_key": d.get("s3_secret_key", ""),
+            "s3_path": d.get("s3_path", ""),
+            "r2_account_id": d.get("r2_account_id", ""),
+            "r2_access_key_id": d.get("r2_access_key_id", ""),
+            "r2_secret_access_key": d.get("r2_secret_access_key", ""),
+            "r2_bucket": d.get("r2_bucket", ""),
+            "r2_path": d.get("r2_path", ""),
+        }
+
+    def save_settings(self, settings: dict):
+        if isinstance(settings, dict):
+            self._cfg.update_from_dict(settings)
+            self._cfg.save()
+            if "hotkey" in settings:
+                self._webui._on_hotkey_change(settings["hotkey"])
+
+    def reset_settings(self) -> dict:
+        self._cfg.reset()
+        self._cfg.save()
+        hotkey = self._cfg.get("hotkey", "Ctrl+Alt+M")
+        self._webui._on_hotkey_change(hotkey)
+        return {
+            "hotkey": hotkey,
+            "auto_play_gif": self._cfg.get("auto_play_gif", True),
+            "sync_auto_fetch_index": False,
+            "sync_auto_sync": False,
+            "sync_type": "",
+            "sync_delete_remote": False,
+            "sync_remove_local": False,
+            "sync_hide_upload_warning": False,
+            "ftp_host": "",
+            "ftp_port": 21,
+            "ftp_user": "",
+            "ftp_password": "",
+            "ftp_path": "/",
+            "s3_endpoint": "",
+            "s3_region": "",
+            "s3_bucket": "",
+            "s3_access_key": "",
+            "s3_secret_key": "",
+            "s3_path": "",
+            "r2_account_id": "",
+            "r2_access_key_id": "",
+            "r2_secret_access_key": "",
+            "r2_bucket": "",
+            "r2_path": "",
+        }
+
+    def move_window(self, dx: int, dy: int):
+        w = self._webui._settings_window
+        if w:
+            try:
+                w.move(w.x + dx, w.y + dy)
+            except Exception:
+                pass
+
+    def close_settings(self):
+        self._webui.close_settings()
+
+    def sync_push(self, delete_remote: bool = None) -> dict:
+        try:
+            r = sync_module.push(delete_remote=delete_remote)
+            r["ok"] = True
+            return r
+        except Exception as e:
+            return {"ok": False, "error": str(e)}
+
+    def sync_pull(self, remove_local: bool = None) -> dict:
+        try:
+            r = sync_module.pull(remove_local=remove_local)
+            r["ok"] = True
+            # 刷新主窗口数据
+            try:
+                if len(webview.windows) > 0:
+                    webview.windows[0].evaluate_js(
+                        "refreshMemes();refreshTags();refreshCollections();"
+                    )
+            except Exception:
+                pass
+            return r
+        except Exception as e:
+            return {"ok": False, "error": str(e)}
+
+    def sync_test(self) -> str:
+        try:
+            from .sync import sync_test as _test
+            return _test()
+        except Exception as e:
+            return str(e)
+
+
 class WebUI:
     """PyWebView UI 管理器"""
 
     def __init__(self):
         self._cfg = get_config()
         self._window = None
+        self._settings_window = None
         self._port = self._find_free_port()
         self._bottle_thread = None
         self._api = JsApi(self)
+        self._settings_api = SettingsApi(self)
         self._visible = False
         self._started = False
         self._pending_hide = False
@@ -364,6 +617,8 @@ class WebUI:
                 imported += 1
             except Exception as e:
                 logger.error(f"import {src}: {e}")
+        if imported:
+            build_manifest()
         logger.info(f"导入完成: {imported} 个")
 
     def _on_hotkey_change(self, new_hotkey: str):
@@ -381,6 +636,13 @@ class WebUI:
             if html_path.exists():
                 return bottle.static_file("index.html", root=str(HTML_DIR))
             return "<h1>OhMyMeme</h1><p>index.html not found</p>"
+
+        @app.route("/settings/")
+        def settings_page():
+            html_path = HTML_DIR / "settings.html"
+            if html_path.exists():
+                return bottle.static_file("settings.html", root=str(HTML_DIR))
+            return "<h1>设置</h1><p>settings.html not found</p>"
 
         @app.route("/api/thumb/<meme_id>/<filename>")
         def serve_thumb(meme_id, filename):
@@ -463,8 +725,18 @@ class WebUI:
                     logger.warning(f"scan_cache skip {fname}: {e}")
         if added:
             logger.info(f"缓存扫描完成: 新增 {added} 个文件")
+        build_manifest()
 
     # --- 启动 ---
+
+    def _on_drop(self, file_paths):
+        """处理拖放文件"""
+        if not file_paths:
+            return
+        valid = [p for p in file_paths if os.path.splitext(p)[1].lower() in
+                 {'.png', '.jpg', '.jpeg', '.gif', '.webp', '.bmp'}]
+        if valid:
+            self._do_import(valid)
 
     def start(self) -> bool:
         if not HAS_WEBVIEW:
@@ -481,7 +753,7 @@ class WebUI:
         self._bottle_thread.start()
         time.sleep(0.3)
 
-        # 创建窗口
+        # 只创建主窗口，设置窗口在首次打开时按需创建
         url = f"http://127.0.0.1:{self._port}/"
         self._window = webview.create_window(
             "OhMyMeme",
@@ -493,10 +765,49 @@ class WebUI:
             frameless=True,
             easy_drag=False,
         )
+        try:
+            self._window.on_drop = self._on_drop
+        except Exception:
+            pass
+
         self._started = True
         # start() blocks - 在调用线程运行 GUI 循环
         webview.start(debug=False, http_server=False)
         return True
+
+    def open_settings(self):
+        self._create_settings_window()
+
+    def _create_settings_window(self):
+        try:
+            if self._settings_window is not None:
+                try:
+                    self._settings_window.destroy()
+                except Exception:
+                    pass
+                self._settings_window = None
+
+            settings_url = f"http://127.0.0.1:{self._port}/settings/"
+            self._settings_window = webview.create_window(
+                "设置 - OhMyMeme",
+                settings_url,
+                js_api=self._settings_api,
+                width=460,
+                height=560,
+                resizable=False,
+                frameless=True,
+                easy_drag=False,
+            )
+        except Exception as e:
+            logger.warning(f"create settings window error: {e}")
+
+    def close_settings(self):
+        if self._settings_window:
+            try:
+                self._settings_window.destroy()
+            except Exception as e:
+                logger.warning(f"destroy settings error: {e}")
+            self._settings_window = None
 
     def stop(self):
         if self._window:
@@ -505,6 +816,12 @@ class WebUI:
             except Exception:
                 pass
             self._window = None
+        if self._settings_window:
+            try:
+                self._settings_window.destroy()
+            except Exception:
+                pass
+            self._settings_window = None
 
     @staticmethod
     def _find_free_port() -> int:

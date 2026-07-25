@@ -220,6 +220,13 @@ class MemeDB:
         conn = self._get_conn()
         return [(r[0], r[1]) for r in conn.execute("SELECT id, name FROM collections ORDER BY name").fetchall()]
 
+    def delete_collection(self, collection_id: int):
+        with self._lock:
+            conn = self._get_conn()
+            conn.execute("DELETE FROM meme_collections WHERE collection_id=?", (collection_id,))
+            conn.execute("DELETE FROM collections WHERE id=?", (collection_id,))
+            conn.commit()
+
     # --- 搜索 ---
 
     def search(self, keyword: str = "", tags: List[str] = None,

@@ -11,6 +11,7 @@ config.json
 *.db
 cache/
 thumbnails/
+ftp_test/
 
 # IDE
 .vscode/
@@ -28,3 +29,4 @@ Thumbs.db
 *.deb
 *.rpm
 *.dmg
+nuitka-crash-report.xml

@@ -1,5 +1,5 @@
 <!DOCTYPE html>
-<html lang="zh-CN">
+<html lang="zh-CN" style="background:#0d0d0f">
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
@@ -201,6 +201,59 @@ body {
 .ctx-item.disabled { color: var(--muted); cursor: not-allowed; }
 .ctx-item.disabled:hover { background: transparent; }
 .ctx-divider { height: 1px; background: var(--border); margin: 4px 8px; }
+
+/* Buttons */
+.btn {
+  display: inline-flex; align-items: center; justify-content: center; gap: 6px;
+  padding: 7px 18px; font-size: 12.5px; font-family: inherit;
+  border-radius: var(--radius-sm); cursor: pointer; line-height: 1.4;
+  transition: all var(--transition); user-select: none;
+  border: 1px solid transparent; background: transparent; color: var(--fg);
+  white-space: nowrap; text-decoration: none; outline: none;
+}
+.btn:active { transform: scale(0.96); }
+.btn:disabled { opacity: .45; cursor: not-allowed; pointer-events: none; }
+.btn-primary { background: var(--accent); color: #fff; border-color: var(--accent); }
+.btn-primary:hover { background: var(--accent-hover); border-color: var(--accent-hover); }
+.btn-primary:focus-visible { box-shadow: 0 0 0 2px var(--bg), 0 0 0 4px var(--accent); }
+.btn-secondary { background: transparent; color: var(--fg); border-color: var(--border); }
+.btn-secondary:hover { background: var(--card); border-color: var(--border-light); }
+.btn-secondary:focus-visible { box-shadow: 0 0 0 2px var(--bg), 0 0 0 4px var(--border-light); }
+.btn-ghost { background: transparent; color: var(--muted); border-color: transparent; }
+.btn-ghost:hover { background: var(--surface-2); color: var(--fg); }
+.btn-ghost:focus-visible { box-shadow: 0 0 0 2px var(--bg), 0 0 0 4px var(--border-light); }
+.btn-danger { background: #ef4444; color: #fff; border-color: #ef4444; }
+.btn-danger:hover { background: #f87171; border-color: #f87171; }
+.btn-danger:focus-visible { box-shadow: 0 0 0 2px var(--bg), 0 0 0 4px #ef4444; }
+.btn-sm { padding: 6px 12px; font-size: 12px; }
+.btn-xs { padding: 4px 8px; font-size: 11px; }
+.btn-flex { flex: 1; }
+.icon-btn {
+  background: transparent; border: none; cursor: pointer;
+  padding: 5px; border-radius: var(--radius-sm);
+  transition: all var(--transition); line-height: 0;
+}
+.icon-btn:hover { background: var(--surface-2); }
+.icon-btn:active { transform: scale(0.93); }
+.icon-btn svg { width: 16px; height: 16px; display: block; }
+.icon-btn svg path { fill: var(--muted); transition: fill var(--transition); }
+.icon-btn:hover svg path { fill: var(--fg); }
+
+/* Drop overlay */
+#drop-overlay {
+  position: fixed; inset: 0; z-index: 9999;
+  background: rgba(13,13,15,.75);
+  display: flex; align-items: center; justify-content: center;
+  opacity: 0; pointer-events: none;
+  transition: opacity 150ms ease;
+  border: 3px dashed var(--accent);
+}
+#drop-overlay.drag-over { opacity: 1; pointer-events: auto; }
+#drop-overlay .drop-content {
+  font-size: 18px; font-weight: 500; color: var(--accent);
+  padding: 40px 60px; border-radius: var(--radius-lg);
+  background: var(--surface); border: 1px solid var(--accent);
+}
 </style>
 </head>
 <body>
@@ -208,9 +261,18 @@ body {
   <div id="titlebar">
     <div class="logo">OhMy<span>Meme</span></div>
     <span class="spacer"></span>
+    <button class="icon-btn" onclick="syncUpload()" title="上传到远端">
+      <svg viewBox="0 0 1024 1024" xmlns="http://www.w3.org/2000/svg"><path d="M481.749333 353.792c16.682667-16.64 43.690667-16.64 60.373334 0l120.917333 120.832 3.541333 4.010667a42.666667 42.666667 0 0 1-63.872 56.32L554.666667 486.954667V896a42.666667 42.666667 0 0 1-85.333334 0v-409.173333l-48.170666 48.128a42.666667 42.666667 0 0 1-60.330667 0l-3.541333-4.010667a42.666667 42.666667 0 0 1 3.541333-56.32zM512 85.333333c122.538667 0 227.84 73.813333 273.92 179.370667A213.333333 213.333333 0 0 1 725.333333 682.666667a42.666667 42.666667 0 0 1-4.992-85.034667L725.333333 597.333333a128 128 0 0 0 36.394667-250.794666l-38.144-11.264-15.914667-36.437334a213.376 213.376 0 0 0-407.296 58.026667l-7.381333 58.368-57.173333 13.824A85.418667 85.418667 0 0 0 256 597.333333h42.666667a42.666667 42.666667 0 0 1 0 85.333334H256a170.666667 170.666667 0 0 1-40.277333-336.554667A298.709333 298.709333 0 0 1 512 85.333333z"/></svg>
+    </button>
+    <button class="icon-btn" onclick="syncDownload()" title="从远端下载">
+      <svg viewBox="0 0 1024 1024" xmlns="http://www.w3.org/2000/svg">
+        <path d="M512 85.333333c122.538667 0 227.84 73.813333 273.92 179.370667A213.333333 213.333333 0 0 1 725.333333 682.666667a42.666667 42.666667 0 0 1-4.992-85.034667L725.333333 597.333333a128 128 0 0 0 36.394667-250.794666l-38.144-11.264-15.914667-36.437334a213.376 213.376 0 0 0-407.296 58.026667l-7.381333 58.368-57.173333 13.824A85.418667 85.418667 0 0 0 256 597.333333h42.666667a42.666667 42.666667 0 0 1 0 85.333334H256a170.666667 170.666667 0 0 1-40.277333-336.554667A298.709333 298.709333 0 0 1 512 85.333333z"/>
+        <path transform="translate(0 1280) scale(1 -1)" d="M481.749333 353.792c16.682667-16.64 43.690667-16.64 60.373334 0l120.917333 120.832 3.541333 4.010667a42.666667 42.666667 0 0 1-63.872 56.32L554.666667 486.954667V896a42.666667 42.666667 0 0 1-85.333334 0v-409.173333l-48.170666 48.128a42.666667 42.666667 0 0 1-60.330667 0l-3.541333-4.010667a42.666667 42.666667 0 0 1 3.541333-56.32z"/>
+      </svg>
+    </button>
     <button class="title-btn" onclick="importMemes()">导入</button>
     <button class="title-btn" onclick="rescanCache()">刷新</button>
-    <button class="title-btn" onclick="toggleSettings()">设置</button>
+    <button class="title-btn" onclick="openSettings()">设置</button>
     <button class="title-btn" onclick="hide()" style="font-size: 15px; padding: 5px 10px; color: var(--muted);">x</button>
   </div>
   <div id="search-wrap">
@@ -228,13 +290,14 @@ body {
 </div>
 <div id="toast"></div>
 <div id="loading"><div class="spinner"></div></div>
+<div id="drop-overlay">
+  <div class="drop-content">拖放图片到此处导入</div>
+</div>
 <div id="ctx-menu">
   <button class="ctx-item" data-action="rename">重命名</button>
   <button class="ctx-item" data-action="favorite">收藏</button>
   <button class="ctx-item" data-action="collection">添加分组</button>
   <button class="ctx-item" data-action="remove-collection" style="display:none">从分组移除</button>
-  <div class="ctx-divider"></div>
-  <button class="ctx-item disabled" data-action="sync">云端同步</button>
   <div class="ctx-divider"></div>
   <button class="ctx-item danger" data-action="delete">删除</button>
 </div>
@@ -458,10 +521,6 @@ document.getElementById('ctx-menu').addEventListener('click', async (e) => {
       } else showToast('移除失败');
       break;
     }
-    case 'sync': {
-      showToast('同步功能尚未实现');
-      break;
-    }
     case 'delete': {
       const confirmed = await showConfirm('删除确认', '确定删除「' + m.filename + '」？');
       if (!confirmed) return;
@@ -484,8 +543,8 @@ function showPrompt(title, defaultValue) {
     box.innerHTML = '<div style="margin-bottom:16px"><h2 style="font-size:15px;font-weight:600;color:var(--fg);margin-bottom:4px">' + title + '</h2></div>'
       + '<input id="modal-input" style="width:100%;padding:8px 12px;border:1px solid var(--border);border-radius:var(--radius-sm);background:var(--card);color:var(--fg);font-size:13px;outline:none;font-family:inherit;box-sizing:border-box" value="' + defaultValue.replace(/"/g, '&quot;') + '">'
       + '<div style="display:flex;gap:8px;justify-content:flex-end;margin-top:16px">'
-      + '<button id="modal-cancel" style="padding:7px 18px;border:1px solid var(--border);border-radius:var(--radius-sm);background:transparent;color:var(--fg);cursor:pointer;font-size:12.5px;font-family:inherit">取消</button>'
-      + '<button id="modal-confirm" style="padding:7px 18px;border:none;border-radius:var(--radius-sm);background:var(--accent);color:#fff;cursor:pointer;font-size:12.5px;font-family:inherit">确定</button>'
+      + '<button id="modal-cancel" class="btn btn-secondary">取消</button>'
+      + '<button id="modal-confirm" class="btn btn-primary">确定</button>'
       + '</div>';
     overlay.appendChild(box);
     document.body.appendChild(overlay);
@@ -511,8 +570,8 @@ function showConfirm(title, message) {
     box.style.cssText = 'background:var(--surface);border-radius:var(--radius-lg);padding:24px 28px;width:360px;border:1px solid var(--border);box-shadow:var(--shadow-lg)';
     box.innerHTML = '<div style="margin-bottom:16px"><h2 style="font-size:15px;font-weight:600;color:var(--fg);margin-bottom:4px">' + title + '</h2><p style="font-size:13px;color:var(--fg-secondary)">' + message + '</p></div>'
       + '<div style="display:flex;gap:8px;justify-content:flex-end">'
-      + '<button id="modal-cancel" style="padding:7px 18px;border:1px solid var(--border);border-radius:var(--radius-sm);background:transparent;color:var(--fg);cursor:pointer;font-size:12.5px;font-family:inherit">取消</button>'
-      + '<button id="modal-confirm" style="padding:7px 18px;border:none;border-radius:var(--radius-sm);background:#ef4444;color:#fff;cursor:pointer;font-size:12.5px;font-family:inherit">确定</button>'
+      + '<button id="modal-cancel" class="btn btn-secondary">取消</button>'
+      + '<button id="modal-confirm" class="btn btn-danger">确定</button>'
       + '</div>';
     overlay.appendChild(box);
     document.body.appendChild(overlay);
@@ -522,119 +581,6 @@ function showConfirm(title, message) {
     document.getElementById('modal-cancel').onclick = () => { cleanup(); resolve(false); };
     overlay.onkeydown = (e) => { if (e.key === 'Escape') { cleanup(); resolve(false); } };
   });
-}
-
-/* Settings */
-function toggleSettings() {
-  let panel = document.getElementById('settings-panel');
-  if (panel) { panel.remove(); return; }
-  panel = document.createElement('div');
-  panel.id = 'settings-panel';
-  panel.style.cssText = 'position:fixed;inset:0;background:rgba(0,0,0,.55);display:flex;align-items:center;justify-content:center;z-index:100;animation:fadeIn .15s';
-  panel.onclick = (e) => { if(e.target===panel) panel.remove(); };
-
-  const box = document.createElement('div');
-  box.style.cssText = 'background:var(--surface);border-radius:var(--radius-lg);padding:28px 32px;width:400px;border:1px solid var(--border);box-shadow:var(--shadow-lg)';
-
-  let html = '<div style="margin-bottom:24px">';
-  html += '<h2 style="font-size:16px;font-weight:600;letter-spacing:-0.01em;color:var(--fg);margin-bottom:4px">设置</h2>';
-  html += '<p style="font-size:12.5px;color:var(--muted)">配置应用行为和快捷键</p></div>';
-
-  html += '<div style="margin-bottom:20px">';
-  html += '<label style="display:block;font-size:12px;font-weight:500;color:var(--fg-secondary);margin-bottom:6px">全局快捷键</label>';
-  html += '<div style="position:relative">';
-  html += '<input id="s-hotkey" readonly style="width:100%;padding:8px 12px;border:1px solid var(--border);border-radius:var(--radius-sm);background:var(--card);color:var(--fg);font-size:13px;outline:none;cursor:pointer;font-family:inherit" onclick="startHotkeyCapture(this)">';
-  html += '</div></div>';
-
-  html += '<div style="margin-bottom:24px">';
-  html += '<label style="display:block;font-size:12px;font-weight:500;color:var(--fg-secondary);margin-bottom:6px">同步模式</label>';
-  html += '<select id="s-sync" style="width:100%;padding:8px 12px;border:1px solid var(--border);border-radius:var(--radius-sm);background:var(--card);color:var(--fg);font-size:13px;outline:none;font-family:inherit;cursor:pointer">';
-  html += '<option value="manual">手动同步</option>';
-  html += '<option value="on_startup">启动时同步</option>';
-  html += '<option value="scheduled">定时同步</option>';
-  html += '</select></div>';
-
-  html += '<div style="margin-bottom:24px">';
-  html += '<label style="display:flex;align-items:center;gap:10px;cursor:pointer;font-size:12.5px;color:var(--fg-secondary);font-weight:500">';
-  html += '<input id="s-gif" type="checkbox" style="width:16px;height:16px;accent-color:var(--accent);cursor:pointer">';
-  html += 'GIF 动图自动播放</label></div>';
-
-  html += '<div style="display:flex;gap:8px;justify-content:space-between;align-items:center">';
-  html += '<button onclick="resetSettings()" style="padding:7px 14px;border:1px solid var(--border);border-radius:var(--radius-sm);background:transparent;color:var(--muted);cursor:pointer;font-size:12px;font-family:inherit;transition:all var(--transition)">恢复默认</button>';
-  html += '<div style="display:flex;gap:8px">';
-  html += '<button onclick="this.closest(\'#settings-panel\').remove()" style="padding:7px 18px;border:1px solid var(--border);border-radius:var(--radius-sm);background:transparent;color:var(--fg);cursor:pointer;font-size:12.5px;font-family:inherit;transition:all var(--transition)">取消</button>';
-  html += '<button onclick="saveSettings()" style="padding:7px 18px;border:none;border-radius:var(--radius-sm);background:var(--accent);color:#fff;cursor:pointer;font-size:12.5px;font-family:inherit;transition:all var(--transition)">保存</button>';
-  html += '</div></div>';
-
-  box.innerHTML = html;
-  panel.appendChild(box);
-  document.body.appendChild(panel);
-  getSettings();
-}
-
-let hotkeyCapturing = false;
-function startHotkeyCapture(input) {
-  if (hotkeyCapturing) return;
-  hotkeyCapturing = true;
-  const prev = input.value;
-  input.value = '';
-  input.placeholder = '按下快捷键...';
-  input.style.borderColor = 'var(--accent)';
-
-  const handler = (e) => {
-    e.preventDefault(); e.stopPropagation();
-    const parts = [];
-    if (e.ctrlKey) parts.push('Ctrl');
-    if (e.altKey) parts.push('Alt');
-    if (e.shiftKey) parts.push('Shift');
-    if (e.metaKey) parts.push('Win');
-    const key = e.key;
-    if (['Control', 'Alt', 'Shift', 'Meta'].includes(key)) return;
-    let mk = key;
-    if (mk === ' ') mk = 'Space';
-    if (mk.length === 1) mk = mk.toUpperCase();
-    parts.push(mk);
-    input.value = parts.join('+');
-    input.placeholder = '';
-    input.style.borderColor = 'var(--border)';
-    hotkeyCapturing = false;
-    document.removeEventListener('keydown', handler, true);
-  };
-  document.addEventListener('keydown', handler, true);
-}
-
-async function getSettings() {
-  const s = await api('get_settings');
-  if (!s) return;
-  const hk = document.getElementById('s-hotkey');
-  const sync = document.getElementById('s-sync');
-  const gif = document.getElementById('s-gif');
-  if (hk && s.hotkey) hk.value = s.hotkey;
-  if (sync && s.sync_mode) sync.value = s.sync_mode;
-  if (gif) gif.checked = s.auto_play_gif !== false;
-}
-
-async function saveSettings() {
-  const hotkey = document.getElementById('s-hotkey')?.value || 'Ctrl+Alt+M';
-  const sync = document.getElementById('s-sync')?.value || 'manual';
-  const gif = document.getElementById('s-gif')?.checked !== false;
-  await api('save_settings', { hotkey, sync_mode: sync, auto_play_gif: gif });
-  showToast('设置已保存');
-  document.getElementById('settings-panel')?.remove();
-  refreshMemes();
-}
-
-async function resetSettings() {
-  const s = await api('reset_settings');
-  if (s) {
-    const hk = document.getElementById('s-hotkey');
-    const sync = document.getElementById('s-sync');
-    const gif = document.getElementById('s-gif');
-    if (hk) hk.value = s.hotkey;
-    if (sync) sync.value = s.sync_mode;
-    if (gif) gif.checked = s.auto_play_gif !== false;
-    showToast('已恢复默认设置');
-  }
 }
 
 /* Toast */
@@ -647,7 +593,85 @@ function showToast(msg) {
   toastTimer = setTimeout(() => el.classList.remove('show'), 1600);
 }
 
+/* Sync: upload / download */
+async function showUploadWarning() {
+  const s = await api('get_settings');
+  if (!s) return true;
+  if (!s.sync_delete_remote) return true;
+  if (s.sync_hide_upload_warning) return true;
+
+  return new Promise(resolve => {
+    const overlay = document.createElement('div');
+    overlay.style.cssText = 'position:fixed;inset:0;background:rgba(0,0,0,.55);display:flex;align-items:center;justify-content:center;z-index:200;animation:fadeIn .15s';
+    overlay.onclick = (e) => { if (e.target === overlay) { overlay.remove(); resolve(false); } };
+    const box = document.createElement('div');
+    box.style.cssText = 'background:var(--surface);border-radius:var(--radius-lg);padding:24px 28px;width:380px;border:1px solid var(--border);box-shadow:var(--shadow-lg)';
+    box.innerHTML = '<div style="margin-bottom:14px"><h2 style="font-size:15px;font-weight:600;color:var(--fg);margin-bottom:8px">上传确认</h2>'
+      + '<p style="font-size:13px;color:var(--fg-secondary);line-height:1.6">上传会将本地的完整状态同步到远端，包括新增、更新和删除操作。远程文件将被覆盖，建议先下载备份。</p></div>'
+      + '<label style="display:flex;align-items:center;gap:8px;cursor:pointer;font-size:12.5px;color:var(--muted);margin-bottom:16px;user-select:none">'
+      + '<input id="upload-warn-hide" type="checkbox" style="width:15px;height:15px;accent-color:var(--accent);cursor:pointer">不再提醒</label>'
+      + '<div style="display:flex;gap:8px;justify-content:flex-end">'
+      + '<button id="modal-cancel" class="btn btn-secondary">取消</button>'
+      + '<button id="modal-confirm" class="btn btn-primary">继续上传</button></div>';
+    overlay.appendChild(box);
+    document.body.appendChild(overlay);
+    document.getElementById('modal-confirm').focus();
+    const cleanup = () => { overlay.remove(); };
+    document.getElementById('modal-confirm').onclick = async () => {
+      const hide = document.getElementById('upload-warn-hide').checked;
+      if (hide) await api('save_settings', { sync_hide_upload_warning: true });
+      cleanup(); resolve(true);
+    };
+    document.getElementById('modal-cancel').onclick = () => { cleanup(); resolve(false); };
+    overlay.onkeydown = (e) => { if (e.key === 'Escape') { cleanup(); resolve(false); } };
+  });
+}
+
+async function syncUpload() {
+  const ok = await showUploadWarning();
+  if (!ok) return;
+  showToast('上传中...');
+  const r = await api('sync_push');
+  if (r.ok) showToast('上传完成: ' + (r.uploaded||0) + ' 个上传, ' + (r.deleted||0) + ' 个删除');
+  else showToast('上传失败: ' + (r.error||''));
+}
+
+async function syncDownload() {
+  showToast('下载中...');
+  const r = await api('sync_pull');
+  if (r.ok) {
+    showToast('下载完成: ' + (r.downloaded||0) + ' 个文件');
+    refreshMemes(); refreshTags(); refreshCollections();
+  } else showToast('下载失败: ' + (r.error||''));
+}
+
 function hide() { try { pywebview.api.hide_window(); } catch(e) {} }
+function openSettings() { try { pywebview.api.open_settings(); } catch(e) {} }
+
+/* Drag-and-drop import */
+(function() {
+  const overlay = document.getElementById('drop-overlay');
+  if (!overlay) return;
+  let dragCounter = 0;
+  document.addEventListener('dragenter', (e) => {
+    e.preventDefault();
+    dragCounter++;
+    overlay.classList.add('drag-over');
+  });
+  document.addEventListener('dragover', (e) => {
+    e.preventDefault();
+  });
+  document.addEventListener('dragleave', (e) => {
+    e.preventDefault();
+    dragCounter--;
+    if (dragCounter <= 0) { dragCounter = 0; overlay.classList.remove('drag-over'); }
+  });
+  document.addEventListener('drop', (e) => {
+    e.preventDefault();
+    dragCounter = 0;
+    overlay.classList.remove('drag-over');
+  });
+})();
 
 /* Window Drag */
 let dragState = null;
@@ -670,16 +694,35 @@ document.addEventListener('mouseup', () => { dragState = null; });
 /* Init */
 document.addEventListener('DOMContentLoaded', async () => {
   document.getElementById('loading').classList.remove('hidden');
-  await Promise.all([refreshTags(), refreshMemes(), refreshCollections()]);
+  const data = await api('get_init_data');
+  if (data) {
+    memes = data.memes || [];
+    renderGrid();
+    allTags = data.tags || [];
+    renderTags();
+    collections = data.collections || [];
+    renderCollections();
+  }
   document.getElementById('loading').classList.add('hidden');
   document.getElementById('search').focus();
-  // 延迟扫描缓存目录，确保 API 线程准备就绪
   setTimeout(async () => {
     await api('rescan_cache');
-    refreshMemes();
-    refreshTags();
-    refreshCollections();
-  }, 1000);
+    memes = await api('search_memes', '', [], null) || [];
+    renderGrid();
+    allTags = await api('get_tags') || [];
+    renderTags();
+    collections = await api('get_collections') || [];
+    renderCollections();
+    // 启动时自动同步（根据配置）
+    await api('run_auto_sync');
+    // 同步后刷新数据
+    memes = await api('search_memes', '', [], null) || [];
+    renderGrid();
+    allTags = await api('get_tags') || [];
+    renderTags();
+    collections = await api('get_collections') || [];
+    renderCollections();
+  }, 300);
 });
 </script>
 </body>

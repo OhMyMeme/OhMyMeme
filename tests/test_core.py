@@ -49,7 +49,10 @@ class TestConfig(unittest.TestCase):
     def test_defaults(self):
         cfg = Config(self.config_path)
         self.assertEqual(cfg.get("hotkey"), "Ctrl+Alt+M")
-        self.assertEqual(cfg.get("sync_mode"), "manual")
+        self.assertEqual(cfg.get("sync_auto_fetch_index"), False)
+        self.assertEqual(cfg.get("sync_auto_sync"), False)
+        self.assertEqual(cfg.get("sync_type"), "")
+        self.assertEqual(cfg.get("ftp_host"), "")
         self.assertEqual(cfg.get("cache_max_size_mb"), 500)
 
     def test_set_get(self):
