@@ -1,14 +1,16 @@
 #!/usr/bin/env python3
 """
-OhMyMeme 打包脚本 (PyInstaller)
-依赖: pip install pyinstaller
-Windows 额外依赖: InnoSetup 6/7 (ISCC.exe) — 制作安装包
-用法:
-    python scripts/build.py                  # 打包 + 制作安装包 (自动检测)
-    python scripts/build.py --windows        # Windows 目标
-    python scripts/build.py --linux          # Linux 目标
-    python scripts/build.py --installer-only # 仅制作安装包(假设已打包)
-    python scripts/build.py --build-only     # 仅打包，跳过安装包
+OhMyMeme build script (PyInstaller)
+Deps: pip install pyinstaller
+Windows extra: InnoSetup 6/7 (ISCC.exe) — to create installer
+
+Usage:
+    python scripts/build.py                  # build + installer (auto-detect)
+    python scripts/build.py --windows        # Windows target
+    python scripts/build.py --linux          # Linux target
+    python scripts/build.py --installer-only # installer only (assumes already built)
+    python scripts/build.py --build-only     # build only, skip installer
+    python scripts/build.py --lang en        # force English output
 """
 
 import os
@@ -26,6 +28,47 @@ APP_NAME = "OhMyMeme"
 
 PYTHON = sys.executable
 IS_WINDOWS = platform.system() == "Windows"
+
+# --- i18n ---
+_MSGS = {
+    "pyinstaller_not_found": {
+        "zh": "错误: 未找到 PyInstaller，请执行 pip install pyinstaller",
+        "en": "ERROR: PyInstaller not found, run: pip install pyinstaller",
+    },
+    "running": {"zh": "运行:", "en": "Running:"},
+    "build_failed": {"zh": "PyInstaller 打包失败 (code=%d)", "en": "PyInstaller build failed (code=%d)"},
+    "build_done": {"zh": "打包完成:", "en": "Build done:"},
+    "skip_installer": {"zh": "跳过安装包制作（非 Windows 平台）", "en": "Skipping installer (non-Windows target)"},
+    "iscc_not_found": {"zh": "警告: 未找到 ISCC.exe（InnoSetup），跳过安装包制作", "en": "WARNING: ISCC.exe (InnoSetup) not found, skipping installer"},
+    "outdir_not_found": {"zh": "错误: 未找到输出目录:", "en": "ERROR: output directory not found:"},
+    "run_build_first": {"zh": "请先执行 PyInstaller 构建", "en": "Run PyInstaller build first"},
+    "iss_not_found": {"zh": "错误: InnoSetup 脚本不存在:", "en": "ERROR: InnoSetup script not found:"},
+    "building_installer": {"zh": "制作安装包...", "en": "Building installer..."},
+    "installer_done": {"zh": "安装包制作完成:", "en": "Installer created:"},
+    "installer_not_found": {"zh": "安装包制作完成，未找到预期文件:", "en": "Installer created but expected file not found:"},
+    "linux_sh_not_found": {"zh": "警告: 未找到 %s，跳过 Linux 打包", "en": "WARNING: %s not found, skipping Linux packaging"},
+    "building_linux": {"zh": "制作 Linux 包...", "en": "Building Linux packages..."},
+    "linux_failed": {"zh": "Linux 打包失败 (code=%d)", "en": "Linux packaging failed (code=%d)"},
+    "installer_only_unsupported": {
+        "zh": "错误: --installer-only 不支持当前目标 %s",
+        "en": "ERROR: --installer-only not supported for target %s",
+    },
+}
+
+_lang = "zh"
+
+
+def _set_lang(lang):
+    global _lang
+    if lang in ("zh", "en"):
+        _lang = lang
+
+
+def L(key, *args):
+    msg = _MSGS.get(key, {}).get(_lang, str(key))
+    if args:
+        return msg % args
+    return msg
 
 
 def get_version():
@@ -53,7 +96,7 @@ def check_pyinstaller():
     try:
         import PyInstaller
     except ImportError:
-        print("错误: 未找到 PyInstaller，请执行 pip install pyinstaller")
+        print(L("pyinstaller_not_found"))
         sys.exit(1)
 
 
@@ -106,13 +149,13 @@ def build_pyinstaller(target=None):
         if icon_png.exists():
             cmd += ["--icon=" + str(icon_png)]
 
-    print("运行: %s" % " ".join(cmd))
+    print(L("running"), " ".join(cmd))
     result = subprocess.run(cmd, cwd=str(PROJECT_ROOT))
     if result.returncode != 0:
-        print("PyInstaller 打包失败 (code=%d)" % result.returncode)
+        print(L("build_failed", result.returncode))
         sys.exit(result.returncode)
 
-    print("打包完成: %s" % (BUILD_DIR / APP_NAME))
+    print(L("build_done"), BUILD_DIR / APP_NAME)
     return version
 
 
@@ -120,24 +163,23 @@ def build_installer(version, target=None):
     if target is None:
         target = platform.system()
     if target != "Windows":
-        print("跳过安装包制作（非 Windows 平台）")
+        print(L("skip_installer"))
         return
 
     iscc = find_iscc()
     if not iscc:
-        print("警告: 未找到 ISCC.exe（InnoSetup），跳过安装包制作")
+        print(L("iscc_not_found"))
         return
 
-    # 查找 PyInstaller 输出目录
     dist_dir = BUILD_DIR / APP_NAME
     if not dist_dir.is_dir():
-        print("错误: 未找到输出目录: %s" % dist_dir)
-        print("请先执行 PyInstaller 构建")
+        print(L("outdir_not_found"), dist_dir)
+        print(L("run_build_first"))
         return
 
     iss_template = PROJECT_ROOT / "scripts" / "installer" / "windows.iss"
     if not iss_template.exists():
-        print("错误: InnoSetup 脚本不存在: %s" % iss_template)
+        print(L("iss_not_found"), iss_template)
         return
 
     iss_content = iss_template.read_text(encoding="utf-8")
@@ -158,7 +200,7 @@ def build_installer(version, target=None):
     iss_temp = BUILD_DIR / "ohmy meme.iss"
     iss_temp.write_text(iss_content, encoding="utf-8")
 
-    print("制作安装包...")
+    print(L("building_installer"))
     result = subprocess.run(
         [iscc, str(iss_temp)],
         cwd=str(PROJECT_ROOT),
@@ -172,46 +214,54 @@ def build_installer(version, target=None):
     output_name = "%s-%s-setup.exe" % (APP_NAME, version)
     installer = BUILD_DIR / output_name
     if installer.exists():
-        print("安装包制作完成: %s" % installer)
+        print(L("installer_done"), installer)
     else:
-        print("安装包制作完成，未找到预期文件: %s" % installer)
+        print(L("installer_not_found"), installer)
 
 
 def build_linux_packages(version):
-    """使用 build.sh 构建 Linux 包 (.deb / AppImage)"""
     build_sh = PROJECT_ROOT / "scripts" / "installer" / "linux" / "build.sh"
     if not build_sh.exists():
-        print("警告: 未找到 %s，跳过 Linux 打包" % build_sh)
+        print(L("linux_sh_not_found", build_sh))
         return
 
-    # build.sh 内部会调用 PyInstaller，传 no_build 避免重复构建
     env = os.environ.copy()
     env["SKIP_PYINSTALLER"] = "1"
-    print("制作 Linux 包...")
+    print(L("building_linux"))
     result = subprocess.run(
         ["bash", str(build_sh), "all"],
         cwd=str(PROJECT_ROOT),
         env=env,
     )
     if result.returncode != 0:
-        print("Linux 打包失败 (code=%d)" % result.returncode)
+        print(L("linux_failed", result.returncode))
         sys.exit(result.returncode)
 
 
 if __name__ == "__main__":
     import argparse
-    parser = argparse.ArgumentParser(description="OhMyMeme 打包脚本 (PyInstaller)")
+    parser = argparse.ArgumentParser(description="OhMyMeme build script (PyInstaller)")
+    parser.add_argument("--lang", choices=["zh", "en"], default=None,
+                        help="Output language (auto-detect: zh locally, en on GitHub Actions)")
     parser.add_argument("--installer-only", action="store_true",
-                        help="仅制作安装包（假设 PyInstaller 已构建）")
+                        help="Only build installer (assumes PyInstaller already ran)")
     parser.add_argument("--build-only", action="store_true",
-                        help="仅打包，跳过安装包制作")
+                        help="Only run PyInstaller, skip installer")
     target_group = parser.add_mutually_exclusive_group()
     target_group.add_argument("--windows", action="store_true", dest="target_windows",
-                              help="构建 Windows 目标")
+                              help="Build for Windows")
     target_group.add_argument("--linux", action="store_true", dest="target_linux",
-                              help="构建 Linux 目标")
+                              help="Build for Linux")
     parser.set_defaults(target_windows=False, target_linux=False)
     args = parser.parse_args()
+
+    # --- language detection ---
+    if args.lang:
+        _set_lang(args.lang)
+    elif os.environ.get("GITHUB_ACTIONS") == "true":
+        _set_lang("en")
+    else:
+        _set_lang("zh")
 
     if args.target_windows:
         target = "Windows"
@@ -226,7 +276,7 @@ if __name__ == "__main__":
         elif target == "Linux":
             build_linux_packages(get_version())
         else:
-            print("错误: --installer-only 不支持当前目标 %s" % target)
+            print(L("installer_only_unsupported", target))
             sys.exit(1)
     else:
         version = build_pyinstaller(target=target)
