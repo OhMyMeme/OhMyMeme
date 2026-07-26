@@ -314,7 +314,7 @@ async function api(method, ...args) {
 let searchTimer;
 function onSearch() {
   clearTimeout(searchTimer);
-  searchTimer = setTimeout(() => refreshMemes(), 200);
+  searchTimer = setTimeout(() => refreshMemes(), 300);
 }
 
 async function refreshMemes() {
@@ -469,7 +469,7 @@ function hideCtxMenu() {
 }
 
 document.addEventListener('click', (e) => {
-  if (!e.target.closest('#ctx-menu')) hideCtxMenu();
+  if (e.button === 0 && !e.target.closest('#ctx-menu')) hideCtxMenu();
 });
 
 document.addEventListener('keydown', (e) => {
@@ -559,6 +559,65 @@ function showPrompt(title, defaultValue) {
       if (e.key === 'Escape') { cleanup(); resolve(null); }
     };
   });
+}
+
+function showUpdateDialogFromMain(current, latest, url) {
+  const overlay = document.createElement('div');
+  overlay.style.cssText = 'position:fixed;inset:0;background:rgba(0,0,0,.55);display:flex;align-items:center;justify-content:center;z-index:300;animation:fadeIn .15s';
+  overlay.onclick = (e) => { if (e.target === overlay) overlay.remove(); };
+  const box = document.createElement('div');
+  box.style.cssText = 'background:var(--surface);border-radius:var(--radius-lg);padding:24px 28px;width:380px;border:1px solid var(--border);box-shadow:var(--shadow-lg)';
+  box.innerHTML = '<div style="margin-bottom:16px"><h2 style="font-size:15px;font-weight:600;color:var(--fg);margin-bottom:8px">发现新版本</h2>'
+    + '<p style="font-size:13px;color:var(--fg-secondary);line-height:1.6">当前版本: ' + current + '<br>最新版本: ' + latest + '</p></div>'
+    + '<div style="display:flex;flex-direction:column;gap:8px">'
+    + '<button id="upd-update" class="btn btn-primary" style="width:100%">更新</button>'
+    + '<div style="display:flex;gap:8px">'
+    + '<button id="upd-later" class="btn btn-secondary btn-flex">稍后提示</button>'
+    + '</div></div>';
+  overlay.appendChild(box);
+  document.body.appendChild(overlay);
+  document.getElementById('upd-update').focus();
+
+  document.getElementById('upd-update').onclick = async () => {
+    const btn = document.getElementById('upd-update');
+    btn.disabled = true;
+    btn.textContent = '准备下载...';
+    const ok = await api('start_download', url);
+    if (!ok) { btn.disabled = false; btn.textContent = '更新'; return; }
+
+    const container = btn.parentNode;
+    container.innerHTML = '<div style="width:100%">'
+      + '<div style="font-size:12px;color:var(--fg-secondary);margin-bottom:4px;text-align:center" id="upd-progress-text">下载中 0%</div>'
+      + '<div style="width:100%;height:8px;background:var(--bg-secondary);border-radius:4px;overflow:hidden">'
+      + '<div id="upd-progress-bar" style="width:0%;height:100%;background:var(--accent);border-radius:4px;transition:width .3s"></div></div></div>';
+
+    const poll = setInterval(async () => {
+      const s = await api('get_download_progress');
+      if (!s) return;
+      const pct = s.progress || 0;
+      document.getElementById('upd-progress-bar').style.width = pct + '%';
+      if (s.status === 'downloading') {
+        document.getElementById('upd-progress-text').textContent = '下载中 ' + pct + '%';
+      } else if (s.status === 'done') {
+        clearInterval(poll);
+        document.getElementById('upd-progress-text').textContent = '下载完成，启动安装...';
+        const r = await api('run_downloaded_installer');
+        overlay.remove();
+        if (r) {
+          showToast('安装程序已启动，安装完成后将自动更新');
+        } else {
+          showToast('启动安装程序失败');
+        }
+      } else if (s.status === 'error') {
+        clearInterval(poll);
+        document.getElementById('upd-progress-text').textContent = '下载失败: ' + (s.error || '未知错误');
+        container.innerHTML += '<button id="upd-retry" class="btn btn-primary" style="width:100%;margin-top:8px">重试</button>';
+        document.getElementById('upd-retry').onclick = () => { overlay.remove(); showUpdateDialogFromMain(current, latest, url); };
+      }
+    }, 500);
+  };
+  document.getElementById('upd-later').onclick = () => { overlay.remove(); };
+  overlay.onkeydown = (e) => { if (e.key === 'Escape') overlay.remove(); };
 }
 
 function showConfirm(title, message) {
@@ -707,21 +766,19 @@ document.addEventListener('DOMContentLoaded', async () => {
   document.getElementById('search').focus();
   setTimeout(async () => {
     await api('rescan_cache');
-    memes = await api('search_memes', '', [], null) || [];
-    renderGrid();
-    allTags = await api('get_tags') || [];
-    renderTags();
-    collections = await api('get_collections') || [];
-    renderCollections();
-    // 启动时自动同步（根据配置）
     await api('run_auto_sync');
-    // 同步后刷新数据
     memes = await api('search_memes', '', [], null) || [];
     renderGrid();
     allTags = await api('get_tags') || [];
     renderTags();
     collections = await api('get_collections') || [];
     renderCollections();
+    try {
+      const upd = await api('check_update');
+      if (upd && upd.has_update) {
+        showUpdateDialogFromMain(upd.current, upd.latest, upd.download_url);
+      }
+    } catch(e) {}
   }, 300);
 });
 </script>

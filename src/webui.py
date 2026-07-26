@@ -1,6 +1,5 @@
 """PyWebView 现代化 UI 窗口管理器 + JS API"""
 
-import base64
 import io
 import logging
 import os
@@ -43,6 +42,7 @@ except ImportError:
     HAS_BOTTLE = False
 
 from . import sync as sync_module
+from . import updater
 from .clipboard_util import copy_image_to_clipboard
 from .config import get_config
 from .database import get_db
@@ -85,7 +85,6 @@ class JsApi:
         auto_gif = self._cfg.get("auto_play_gif", True)
         result = []
         for r in rows:
-            thumb_b64 = self._webui.get_thumbnail_base64(r["id"], r["filename"])
             is_gif = r.get("mime_type", "").endswith("gif") or r[
                 "filename"
             ].lower().endswith(".gif")
@@ -100,7 +99,6 @@ class JsApi:
                     "is_gif": is_gif,
                     "favorited": r["id"] in favorited_ids,
                     "auto_play_gif": auto_gif,
-                    "thumb_b64": thumb_b64 or "",
                 }
             )
         return result
@@ -131,7 +129,6 @@ class JsApi:
         auto_gif = self._cfg.get("auto_play_gif", True)
         memes = []
         for r in rows:
-            thumb_b64 = self._webui.get_thumbnail_base64(r["id"], r["filename"])
             is_gif = r.get("mime_type", "").endswith("gif") or r[
                 "filename"
             ].lower().endswith(".gif")
@@ -146,7 +143,6 @@ class JsApi:
                     "is_gif": is_gif,
                     "favorited": r["id"] in favorited_ids,
                     "auto_play_gif": auto_gif,
-                    "thumb_b64": thumb_b64 or "",
                 }
             )
         collections_raw = self._db.get_collections()
@@ -195,6 +191,9 @@ class JsApi:
         try:
             os.rename(old_path, new_path)
             self._db.update_meme(meme_id, filename=new_filename)
+            if hasattr(self._webui, "_file_cache"):
+                self._webui._file_cache.pop(row["filename"], None)
+                self._webui._file_cache[new_filename] = new_path
             build_manifest()
             return True
         except Exception as e:
@@ -207,20 +206,20 @@ class JsApi:
         row = self._db.get_by_id(meme_id)
         if not row:
             return False
-        # 删除缓存文件
         file_path = self._find_meme_file(row["filename"])
         if file_path:
             try:
                 os.remove(file_path)
             except Exception:
                 pass
-        # 删除缩略图
         thumb_dir = self._cfg.thumbnail_dir
         for f in thumb_dir.glob(f"{meme_id}_*.png"):
             try:
                 f.unlink()
             except Exception:
                 pass
+        if hasattr(self._webui, "_file_cache"):
+            self._webui._file_cache.pop(row["filename"], None)
         self._db.delete_meme(meme_id)
         build_manifest()
         return True
@@ -249,6 +248,33 @@ class JsApi:
     def rescan_cache(self) -> bool:
         self._webui.scan_cache()
         return True
+
+    def check_update(self, debug: bool = False) -> dict:
+        """检查更新，返回版本信息 + 是否建议更新"""
+        from . import __version__ as cur_ver
+
+        info = updater.check_latest()
+        info["current"] = cur_ver
+        if debug or self._webui._update_debug:
+            info["has_update"] = True
+        return info
+
+    def start_download(self, url: str) -> bool:
+        return updater.start_download(url)
+
+    def get_download_progress(self) -> dict:
+        return updater.get_download_progress()
+
+    def run_downloaded_installer(self) -> bool:
+        return updater.run_downloaded_installer()
+
+    def download_update(self, url: str) -> dict:
+        """同步下载（旧版，保留兼容）"""
+        path = updater.download_release(url)
+        if not path:
+            return {"ok": False, "error": "download failed"}
+        ok = updater.run_installer(path)
+        return {"ok": ok, "error": "" if ok else "run installer failed"}
 
     def sync_push(self) -> dict:
         try:
@@ -485,6 +511,31 @@ class SettingsApi:
     def close_settings(self):
         self._webui.close_settings()
 
+    def check_update(self, debug: bool = False) -> dict:
+        from . import __version__ as cur_ver
+
+        info = updater.check_latest()
+        info["current"] = cur_ver
+        if debug or self._webui._update_debug:
+            info["has_update"] = True
+        return info
+
+    def start_download(self, url: str) -> bool:
+        return updater.start_download(url)
+
+    def get_download_progress(self) -> dict:
+        return updater.get_download_progress()
+
+    def run_downloaded_installer(self) -> bool:
+        return updater.run_downloaded_installer()
+
+    def download_update(self, url: str) -> dict:
+        path = updater.download_release(url)
+        if not path:
+            return {"ok": False, "error": "download failed"}
+        ok = updater.run_installer(path)
+        return {"ok": ok, "error": "" if ok else "run installer failed"}
+
     def sync_push(self, delete_remote: bool = None) -> dict:
         try:
             r = sync_module.push(delete_remote=delete_remote)
@@ -521,7 +572,7 @@ class SettingsApi:
 class WebUI:
     """PyWebView UI 管理器"""
 
-    def __init__(self):
+    def __init__(self, update_debug: bool = False):
         self._cfg = get_config()
         self._window = None
         self._settings_window = None
@@ -533,6 +584,7 @@ class WebUI:
         self._started = False
         self._pending_hide = False
         self._on_hotkey_change_cb = None
+        self._update_debug = update_debug
 
     def set_on_hotkey_change(self, cb):
         self._on_hotkey_change_cb = cb
@@ -554,6 +606,7 @@ class WebUI:
         self._visible = False
         if self._window:
             try:
+                self._save_window_position()
                 if callable(self._window.hide):
                     self._window.hide()
             except Exception as e:
@@ -594,16 +647,11 @@ class WebUI:
 
     # --- 缩略图 ---
 
-    def get_thumbnail_base64(self, meme_id: int, filename: str, size: int = 150) -> str:
+    def _get_thumbnail_path(self, meme_id: int, filename: str, size: int = 150) -> str:
         cache_dir = self._cfg.thumbnail_dir
         thumb_path = cache_dir / f"{meme_id}_{size}.png"
         if thumb_path.exists():
-            try:
-                data = thumb_path.read_bytes()
-                return base64.b64encode(data).decode()
-            except Exception:
-                pass
-        # 生成缩略图
+            return str(thumb_path)
         meme_path = self._find_meme_file(filename)
         if not meme_path or not HAS_PIL:
             return ""
@@ -614,16 +662,27 @@ class WebUI:
             img.save(buf, "PNG")
             cache_dir.mkdir(parents=True, exist_ok=True)
             thumb_path.write_bytes(buf.getvalue())
-            return base64.b64encode(buf.getvalue()).decode()
+            return str(thumb_path)
         except Exception as e:
             logger.warning(f"thumb error {filename}: {e}")
             return ""
 
     def _find_meme_file(self, filename: str) -> str:
         cache_dir = self._cfg.cache_dir
+        direct = cache_dir / filename
+        if direct.exists():
+            return str(direct)
+        if not hasattr(self, "_file_cache"):
+            self._file_cache = {}
+        if filename in self._file_cache:
+            cached = self._file_cache[filename]
+            if os.path.exists(cached):
+                return cached
         for root, _, files in os.walk(cache_dir):
             if filename in files:
-                return os.path.join(root, filename)
+                full = os.path.join(root, filename)
+                self._file_cache[filename] = full
+                return full
         return ""
 
     def _do_import(self, file_paths):
@@ -693,11 +752,11 @@ class WebUI:
 
         @app.route("/api/thumb/<meme_id>/<filename>")
         def serve_thumb(meme_id, filename):
-            b64 = self.get_thumbnail_base64(int(meme_id), filename)
-            if b64:
-                data = base64.b64decode(b64)
-                bottle.response.content_type = "image/png"
-                return data
+            path = self._get_thumbnail_path(int(meme_id), filename)
+            if path:
+                return bottle.static_file(
+                    os.path.basename(path), root=os.path.dirname(path), mimetype="image/png"
+                )
             bottle.response.status = 404
             return ""
 
@@ -807,14 +866,17 @@ class WebUI:
         self._bottle_thread.start()
         time.sleep(0.3)
 
-        # 只创建主窗口，设置窗口在首次打开时按需创建
         url = f"http://127.0.0.1:{self._port}/"
+        wx = self._cfg.get("window_x", -1)
+        wy = self._cfg.get("window_y", -1)
         self._window = webview.create_window(
             "OhMyMeme",
             url,
             js_api=self._api,
             width=self._cfg.get("window_width", 700),
             height=self._cfg.get("window_height", 500),
+            x=wx if wx >= 0 else None,
+            y=wy if wy >= 0 else None,
             resizable=True,
             frameless=True,
             easy_drag=False,
@@ -863,7 +925,20 @@ class WebUI:
                 logger.warning(f"destroy settings error: {e}")
             self._settings_window = None
 
+    def _save_window_position(self):
+        if not self._window:
+            return
+        try:
+            self._cfg.set("window_x", self._window.x)
+            self._cfg.set("window_y", self._window.y)
+            self._cfg.set("window_width", self._window.width)
+            self._cfg.set("window_height", self._window.height)
+            self._cfg.save()
+        except Exception:
+            pass
+
     def stop(self):
+        self._save_window_position()
         if self._window:
             try:
                 self._window.destroy()

@@ -140,6 +140,10 @@ bash scripts/installer/linux/build.sh appimage # 仅 AppImage
 
 输出目录: `dist/`。
 
+## AI 辅助开发
+
+本项目包含 `AGENTS.md` 文件，供 AI 编码助手读取以了解项目结构、代码规范和关键实现细节。若通过 AI 修改代码，请确保 AI 读取该文件后再进行操作。
+
 ## 架构
 
 ```
@@ -158,6 +162,26 @@ bash scripts/installer/linux/build.sh appimage # 仅 AppImage
 │  元数据      │     │  缩略图+原图     │
 └─────────────┘     └──────────────────┘
 ```
+
+## 实现要点
+
+### 启动时序
+启动分两阶段：首先 `get_init_data()` 秒开渲染数据库数据，300ms 后依次执行 `rescan_cache()` → `run_auto_sync()` → `check_update()`。**300ms 延迟不可移除**（桥接稳定需要），**先 rescan 再 sync**（文件与 DB 一致后再对比远端）。
+
+### 缓存去重
+扫描缓存目录时**双重去重**：按文件名查 DB 防止每次启动重复注册，按 SHA-256 哈希查 DB 防止同图不同名重复。导入（拖入/对话框）同样有哈希去重。
+
+### GIF 剪贴板
+Windows 上 GIF 复制同时写入三个剪贴板格式：`CF_DIB`（首帧 BMP）、`CF_HDROP`（文件路径，QQ/微信粘贴动图必需）、自定义 `"GIF"` 格式。**移除 CF_HDROP 会导致 QQ/微信粘贴 GIF 变静态图。**
+
+### 加密降级
+加密优先使用 `cryptography.fernet.Fernet`，不可用时降级为 `hashlib.pbkdf2_hmac` + XOR + base64。**不能移除 XOR 降级**，否则无 `cryptography` 时系统崩溃。
+
+### Sync 集合合并
+`pull` 时远端分组以**并集**方式合并到本地已有分组（不清除本地成员）。远端 manifest 中的 `collections` 用文件名关联（非 ID），跨设备稳定。
+
+### Manifest 自动清理
+构建 `meme-index.json` 时，若某分组无成员则自动删除该分组并跳过写入，防止空分组累积到远端。
 
 ## 技术栈
 

@@ -30,7 +30,7 @@ class OhMyMemeApp:
         self._running = True
 
         # 1. 创建 WebUI（先不启动 GUI 循环）
-        self._webui = WebUI()
+        self._webui = WebUI(update_debug=getattr(self, "_update_debug", False))
         self._webui.set_on_hotkey_change(self._on_hotkey_change)
 
         # 2. 注册全局快捷键
@@ -116,6 +116,17 @@ class OhMyMemeApp:
 
 
 def main():
+    import argparse
+
+    parser = argparse.ArgumentParser(description="OhMyMeme")
+    parser.add_argument(
+        "--update-debug",
+        action="store_true",
+        dest="update_debug",
+        help="Force show update dialog for testing",
+    )
+    args, _ = parser.parse_known_args()
+
     logging.basicConfig(
         level=logging.INFO,
         format="[%(levelname)s] %(name)s: %(message)s",
@@ -125,6 +136,7 @@ def main():
         signal.signal(signal.SIGTERM, lambda *a: sys.exit(0))
 
     app = OhMyMemeApp()
+    app._update_debug = args.update_debug
     try:
         app.run()
     except Exception as e:

@@ -82,6 +82,8 @@ class Config:
         "theme": "dark",
         "window_width": 700,
         "window_height": 500,
+        "window_x": -1,
+        "window_y": -1,
         "auto_play_gif": True,
     }
 
