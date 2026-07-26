@@ -5,6 +5,7 @@ __pycache__/
 dist/
 build/
 *.spec
+.venv/
 
 # OhMyMeme 本地数据
 config.json

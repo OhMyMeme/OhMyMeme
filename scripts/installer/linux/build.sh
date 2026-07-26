@@ -8,19 +8,20 @@ SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 PROJECT_DIR="$(cd "$SCRIPT_DIR/../../" && pwd)"
 DIST_DIR="$PROJECT_DIR/dist"
 APP_NAME="OhMyMeme"
-APP_VERSION="0.1.0"
+APP_VERSION="$(python3 -c "import re; print(re.search(r'__version__\s*=\s*\"([^\"]+)\"', open('$PROJECT_DIR/src/__init__.py').read())[1])")"
 
-# 清理
 clean() {
     rm -rf "$DIST_DIR/OhMyMeme.AppDir" "$DIST_DIR/*.AppImage" \
            "$DIST_DIR/*.deb" "$DIST_DIR/*.rpm"
 }
 
-# 1. 先用 PyInstaller 打包
+# 1. 用 PyInstaller 打包
 build_pyinstaller() {
+    if [ -n "${SKIP_PYINSTALLER:-}" ]; then
+        return 0
+    fi
     cd "$PROJECT_DIR"
-    python scripts/build.py --onedir
-    # PyInstaller 输出在 dist/OhMyMeme/
+    python scripts/build.py --linux --build-only
 }
 
 # 2. 构建 AppImage
@@ -30,8 +31,9 @@ build_appimage() {
     mkdir -p "$appdir/usr/share/applications"
     mkdir -p "$appdir/usr/share/icons/hicolor/256x256/apps"
 
-    # 复制可执行文件
-    cp -r "$DIST_DIR/OhMyMeme"/* "$appdir/usr/bin/"
+    # 复制 PyInstaller 输出
+    cp -r "$DIST_DIR/OhMyMeme/_internal" "$appdir/usr/bin/"
+    cp "$DIST_DIR/OhMyMeme/OhMyMeme" "$appdir/usr/bin/"
     ln -sf "$appdir/usr/bin/OhMyMeme" "$appdir/AppRun"
 
     # .desktop 文件
@@ -47,7 +49,7 @@ Categories=Utility;Graphics;
 DESKTOP
     cp "$appdir/usr/share/applications/com.ohmymeme.desktop" "$appdir/"
 
-    # 图标（用 PIL 生成一个占位）
+    # 图标
     cat > /tmp/gen_icon.py << 'PYEOF'
 from PIL import Image, ImageDraw
 img = Image.new('RGBA', (256, 256), (255, 100, 100, 255))
@@ -67,11 +69,10 @@ PYEOF
         chmod +x "$DIST_DIR/appimagetool"
     fi
 
-    # 构建 AppImage
     cd "$DIST_DIR"
     ARCH=x86_64 ./appimagetool OhMyMeme.AppDir \
         "OhMyMeme-v${APP_VERSION}-x86_64.AppImage"
-    echo "AppImage 构建完成: $DIST_DIR/OhMyMeme-v${APP_VERSION}-x86_64.AppImage"
+    echo "AppImage: $DIST_DIR/OhMyMeme-v${APP_VERSION}-x86_64.AppImage"
 }
 
 # 3. 构建 .deb
@@ -82,7 +83,8 @@ build_deb() {
     mkdir -p "$deb_root/usr/share/applications"
     mkdir -p "$deb_root/usr/share/icons/hicolor/256x256/apps"
 
-    cp -r "$DIST_DIR/OhMyMeme"/* "$deb_root/usr/bin/"
+    cp -r "$DIST_DIR/OhMyMeme/_internal" "$deb_root/usr/bin/"
+    cp "$DIST_DIR/OhMyMeme/OhMyMeme" "$deb_root/usr/bin/"
     ln -sf /usr/bin/OhMyMeme "$deb_root/usr/bin/ohmymeme"
 
     cat > "$deb_root/usr/share/applications/com.ohmymeme.desktop" << 'DESKTOP'
@@ -109,10 +111,13 @@ Description: 轻量化跨平台表情包管理系统
  轻量化表情包管理器，支持快捷键呼出、搜索、一键复制到剪贴板。
 CTRL
 
+    # 替换版本号
+    sed -i "s/Version: 0.1.0/Version: $APP_VERSION/" "$deb_root/DEBIAN/control"
+
     dpkg-deb --build "$deb_root"
     mv "$DIST_DIR/ohmymeme_${APP_VERSION}_amd64.deb" \
        "$DIST_DIR/OhMyMeme-v${APP_VERSION}-amd64.deb"
-    echo ".deb 构建完成: $DIST_DIR/OhMyMeme-v${APP_VERSION}-amd64.deb"
+    echo "deb:  $DIST_DIR/OhMyMeme-v${APP_VERSION}-amd64.deb"
 }
 
 # 4. 构建 .rpm
@@ -121,7 +126,6 @@ build_rpm() {
     mkdir -p "$rpm_root/BUILD" "$rpm_root/RPMS" "$rpm_root/SOURCES" \
              "$rpm_root/SPECS" "$rpm_root/SRPMS"
 
-    # 创建源码包
     local src_tar="$DIST_DIR/ohmymeme-${APP_VERSION}.tar.gz"
     cd "$DIST_DIR"
     tar czf "$src_tar" OhMyMeme/
@@ -143,7 +147,8 @@ Source0: ohmymeme-0.1.0.tar.gz
 
 %install
 mkdir -p %{buildroot}/%{_bindir}
-cp -r OhMyMeme/* %{buildroot}/%{_bindir}/
+cp -r OhMyMeme/_internal %{buildroot}/%{_bindir}/
+cp OhMyMeme/OhMyMeme %{buildroot}/%{_bindir}/
 ln -sf %{_bindir}/OhMyMeme %{buildroot}/%{_bindir}/ohmymeme
 
 %files
@@ -151,7 +156,6 @@ ln -sf %{_bindir}/OhMyMeme %{buildroot}/%{_bindir}/ohmymeme
 %doc
 
 %post
-# 创建桌面入口
 cat > /usr/share/applications/com.ohmymeme.desktop << EOF
 [Desktop Entry]
 Name=OhMyMeme
@@ -164,15 +168,15 @@ Categories=Utility;Graphics;
 EOF
 SPEC
 
+    sed -i "s/Version: 0.1.0/Version: $APP_VERSION/" "$rpm_root/SPECS/ohmymeme.spec"
+
     rpmbuild --define "_topdir $rpm_root" -bb "$rpm_root/SPECS/ohmymeme.spec"
     cp "$rpm_root/RPMS/x86_64/"*.rpm "$DIST_DIR/"
-    echo ".rpm 构建完成"
+    echo "rpm:  $DIST_DIR/*.rpm"
 }
 
-# 主流程
 main() {
     local target="${1:-all}"
-
     clean
 
     case "$target" in
@@ -192,7 +196,6 @@ main() {
             build_pyinstaller
             build_appimage
             build_deb
-            # build_rpm 需要 rpmbuild，可选
             echo ""
             echo "=== 构建完成 ==="
             echo "AppImage: $DIST_DIR/OhMyMeme-v${APP_VERSION}-x86_64.AppImage"

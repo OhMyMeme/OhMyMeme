@@ -1,0 +1,59 @@
+name: Build Windows Installer
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install dependencies
+        run: |
+          pip install -r requirements.txt
+          pip install ruff black pytest
+      - name: Lint
+        run: |
+          ruff check src/
+          black --check src/
+      - name: Test
+        run: python -m pytest tests/ -v
+
+  build:
+    needs: check
+    if: github.event_name == 'push' || github.event_name == 'workflow_dispatch'
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install dependencies
+        run: |
+          pip install -r requirements.txt
+          pip install pyinstaller
+
+      - name: Build with PyInstaller
+        run: python scripts/build.py --build-only
+
+      - name: Install InnoSetup
+        run: |
+          choco install innosetup --no-progress
+          echo "ISCC_DIR=C:\Program Files (x86)\Inno Setup 6\ISCC.exe" | Out-File -FilePath $env:GITHUB_ENV -Append
+
+      - name: Build installer
+        run: python scripts/build.py --installer-only
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: OhMyMeme-Windows
+          path: dist/OhMyMeme-*-setup.exe

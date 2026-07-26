@@ -10,7 +10,7 @@ from . import __app_name__, __version__
 from .config import get_config
 from .database import get_db
 from .hotkey import GlobalHotkey
-from .platform_util import set_auto_start
+from .platform_util import is_wsl, set_auto_start
 from .tray import TrayManager
 from .webui import WebUI
 
@@ -37,15 +37,18 @@ class OhMyMemeApp:
         # 2. 注册全局快捷键
         self._register_hotkey()
 
-        # 3. 启动系统托盘（在后台线程）
-        self._tray = TrayManager(
-            on_show=self._on_hotkey,
-            on_quit=self._on_quit,
-        )
-        try:
-            self._tray.start()
-        except Exception as e:
-            logger.warning(f"托盘启动失败: {e}")
+        # 3. 启动系统托盘（WSL 环境下跳过，避免 GTK 线程冲突）
+        if is_wsl():
+            logger.warning("WSL 环境：跳过系统托盘（缺少 DBus，存在 GTK 线程冲突）")
+        else:
+            self._tray = TrayManager(
+                on_show=self._on_hotkey,
+                on_quit=self._on_quit,
+            )
+            try:
+                self._tray.start()
+            except Exception as e:
+                logger.warning(f"托盘启动失败: {e}")
 
         # 4. 开机自启
         if self._cfg.get("auto_start", False):

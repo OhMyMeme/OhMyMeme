@@ -11,6 +11,17 @@ from .config import get_config
 APP_NAME = "OhMyMeme"
 
 
+def is_wsl() -> bool:
+    """检测是否运行在 WSL 环境"""
+    if platform.system() != "Linux":
+        return False
+    try:
+        with open("/proc/version", "r", encoding="utf-8") as f:
+            return "microsoft" in f.read().lower()
+    except Exception:
+        return False
+
+
 def set_auto_start(enabled: bool) -> bool:
     """设置开机自启"""
     system = platform.system()

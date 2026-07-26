@@ -4,10 +4,22 @@ import base64
 import io
 import logging
 import os
+import platform
 import socket
 import threading
 import time
 from pathlib import Path
+
+# WSL 环境强制软件渲染（必须在导入 webview/GUI 之前设置）
+if platform.system() == "Linux":
+    try:
+        with open("/proc/version", "r", encoding="utf-8") as _f:
+            if "microsoft" in _f.read().lower():
+                os.environ["MESA_LOADER_DRIVER_OVERRIDE"] = "llvmpipe"
+                os.environ["LIBGL_ALWAYS_SOFTWARE"] = "1"
+                os.environ["VK_ICD_FILENAMES"] = ""
+    except Exception:
+        pass
 
 try:
     from PIL import Image as PILImage

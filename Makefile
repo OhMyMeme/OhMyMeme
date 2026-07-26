@@ -1,4 +1,4 @@
-.PHONY: install run build build-windows build-linux build-installer clean test lint
+.PHONY: install run build build-installer clean test lint
 
 # 开发命令
 install:
@@ -17,18 +17,15 @@ lint:
 format:
 	black src/
 
-# 打包命令 (Nuitka)
+# 打包命令 (PyInstaller)
 build:
 	python scripts/build.py
 
-build-windows:
-	python scripts/build.py --windows
-
-build-linux:
-	python scripts/build.py --linux
-
 build-installer:
 	python scripts/build.py --installer-only
+
+build-linux:
+	bash scripts/installer/linux/build.sh all
 
 # 清理
 clean:

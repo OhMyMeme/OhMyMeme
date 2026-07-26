@@ -1,16 +1,14 @@
 #!/usr/bin/env python3
 """
-OhMyMeme 打包脚本 (Nuitka)
-依赖: pip install nuitka
+OhMyMeme 打包脚本 (PyInstaller)
+依赖: pip install pyinstaller
 Windows 额外依赖: InnoSetup 6/7 (ISCC.exe) — 制作安装包
 用法:
-    python scripts/build.py                        # 自动检测当前系统打包
-    python scripts/build.py --windows              # 打包 Windows 目标
-    python scripts/build.py --linux                # 打包 Linux 目标
-    python scripts/build.py --clang                # 使用 Clang 编译器
-    python scripts/build.py --nuitka-only          # 仅 Nuitka 构建，跳过安装包
-    python scripts/build.py --installer-only       # 仅制作安装包(Nuitka 已构建)
-    python scripts/build.py --onefile              # 单文件模式
+    python scripts/build.py                  # 打包 + 制作安装包 (自动检测)
+    python scripts/build.py --windows        # Windows 目标
+    python scripts/build.py --linux          # Linux 目标
+    python scripts/build.py --installer-only # 仅制作安装包(假设已打包)
+    python scripts/build.py --build-only     # 仅打包，跳过安装包
 """
 
 import os
@@ -27,6 +25,7 @@ BUILD_DIR = PROJECT_ROOT / "dist"
 APP_NAME = "OhMyMeme"
 
 PYTHON = sys.executable
+IS_WINDOWS = platform.system() == "Windows"
 
 
 def get_version():
@@ -50,152 +49,91 @@ def find_iscc():
     return None
 
 
-def check_nuitka():
+def check_pyinstaller():
     try:
-        import nuitka
+        import PyInstaller
     except ImportError:
-        print("错误: 未找到 Nuitka，请执行 pip install nuitka")
+        print("错误: 未找到 PyInstaller，请执行 pip install pyinstaller")
         sys.exit(1)
 
 
 def clean():
-    for d in [BUILD_DIR, PROJECT_ROOT / "build", PROJECT_ROOT / "*.spec"]:
-        if isinstance(d, Path):
-            if d.is_dir():
-                shutil.rmtree(d, ignore_errors=True)
-            elif d.parent.glob(d.name):
-                for f in d.parent.glob(d.name):
-                    f.unlink()
-    build_dir = PROJECT_ROOT / ("%s.build" % APP_NAME)
+    out_dir = BUILD_DIR / APP_NAME
+    if out_dir.is_dir():
+        shutil.rmtree(out_dir, ignore_errors=True)
+    build_dir = PROJECT_ROOT / "build" / APP_NAME
     if build_dir.is_dir():
         shutil.rmtree(build_dir, ignore_errors=True)
-    dist_src = PROJECT_ROOT / ("%s.dist" % APP_NAME)
-    if dist_src.is_dir():
-        shutil.rmtree(dist_src, ignore_errors=True)
+    spec_file = PROJECT_ROOT / ("%s.spec" % APP_NAME)
+    if spec_file.exists():
+        spec_file.unlink()
 
 
-def build_nuitka(onefile=False, use_clang=False, target=None):
-    check_nuitka()
+def build_pyinstaller(target=None):
+    check_pyinstaller()
     clean()
 
-    if target is None:
-        target = platform.system()
-
     version = get_version()
-    platform_opts = []
-
-    if target == "Windows":
-        icon_file = str(SRC_DIR / "resources" / "icon.ico")
-        platform_opts = [
-            "--windows-console-mode=disable",
-            "--windows-icon-from-ico=" + icon_file,
-            "--msvc=latest",
-        ]
-        if use_clang:
-            platform_opts.append("--clang")
-    elif target == "Linux":
-        icon_path = SRC_DIR / "resources" / "icon.png"
-        if icon_path.exists():
-            platform_opts.append("--linux-icon=" + str(icon_path))
-        if use_clang:
-            platform_opts.append("--clang")
-    elif target == "Darwin":
-        platform_opts = [
-            "--macos-create-app-bundle",
-            "--macos-app-name=" + APP_NAME,
-        ]
-
-    data_opts = [
-        "--include-data-dir=" + str(SRC_DIR / "webui") + "=src/webui",
-    ]
-
-    nofollow_opts = [
-        "--nofollow-import-to=pygments",
-        "--nofollow-import-to=PyQt5",
-        "--nofollow-import-to=PyQt6",
-        "--nofollow-import-to=PySide2",
-        "--nofollow-import-to=PySide6",
-        "--nofollow-import-to=boto3.docs",
-    ]
-
-    pkg_opts = [
-        "--include-package=PIL",
-        "--include-package=pystray",
-        "--include-package=pyperclip",
-        "--include-package=cryptography",
-        "--include-package=keyboard",
-        "--include-package=bottle",
-        "--disable-plugin=pywebview",
-    ]
-
-    if target == "Windows":
-        pkg_opts += [
-            "--include-module=webview.platforms.win32",
-            "--include-module=webview.platforms.winforms",
-            "--include-module=webview.platforms.edgechromium",
-            "--include-module=webview.platforms.mshtml",
-            "--include-module=webview.platforms.cef",
-        ]
+    sep = ";" if IS_WINDOWS else ":"
 
     cmd = [
-        PYTHON, "-m", "nuitka",
-        "--standalone",
-        "--output-dir=" + str(BUILD_DIR),
-        "--output-filename=" + APP_NAME,
-        "--python-flag=nosite",
-        "--python-flag=-m",
-        "--noinclude-pytest-mode=nofollow",
-        "--low-memory",
-    ] + nofollow_opts + data_opts + pkg_opts + platform_opts
+        PYTHON, "-m", "PyInstaller",
+        "--onedir",
+        "--name", APP_NAME,
+        "--distpath", str(BUILD_DIR),
+        "--specpath", str(PROJECT_ROOT / "build"),
+        "--noconfirm",
+        "--clean",
+        "--add-data", str(SRC_DIR / "webui") + sep + "src/webui",
+        "--hidden-import", "src.main",
+        str(PROJECT_ROOT / "scripts" / "launcher.py"),
+    ]
 
-    if onefile:
-        cmd.append("--onefile")
+    exclude = [
+        "numpy", "PyQt5", "PyQt5.QtCore", "PyQt5.QtGui",
+        "PyQt5.QtWidgets", "PyQt5.QtNetwork", "PyQt5.QtSvg",
+        "psutil", "setuptools", "pkg_resources", "pyreadline3",
+        "yaml", "tornado", "jaraco", "jaraco.text", "jaraco.functools",
+    ]
+    for m in exclude:
+        cmd += ["--exclude-module", m]
 
-    cmd.append(str(SRC_DIR))
+    if target == "Windows" or (target is None and IS_WINDOWS):
+        icon = str(SRC_DIR / "resources" / "icon.ico")
+        cmd += ["--windowed", "--icon=" + icon]
+    elif target == "Linux":
+        icon_png = SRC_DIR / "resources" / "icon.png"
+        if icon_png.exists():
+            cmd += ["--icon=" + str(icon_png)]
 
     print("运行: %s" % " ".join(cmd))
     result = subprocess.run(cmd, cwd=str(PROJECT_ROOT))
     if result.returncode != 0:
-        print("Nuitka 打包失败 (code=%d)" % result.returncode)
+        print("PyInstaller 打包失败 (code=%d)" % result.returncode)
         sys.exit(result.returncode)
 
-    ext_map = {"Windows": ".exe", "Darwin": "", "Linux": ".bin"}
-    ext = ext_map.get(target, "")
-    if onefile:
-        src = BUILD_DIR / ("%s%s" % (APP_NAME, ext))
-        dst = BUILD_DIR / ("%s-v%s-%s%s" % (APP_NAME, version, target.lower(), ext))
-        if src.exists():
-            src.rename(dst)
-            print("打包完成: %s" % dst)
-    else:
-        # 查找实际生成的 .dist 目录
-        dist_dirs = sorted(BUILD_DIR.glob("*.dist"))
-        if dist_dirs:
-            print("打包完成: %s" % dist_dirs[-1])
-
-    print("Nuitka 构建完成!")
+    print("打包完成: %s" % (BUILD_DIR / APP_NAME))
     return version
 
 
-def build_installer(version):
-    """使用 InnoSetup 制作 Windows 安装包"""
-    system = platform.system()
-    if system != "Windows":
+def build_installer(version, target=None):
+    if target is None:
+        target = platform.system()
+    if target != "Windows":
         print("跳过安装包制作（非 Windows 平台）")
         return
 
     iscc = find_iscc()
     if not iscc:
         print("警告: 未找到 ISCC.exe（InnoSetup），跳过安装包制作")
-        print("请安装 InnoSetup 6/7 或设置 ISCC_DIR 环境变量指向 ISCC.exe")
         return
 
-    dist_dirs = sorted(BUILD_DIR.glob("*.dist"))
-    if not dist_dirs:
-        print("错误: 未找到 Nuitka 输出目录 (dist/*.dist)")
-        print("请先执行 Nuitka 构建")
+    # 查找 PyInstaller 输出目录
+    dist_dir = BUILD_DIR / APP_NAME
+    if not dist_dir.is_dir():
+        print("错误: 未找到输出目录: %s" % dist_dir)
+        print("请先执行 PyInstaller 构建")
         return
-    dist_dir = dist_dirs[-1]
 
     iss_template = PROJECT_ROOT / "scripts" / "installer" / "windows.iss"
     if not iss_template.exists():
@@ -207,7 +145,6 @@ def build_installer(version):
         '#define MyAppVersion "0.1.0"',
         '#define MyAppVersion "%s"' % version,
     )
-    # 替换路径为绝对路径（ISS 临时文件位置改变，相对路径会算错）
     source_dir_abs = str(dist_dir.resolve())
     iss_content = iss_content.replace(
         '#define SourceDir "..\\..\\dist\\src.dist"',
@@ -217,6 +154,7 @@ def build_installer(version):
         'OutputDir=..\\..\\dist',
         'OutputDir=%s' % str(BUILD_DIR.resolve()),
     )
+
     iss_temp = BUILD_DIR / "ohmy meme.iss"
     iss_temp.write_text(iss_content, encoding="utf-8")
 
@@ -239,25 +177,40 @@ def build_installer(version):
         print("安装包制作完成，未找到预期文件: %s" % installer)
 
 
+def build_linux_packages(version):
+    """使用 build.sh 构建 Linux 包 (.deb / AppImage)"""
+    build_sh = PROJECT_ROOT / "scripts" / "installer" / "linux" / "build.sh"
+    if not build_sh.exists():
+        print("警告: 未找到 %s，跳过 Linux 打包" % build_sh)
+        return
+
+    # build.sh 内部会调用 PyInstaller，传 no_build 避免重复构建
+    env = os.environ.copy()
+    env["SKIP_PYINSTALLER"] = "1"
+    print("制作 Linux 包...")
+    result = subprocess.run(
+        ["bash", str(build_sh), "all"],
+        cwd=str(PROJECT_ROOT),
+        env=env,
+    )
+    if result.returncode != 0:
+        print("Linux 打包失败 (code=%d)" % result.returncode)
+        sys.exit(result.returncode)
+
+
 if __name__ == "__main__":
     import argparse
-    parser = argparse.ArgumentParser(description="OhMyMeme 打包脚本 (Nuitka)")
-    parser.add_argument("--onefile", action="store_true", dest="onefile",
-                        help="单文件模式 (可能因 zstd OOM 失败)")
-    parser.add_argument("--onedir", action="store_false", dest="onefile",
-                        help="目录模式 (默认)")
-    parser.add_argument("--nuitka-only", action="store_true",
-                        help="仅 Nuitka 构建，跳过安装包制作")
+    parser = argparse.ArgumentParser(description="OhMyMeme 打包脚本 (PyInstaller)")
     parser.add_argument("--installer-only", action="store_true",
-                        help="仅制作安装包（假设 Nuitka 已构建）")
-    parser.add_argument("--clang", action="store_true", dest="use_clang",
-                        help="使用 Clang 编译器")
+                        help="仅制作安装包（假设 PyInstaller 已构建）")
+    parser.add_argument("--build-only", action="store_true",
+                        help="仅打包，跳过安装包制作")
     target_group = parser.add_mutually_exclusive_group()
     target_group.add_argument("--windows", action="store_true", dest="target_windows",
                               help="构建 Windows 目标")
     target_group.add_argument("--linux", action="store_true", dest="target_linux",
                               help="构建 Linux 目标")
-    parser.set_defaults(onefile=False, use_clang=False, target_windows=False, target_linux=False)
+    parser.set_defaults(target_windows=False, target_linux=False)
     args = parser.parse_args()
 
     if args.target_windows:
@@ -265,15 +218,21 @@ if __name__ == "__main__":
     elif args.target_linux:
         target = "Linux"
     else:
-        target = None  # auto-detect
+        target = platform.system()
 
     if args.installer_only:
-        if target is not None and target != "Windows":
-            print("错误: --installer-only 仅支持 Windows 目标")
+        if target == "Windows":
+            build_installer(get_version(), target=target)
+        elif target == "Linux":
+            build_linux_packages(get_version())
+        else:
+            print("错误: --installer-only 不支持当前目标 %s" % target)
             sys.exit(1)
-        build_installer(get_version())
     else:
-        version = build_nuitka(onefile=args.onefile, use_clang=args.use_clang, target=target)
-        make_installer = not args.nuitka_only and (target is None or target == "Windows")
-        if make_installer:
-            build_installer(version)
+        version = build_pyinstaller(target=target)
+        if args.build_only:
+            pass
+        elif target == "Windows":
+            build_installer(version, target=target)
+        elif target == "Linux":
+            build_linux_packages(version)

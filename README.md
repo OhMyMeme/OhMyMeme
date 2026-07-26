@@ -27,6 +27,17 @@
 
 **环境要求**: Python 3.10+
 
+**Linux 额外依赖**:
+```bash
+# Debian / Ubuntu
+sudo apt install python3-gi
+# apt install gir1.2-webkit2-4.0  # 按系统版本选择 webkit2gtk 包
+
+# Arch Linux
+sudo pacman -S python-gobject
+yay -S webkit2gtk  # 依赖 libsoup，通过 yay 安装
+```
+
 ```bash
 git clone https://github.com/TNTXZ/ohmymeme.git
 cd ohmymeme
@@ -95,16 +106,10 @@ python -m src
 
 ## 构建
 
-依赖 Nuitka 2.0+。
-
-**Windows**: 需安装 MSVC（Visual Studio Build Tools）和 [InnoSetup 6](https://jrsoftware.org/isdl.php)（制作安装包）。建议从 [LLVM Releases](https://github.com/llvm/llvm-project/releases) 独立安装 LLVM 以获得更稳定的编译体验（`--clang` 模式）。
-
-> ⚠️ **杀毒软件**: 构建前请在 Windows Defender 及任何杀毒软件中将项目目录和 `dist/` 输出目录添加排除/信任目录。Nuitka 生成大量临时 C 文件和可执行文件，杀毒软件实时扫描会拖慢编译速度甚至导致资源写入失败。
->
-**Linux**: 需安装 C 编译器（gcc 或 clang）。
+依赖 PyInstaller 6.0+。
 
 ```bash
-pip install nuitka
+pip install pyinstaller
 
 # 自动检测当前系统打包
 python scripts/build.py
@@ -113,15 +118,25 @@ python scripts/build.py
 python scripts/build.py --windows          # Windows 目标
 python scripts/build.py --linux            # Linux 目标
 
-# 使用 Clang 编译器
-python scripts/build.py --clang
+# 仅打包，跳过安装包
+python scripts/build.py --build-only
 
-# 仅 Nuitka 打包，跳过安装包
-python scripts/build.py --nuitka-only
-
-# 仅制作安装包（Nuitka 已打包完时，仅 Windows）
+# 仅制作安装包（PyInstaller 已打包完时，仅 Windows）
 python scripts/build.py --installer-only
 ```
+
+**Windows 安装包**: 需 [InnoSetup 6/7](https://jrsoftware.org/isdl.php)。
+
+**Linux 包**: 支持 .deb / .rpm / AppImage，详见 `scripts/installer/linux/build.sh`。构建前需安装 GTK/WebKit 依赖（同上）。
+
+```bash
+bash scripts/installer/linux/build.sh all      # AppImage + .deb
+bash scripts/installer/linux/build.sh deb      # 仅 .deb
+bash scripts/installer/linux/build.sh rpm      # 仅 .rpm
+bash scripts/installer/linux/build.sh appimage # 仅 AppImage
+```
+
+> 原 Nuitka 构建脚本已移至 `scripts/nuitka/build.py`，待申诉完成后重新启用。
 
 输出目录: `dist/`。
 
