@@ -32,8 +32,7 @@ class MemeDB:
     def _init_db(self):
         self._db_path.parent.mkdir(parents=True, exist_ok=True)
         conn = self._get_conn()
-        conn.executescript(
-            """
+        conn.executescript("""
             CREATE TABLE IF NOT EXISTS memes (
                 id          INTEGER PRIMARY KEY AUTOINCREMENT,
                 filename    TEXT    NOT NULL,
@@ -77,8 +76,7 @@ class MemeDB:
 
             CREATE INDEX IF NOT EXISTS idx_memes_hash ON memes(file_hash);
             CREATE INDEX IF NOT EXISTS idx_memes_name ON memes(filename);
-        """
-        )
+        """)
         conn.commit()
 
     def close(self):
@@ -277,23 +275,19 @@ class MemeDB:
 
         if tags:
             placeholders = ",".join("?" for _ in tags)
-            where.append(
-                f"""m.id IN (
+            where.append(f"""m.id IN (
                 SELECT mt.meme_id FROM meme_tags mt
                 JOIN tags t ON t.id = mt.tag_id
                 WHERE t.name IN ({placeholders})
                 GROUP BY mt.meme_id HAVING COUNT(DISTINCT t.id) = ?
-            )"""
-            )
+            )""")
             params.extend(tags)
             params.append(len(tags))
 
         if collection_id is not None:
-            where.append(
-                """m.id IN (
+            where.append("""m.id IN (
                 SELECT mc.meme_id FROM meme_collections mc WHERE mc.collection_id = ?
-            )"""
-            )
+            )""")
             params.append(collection_id)
 
         if favorite_only:
@@ -319,11 +313,9 @@ class MemeDB:
             kw = f"%{keyword}%"
             params.extend([kw, kw])
         if collection_id is not None:
-            where.append(
-                """id IN (
+            where.append("""id IN (
                 SELECT meme_id FROM meme_collections WHERE collection_id = ?
-            )"""
-            )
+            )""")
             params.append(collection_id)
         if favorite_only:
             where.append("id IN (SELECT meme_id FROM favorites)")
