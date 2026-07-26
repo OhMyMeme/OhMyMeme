@@ -755,7 +755,9 @@ class WebUI:
             path = self._get_thumbnail_path(int(meme_id), filename)
             if path:
                 return bottle.static_file(
-                    os.path.basename(path), root=os.path.dirname(path), mimetype="image/png"
+                    os.path.basename(path),
+                    root=os.path.dirname(path),
+                    mimetype="image/png",
                 )
             bottle.response.status = 404
             return ""
