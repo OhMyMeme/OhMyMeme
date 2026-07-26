@@ -159,6 +159,25 @@ def build_pyinstaller(target=None):
     return version
 
 
+_LANG_URL = "https://raw.githubusercontent.com/jrsoftware/issrc/refs/heads/main/Files/Languages/ChineseSimplified.isl"
+
+
+def _ensure_lang_file(iscc_exe):
+    """Download ChineseSimplified.isl if missing (common on CI runners)."""
+    iscc_dir = Path(iscc_exe).resolve().parent
+    lang_dir = iscc_dir / "Languages"
+    lang_file = lang_dir / "ChineseSimplified.isl"
+    if lang_file.exists():
+        return
+    lang_dir.mkdir(parents=True, exist_ok=True)
+    try:
+        import urllib.request
+        print("Downloading ChineseSimplified.isl...")
+        urllib.request.urlretrieve(_LANG_URL, lang_file)
+    except Exception as e:
+        print("WARNING: failed to download language file:", e)
+
+
 def build_installer(version, target=None):
     if target is None:
         target = platform.system()
@@ -170,6 +189,8 @@ def build_installer(version, target=None):
     if not iscc:
         print(L("iscc_not_found"))
         return
+
+    _ensure_lang_file(iscc)
 
     dist_dir = BUILD_DIR / APP_NAME
     if not dist_dir.is_dir():
