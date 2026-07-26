@@ -1,14 +1,17 @@
 """云端同步 - FTP / S3 (兼容 R2/MinIO) 实现"""
+
 import json
 import logging
 import os
+from ftplib import FTP, error_perm
 from pathlib import Path
 from typing import Optional
-from ftplib import FTP, error_perm
 
 from .config import get_config
 from .database import get_db
-from .manifest import build as build_manifest, load as load_manifest, INDEX_FILENAME
+from .manifest import INDEX_FILENAME
+from .manifest import build as build_manifest
+from .manifest import load as load_manifest
 
 logger = logging.getLogger(__name__)
 
@@ -514,6 +517,7 @@ def pull(remove_local: bool = None) -> dict:
                     w = h = 0
                     try:
                         from PIL import Image as PILImage
+
                         img = PILImage.open(local_path)
                         w, h = img.size
                     except Exception:
@@ -521,7 +525,8 @@ def pull(remove_local: bool = None) -> dict:
                     db.add_meme(
                         filename=fname,
                         file_hash=rentry.get("sha256", ""),
-                        width=w, height=h,
+                        width=w,
+                        height=h,
                         file_size=local_path.stat().st_size,
                         mime_type="image/%s" % ext[1:] if ext else "image/png",
                     )

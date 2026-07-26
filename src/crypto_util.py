@@ -8,6 +8,7 @@ try:
     from cryptography.fernet import Fernet
     from cryptography.hazmat.primitives import hashes
     from cryptography.hazmat.primitives.kdf.pbkdf2 import PBKDF2HMAC
+
     HAS_CRYPTO = True
 except ImportError:
     HAS_CRYPTO = False
@@ -32,6 +33,7 @@ def _derive_key(machine_id: str, salt: bytes) -> bytes:
 def get_machine_id() -> str:
     """获取机器唯一标识用于派生密钥"""
     import platform
+
     node = platform.node()
     # 在Linux上读取machine-id
     for p in ("/etc/machine-id", "/var/lib/dbus/machine-id"):
@@ -45,8 +47,10 @@ def get_machine_id() -> str:
     if os.name == "nt":
         try:
             import winreg
-            with winreg.OpenKey(winreg.HKEY_LOCAL_MACHINE,
-                                r"SOFTWARE\Microsoft\Cryptography") as key:
+
+            with winreg.OpenKey(
+                winreg.HKEY_LOCAL_MACHINE, r"SOFTWARE\Microsoft\Cryptography"
+            ) as key:
                 node += winreg.QueryValueEx(key, "MachineGuid")[0]
         except Exception:
             pass

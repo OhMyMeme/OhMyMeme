@@ -2,7 +2,7 @@ name: Build Windows Installer
 
 on:
   push:
-    branches: [main]
+    branches: ["**"]
   pull_request:
     branches: [main]
   workflow_dispatch:
@@ -28,7 +28,7 @@ jobs:
 
   build:
     needs: check
-    if: github.event_name == 'push' || github.event_name == 'workflow_dispatch'
+    if: (github.event_name == 'push' && github.ref == 'refs/heads/main') || github.event_name == 'workflow_dispatch'
     runs-on: windows-latest
     steps:
       - uses: actions/checkout@v4

@@ -23,27 +23,30 @@ if platform.system() == "Linux":
 
 try:
     from PIL import Image as PILImage
+
     HAS_PIL = True
 except ImportError:
     HAS_PIL = False
 
 try:
     import webview
+
     HAS_WEBVIEW = True
 except ImportError:
     HAS_WEBVIEW = False
 
 try:
     import bottle
+
     HAS_BOTTLE = True
 except ImportError:
     HAS_BOTTLE = False
 
+from . import sync as sync_module
+from .clipboard_util import copy_image_to_clipboard
 from .config import get_config
 from .database import get_db
-from .clipboard_util import copy_image_to_clipboard
 from .manifest import build as build_manifest
-from . import sync as sync_module
 
 logger = logging.getLogger(__name__)
 
@@ -58,14 +61,18 @@ class JsApi:
         self._cfg = get_config()
         self._db = get_db()
 
-    def search_memes(self, keyword: str = "", tags: list = None,
-                     collection_id: int = None) -> list:
+    def search_memes(self, keyword: str = "", tags: list = None, collection_id: int = None) -> list:
         if tags is not None and len(tags) == 0:
             tags = None
         fav_only = collection_id == -1
         cid = None if fav_only else collection_id
-        rows = self._db.search(keyword=keyword, tags=tags,
-                               collection_id=cid, favorite_only=fav_only, limit=200)
+        rows = self._db.search(
+            keyword=keyword,
+            tags=tags,
+            collection_id=cid,
+            favorite_only=fav_only,
+            limit=200,
+        )
         favorited_ids = set()
         try:
             conn = self._db._get_conn()
@@ -77,19 +84,23 @@ class JsApi:
         result = []
         for r in rows:
             thumb_b64 = self._webui.get_thumbnail_base64(r["id"], r["filename"])
-            is_gif = r.get("mime_type", "").endswith("gif") or r["filename"].lower().endswith(".gif")
-            result.append({
-                "id": r["id"],
-                "filename": r["filename"],
-                "file_hash": r.get("file_hash", ""),
-                "width": r.get("width", 0),
-                "height": r.get("height", 0),
-                "mime_type": r.get("mime_type", ""),
-                "is_gif": is_gif,
-                "favorited": r["id"] in favorited_ids,
-                "auto_play_gif": auto_gif,
-                "thumb_b64": thumb_b64 or "",
-            })
+            is_gif = r.get("mime_type", "").endswith("gif") or r["filename"].lower().endswith(
+                ".gif"
+            )
+            result.append(
+                {
+                    "id": r["id"],
+                    "filename": r["filename"],
+                    "file_hash": r.get("file_hash", ""),
+                    "width": r.get("width", 0),
+                    "height": r.get("height", 0),
+                    "mime_type": r.get("mime_type", ""),
+                    "is_gif": is_gif,
+                    "favorited": r["id"] in favorited_ids,
+                    "auto_play_gif": auto_gif,
+                    "thumb_b64": thumb_b64 or "",
+                }
+            )
         return result
 
     def get_tags(self) -> list:
@@ -101,8 +112,13 @@ class JsApi:
         tags = None
         collection_id = None
         fav_only = False
-        rows = self._db.search(keyword=q, tags=tags,
-                               collection_id=collection_id, favorite_only=fav_only, limit=200)
+        rows = self._db.search(
+            keyword=q,
+            tags=tags,
+            collection_id=collection_id,
+            favorite_only=fav_only,
+            limit=200,
+        )
         favorited_ids = set()
         try:
             conn = self._db._get_conn()
@@ -114,19 +130,23 @@ class JsApi:
         memes = []
         for r in rows:
             thumb_b64 = self._webui.get_thumbnail_base64(r["id"], r["filename"])
-            is_gif = r.get("mime_type", "").endswith("gif") or r["filename"].lower().endswith(".gif")
-            memes.append({
-                "id": r["id"],
-                "filename": r["filename"],
-                "file_hash": r.get("file_hash", ""),
-                "width": r.get("width", 0),
-                "height": r.get("height", 0),
-                "mime_type": r.get("mime_type", ""),
-                "is_gif": is_gif,
-                "favorited": r["id"] in favorited_ids,
-                "auto_play_gif": auto_gif,
-                "thumb_b64": thumb_b64 or "",
-            })
+            is_gif = r.get("mime_type", "").endswith("gif") or r["filename"].lower().endswith(
+                ".gif"
+            )
+            memes.append(
+                {
+                    "id": r["id"],
+                    "filename": r["filename"],
+                    "file_hash": r.get("file_hash", ""),
+                    "width": r.get("width", 0),
+                    "height": r.get("height", 0),
+                    "mime_type": r.get("mime_type", ""),
+                    "is_gif": is_gif,
+                    "favorited": r["id"] in favorited_ids,
+                    "auto_play_gif": auto_gif,
+                    "thumb_b64": thumb_b64 or "",
+                }
+            )
         collections_raw = self._db.get_collections()
         collections = [{"id": -1, "name": "收藏夹", "count": self._db.count(favorite_only=True)}]
         for cid, name in collections_raw:
@@ -158,6 +178,7 @@ class JsApi:
 
     def rename_meme(self, meme_id: int, new_name: str) -> bool:
         import os
+
         row = self._db.get_by_id(meme_id)
         if not row or not new_name:
             return False
@@ -177,7 +198,8 @@ class JsApi:
             return False
 
     def delete_meme(self, meme_id: int) -> bool:
-        import os, glob as gglob
+        import os
+
         row = self._db.get_by_id(meme_id)
         if not row:
             return False
@@ -247,10 +269,12 @@ class JsApi:
         try:
             if self._cfg.get("sync_auto_fetch_index", False):
                 from .sync import download_index
+
                 data = download_index()
                 result["fetched"] = data is not None
             if self._cfg.get("sync_auto_sync", False):
                 from .sync import pull
+
                 r = pull()
                 result["synced"] = r.get("downloaded", 0) > 0
         except Exception as e:
@@ -260,6 +284,7 @@ class JsApi:
     def sync_test(self) -> str:
         try:
             from .sync import sync_test as _test
+
             return _test()
         except Exception as e:
             return str(e)
@@ -481,6 +506,7 @@ class SettingsApi:
     def sync_test(self) -> str:
         try:
             from .sync import sync_test as _test
+
             return _test()
         except Exception as e:
             return str(e)
@@ -562,8 +588,7 @@ class WebUI:
 
     # --- 缩略图 ---
 
-    def get_thumbnail_base64(self, meme_id: int, filename: str,
-                             size: int = 150) -> str:
+    def get_thumbnail_base64(self, meme_id: int, filename: str, size: int = 150) -> str:
         cache_dir = self._cfg.thumbnail_dir
         thumb_path = cache_dir / f"{meme_id}_{size}.png"
         if thumb_path.exists():
@@ -598,6 +623,7 @@ class WebUI:
     def _do_import(self, file_paths):
         import hashlib
         import shutil
+
         cfg = get_config()
         db = get_db()
         cache_dir = cfg.cache_dir
@@ -622,8 +648,11 @@ class WebUI:
                     except Exception:
                         pass
                 db.add_meme(
-                    filename=dst.name, file_hash=fhash,
-                    width=w, height=h, file_size=os.path.getsize(src),
+                    filename=dst.name,
+                    file_hash=fhash,
+                    width=w,
+                    height=h,
+                    file_size=os.path.getsize(src),
                     mime_type=f"image/{ext[1:]}" if ext else "image/png",
                 )
                 imported += 1
@@ -672,13 +701,15 @@ class WebUI:
             if path:
                 ext = os.path.splitext(filename)[1].lower()
                 ctype = {
-                    ".png": "image/png", ".jpg": "image/jpeg",
-                    ".jpeg": "image/jpeg", ".gif": "image/gif",
+                    ".png": "image/png",
+                    ".jpg": "image/jpeg",
+                    ".jpeg": "image/jpeg",
+                    ".gif": "image/gif",
                     ".webp": "image/webp",
                 }.get(ext, "application/octet-stream")
-                return bottle.static_file(os.path.basename(path),
-                                          root=os.path.dirname(path),
-                                          mimetype=ctype)
+                return bottle.static_file(
+                    os.path.basename(path), root=os.path.dirname(path), mimetype=ctype
+                )
             bottle.response.status = 404
             return ""
 
@@ -693,6 +724,7 @@ class WebUI:
     def scan_cache(self):
         """扫描本地缓存目录，将已有文件自动注册到数据库"""
         import hashlib
+
         cache_dir = self._cfg.cache_dir
         db = get_db()
         allowed_ext = {".png", ".jpg", ".jpeg", ".gif", ".webp", ".bmp"}
@@ -727,8 +759,10 @@ class WebUI:
                             pass
                     mime = f"image/{ext[1:]}" if ext else "image/png"
                     db.add_meme(
-                        filename=fname, file_hash=fhash,
-                        width=w, height=h,
+                        filename=fname,
+                        file_hash=fhash,
+                        width=w,
+                        height=h,
                         file_size=os.path.getsize(fpath),
                         mime_type=mime,
                     )
@@ -745,8 +779,11 @@ class WebUI:
         """处理拖放文件"""
         if not file_paths:
             return
-        valid = [p for p in file_paths if os.path.splitext(p)[1].lower() in
-                 {'.png', '.jpg', '.jpeg', '.gif', '.webp', '.bmp'}]
+        valid = [
+            p
+            for p in file_paths
+            if os.path.splitext(p)[1].lower() in {".png", ".jpg", ".jpeg", ".gif", ".webp", ".bmp"}
+        ]
         if valid:
             self._do_import(valid)
 
@@ -759,9 +796,7 @@ class WebUI:
             return False
 
         # 启动 Bottle 服务器
-        self._bottle_thread = threading.Thread(
-            target=self._setup_bottle, daemon=True
-        )
+        self._bottle_thread = threading.Thread(target=self._setup_bottle, daemon=True)
         self._bottle_thread.start()
         time.sleep(0.3)
 

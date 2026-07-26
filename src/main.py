@@ -4,7 +4,6 @@ import logging
 import os
 import signal
 import sys
-import threading
 
 from . import __app_name__, __version__
 from .config import get_config

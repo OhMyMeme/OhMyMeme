@@ -1,8 +1,10 @@
 """远端同步索引清单维护"""
+
 import json
 import logging
 from pathlib import Path
-from typing import List, Dict
+from typing import Dict, List
+
 from .config import get_config
 from .database import get_db
 
@@ -32,12 +34,14 @@ def build() -> List[Dict]:
                 mtime = str(int(fpath.stat().st_mtime))
             except Exception:
                 pass
-        memes.append({
-            "filename": fname,
-            "sha256": r.get("file_hash", ""),
-            "file_size": r.get("file_size", 0),
-            "mtime": mtime,
-        })
+        memes.append(
+            {
+                "filename": fname,
+                "sha256": r.get("file_hash", ""),
+                "file_size": r.get("file_size", 0),
+                "mtime": mtime,
+            }
+        )
 
     # 收集分组信息（跳过并清理空分组）
     raw_colls = db.get_collections()
@@ -72,4 +76,3 @@ def load() -> Dict:
     except Exception as e:
         logger.warning(f"manifest load failed: {e}")
         return {"version": 2, "memes": [], "collections": []}
-

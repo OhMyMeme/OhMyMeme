@@ -1,12 +1,9 @@
 """平台工具 - 开机自启、系统相关"""
 
-import os
 import platform
 import subprocess
 import sys
 from pathlib import Path
-
-from .config import get_config
 
 APP_NAME = "OhMyMeme"
 
@@ -47,9 +44,14 @@ def _set_auto_start_windows(enabled: bool) -> bool:
     """Windows: 使用注册表 Run 键"""
     try:
         import winreg
+
         key_path = r"Software\Microsoft\Windows\CurrentVersion\Run"
-        with winreg.OpenKey(winreg.HKEY_CURRENT_USER, key_path, 0,
-                            winreg.KEY_SET_VALUE | winreg.KEY_QUERY_VALUE) as key:
+        with winreg.OpenKey(
+            winreg.HKEY_CURRENT_USER,
+            key_path,
+            0,
+            winreg.KEY_SET_VALUE | winreg.KEY_QUERY_VALUE,
+        ) as key:
             if enabled:
                 exe = _get_executable_path()
                 # 如果是开发模式，加参数
@@ -96,7 +98,11 @@ def _set_auto_start_macos(enabled: bool) -> bool:
         subprocess.run(["launchctl", "load", str(plist_path)], capture_output=True, timeout=10)
     else:
         if plist_path.exists():
-            subprocess.run(["launchctl", "unload", str(plist_path)], capture_output=True, timeout=10)
+            subprocess.run(
+                ["launchctl", "unload", str(plist_path)],
+                capture_output=True,
+                timeout=10,
+            )
             plist_path.unlink(missing_ok=True)
     return True
 
@@ -128,9 +134,11 @@ def is_auto_start_enabled() -> bool:
     if system == "Windows":
         try:
             import winreg
+
             key_path = r"Software\Microsoft\Windows\CurrentVersion\Run"
-            with winreg.OpenKey(winreg.HKEY_CURRENT_USER, key_path, 0,
-                                winreg.KEY_QUERY_VALUE) as key:
+            with winreg.OpenKey(
+                winreg.HKEY_CURRENT_USER, key_path, 0, winreg.KEY_QUERY_VALUE
+            ) as key:
                 winreg.QueryValueEx(key, APP_NAME)
                 return True
         except (FileNotFoundError, OSError):

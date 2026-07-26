@@ -9,12 +9,14 @@ logger = logging.getLogger(__name__)
 
 try:
     from PIL import Image as PILImage
+
     HAS_PIL = True
 except ImportError:
     HAS_PIL = False
 
 try:
     import pyperclip
+
     HAS_PYPERCLIP = True
 except ImportError:
     HAS_PYPERCLIP = False
@@ -32,6 +34,7 @@ def copy_image_to_clipboard(image_path: str) -> bool:
         return _copy_image_windows(image_path, ext)
     elif os.name == "posix":
         import platform
+
         if platform.system() == "Darwin":
             return _copy_image_macos(image_path, ext)
         else:
@@ -61,16 +64,19 @@ def _copy_image_windows(image_path: str, ext: str) -> bool:
     # PowerShell 回退
     try:
         import subprocess
+
         abs_path = os.path.abspath(image_path)
         ps_cmd = (
-            f'Add-Type -AssemblyName System.Windows.Forms; '
+            f"Add-Type -AssemblyName System.Windows.Forms; "
             f'$img = [System.Drawing.Image]::FromFile("{abs_path}"); '
-            f'[System.Windows.Forms.Clipboard]::SetImage($img); '
-            f'$img.Dispose()'
+            f"[System.Windows.Forms.Clipboard]::SetImage($img); "
+            f"$img.Dispose()"
         )
         subprocess.run(
             ["powershell", "-NoProfile", "-Command", ps_cmd],
-            capture_output=True, timeout=10, check=True
+            capture_output=True,
+            timeout=10,
+            check=True,
         )
         return True
     except Exception:
@@ -269,15 +275,18 @@ def _copy_gif_windows(gif_path: str) -> bool:
     # 方案2: PowerShell 回退
     try:
         import subprocess
+
         abspath = os.path.abspath(gif_path)
         ps = (
-            f'Add-Type -AssemblyName System.Windows.Forms; '
+            f"Add-Type -AssemblyName System.Windows.Forms; "
             f'$data = [System.IO.File]::ReadAllBytes("{abspath}"); '
             f'[System.Windows.Forms.Clipboard]::SetData("GIF", $data);'
         )
         subprocess.run(
             ["powershell", "-NoProfile", "-Command", ps],
-            capture_output=True, timeout=10, check=True
+            capture_output=True,
+            timeout=10,
+            check=True,
         )
         return True
     except Exception:
@@ -290,17 +299,18 @@ def _copy_image_macos(image_path: str, ext: str) -> bool:
     """macOS: 使用 osascript"""
     try:
         import subprocess
+
         abs_path = os.path.abspath(image_path)
-        script = (
-            f'set theFile to (POSIX file "{abs_path}") as alias\n'
-            f'set theClipboard to current date\n'
-            f'set theImage to (load image theFile)\n'
-            f'set thePasteboard to current date\n'
-        )
         subprocess.run(
-            ["osascript", "-e", f'set theImage to (load image POSIX file "{abs_path}")',
-             "-e", "set the clipboard to theImage"],
-            capture_output=True, timeout=10
+            [
+                "osascript",
+                "-e",
+                f'set theImage to (load image POSIX file "{abs_path}")',
+                "-e",
+                "set the clipboard to theImage",
+            ],
+            capture_output=True,
+            timeout=10,
         )
         return True
     except Exception:
@@ -317,12 +327,15 @@ def _copy_image_linux(image_path: str, ext: str) -> bool:
     """Linux: 使用 xclip 或 wl-copy"""
     try:
         import subprocess
+
         abs_path = os.path.abspath(image_path)
         # 尝试 xclip
         try:
             subprocess.run(
                 ["xclip", "-selection", "clipboard", "-t", "image/png", "-i", abs_path],
-                capture_output=True, timeout=5, check=True
+                capture_output=True,
+                timeout=5,
+                check=True,
             )
             return True
         except (subprocess.SubprocessError, FileNotFoundError):
@@ -331,7 +344,9 @@ def _copy_image_linux(image_path: str, ext: str) -> bool:
         try:
             subprocess.run(
                 ["wl-copy", "--type", "image/png", "-i", abs_path],
-                capture_output=True, timeout=5, check=True
+                capture_output=True,
+                timeout=5,
+                check=True,
             )
             return True
         except (subprocess.SubprocessError, FileNotFoundError):
@@ -359,24 +374,31 @@ def copy_text(text: str) -> bool:
     # 回退：使用系统命令
     try:
         import subprocess
+
         if os.name == "nt":
             subprocess.run(
-                ["powershell", "-NoProfile", "-Command", f'Set-Clipboard -Value "{text}"'],
-                capture_output=True, timeout=5, check=True
+                [
+                    "powershell",
+                    "-NoProfile",
+                    "-Command",
+                    f'Set-Clipboard -Value "{text}"',
+                ],
+                capture_output=True,
+                timeout=5,
+                check=True,
             )
             return True
         elif os.name == "posix":
             import platform
+
             if platform.system() == "Darwin":
                 subprocess.run(
                     ["osascript", "-e", f'set the clipboard to "{text}"'],
-                    capture_output=True, timeout=5
+                    capture_output=True,
+                    timeout=5,
                 )
             else:
-                subprocess.run(
-                    ["xclip", "-selection", "clipboard"],
-                    input=text.encode(), timeout=5
-                )
+                subprocess.run(["xclip", "-selection", "clipboard"], input=text.encode(), timeout=5)
             return True
     except Exception:
         pass

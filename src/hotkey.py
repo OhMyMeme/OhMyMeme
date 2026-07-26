@@ -40,6 +40,7 @@ class GlobalHotkey:
     def _try_keyboard(self, hotkey: str, callback) -> bool:
         try:
             import keyboard
+
             keyboard.add_hotkey(hotkey, callback, suppress=True)
             self._backend = "keyboard"
             self._active = True
@@ -93,9 +94,7 @@ class GlobalHotkey:
                 except Exception:
                     pass
 
-            self._listener = pynput_keyboard.Listener(
-                on_press=on_press, on_release=on_release
-            )
+            self._listener = pynput_keyboard.Listener(on_press=on_press, on_release=on_release)
             self._listener.daemon = True
             self._listener.start()
             self._backend = "pynput"
@@ -153,6 +152,7 @@ class GlobalHotkey:
         if self._backend == "keyboard":
             try:
                 import keyboard
+
                 if self._hotkey:
                     keyboard.remove_hotkey(self._hotkey)
             except Exception:

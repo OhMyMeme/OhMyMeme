@@ -5,14 +5,16 @@ import os
 import platform
 from pathlib import Path
 
-from .crypto_util import encrypt_data, decrypt_data
+from .crypto_util import decrypt_data, encrypt_data
 
 APP_NAME = "OhMyMeme"
 
 # ~~~ 加密字段列表 ~~~（写入前自动加密，读取时自动解密）
 _SECRET_KEYS = {
-    "s3_access_key", "s3_secret_key",
-    "r2_access_key_id", "r2_secret_access_key",
+    "s3_access_key",
+    "s3_secret_key",
+    "r2_access_key_id",
+    "r2_secret_access_key",
     "ftp_password",
 }
 

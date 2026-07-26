@@ -1,17 +1,19 @@
 """系统托盘 - 跨平台托盘图标"""
 
-import io
 import logging
 import threading
 
 try:
-    from PIL import Image as PILImage, ImageDraw
+    from PIL import Image as PILImage
+    from PIL import ImageDraw
+
     HAS_PIL = True
 except ImportError:
     HAS_PIL = False
 
 try:
     import pystray
+
     HAS_PYSTRAY = True
 except ImportError:
     HAS_PYSTRAY = False
@@ -29,12 +31,18 @@ def _create_default_icon():
     cx = cy = size // 2
     r = size // 2 - 2
     draw.ellipse([cx - r, cy - r, cx + r, cy + r], fill=(74, 158, 255, 255))
-    draw.ellipse([cx - r//4, cy - r//3, cx + r//4, cy + r//3],
-                 fill=(255, 255, 255, 255))
-    draw.ellipse([cx - r//4 + r//2, cy - r//3, cx + r//4 + r//2, cy + r//3],
-                 fill=(255, 255, 255, 255))
-    draw.arc([cx - r//2, cy + r//6, cx + r//2, cy + r//2],
-             0, 180, fill=(255, 255, 255, 255), width=3)
+    draw.ellipse([cx - r // 4, cy - r // 3, cx + r // 4, cy + r // 3], fill=(255, 255, 255, 255))
+    draw.ellipse(
+        [cx - r // 4 + r // 2, cy - r // 3, cx + r // 4 + r // 2, cy + r // 3],
+        fill=(255, 255, 255, 255),
+    )
+    draw.arc(
+        [cx - r // 2, cy + r // 6, cx + r // 2, cy + r // 2],
+        0,
+        180,
+        fill=(255, 255, 255, 255),
+        width=3,
+    )
     return img
 
 
@@ -60,8 +68,7 @@ class TrayManager:
             return False
 
         menu = pystray.Menu(
-            pystray.MenuItem("显示/隐藏", self._on_show or (lambda: None),
-                             default=True),
+            pystray.MenuItem("显示/隐藏", self._on_show or (lambda: None), default=True),
             pystray.Menu.SEPARATOR,
             pystray.MenuItem("退出", self._on_quit or (lambda: None)),
         )

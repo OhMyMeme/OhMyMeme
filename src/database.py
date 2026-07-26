@@ -2,7 +2,6 @@
 
 import sqlite3
 import threading
-import time
 from pathlib import Path
 from typing import List, Optional, Tuple
 
@@ -33,7 +32,8 @@ class MemeDB:
     def _init_db(self):
         self._db_path.parent.mkdir(parents=True, exist_ok=True)
         conn = self._get_conn()
-        conn.executescript("""
+        conn.executescript(
+            """
             CREATE TABLE IF NOT EXISTS memes (
                 id          INTEGER PRIMARY KEY AUTOINCREMENT,
                 filename    TEXT    NOT NULL,
@@ -76,7 +76,8 @@ class MemeDB:
 
             CREATE INDEX IF NOT EXISTS idx_memes_hash ON memes(file_hash);
             CREATE INDEX IF NOT EXISTS idx_memes_name ON memes(filename);
-        """)
+        """
+        )
         conn.commit()
 
     def close(self):
@@ -86,10 +87,16 @@ class MemeDB:
 
     # --- 增删改 ---
 
-    def add_meme(self, filename: str, file_hash: str = "",
-                 width: int = 0, height: int = 0,
-                 file_size: int = 0, mime_type: str = "image/png",
-                 tags: List[str] = None) -> int:
+    def add_meme(
+        self,
+        filename: str,
+        file_hash: str = "",
+        width: int = 0,
+        height: int = 0,
+        file_size: int = 0,
+        mime_type: str = "image/png",
+        tags: List[str] = None,
+    ) -> int:
         with self._lock:
             conn = self._get_conn()
             cur = conn.execute(
@@ -123,9 +130,7 @@ class MemeDB:
         sets.append("updated_at=datetime('now','localtime')")
         with self._lock:
             conn = self._get_conn()
-            conn.execute(
-                f"UPDATE memes SET {', '.join(sets)} WHERE id=?", (*vals, meme_id)
-            )
+            conn.execute(f"UPDATE memes SET {', '.join(sets)} WHERE id=?", (*vals, meme_id))
             conn.commit()
 
     # --- 标签 ---
@@ -184,16 +189,17 @@ class MemeDB:
 
     def is_favorite(self, meme_id: int) -> bool:
         conn = self._get_conn()
-        return conn.execute(
-            "SELECT 1 FROM favorites WHERE meme_id=?", (meme_id,)
-        ).fetchone() is not None
+        return (
+            conn.execute("SELECT 1 FROM favorites WHERE meme_id=?", (meme_id,)).fetchone()
+            is not None
+        )
 
     # --- 收藏集 ---
 
     def create_collection(self, name: str) -> int:
         with self._lock:
             conn = self._get_conn()
-            cur = conn.execute("INSERT OR IGNORE INTO collections (name) VALUES (?)", (name,))
+            conn.execute("INSERT OR IGNORE INTO collections (name) VALUES (?)", (name,))
             conn.commit()
             row = conn.execute("SELECT id FROM collections WHERE name=?", (name,)).fetchone()
             return row[0] if row else -1
@@ -218,7 +224,10 @@ class MemeDB:
 
     def get_collections(self) -> List[Tuple[int, str]]:
         conn = self._get_conn()
-        return [(r[0], r[1]) for r in conn.execute("SELECT id, name FROM collections ORDER BY name").fetchall()]
+        return [
+            (r[0], r[1])
+            for r in conn.execute("SELECT id, name FROM collections ORDER BY name").fetchall()
+        ]
 
     def delete_collection(self, collection_id: int):
         with self._lock:
@@ -229,9 +238,15 @@ class MemeDB:
 
     # --- 搜索 ---
 
-    def search(self, keyword: str = "", tags: List[str] = None,
-               collection_id: int = None, favorite_only: bool = False,
-               offset: int = 0, limit: int = 100) -> List[dict]:
+    def search(
+        self,
+        keyword: str = "",
+        tags: List[str] = None,
+        collection_id: int = None,
+        favorite_only: bool = False,
+        offset: int = 0,
+        limit: int = 100,
+    ) -> List[dict]:
         conn = self._get_conn()
         where = []
         params = []
@@ -243,19 +258,23 @@ class MemeDB:
 
         if tags:
             placeholders = ",".join("?" for _ in tags)
-            where.append(f"""m.id IN (
+            where.append(
+                f"""m.id IN (
                 SELECT mt.meme_id FROM meme_tags mt
                 JOIN tags t ON t.id = mt.tag_id
                 WHERE t.name IN ({placeholders})
                 GROUP BY mt.meme_id HAVING COUNT(DISTINCT t.id) = ?
-            )""")
+            )"""
+            )
             params.extend(tags)
             params.append(len(tags))
 
         if collection_id is not None:
-            where.append("""m.id IN (
+            where.append(
+                """m.id IN (
                 SELECT mc.meme_id FROM meme_collections mc WHERE mc.collection_id = ?
-            )""")
+            )"""
+            )
             params.append(collection_id)
 
         if favorite_only:
@@ -270,8 +289,9 @@ class MemeDB:
         rows = conn.execute(sql, params).fetchall()
         return [dict(r) for r in rows]
 
-    def count(self, keyword: str = "", collection_id: int = None,
-              favorite_only: bool = False) -> int:
+    def count(
+        self, keyword: str = "", collection_id: int = None, favorite_only: bool = False
+    ) -> int:
         conn = self._get_conn()
         where = []
         params = []
@@ -280,9 +300,11 @@ class MemeDB:
             kw = f"%{keyword}%"
             params.extend([kw, kw])
         if collection_id is not None:
-            where.append("""id IN (
+            where.append(
+                """id IN (
                 SELECT meme_id FROM meme_collections WHERE collection_id = ?
-            )""")
+            )"""
+            )
             params.append(collection_id)
         if favorite_only:
             where.append("id IN (SELECT meme_id FROM favorites)")
@@ -294,9 +316,7 @@ class MemeDB:
 
     def get_by_hash(self, file_hash: str) -> Optional[dict]:
         conn = self._get_conn()
-        row = conn.execute(
-            "SELECT * FROM memes WHERE file_hash=? LIMIT 1", (file_hash,)
-        ).fetchone()
+        row = conn.execute("SELECT * FROM memes WHERE file_hash=? LIMIT 1", (file_hash,)).fetchone()
         return dict(row) if row else None
 
     def get_by_id(self, meme_id: int) -> Optional[dict]:
