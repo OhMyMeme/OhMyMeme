@@ -11,14 +11,21 @@ try:
 except ImportError:
     HAS_PIL = False
 
-try:
-    import pystray
-
-    HAS_PYSTRAY = True
-except ImportError:
-    HAS_PYSTRAY = False
-
 logger = logging.getLogger(__name__)
+
+_pystray_available = None
+
+
+def _pystray_ok() -> bool:
+    global _pystray_available
+    if _pystray_available is None:
+        try:
+            import pystray  # noqa: F401
+
+            _pystray_available = True
+        except Exception:
+            _pystray_available = False
+    return _pystray_available
 
 
 def _create_default_icon():
@@ -60,7 +67,9 @@ class TrayManager:
 
     def start(self):
         """启动托盘"""
-        if not HAS_PYSTRAY:
+        import pystray
+
+        if not _pystray_ok():
             logger.error("pystray not installed")
             return False
 
@@ -93,7 +102,7 @@ class TrayManager:
             self._icon = None
 
     def notify(self, title: str, message: str):
-        if self._icon and HAS_PYSTRAY:
+        if self._icon and _pystray_ok():
             try:
                 self._icon.notify(message, title)
             except Exception:

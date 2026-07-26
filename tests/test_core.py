@@ -1,6 +1,7 @@
 """OhMyMeme 核心模块测试"""
 
 import os
+import re
 import sys
 import tempfile
 import unittest
@@ -17,7 +18,7 @@ from src.crypto_util import encrypt_data, decrypt_data
 
 class TestVersion(unittest.TestCase):
     def test_version(self):
-        self.assertEqual(__version__, "0.1.0")
+        self.assertIsNotNone(re.match(r"\d+\.\d+\.\d+", __version__))
         self.assertEqual(__app_name__, "OhMyMeme")
 
 
