@@ -117,9 +117,9 @@ def _try_fetch(url: str, timeout: int) -> bytes:
 
 def _urlopen_mirror(url: str, timeout: int = 10):
     """并发尝试所有镜像+直连，返回第一个成功响应"""
-    targets = [
-        (m + url, f"mirror {i+1}") for i, m in enumerate(_GH_MIRRORS)
-    ] + [(url, "direct")]
+    targets = [(m + url, f"mirror {i+1}") for i, m in enumerate(_GH_MIRRORS)] + [
+        (url, "direct")
+    ]
     pool = ThreadPoolExecutor(max_workers=len(targets))
     fut_map = {pool.submit(_try_fetch, u, timeout): label for u, label in targets}
     last_err = None
@@ -226,9 +226,9 @@ def _try_download(url: str, dest: str, reporthook) -> str:
 
 def _urlretrieve_mirror(url: str, dest: str, reporthook=None):
     """并发尝试所有镜像+直连，第一个成功者写入最终 dest"""
-    targets = [
-        (m + url, f"mirror {i+1}") for i, m in enumerate(_GH_MIRRORS)
-    ] + [(url, "direct")]
+    targets = [(m + url, f"mirror {i+1}") for i, m in enumerate(_GH_MIRRORS)] + [
+        (url, "direct")
+    ]
     base_dir = os.path.dirname(dest) or "."
     base_name = os.path.basename(dest)
 
