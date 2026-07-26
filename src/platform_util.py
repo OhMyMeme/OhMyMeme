@@ -95,7 +95,9 @@ def _set_auto_start_macos(enabled: bool) -> bool:
 </dict>
 </plist>"""
         plist_path.write_text(plist_content, encoding="utf-8")
-        subprocess.run(["launchctl", "load", str(plist_path)], capture_output=True, timeout=10)
+        subprocess.run(
+            ["launchctl", "load", str(plist_path)], capture_output=True, timeout=10
+        )
     else:
         if plist_path.exists():
             subprocess.run(
@@ -144,9 +146,13 @@ def is_auto_start_enabled() -> bool:
         except (FileNotFoundError, OSError):
             return False
     elif system == "Darwin":
-        plist_path = Path.home() / "Library" / "LaunchAgents" / f"com.{APP_NAME.lower()}.plist"
+        plist_path = (
+            Path.home() / "Library" / "LaunchAgents" / f"com.{APP_NAME.lower()}.plist"
+        )
         return plist_path.exists()
     elif system == "Linux":
-        desktop_path = Path.home() / ".config" / "autostart" / f"{APP_NAME.lower()}.desktop"
+        desktop_path = (
+            Path.home() / ".config" / "autostart" / f"{APP_NAME.lower()}.desktop"
+        )
         return desktop_path.exists()
     return False

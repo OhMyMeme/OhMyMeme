@@ -61,7 +61,9 @@ class JsApi:
         self._cfg = get_config()
         self._db = get_db()
 
-    def search_memes(self, keyword: str = "", tags: list = None, collection_id: int = None) -> list:
+    def search_memes(
+        self, keyword: str = "", tags: list = None, collection_id: int = None
+    ) -> list:
         if tags is not None and len(tags) == 0:
             tags = None
         fav_only = collection_id == -1
@@ -84,9 +86,9 @@ class JsApi:
         result = []
         for r in rows:
             thumb_b64 = self._webui.get_thumbnail_base64(r["id"], r["filename"])
-            is_gif = r.get("mime_type", "").endswith("gif") or r["filename"].lower().endswith(
-                ".gif"
-            )
+            is_gif = r.get("mime_type", "").endswith("gif") or r[
+                "filename"
+            ].lower().endswith(".gif")
             result.append(
                 {
                     "id": r["id"],
@@ -130,9 +132,9 @@ class JsApi:
         memes = []
         for r in rows:
             thumb_b64 = self._webui.get_thumbnail_base64(r["id"], r["filename"])
-            is_gif = r.get("mime_type", "").endswith("gif") or r["filename"].lower().endswith(
-                ".gif"
-            )
+            is_gif = r.get("mime_type", "").endswith("gif") or r[
+                "filename"
+            ].lower().endswith(".gif")
             memes.append(
                 {
                     "id": r["id"],
@@ -148,7 +150,9 @@ class JsApi:
                 }
             )
         collections_raw = self._db.get_collections()
-        collections = [{"id": -1, "name": "收藏夹", "count": self._db.count(favorite_only=True)}]
+        collections = [
+            {"id": -1, "name": "收藏夹", "count": self._db.count(favorite_only=True)}
+        ]
         for cid, name in collections_raw:
             cnt = self._db.count(collection_id=cid)
             collections.append({"id": cid, "name": name, "count": cnt})
@@ -223,7 +227,9 @@ class JsApi:
 
     def get_collections(self) -> list:
         raw = self._db.get_collections()
-        result = [{"id": -1, "name": "收藏夹", "count": self._db.count(favorite_only=True)}]
+        result = [
+            {"id": -1, "name": "收藏夹", "count": self._db.count(favorite_only=True)}
+        ]
         for cid, name in raw:
             cnt = self._db.count(collection_id=cid)
             result.append({"id": cid, "name": name, "count": cnt})
@@ -782,7 +788,8 @@ class WebUI:
         valid = [
             p
             for p in file_paths
-            if os.path.splitext(p)[1].lower() in {".png", ".jpg", ".jpeg", ".gif", ".webp", ".bmp"}
+            if os.path.splitext(p)[1].lower()
+            in {".png", ".jpg", ".jpeg", ".gif", ".webp", ".bmp"}
         ]
         if valid:
             self._do_import(valid)

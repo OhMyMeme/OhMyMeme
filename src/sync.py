@@ -186,7 +186,9 @@ class _S3Backend(_SyncBackend):
 
     def upload_file(self, local_path, remote_path):
         try:
-            self.client.upload_file(str(local_path), self.bucket, self._key(remote_path))
+            self.client.upload_file(
+                str(local_path), self.bucket, self._key(remote_path)
+            )
             return True
         except Exception as e:
             logger.warning("upload failed %s: %s", remote_path, e)
@@ -195,7 +197,9 @@ class _S3Backend(_SyncBackend):
     def download_file(self, remote_path, local_path):
         try:
             local_path.parent.mkdir(parents=True, exist_ok=True)
-            self.client.download_file(self.bucket, self._key(remote_path), str(local_path))
+            self.client.download_file(
+                self.bucket, self._key(remote_path), str(local_path)
+            )
             return True
         except Exception as e:
             logger.warning("download failed %s: %s", remote_path, e)
@@ -266,7 +270,9 @@ class _R2Backend(_SyncBackend):
 
     def upload_file(self, local_path, remote_path):
         try:
-            self.client.upload_file(str(local_path), self.bucket, self._key(remote_path))
+            self.client.upload_file(
+                str(local_path), self.bucket, self._key(remote_path)
+            )
             return True
         except Exception as e:
             logger.warning("upload failed %s: %s", remote_path, e)
@@ -275,7 +281,9 @@ class _R2Backend(_SyncBackend):
     def download_file(self, remote_path, local_path):
         try:
             local_path.parent.mkdir(parents=True, exist_ok=True)
-            self.client.download_file(self.bucket, self._key(remote_path), str(local_path))
+            self.client.download_file(
+                self.bucket, self._key(remote_path), str(local_path)
+            )
             return True
         except Exception as e:
             logger.warning("download failed %s: %s", remote_path, e)
@@ -435,17 +443,23 @@ def push(delete_remote: bool = None) -> dict:
                 results["errors"] += 1
             thumb_file = thumb_dir / ("%s_thumb.png" % fname)
             if thumb_file.exists():
-                rem_thumb = remote_root.rstrip("/") + "/" + REMOTE_THUMB_DIR + "/" + fname
+                rem_thumb = (
+                    remote_root.rstrip("/") + "/" + REMOTE_THUMB_DIR + "/" + fname
+                )
                 bk.ensure_remote_dir(os.path.dirname(rem_thumb))
                 bk.upload_file(thumb_file, rem_thumb)
 
         if delete_remote:
             for fname in list(remote_memes.keys()):
                 if fname not in local_idx:
-                    rem_path = remote_root.rstrip("/") + "/" + REMOTE_MEME_DIR + "/" + fname
+                    rem_path = (
+                        remote_root.rstrip("/") + "/" + REMOTE_MEME_DIR + "/" + fname
+                    )
                     if bk.delete_file(rem_path):
                         results["deleted"] += 1
-                    rem_thumb = remote_root.rstrip("/") + "/" + REMOTE_THUMB_DIR + "/" + fname
+                    rem_thumb = (
+                        remote_root.rstrip("/") + "/" + REMOTE_THUMB_DIR + "/" + fname
+                    )
                     bk.delete_file(rem_thumb)
 
         remote_manifest_path = remote_root.rstrip("/") + "/" + REMOTE_INDEX

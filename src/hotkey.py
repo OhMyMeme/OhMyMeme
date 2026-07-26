@@ -94,7 +94,9 @@ class GlobalHotkey:
                 except Exception:
                     pass
 
-            self._listener = pynput_keyboard.Listener(on_press=on_press, on_release=on_release)
+            self._listener = pynput_keyboard.Listener(
+                on_press=on_press, on_release=on_release
+            )
             self._listener.daemon = True
             self._listener.start()
             self._backend = "pynput"

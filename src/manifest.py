@@ -58,8 +58,12 @@ def build() -> List[Dict]:
     path = _index_path()
     try:
         path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
-        logger.debug(f"manifest written: {len(memes)} memes, {len(collections)} collections")
+        path.write_text(
+            json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8"
+        )
+        logger.debug(
+            f"manifest written: {len(memes)} memes, {len(collections)} collections"
+        )
     except Exception as e:
         logger.warning(f"manifest write failed: {e}")
 

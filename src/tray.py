@@ -31,7 +31,9 @@ def _create_default_icon():
     cx = cy = size // 2
     r = size // 2 - 2
     draw.ellipse([cx - r, cy - r, cx + r, cy + r], fill=(74, 158, 255, 255))
-    draw.ellipse([cx - r // 4, cy - r // 3, cx + r // 4, cy + r // 3], fill=(255, 255, 255, 255))
+    draw.ellipse(
+        [cx - r // 4, cy - r // 3, cx + r // 4, cy + r // 3], fill=(255, 255, 255, 255)
+    )
     draw.ellipse(
         [cx - r // 4 + r // 2, cy - r // 3, cx + r // 4 + r // 2, cy + r // 3],
         fill=(255, 255, 255, 255),
@@ -68,7 +70,9 @@ class TrayManager:
             return False
 
         menu = pystray.Menu(
-            pystray.MenuItem("显示/隐藏", self._on_show or (lambda: None), default=True),
+            pystray.MenuItem(
+                "显示/隐藏", self._on_show or (lambda: None), default=True
+            ),
             pystray.Menu.SEPARATOR,
             pystray.MenuItem("退出", self._on_quit or (lambda: None)),
         )

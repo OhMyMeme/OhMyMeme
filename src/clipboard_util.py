@@ -183,7 +183,9 @@ def _copy_gif_windows(gif_path: str) -> bool:
         path_utf16 = (abspath + "\0").encode("utf-16-le")
         dropfile_size = 20  # sizeof(DROPFILES) = 5 * 4
         hdrop_data = (
-            struct.pack("<IiiII", dropfile_size, 0, 0, 0, 1)  # pFiles, pt.x/y, fNC=0, fWide=1
+            struct.pack(
+                "<IiiII", dropfile_size, 0, 0, 0, 1
+            )  # pFiles, pt.x/y, fNC=0, fWide=1
             + path_utf16
             + b"\0\0"  # double null terminator
         )
@@ -398,7 +400,9 @@ def copy_text(text: str) -> bool:
                     timeout=5,
                 )
             else:
-                subprocess.run(["xclip", "-selection", "clipboard"], input=text.encode(), timeout=5)
+                subprocess.run(
+                    ["xclip", "-selection", "clipboard"], input=text.encode(), timeout=5
+                )
             return True
     except Exception:
         pass

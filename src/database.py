@@ -65,7 +65,8 @@ class MemeDB:
 
             CREATE TABLE IF NOT EXISTS meme_collections (
                 meme_id       INTEGER NOT NULL REFERENCES memes(id) ON DELETE CASCADE,
-                collection_id INTEGER NOT NULL REFERENCES collections(id) ON DELETE CASCADE,
+                collection_id INTEGER NOT NULL
+                              REFERENCES collections(id) ON DELETE CASCADE,
                 PRIMARY KEY (meme_id, collection_id)
             );
 
@@ -100,7 +101,8 @@ class MemeDB:
         with self._lock:
             conn = self._get_conn()
             cur = conn.execute(
-                """INSERT INTO memes (filename, file_hash, width, height, file_size, mime_type)
+                """INSERT INTO memes
+                   (filename, file_hash, width, height, file_size, mime_type)
                    VALUES (?, ?, ?, ?, ?, ?)""",
                 (filename, file_hash, width, height, file_size, mime_type),
             )
@@ -130,7 +132,9 @@ class MemeDB:
         sets.append("updated_at=datetime('now','localtime')")
         with self._lock:
             conn = self._get_conn()
-            conn.execute(f"UPDATE memes SET {', '.join(sets)} WHERE id=?", (*vals, meme_id))
+            conn.execute(
+                f"UPDATE memes SET {', '.join(sets)} WHERE id=?", (*vals, meme_id)
+            )
             conn.commit()
 
     # --- 标签 ---
@@ -170,19 +174,25 @@ class MemeDB:
 
     def get_all_tags(self) -> List[str]:
         conn = self._get_conn()
-        return [r[0] for r in conn.execute("SELECT name FROM tags ORDER BY name").fetchall()]
+        return [
+            r[0] for r in conn.execute("SELECT name FROM tags ORDER BY name").fetchall()
+        ]
 
     # --- 收藏 ---
 
     def toggle_favorite(self, meme_id: int) -> bool:
         with self._lock:
             conn = self._get_conn()
-            row = conn.execute("SELECT 1 FROM favorites WHERE meme_id=?", (meme_id,)).fetchone()
+            row = conn.execute(
+                "SELECT 1 FROM favorites WHERE meme_id=?", (meme_id,)
+            ).fetchone()
             if row:
                 conn.execute("DELETE FROM favorites WHERE meme_id=?", (meme_id,))
                 fav = False
             else:
-                conn.execute("INSERT OR IGNORE INTO favorites (meme_id) VALUES (?)", (meme_id,))
+                conn.execute(
+                    "INSERT OR IGNORE INTO favorites (meme_id) VALUES (?)", (meme_id,)
+                )
                 fav = True
             conn.commit()
             return fav
@@ -190,7 +200,9 @@ class MemeDB:
     def is_favorite(self, meme_id: int) -> bool:
         conn = self._get_conn()
         return (
-            conn.execute("SELECT 1 FROM favorites WHERE meme_id=?", (meme_id,)).fetchone()
+            conn.execute(
+                "SELECT 1 FROM favorites WHERE meme_id=?", (meme_id,)
+            ).fetchone()
             is not None
         )
 
@@ -201,14 +213,17 @@ class MemeDB:
             conn = self._get_conn()
             conn.execute("INSERT OR IGNORE INTO collections (name) VALUES (?)", (name,))
             conn.commit()
-            row = conn.execute("SELECT id FROM collections WHERE name=?", (name,)).fetchone()
+            row = conn.execute(
+                "SELECT id FROM collections WHERE name=?", (name,)
+            ).fetchone()
             return row[0] if row else -1
 
     def add_to_collection(self, meme_id: int, collection_id: int):
         with self._lock:
             conn = self._get_conn()
             conn.execute(
-                "INSERT OR IGNORE INTO meme_collections (meme_id, collection_id) VALUES (?, ?)",
+                "INSERT OR IGNORE INTO meme_collections "
+                "(meme_id, collection_id) VALUES (?, ?)",
                 (meme_id, collection_id),
             )
             conn.commit()
@@ -226,13 +241,17 @@ class MemeDB:
         conn = self._get_conn()
         return [
             (r[0], r[1])
-            for r in conn.execute("SELECT id, name FROM collections ORDER BY name").fetchall()
+            for r in conn.execute(
+                "SELECT id, name FROM collections ORDER BY name"
+            ).fetchall()
         ]
 
     def delete_collection(self, collection_id: int):
         with self._lock:
             conn = self._get_conn()
-            conn.execute("DELETE FROM meme_collections WHERE collection_id=?", (collection_id,))
+            conn.execute(
+                "DELETE FROM meme_collections WHERE collection_id=?", (collection_id,)
+            )
             conn.execute("DELETE FROM collections WHERE id=?", (collection_id,))
             conn.commit()
 
@@ -316,7 +335,9 @@ class MemeDB:
 
     def get_by_hash(self, file_hash: str) -> Optional[dict]:
         conn = self._get_conn()
-        row = conn.execute("SELECT * FROM memes WHERE file_hash=? LIMIT 1", (file_hash,)).fetchone()
+        row = conn.execute(
+            "SELECT * FROM memes WHERE file_hash=? LIMIT 1", (file_hash,)
+        ).fetchone()
         return dict(row) if row else None
 
     def get_by_id(self, meme_id: int) -> Optional[dict]:
@@ -326,7 +347,9 @@ class MemeDB:
 
     def get_by_filename(self, filename: str) -> Optional[dict]:
         conn = self._get_conn()
-        row = conn.execute("SELECT * FROM memes WHERE filename=? LIMIT 1", (filename,)).fetchone()
+        row = conn.execute(
+            "SELECT * FROM memes WHERE filename=? LIMIT 1", (filename,)
+        ).fetchone()
         return dict(row) if row else None
 
     def get_all(self, offset: int = 0, limit: int = 100) -> List[dict]:
