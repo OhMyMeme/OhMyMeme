@@ -88,10 +88,14 @@ class JsApi:
             is_gif = r.get("mime_type", "").endswith("gif") or r[
                 "filename"
             ].lower().endswith(".gif")
+            oname = r.get("original_name", "")
+            if not oname:
+                oname = os.path.splitext(r["filename"])[0]
             result.append(
                 {
                     "id": r["id"],
                     "filename": r["filename"],
+                    "name": oname,
                     "file_hash": r.get("file_hash", ""),
                     "width": r.get("width", 0),
                     "height": r.get("height", 0),
@@ -132,10 +136,14 @@ class JsApi:
             is_gif = r.get("mime_type", "").endswith("gif") or r[
                 "filename"
             ].lower().endswith(".gif")
+            oname = r.get("original_name", "")
+            if not oname:
+                oname = os.path.splitext(r["filename"])[0]
             memes.append(
                 {
                     "id": r["id"],
                     "filename": r["filename"],
+                    "name": oname,
                     "file_hash": r.get("file_hash", ""),
                     "width": r.get("width", 0),
                     "height": r.get("height", 0),
@@ -177,23 +185,10 @@ class JsApi:
         return self._db.is_favorite(meme_id)
 
     def rename_meme(self, meme_id: int, new_name: str) -> bool:
-        import os
-
-        row = self._db.get_by_id(meme_id)
-        if not row or not new_name:
+        if not new_name:
             return False
-        old_path = self._find_meme_file(row["filename"])
-        if not old_path:
-            return False
-        ext = os.path.splitext(row["filename"])[1]
-        new_filename = new_name if new_name.endswith(ext) else new_name + ext
-        new_path = os.path.join(os.path.dirname(old_path), new_filename)
         try:
-            os.rename(old_path, new_path)
-            self._db.update_meme(meme_id, filename=new_filename)
-            if hasattr(self._webui, "_file_cache"):
-                self._webui._file_cache.pop(row["filename"], None)
-                self._webui._file_cache[new_filename] = new_path
+            self._db.update_meme(meme_id, original_name=new_name)
             build_manifest()
             return True
         except Exception as e:
@@ -276,6 +271,9 @@ class JsApi:
         ok = updater.run_installer(path)
         return {"ok": ok, "error": "" if ok else "run installer failed"}
 
+    def get_sync_progress(self) -> dict:
+        return sync_module.get_sync_progress()
+
     def sync_push(self) -> dict:
         try:
             r = sync_module.push()
@@ -324,9 +322,10 @@ class JsApi:
     def import_memes(self) -> bool:
         # 通过系统文件对话框选择导入
         try:
-            file_types = ("图片文件 (*.png;*.jpg;*.jpeg;*.gif;*.webp)",)
             result = webview.windows[0].create_file_dialog(
-                webview.FileDialog.OPEN, allow_multiple=True, file_types=file_types
+                webview.FileDialog.OPEN,
+                allow_multiple=True,
+                file_types=("图片文件 (*.png;*.jpg;*.jpeg;*.gif;*.webp;*.bmp)",),
             )
         except Exception:
             return False
@@ -365,6 +364,10 @@ class JsApi:
             "r2_secret_access_key": d.get("r2_secret_access_key", ""),
             "r2_bucket": d.get("r2_bucket", ""),
             "r2_path": d.get("r2_path", ""),
+            "show_upload_progress": d.get("show_upload_progress", True),
+            "show_upload_done": d.get("show_upload_done", True),
+            "show_download_progress": d.get("show_download_progress", True),
+            "show_download_done": d.get("show_download_done", True),
         }
 
     def save_settings(self, settings: dict):
@@ -404,6 +407,10 @@ class JsApi:
             "r2_secret_access_key": "",
             "r2_bucket": "",
             "r2_path": "",
+            "show_upload_progress": True,
+            "show_upload_done": True,
+            "show_download_progress": True,
+            "show_download_done": True,
         }
 
     def move_window(self, dx: int, dy: int):
@@ -459,6 +466,10 @@ class SettingsApi:
             "r2_secret_access_key": d.get("r2_secret_access_key", ""),
             "r2_bucket": d.get("r2_bucket", ""),
             "r2_path": d.get("r2_path", ""),
+            "show_upload_progress": d.get("show_upload_progress", True),
+            "show_upload_done": d.get("show_upload_done", True),
+            "show_download_progress": d.get("show_download_progress", True),
+            "show_download_done": d.get("show_download_done", True),
         }
 
     def save_settings(self, settings: dict):
@@ -498,6 +509,10 @@ class SettingsApi:
             "r2_secret_access_key": "",
             "r2_bucket": "",
             "r2_path": "",
+            "show_upload_progress": True,
+            "show_upload_done": True,
+            "show_download_progress": True,
+            "show_download_done": True,
         }
 
     def move_window(self, dx: int, dy: int):
@@ -536,6 +551,9 @@ class SettingsApi:
         ok = updater.run_installer(path)
         return {"ok": ok, "error": "" if ok else "run installer failed"}
 
+    def get_sync_progress(self) -> dict:
+        return sync_module.get_sync_progress()
+
     def sync_push(self, delete_remote: bool = None) -> dict:
         try:
             r = sync_module.push(delete_remote=delete_remote)
@@ -568,11 +586,40 @@ class SettingsApi:
         except Exception as e:
             return str(e)
 
+    def delete_all_local(self) -> dict:
+        """删除本地所有表情包"""
+        try:
+            db = get_db()
+            db.delete_all()
+            cache = self._cfg.cache_dir
+            if cache.exists():
+                for f in cache.iterdir():
+                    if f.is_file():
+                        f.unlink()
+            thumbs = self._cfg.thumbnail_dir
+            if thumbs.exists():
+                for f in thumbs.iterdir():
+                    if f.is_file():
+                        f.unlink()
+            from .manifest import build_manifest
+
+            build_manifest()
+            return {"ok": True}
+        except Exception as e:
+            return {"ok": False, "error": str(e)}
+
+    def delete_all_cloud(self) -> dict:
+        """删除云端所有表情包"""
+        try:
+            return sync_module.delete_all_remote()
+        except Exception as e:
+            return {"ok": False, "error": str(e)}
+
 
 class WebUI:
     """PyWebView UI 管理器"""
 
-    def __init__(self, update_debug: bool = False):
+    def __init__(self, update_debug: bool = False, silent_start: bool = False):
         self._cfg = get_config()
         self._window = None
         self._settings_window = None
@@ -585,6 +632,7 @@ class WebUI:
         self._pending_hide = False
         self._on_hotkey_change_cb = None
         self._update_debug = update_debug
+        self._silent_start = silent_start
 
     def set_on_hotkey_change(self, cb):
         self._on_hotkey_change_cb = cb
@@ -685,7 +733,7 @@ class WebUI:
                 return full
         return ""
 
-    def _do_import(self, file_paths):
+    def _do_import(self, file_paths, names=None):
         import hashlib
         import shutil
 
@@ -693,7 +741,7 @@ class WebUI:
         db = get_db()
         cache_dir = cfg.cache_dir
         imported = 0
-        for src in file_paths:
+        for i, src in enumerate(file_paths):
             try:
                 sha256 = hashlib.sha256()
                 with open(src, "rb") as f:
@@ -712,6 +760,11 @@ class WebUI:
                         w, h = img.size
                     except Exception:
                         pass
+                oname = (
+                    names[i]
+                    if names and i < len(names)
+                    else os.path.splitext(os.path.basename(src))[0]
+                )
                 db.add_meme(
                     filename=dst.name,
                     file_hash=fhash,
@@ -719,6 +772,7 @@ class WebUI:
                     height=h,
                     file_size=os.path.getsize(src),
                     mime_type=f"image/{ext[1:]}" if ext else "image/png",
+                    original_name=oname,
                 )
                 imported += 1
             except Exception as e:
@@ -780,6 +834,44 @@ class WebUI:
             bottle.response.status = 404
             return ""
 
+        @app.route("/api/upload/", method="POST")
+        def upload_memes():
+            try:
+                import json
+                data = json.loads(bottle.request.body.read())
+                files = data.get("files", []) if isinstance(data, dict) else data
+                allowed = {".png", ".jpg", ".jpeg", ".gif", ".webp", ".bmp"}
+                paths, names = [], []
+                for item in files:
+                    oname = item.get("name", "")
+                    b64 = item.get("data", "")
+                    ext = os.path.splitext(oname)[1].lower()
+                    if ext not in allowed or not b64:
+                        continue
+                    import base64
+                    import uuid
+                    raw = base64.b64decode(b64)
+                    tmp = str(
+                        self._cfg.cache_dir / f"_upload_{uuid.uuid4().hex}{ext}"
+                    )
+                    with open(tmp, "wb") as f:
+                        f.write(raw)
+                    paths.append(tmp)
+                    base = os.path.splitext(oname)[0]
+                    names.append(base)
+                if paths:
+                    self._do_import(paths, names)
+                    for p in paths:
+                        try:
+                            os.unlink(p)
+                        except Exception:
+                            pass
+                return {"ok": True}
+            except Exception as e:
+                logger.error(f"upload error: {e}")
+                bottle.response.status = 500
+                return {"ok": False, "error": str(e)}
+
         @app.route("/<filepath:path>")
         def static_files(filepath):
             return bottle.static_file(filepath, root=str(HTML_DIR))
@@ -825,6 +917,7 @@ class WebUI:
                         except Exception:
                             pass
                     mime = f"image/{ext[1:]}" if ext else "image/png"
+                    oname = os.path.splitext(fname)[0]
                     db.add_meme(
                         filename=fname,
                         file_hash=fhash,
@@ -832,6 +925,7 @@ class WebUI:
                         height=h,
                         file_size=os.path.getsize(fpath),
                         mime_type=mime,
+                        original_name=oname,
                     )
                     added += 1
                 except Exception as e:
@@ -841,19 +935,6 @@ class WebUI:
         build_manifest()
 
     # --- 启动 ---
-
-    def _on_drop(self, file_paths):
-        """处理拖放文件"""
-        if not file_paths:
-            return
-        valid = [
-            p
-            for p in file_paths
-            if os.path.splitext(p)[1].lower()
-            in {".png", ".jpg", ".jpeg", ".gif", ".webp", ".bmp"}
-        ]
-        if valid:
-            self._do_import(valid)
 
     def start(self) -> bool:
         if not HAS_WEBVIEW:
@@ -875,18 +956,15 @@ class WebUI:
             "OhMyMeme",
             url,
             js_api=self._api,
-            width=self._cfg.get("window_width", 700),
-            height=self._cfg.get("window_height", 500),
+            width=700,
+            height=500,
             x=wx if wx >= 0 else None,
             y=wy if wy >= 0 else None,
             resizable=True,
             frameless=True,
             easy_drag=False,
+            hidden=self._silent_start,
         )
-        try:
-            self._window.on_drop = self._on_drop
-        except Exception:
-            pass
 
         self._started = True
         # start() blocks - 在调用线程运行 GUI 循环
@@ -933,8 +1011,6 @@ class WebUI:
         try:
             self._cfg.set("window_x", self._window.x)
             self._cfg.set("window_y", self._window.y)
-            self._cfg.set("window_width", self._window.width)
-            self._cfg.set("window_height", self._window.height)
             self._cfg.save()
         except Exception:
             pass

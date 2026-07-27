@@ -1,5 +1,6 @@
 """平台工具 - 开机自启、系统相关"""
 
+import os
 import platform
 import subprocess
 import sys
@@ -41,7 +42,7 @@ def _get_executable_path() -> str:
 
 
 def _set_auto_start_windows(enabled: bool) -> bool:
-    """Windows: 使用注册表 Run 键"""
+    """Windows: 使用注册表 Run 键（关闭时同时清理启动文件夹）"""
     try:
         import winreg
 
@@ -54,16 +55,23 @@ def _set_auto_start_windows(enabled: bool) -> bool:
         ) as key:
             if enabled:
                 exe = _get_executable_path()
-                # 如果是开发模式，加参数
                 if not getattr(sys, "frozen", False):
-                    args = f'"{exe}" -m src.main'
+                    args = f'"{exe}" -m src.main --silent'
                 else:
-                    args = f'"{exe}"'
+                    args = f'"{exe}" --silent'
                 winreg.SetValueEx(key, APP_NAME, 0, winreg.REG_SZ, args)
             else:
                 try:
                     winreg.DeleteValue(key, APP_NAME)
                 except FileNotFoundError:
+                    pass
+        # 关闭时同时清理 InnoSetup 安装程序创建的启动文件夹快捷方式
+        if not enabled:
+            startup_link = _startup_folder_path() / f"{APP_NAME}.lnk"
+            if startup_link.exists():
+                try:
+                    startup_link.unlink()
+                except OSError:
                     pass
         return True
     except Exception:
@@ -87,6 +95,7 @@ def _set_auto_start_macos(enabled: bool) -> bool:
     <key>ProgramArguments</key>
     <array>
         <string>{exe}</string>
+        <string>--silent</string>
     </array>
     <key>RunAtLoad</key>
     <true/>
@@ -120,7 +129,7 @@ def _set_auto_start_linux(enabled: bool) -> bool:
         desktop_content = f"""[Desktop Entry]
 Type=Application
 Name={APP_NAME}
-Exec={exe}
+Exec={exe} --silent
 Terminal=false
 X-GNOME-Autostart-enabled=true
 """
@@ -130,10 +139,16 @@ X-GNOME-Autostart-enabled=true
     return True
 
 
+def _startup_folder_path() -> Path:
+    base = os.environ.get("APPDATA", "")
+    return Path(base) / "Microsoft" / "Windows" / "Start Menu" / "Programs" / "Startup"
+
+
 def is_auto_start_enabled() -> bool:
-    """检查开机自启状态"""
+    """检查开机自启状态（检测注册表 Run 键 + 启动文件夹）"""
     system = platform.system()
     if system == "Windows":
+        # 检查注册表 Run 键
         try:
             import winreg
 
@@ -144,7 +159,12 @@ def is_auto_start_enabled() -> bool:
                 winreg.QueryValueEx(key, APP_NAME)
                 return True
         except (FileNotFoundError, OSError):
-            return False
+            pass
+        # 检查启动文件夹（兼容 InnoSetup 安装程序）
+        startup_link = _startup_folder_path() / f"{APP_NAME}.lnk"
+        if startup_link.exists():
+            return True
+        return False
     elif system == "Darwin":
         plist_path = (
             Path.home() / "Library" / "LaunchAgents" / f"com.{APP_NAME.lower()}.plist"

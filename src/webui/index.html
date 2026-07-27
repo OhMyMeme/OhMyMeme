@@ -248,7 +248,7 @@ body {
   transition: opacity 150ms ease;
   border: 3px dashed var(--accent);
 }
-#drop-overlay.drag-over { opacity: 1; pointer-events: auto; }
+#drop-overlay.drag-over { opacity: 1; }
 #drop-overlay .drop-content {
   font-size: 18px; font-weight: 500; color: var(--accent);
   padding: 40px 60px; border-radius: var(--radius-lg);
@@ -389,10 +389,10 @@ function renderGrid() {
   memes.forEach(m => {
     const card = document.createElement('div');
     card.className = 'meme-card';
-    card.title = m.filename;
-
+    card.title = m.name;
+    card.style.background = 'var(--surface)';
     const img = document.createElement('img');
-    img.alt = m.filename;
+    img.alt = m.name;
     img.loading = 'lazy';
     if (m.is_gif && m.auto_play_gif) {
       img.src = '/api/original/' + m.id + '/' + encodeURIComponent(m.filename);
@@ -401,7 +401,7 @@ function renderGrid() {
     }
     card.appendChild(img);
 
-    const dn = m.filename.length > 16 ? m.filename.slice(0, 13) + '..' : m.filename;
+    const dn = m.name.length > 16 ? m.name.slice(0, 13) + '..' : m.name;
     const name = document.createElement('div');
     name.className = 'name';
     name.textContent = dn;
@@ -414,7 +414,7 @@ function renderGrid() {
       card.appendChild(badge);
     }
 
-    card.onclick = () => copyMeme(m.id, m.filename);
+    card.onclick = () => copyMeme(m.id, m.name);
     card.oncontextmenu = (e) => { e.preventDefault(); showCtxMenu(e, m); };
     grid.appendChild(card);
   });
@@ -458,9 +458,15 @@ function showCtxMenu(e, meme) {
   } else {
     rmBtn.style.display = 'none';
   }
-  menu.style.left = e.clientX + 'px';
-  menu.style.top = e.clientY + 'px';
   menu.classList.add('show');
+  const rect = menu.getBoundingClientRect();
+  const overflowRight = rect.right - window.innerWidth;
+  if (overflowRight > 0) {
+    menu.style.left = (e.clientX - rect.width) + 'px';
+  } else {
+    menu.style.left = e.clientX + 'px';
+  }
+  menu.style.top = e.clientY + 'px';
 }
 
 function hideCtxMenu() {
@@ -486,9 +492,8 @@ document.getElementById('ctx-menu').addEventListener('click', async (e) => {
 
   switch (action) {
     case 'rename': {
-      const base = m.filename.replace(/\.[^.]+$/, '');
-      const newName = await showPrompt('重命名', base);
-      if (!newName || newName === base) return;
+      const newName = await showPrompt('重命名', m.name);
+      if (!newName || newName === m.name) return;
       const ok = await api('rename_meme', m.id, newName);
       if (ok) { showToast('重命名成功'); refreshMemes(); }
       else { showToast('重命名失败'); }
@@ -522,7 +527,7 @@ document.getElementById('ctx-menu').addEventListener('click', async (e) => {
       break;
     }
     case 'delete': {
-      const confirmed = await showConfirm('删除确认', '确定删除「' + m.filename + '」？');
+      const confirmed = await showConfirm('删除确认', '确定删除「' + m.name + '」？');
       if (!confirmed) return;
       const ok = await api('delete_meme', m.id);
       if (ok) { showToast('已删除'); refreshMemes(); refreshTags(); refreshCollections(); }
@@ -686,22 +691,89 @@ async function showUploadWarning() {
   });
 }
 
+/* Sync progress */
+let syncPollTimer = null;
+let syncBg = false;
+
+function hideSyncProgress() {
+  syncBg = true;
+  const el = document.getElementById('sync-progress-overlay');
+  if (el) el.style.display = 'none';
+  if (syncPollTimer) { clearInterval(syncPollTimer); syncPollTimer = null; }
+}
+
+function hideSyncDone() {
+  const el = document.getElementById('sync-done-overlay');
+  if (el) el.style.display = 'none';
+}
+
+function formatSpeed(bytesPerSec) {
+  if (bytesPerSec >= 1048576) return (bytesPerSec / 1048576).toFixed(1) + ' MB/s';
+  if (bytesPerSec >= 1024) return (bytesPerSec / 1024).toFixed(1) + ' KB/s';
+  return bytesPerSec.toFixed(0) + ' B/s';
+}
+
+async function doSyncWithProgress(method, title, progressSetting, doneSetting) {
+  const s = await api('get_settings');
+  const showProgress = s ? s[progressSetting] !== false : true;
+  const showDone = s ? s[doneSetting] !== false : true;
+
+  const warnOk = await showUploadWarning();
+  if (!warnOk) return;
+
+  syncBg = false;
+
+  if (showProgress) {
+    const po = document.getElementById('sync-progress-overlay');
+    if (po) {
+      document.getElementById('sync-progress-title').textContent = title;
+      document.getElementById('sync-progress-file').textContent = '准备中...';
+      document.getElementById('sync-progress-bar').style.width = '0%';
+      document.getElementById('sync-progress-pct').textContent = '0%';
+      document.getElementById('sync-progress-speed').textContent = '';
+      po.style.display = 'flex';
+      syncPollTimer = setInterval(async () => {
+        const p = await api('get_sync_progress');
+        if (!p || p.status === 'idle') return;
+        document.getElementById('sync-progress-file').textContent = p.current_file || '';
+        document.getElementById('sync-progress-bar').style.width = (p.progress || 0) + '%';
+        document.getElementById('sync-progress-pct').textContent = (p.progress || 0) + '%';
+        if (p.speed) {
+          document.getElementById('sync-progress-speed').textContent = formatSpeed(p.speed);
+        }
+      }, 300);
+    }
+  }
+
+  const r = await api(method);
+  if (syncPollTimer) { clearInterval(syncPollTimer); syncPollTimer = null; }
+
+  if (showProgress && !syncBg) {
+    const po = document.getElementById('sync-progress-overlay');
+    if (po) po.style.display = 'none';
+  }
+
+  if (r && r.ok) {
+    const cnt = r.uploaded || r.downloaded || 0;
+    showToast('完成: ' + cnt + ' 个');
+    if (showDone) {
+      document.getElementById('sync-done-title').textContent = title + '完成';
+      document.getElementById('sync-done-detail').textContent = '成功 ' + cnt + ' 个';
+      const doo = document.getElementById('sync-done-overlay');
+      if (doo) doo.style.display = 'flex';
+    }
+  } else {
+    showToast('失败: ' + ((r && r.error) || '未知错误'));
+  }
+}
+
 async function syncUpload() {
-  const ok = await showUploadWarning();
-  if (!ok) return;
-  showToast('上传中...');
-  const r = await api('sync_push');
-  if (r.ok) showToast('上传完成: ' + (r.uploaded||0) + ' 个上传, ' + (r.deleted||0) + ' 个删除');
-  else showToast('上传失败: ' + (r.error||''));
+  await doSyncWithProgress('sync_push', '上传中', 'show_upload_progress', 'show_upload_done');
 }
 
 async function syncDownload() {
-  showToast('下载中...');
-  const r = await api('sync_pull');
-  if (r.ok) {
-    showToast('下载完成: ' + (r.downloaded||0) + ' 个文件');
-    refreshMemes(); refreshTags(); refreshCollections();
-  } else showToast('下载失败: ' + (r.error||''));
+  await doSyncWithProgress('sync_pull', '下载中', 'show_download_progress', 'show_download_done');
+  refreshMemes(); refreshTags(); refreshCollections();
 }
 
 function hide() { try { pywebview.api.hide_window(); } catch(e) {} }
@@ -720,15 +792,35 @@ function openSettings() { try { pywebview.api.open_settings(); } catch(e) {} }
   document.addEventListener('dragover', (e) => {
     e.preventDefault();
   });
-  document.addEventListener('dragleave', (e) => {
-    e.preventDefault();
+  document.addEventListener('dragleave', () => {
     dragCounter--;
     if (dragCounter <= 0) { dragCounter = 0; overlay.classList.remove('drag-over'); }
   });
-  document.addEventListener('drop', (e) => {
+  document.addEventListener('drop', async (e) => {
     e.preventDefault();
     dragCounter = 0;
     overlay.classList.remove('drag-over');
+    const files = e.dataTransfer.files;
+    if (!files || files.length === 0) return;
+    const imgExts = /\.(png|jpg|jpeg|gif|webp|bmp)$/i;
+    const items = [];
+    for (const file of files) {
+      if (!imgExts.test(file.name)) continue;
+      try {
+        const ab = await file.arrayBuffer();
+        const b64 = btoa(new Uint8Array(ab).reduce((s, b) => s + String.fromCharCode(b), ''));
+        items.push({ name: file.name, data: b64 });
+      } catch(_) {}
+    }
+    if (items.length === 0) return;
+    try {
+      const res = await fetch('/api/upload/', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ files: items }),
+      });
+      if (res.ok) { location.reload(); }
+    } catch(_) {}
   });
 })();
 
@@ -782,5 +874,29 @@ document.addEventListener('DOMContentLoaded', async () => {
   }, 300);
 });
 </script>
+
+<!-- Sync progress overlay -->
+<div id="sync-progress-overlay" style="display:none;position:fixed;inset:0;background:rgba(0,0,0,.6);align-items:center;justify-content:center;z-index:500;animation:fadeIn .15s">
+  <div style="background:var(--surface);border-radius:var(--radius-lg);padding:24px 28px;width:420px;border:1px solid var(--border);box-shadow:var(--shadow-lg);text-align:center">
+    <div style="font-size:14px;font-weight:600;color:var(--fg);margin-bottom:4px" id="sync-progress-title">同步中...</div>
+    <div style="font-size:12px;color:var(--fg-secondary);margin-bottom:12px;word-break:break-all" id="sync-progress-file">准备中</div>
+    <div style="width:100%;height:8px;background:var(--bg);border-radius:4px;overflow:hidden;margin-bottom:6px">
+      <div id="sync-progress-bar" style="width:0%;height:100%;background:var(--accent);border-radius:4px;transition:width .3s"></div>
+    </div>
+    <div style="font-size:11.5px;color:var(--muted);margin-bottom:16px">
+      <span id="sync-progress-pct">0%</span>
+      <span id="sync-progress-speed" style="margin-left:12px">0 KB/s</span>
+    </div>
+    <button class="btn btn-secondary btn-sm" onclick="hideSyncProgress()">后台运行</button>
+  </div>
+</div>
+
+<div id="sync-done-overlay" style="display:none;position:fixed;inset:0;background:rgba(0,0,0,.6);align-items:center;justify-content:center;z-index:501;animation:fadeIn .15s">
+  <div style="background:var(--surface);border-radius:var(--radius-lg);padding:24px 28px;width:380px;border:1px solid var(--border);box-shadow:var(--shadow-lg);text-align:center">
+    <div style="font-size:14px;font-weight:600;color:var(--fg);margin-bottom:8px" id="sync-done-title">同步完成</div>
+    <div style="font-size:13px;color:var(--fg-secondary);line-height:1.6;margin-bottom:18px" id="sync-done-detail"></div>
+    <button class="btn btn-primary" onclick="hideSyncDone()">关闭</button>
+  </div>
+</div>
 </body>
 </html>

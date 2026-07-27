@@ -2,6 +2,7 @@
 
 import json
 import logging
+import os
 from pathlib import Path
 from typing import Dict, List
 
@@ -37,6 +38,7 @@ def build() -> List[Dict]:
         memes.append(
             {
                 "filename": fname,
+                "name": r.get("original_name", os.path.splitext(fname)[0]),
                 "sha256": r.get("file_hash", ""),
                 "file_size": r.get("file_size", 0),
                 "mtime": mtime,

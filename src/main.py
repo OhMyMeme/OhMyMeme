@@ -9,7 +9,7 @@ from . import __app_name__, __version__
 from .config import get_config
 from .database import get_db
 from .hotkey import GlobalHotkey
-from .platform_util import is_wsl, set_auto_start
+from .platform_util import is_auto_start_enabled, is_wsl, set_auto_start
 from .tray import TrayManager
 from .webui import WebUI
 
@@ -30,7 +30,10 @@ class OhMyMemeApp:
         self._running = True
 
         # 1. 创建 WebUI（先不启动 GUI 循环）
-        self._webui = WebUI(update_debug=getattr(self, "_update_debug", False))
+        self._webui = WebUI(
+            update_debug=getattr(self, "_update_debug", False),
+            silent_start=getattr(self, "_silent_start", False),
+        )
         self._webui.set_on_hotkey_change(self._on_hotkey_change)
 
         # 2. 注册全局快捷键
@@ -50,11 +53,24 @@ class OhMyMemeApp:
                 logger.warning(f"托盘启动失败: {e}")
 
         # 4. 开机自启
-        if self._cfg.get("auto_start", False):
-            try:
-                set_auto_start(True)
-            except Exception as e:
-                logger.warning(f"开机自启失败: {e}")
+        is_frozen = getattr(sys, "frozen", False)
+        if not is_frozen:
+            # 源码运行时：清理残留的 python 开机自启项，不自动设置
+            if is_auto_start_enabled():
+                try:
+                    set_auto_start(False)
+                    self._cfg.set("auto_start", False)
+                    logger.info("已清理源码运行残留的开机自启项")
+                except Exception as e:
+                    logger.warning(f"清理开机自启失败: {e}")
+        else:
+            if is_auto_start_enabled():
+                self._cfg.set("auto_start", True)
+            if self._cfg.get("auto_start", False):
+                try:
+                    set_auto_start(True)
+                except Exception as e:
+                    logger.warning(f"开机自启失败: {e}")
 
         logger.info(f"{__app_name__} v{__version__} 已启动")
 
@@ -125,6 +141,12 @@ def main():
         dest="update_debug",
         help="Force show update dialog for testing",
     )
+    parser.add_argument(
+        "--silent",
+        action="store_true",
+        dest="silent",
+        help="Start minimized to tray",
+    )
     args, _ = parser.parse_known_args()
 
     logging.basicConfig(
@@ -137,6 +159,7 @@ def main():
 
     app = OhMyMemeApp()
     app._update_debug = args.update_debug
+    app._silent_start = args.silent or get_config().get("silent_start", False)
     try:
         app.run()
     except Exception as e:

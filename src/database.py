@@ -94,15 +94,25 @@ class MemeDB:
         height: int = 0,
         file_size: int = 0,
         mime_type: str = "image/png",
+        original_name: str = "",
         tags: List[str] = None,
     ) -> int:
         with self._lock:
             conn = self._get_conn()
             cur = conn.execute(
                 """INSERT INTO memes
-                   (filename, file_hash, width, height, file_size, mime_type)
-                   VALUES (?, ?, ?, ?, ?, ?)""",
-                (filename, file_hash, width, height, file_size, mime_type),
+                   (filename, file_hash, width, height,
+                    file_size, mime_type, original_name)
+                   VALUES (?, ?, ?, ?, ?, ?, ?)""",
+                (
+                    filename,
+                    file_hash,
+                    width,
+                    height,
+                    file_size,
+                    mime_type,
+                    original_name,
+                ),
             )
             meme_id = cur.lastrowid
             conn.commit()  # 先提交meme插入，确保FOREIGN KEY约束通过
@@ -118,7 +128,15 @@ class MemeDB:
             conn.commit()
 
     def update_meme(self, meme_id: int, **kwargs):
-        allowed = {"filename", "file_hash", "width", "height", "file_size", "mime_type"}
+        allowed = {
+            "filename",
+            "file_hash",
+            "width",
+            "height",
+            "file_size",
+            "mime_type",
+            "original_name",
+        }
         sets = []
         vals = []
         for k, v in kwargs.items():
@@ -243,6 +261,18 @@ class MemeDB:
                 "SELECT id, name FROM collections ORDER BY name"
             ).fetchall()
         ]
+
+    def delete_all(self):
+        """删除所有表情包及相关数据"""
+        with self._lock:
+            conn = self._get_conn()
+            conn.execute("DELETE FROM favorites")
+            conn.execute("DELETE FROM meme_collections")
+            conn.execute("DELETE FROM meme_tags")
+            conn.execute("DELETE FROM memes")
+            conn.execute("DELETE FROM collections")
+            conn.execute("DELETE FROM tags")
+            conn.commit()
 
     def delete_collection(self, collection_id: int):
         with self._lock:

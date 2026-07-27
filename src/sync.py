@@ -3,6 +3,7 @@
 import json
 import logging
 import os
+import time
 from ftplib import FTP, error_perm
 from pathlib import Path
 from typing import Optional
@@ -14,6 +15,55 @@ from .manifest import build as build_manifest
 from .manifest import load as load_manifest
 
 logger = logging.getLogger(__name__)
+
+# 同步进度状态（全局，供 JS 轮询）
+_sync_state = {
+    "status": "idle",  # idle | uploading | downloading | done | error
+    "direction": "",  # upload | download
+    "progress": 0,  # 0-100
+    "files_done": 0,
+    "files_total": 0,
+    "bytes_done": 0,
+    "bytes_total": 0,
+    "current_file": "",
+    "speed": 0,  # bytes/sec
+    "start_time": 0,
+    "results": None,
+    "error": "",
+}
+
+
+def _reset_sync_state(direction, files_total, bytes_total):
+    global _sync_state
+    _sync_state.update(
+        status="idle",
+        direction=direction,
+        progress=0,
+        files_done=0,
+        files_total=files_total,
+        bytes_done=0,
+        bytes_total=bytes_total,
+        current_file="",
+        speed=0,
+        start_time=0,
+        results=None,
+        error="",
+    )
+
+
+def _update_sync_state(**kw):
+    _sync_state.update(**kw)
+
+
+def get_sync_progress() -> dict:
+    """返回当前同步进度（供 JS 轮询）"""
+    s = _sync_state
+    if s["start_time"] > 0 and s["status"] in ("uploading", "downloading"):
+        elapsed = max(time.time() - s["start_time"], 0.001)
+        s["speed"] = s["bytes_done"] / elapsed
+        if s["bytes_total"] > 0:
+            s["progress"] = min(int(s["bytes_done"] * 100 / s["bytes_total"]), 99)
+    return dict(s)
 
 REMOTE_INDEX = INDEX_FILENAME
 REMOTE_MEME_DIR = "memes"
@@ -416,9 +466,23 @@ def push(delete_remote: bool = None) -> dict:
         if not local.get("memes"):
             raise SyncError("local manifest is empty, nothing to push")
 
+    # 计算总文件数和字节数
+    files_total = len(local["memes"])
+    bytes_total = 0
+    for entry in local["memes"]:
+        fp = cache_dir / entry["filename"]
+        if fp.exists():
+            bytes_total += fp.stat().st_size
+
+    _reset_sync_state("upload", files_total, bytes_total)
+    start = time.time()
+
     bk = _get_backend()
     bk.connect()
+    _update_sync_state(status="uploading", start_time=start)
     results = {"uploaded": 0, "skipped": 0, "errors": 0, "deleted": 0}
+    files_done = 0
+    bytes_done = 0
     try:
         bk.ensure_remote_dir(remote_root)
         remote_memes = _fetch_remote_memes(bk, remote_root)
@@ -426,28 +490,32 @@ def push(delete_remote: bool = None) -> dict:
 
         for entry in local["memes"]:
             fname = entry["filename"]
+            _update_sync_state(current_file=fname)
+            local_file = cache_dir / fname
+            fsize = local_file.stat().st_size if local_file.exists() else 0
             local_hash = entry["sha256"]
             remote_entry = remote_memes.get(fname)
             if remote_entry and remote_entry.get("sha256") == local_hash:
                 results["skipped"] += 1
-                continue
-            local_file = cache_dir / fname
-            if not local_file.exists():
+            elif not local_file.exists():
                 results["errors"] += 1
-                continue
-            rem_path = remote_root.rstrip("/") + "/" + REMOTE_MEME_DIR + "/" + fname
-            bk.ensure_remote_dir(os.path.dirname(rem_path))
-            if bk.upload_file(local_file, rem_path):
-                results["uploaded"] += 1
             else:
-                results["errors"] += 1
-            thumb_file = thumb_dir / ("%s_thumb.png" % fname)
-            if thumb_file.exists():
-                rem_thumb = (
-                    remote_root.rstrip("/") + "/" + REMOTE_THUMB_DIR + "/" + fname
-                )
-                bk.ensure_remote_dir(os.path.dirname(rem_thumb))
-                bk.upload_file(thumb_file, rem_thumb)
+                rem_path = remote_root.rstrip("/") + "/" + REMOTE_MEME_DIR + "/" + fname
+                bk.ensure_remote_dir(os.path.dirname(rem_path))
+                if bk.upload_file(local_file, rem_path):
+                    results["uploaded"] += 1
+                    bytes_done += fsize
+                else:
+                    results["errors"] += 1
+                thumb_file = thumb_dir / ("%s_thumb.png" % fname)
+                if thumb_file.exists():
+                    rem_thumb = (
+                        remote_root.rstrip("/") + "/" + REMOTE_THUMB_DIR + "/" + fname
+                    )
+                    bk.ensure_remote_dir(os.path.dirname(rem_thumb))
+                    bk.upload_file(thumb_file, rem_thumb)
+            files_done += 1
+            _update_sync_state(files_done=files_done, bytes_done=bytes_done)
 
         if delete_remote:
             for fname in list(remote_memes.keys()):
@@ -466,8 +534,18 @@ def push(delete_remote: bool = None) -> dict:
         local_index = cfg.data_dir / INDEX_FILENAME
         bk.upload_file(local_index, remote_manifest_path)
 
+        _update_sync_state(
+            status="done",
+            progress=100,
+            files_done=files_total,
+            bytes_done=bytes_total,
+            results=results,
+        )
         logger.info("sync push done: %s", results)
         return results
+    except Exception as e:
+        _update_sync_state(status="error", error=str(e))
+        raise
     finally:
         bk.close()
 
@@ -514,17 +592,32 @@ def pull(remove_local: bool = None) -> dict:
     local_data = load_manifest()
     local_idx = {m["filename"]: m for m in local_data.get("memes", [])}
 
+    files_total = len(remote_idx)
+    bytes_total = 0
+    for m in remote_data.get("memes", []):
+        bytes_total += m.get("file_size", 0)
+
+    _reset_sync_state("download", files_total, bytes_total)
+    start = time.time()
+
     bk = _get_backend()
     bk.connect()
+    _update_sync_state(status="downloading", start_time=start)
     results = {"downloaded": 0, "skipped": 0, "errors": 0, "removed_local": 0}
+    files_done = 0
+    bytes_done = 0
     try:
         for fname, rentry in remote_idx.items():
+            _update_sync_state(current_file=fname)
             local_entry = local_idx.get(fname)
             if local_entry and local_entry.get("sha256") == rentry.get("sha256"):
                 results["skipped"] += 1
+                files_done += 1
+                _update_sync_state(files_done=files_done, bytes_done=bytes_done)
                 continue
             rem_path = remote_root.rstrip("/") + "/" + REMOTE_MEME_DIR + "/" + fname
             local_path = cache_dir / fname
+            fsize = rentry.get("file_size", 0)
             if bk.download_file(rem_path, local_path):
                 if not db.get_by_filename(fname):
                     ext = os.path.splitext(fname)[1].lower()
@@ -536,6 +629,7 @@ def pull(remove_local: bool = None) -> dict:
                         w, h = img.size
                     except Exception:
                         pass
+                    oname = rentry.get("name", "") or os.path.splitext(fname)[0]
                     db.add_meme(
                         filename=fname,
                         file_hash=rentry.get("sha256", ""),
@@ -543,10 +637,14 @@ def pull(remove_local: bool = None) -> dict:
                         height=h,
                         file_size=local_path.stat().st_size,
                         mime_type="image/%s" % ext[1:] if ext else "image/png",
+                        original_name=oname,
                     )
                 results["downloaded"] += 1
+                bytes_done += fsize
             else:
                 results["errors"] += 1
+            files_done += 1
+            _update_sync_state(files_done=files_done, bytes_done=bytes_done)
             rem_thumb = remote_root.rstrip("/") + "/" + REMOTE_THUMB_DIR + "/" + fname
             local_thumb = thumb_dir / fname
             if bk.file_exists(rem_thumb):
@@ -574,7 +672,47 @@ def pull(remove_local: bool = None) -> dict:
 
         _apply_remote_collections(remote_data)
         build_manifest()
+        _update_sync_state(
+            status="done",
+            progress=100,
+            files_done=files_total,
+            bytes_done=bytes_total,
+            results=results,
+        )
         logger.info("sync pull done: %s", results)
         return results
+    except Exception as e:
+        _update_sync_state(status="error", error=str(e))
+        raise
+    finally:
+        bk.close()
+
+
+def delete_all_remote() -> dict:
+    """删除远端所有表情包和清单"""
+    from .config import get_config
+
+    cfg = get_config()
+    remote_root = cfg.get("ftp_path", "/") if cfg.get("sync_type", "") == "ftp" else ""
+    bk = _get_backend()
+    bk.connect()
+    try:
+        remote_memes = _fetch_remote_memes(bk, remote_root)
+        count = 0
+        for fname in remote_memes:
+            rem_path = remote_root.rstrip("/") + "/" + REMOTE_MEME_DIR + "/" + fname
+            try:
+                bk.delete_file(rem_path)
+                count += 1
+            except Exception:
+                pass
+        rem_manifest = remote_root.rstrip("/") + "/" + REMOTE_INDEX
+        try:
+            bk.delete_file(rem_manifest)
+        except Exception:
+            pass
+        return {"ok": True, "deleted": count}
+    except Exception as e:
+        return {"ok": False, "error": str(e)}
     finally:
         bk.close()

@@ -5,9 +5,13 @@ import os
 import platform
 from pathlib import Path
 
+from . import __version__
 from .crypto_util import decrypt_data, encrypt_data
 
 APP_NAME = "OhMyMeme"
+
+# 当前配置文件版本（与软件版本同步，用于数据迁移）
+_CONFIG_VERSION = __version__
 
 # ~~~ 加密字段列表 ~~~（写入前自动加密，读取时自动解密）
 _SECRET_KEYS = {
@@ -45,9 +49,12 @@ class Config:
     """应用配置"""
 
     DEFAULTS = {
+        # 版本（用于数据迁移）
+        "version": "",
         # 全局设置
         "hotkey": "Ctrl+Alt+M",
         "auto_start": False,
+        "silent_start": False,
         "language": "zh-CN",
         # 缓存设置
         "cache_max_size_mb": 500,
@@ -60,6 +67,10 @@ class Config:
         "sync_delete_remote": False,  # 上传时删除远端文件
         "sync_remove_local": False,  # 下载时删除本地多余文件
         "sync_hide_upload_warning": False,  # 不再提醒上传警告
+        "show_upload_progress": True,  # 上传时显示进度条
+        "show_upload_done": True,  # 上传完毕显示提示
+        "show_download_progress": True,  # 下载时显示进度条
+        "show_download_done": True,  # 下载完毕显示提示
         # FTP
         "ftp_host": "",
         "ftp_port": 21,
@@ -80,8 +91,6 @@ class Config:
         "r2_path": "",
         # UI
         "theme": "dark",
-        "window_width": 700,
-        "window_height": 500,
         "window_x": -1,
         "window_y": -1,
         "auto_play_gif": True,
@@ -153,8 +162,20 @@ class Config:
                 for k in self.DEFAULTS:
                     if k in raw:
                         self._data[k] = raw[k]
+                self._migrate(raw)
             except (json.JSONDecodeError, OSError):
                 pass
+
+    def _migrate(self, raw):
+        """配置文件版本迁移"""
+        saved_ver = raw.get("version", "")
+        if saved_ver == _CONFIG_VERSION:
+            return
+        # 0.2.0 及之前：删除 window_width/window_height
+        for k in ("window_width", "window_height"):
+            self._data.pop(k, None)
+        self._data["version"] = _CONFIG_VERSION
+        self._dirty = True
 
     def save(self):
         self._path.parent.mkdir(parents=True, exist_ok=True)

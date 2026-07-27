@@ -141,6 +141,9 @@ select:hover { border-color: var(--border-light); }
   white-space: nowrap;
 }
 #toast.show { opacity: 1; transform: translateX(-50%) translateY(0); }
+.danger-input { width:100%; padding:8px 12px; border:1px solid var(--border); border-radius:var(--radius-sm); background:var(--card); color:var(--fg); font-size:13px; outline:none; font-family:inherit; margin-top:4px; transition:border-color var(--transition); }
+.danger-input:focus { border-color:#ef4444; }
+.danger-input.match { border-color:#22c55e; }
 </style>
 </head>
 <body>
@@ -166,6 +169,16 @@ select:hover { border-color: var(--border-light); }
         <button class="btn btn-secondary btn-sm" id="btn-check-update" onclick="checkUpdate()">检查更新</button>
       </div>
       <div id="s-update-status" style="font-size:11.5px;color:var(--muted)"></div>
+    </div>
+
+    <div class="section">
+      <div class="section-title">启动与开机自启</div>
+      <label class="check-row">
+        <input id="s-auto-start" type="checkbox" onchange="toggleSilentStart()">开机自启
+      </label>
+      <label class="check-row" id="s-silent-row" style="display:none">
+        <input id="s-silent-start" type="checkbox">开机自启时静默启动（直接托盘运行）
+      </label>
     </div>
 
     <div class="section">
@@ -202,9 +215,21 @@ select:hover { border-color: var(--border-light); }
         <label class="check-row">
           <input id="s-remove-local" type="checkbox">下载时删除本地多余文件
         </label>
-        <label class="check-row" style="margin-bottom:12px">
+      <label class="check-row" style="margin-bottom:12px">
           <input id="s-hide-upload-warn" type="checkbox">上传前不再提醒</label>
-      </div>
+        <label class="check-row">
+          <input id="s-show-up-progress" type="checkbox">上传时显示进度条
+        </label>
+        <label class="check-row">
+          <input id="s-show-up-done" type="checkbox">上传完毕显示提示
+        </label>
+        <label class="check-row">
+          <input id="s-show-dl-progress" type="checkbox">下载时显示进度条
+        </label>
+        <label class="check-row">
+          <input id="s-show-dl-done" type="checkbox">下载完毕显示提示
+        </label>
+        </div>
 
       <div id="s-sync-ftp" style="display:none">
         <div class="form-group">
@@ -289,6 +314,15 @@ select:hover { border-color: var(--border-light); }
         <div id="s-sync-status" style="margin-top:6px"></div>
       </div>
     </div>
+
+    <div class="section" style="border-color:var(--accent-muted)">
+      <div class="section-title" style="color:#ef4444">危险操作</div>
+      <p style="font-size:11.5px;color:var(--muted);margin-bottom:12px;line-height:1.6">以下操作不可撤销，请谨慎使用</p>
+      <div style="display:flex;gap:8px">
+        <button class="btn btn-flex" style="border-color:#ef4444;color:#ef4444" onclick="showDangerConfirm('local')">删除本地所有表情包</button>
+        <button class="btn btn-flex" style="border-color:#ef4444;color:#ef4444" onclick="showDangerConfirm('cloud')">删除云端所有表情包</button>
+      </div>
+    </div>
   </div>
 
   <div id="bottom">
@@ -300,6 +334,49 @@ select:hover { border-color: var(--border-light); }
 </div>
 
 <div id="toast"></div>
+
+<!-- Danger confirm overlay -->
+<div id="sync-progress-overlay" style="display:none;position:fixed;inset:0;background:rgba(0,0,0,.6);align-items:center;justify-content:center;z-index:400;animation:fadeIn .15s">
+  <div style="background:var(--surface);border-radius:var(--radius-lg);padding:24px 28px;width:420px;border:1px solid var(--border);box-shadow:var(--shadow-lg);text-align:center">
+    <div style="font-size:14px;font-weight:600;color:var(--fg);margin-bottom:4px" id="sync-progress-title">同步中...</div>
+    <div style="font-size:12px;color:var(--fg-secondary);margin-bottom:12px;word-break:break-all" id="sync-progress-file">准备中</div>
+    <div style="width:100%;height:8px;background:var(--bg);border-radius:4px;overflow:hidden;margin-bottom:6px">
+      <div id="sync-progress-bar" style="width:0%;height:100%;background:var(--accent);border-radius:4px;transition:width .3s"></div>
+    </div>
+    <div style="font-size:11.5px;color:var(--muted);margin-bottom:16px">
+      <span id="sync-progress-pct">0%</span>
+      <span id="sync-progress-speed" style="margin-left:12px">0 KB/s</span>
+    </div>
+    <button id="sync-progress-bg-btn" class="btn btn-secondary btn-sm" onclick="hideSyncProgress()">后台运行</button>
+  </div>
+</div>
+
+<div id="sync-done-overlay" style="display:none;position:fixed;inset:0;background:rgba(0,0,0,.6);align-items:center;justify-content:center;z-index:400;animation:fadeIn .15s">
+  <div style="background:var(--surface);border-radius:var(--radius-lg);padding:24px 28px;width:380px;border:1px solid var(--border);box-shadow:var(--shadow-lg);text-align:center">
+    <div style="font-size:14px;font-weight:600;color:var(--fg);margin-bottom:8px" id="sync-done-title">同步完成</div>
+    <div style="font-size:13px;color:var(--fg-secondary);line-height:1.6;margin-bottom:18px" id="sync-done-detail"></div>
+    <button class="btn btn-primary" onclick="hideSyncDone()">关闭</button>
+  </div>
+</div>
+
+<div id="danger-overlay" style="display:none;position:fixed;inset:0;background:rgba(0,0,0,.6);align-items:center;justify-content:center;z-index:400;animation:fadeIn .15s" onclick="if(event.target===this)dangerCancel()">
+  <div style="background:var(--surface);border-radius:var(--radius-lg);padding:24px 28px;width:400px;border:1px solid var(--border);box-shadow:var(--shadow-lg)" onclick="event.stopPropagation()">
+    <h2 style="font-size:15px;font-weight:600;color:#ef4444;margin-bottom:10px" id="danger-title">危险操作</h2>
+    <p style="font-size:13px;color:var(--fg-secondary);line-height:1.6;margin-bottom:16px" id="danger-desc">此操作不可撤销。</p>
+    <div style="margin-bottom:10px">
+      <label style="display:block;font-size:12px;font-weight:500;color:var(--fg-secondary);margin-bottom:2px">请在上方输入框输入 <b style="color:#ef4444">confirm</b> 确认</label>
+      <input class="danger-input" id="danger-input-1" placeholder="在此输入 confirm" spellcheck="false" autocomplete="off">
+    </div>
+    <div style="margin-bottom:18px">
+      <label style="display:block;font-size:12px;font-weight:500;color:var(--fg-secondary);margin-bottom:2px">请在下方输入框再次输入 <b style="color:#ef4444">confirm</b> 确认</label>
+      <input class="danger-input" id="danger-input-2" placeholder="在此输入 confirm" spellcheck="false" autocomplete="off">
+    </div>
+    <div style="display:flex;gap:8px;justify-content:flex-end">
+      <button class="btn btn-secondary" onclick="dangerCancel()">取消</button>
+      <button class="btn" id="danger-confirm-btn" disabled style="border-color:#ef4444;color:#ef4444" onclick="dangerExec()">确认执行</button>
+    </div>
+  </div>
+</div>
 
 <script>
 /* API helper */
@@ -346,14 +423,25 @@ function startHotkeyCapture(input) {
   document.addEventListener('keydown', handler, true);
 }
 
+function toggleSilentStart() {
+  const autoStart = document.getElementById('s-auto-start')?.checked === true;
+  const row = document.getElementById('s-silent-row');
+  if (row) row.style.display = autoStart ? '' : 'none';
+}
+
 /* Load settings */
 async function getSettings() {
   const s = await api('get_settings');
   if (!s) return false;
   const hk = document.getElementById('s-hotkey');
   const gif = document.getElementById('s-gif');
+  const as = document.getElementById('s-auto-start');
+  const ss = document.getElementById('s-silent-start');
   if (hk && s.hotkey) hk.value = s.hotkey;
   if (gif) gif.checked = s.auto_play_gif !== false;
+  if (as) as.checked = s.auto_start === true;
+  if (ss) ss.checked = s.silent_start === true;
+  toggleSilentStart();
   const ff = document.getElementById('s-sync-fetch');
   const sa = document.getElementById('s-sync-auto');
   const st = document.getElementById('s-sync-type');
@@ -382,6 +470,14 @@ async function getSettings() {
   if (kr) kr.checked = s.sync_delete_remote === true;
   if (rl) rl.checked = s.sync_remove_local === true;
   if (hw) hw.checked = s.sync_hide_upload_warning === true;
+  const up = document.getElementById('s-show-up-progress');
+  const ud = document.getElementById('s-show-up-done');
+  const dp = document.getElementById('s-show-dl-progress');
+  const dd = document.getElementById('s-show-dl-done');
+  if (up) up.checked = s.show_upload_progress !== false;
+  if (ud) ud.checked = s.show_upload_done !== false;
+  if (dp) dp.checked = s.show_download_progress !== false;
+  if (dd) dd.checked = s.show_download_done !== false;
   return true;
 }
 
@@ -464,9 +560,15 @@ function validateSync(sync) {
 async function saveSettings() {
   const hotkey = document.getElementById('s-hotkey')?.value || 'Ctrl+Alt+M';
   const gif = document.getElementById('s-gif')?.checked !== false;
+  const auto_start = document.getElementById('s-auto-start')?.checked === true;
+  const silent_start = document.getElementById('s-silent-start')?.checked === true;
   const sync = collectSyncSettings();
   if (!validateSync(sync)) return;
-  await api('save_settings', { hotkey, auto_play_gif: gif, ...sync });
+  await api('save_settings', {
+    hotkey, auto_play_gif: gif,
+    auto_start, silent_start,
+    ...sync
+  });
   showToast('设置已保存');
 }
 
@@ -475,8 +577,13 @@ async function resetSettings() {
   if (s) {
     const hk = document.getElementById('s-hotkey');
     const gif = document.getElementById('s-gif');
+    const as = document.getElementById('s-auto-start');
+    const ss = document.getElementById('s-silent-start');
     if (hk) hk.value = s.hotkey;
     if (gif) gif.checked = s.auto_play_gif !== false;
+    if (as) as.checked = s.auto_start === true;
+    if (ss) ss.checked = s.silent_start === true;
+    toggleSilentStart();
     const ff = document.getElementById('s-sync-fetch');
     const sa = document.getElementById('s-sync-auto');
     const st = document.getElementById('s-sync-type');
@@ -505,6 +612,14 @@ async function resetSettings() {
     if (kr) kr.checked = false;
     if (rl) rl.checked = false;
     if (hw) hw.checked = false;
+    const up = document.getElementById('s-show-up-progress');
+    const ud = document.getElementById('s-show-up-done');
+    const dp = document.getElementById('s-show-dl-progress');
+    const dd = document.getElementById('s-show-dl-done');
+    if (up) up.checked = true;
+    if (ud) ud.checked = true;
+    if (dp) dp.checked = true;
+    if (dd) dd.checked = true;
     showToast('已恢复默认设置');
   }
 }
@@ -552,33 +667,103 @@ async function showUploadWarning() {
   });
 }
 
-async function syncPush() {
+let syncPollTimer = null;
+let syncBg = false;
+
+function hideSyncProgress() {
+  syncBg = true;
+  document.getElementById('sync-progress-overlay').style.display = 'none';
+  if (syncPollTimer) { clearInterval(syncPollTimer); syncPollTimer = null; }
+}
+
+function hideSyncDone() {
+  document.getElementById('sync-done-overlay').style.display = 'none';
+  location.reload();
+}
+
+function formatSpeed(bytesPerSec) {
+  if (bytesPerSec >= 1048576) return (bytesPerSec / 1048576).toFixed(1) + ' MB/s';
+  if (bytesPerSec >= 1024) return (bytesPerSec / 1024).toFixed(1) + ' KB/s';
+  return bytesPerSec.toFixed(0) + ' B/s';
+}
+
+async function doSyncWithProgress(method, title, progressSetting, doneSetting, btnId, statusId) {
   const sync = collectSyncSettings();
   if (!validateSync(sync)) return;
-  const ok = await showUploadWarning();
-  if (!ok) return;
-  const btn = document.getElementById('btn-sync-push');
-  const status = document.getElementById('s-sync-status');
-  btn.disabled = true; btn.textContent = '上传中...'; status.textContent = '';
+  const warnOk = await showUploadWarning();
+  if (!warnOk) return;
   await api('save_settings', sync);
-  const r = await api('sync_push');
-  btn.disabled = false; btn.textContent = '上传到远端';
-  if (r.ok) status.textContent = '上传完成: ' + (r.uploaded||0) + ' 个文件';
-  else status.textContent = '上传失败: ' + (r.error||'');
+
+  // 检查设置
+  const showProgress = document.getElementById(progressSetting)?.checked !== false;
+  const showDone = document.getElementById(doneSetting)?.checked !== false;
+
+  const btn = document.getElementById(btnId);
+  const status = document.getElementById(statusId);
+  btn.disabled = true;
+  const origText = btn.textContent;
+  btn.textContent = '同步中...';
+  status.textContent = '';
+
+  syncBg = false;
+
+  if (showProgress) {
+    document.getElementById('sync-progress-title').textContent = title;
+    document.getElementById('sync-progress-file').textContent = '准备中...';
+    document.getElementById('sync-progress-bar').style.width = '0%';
+    document.getElementById('sync-progress-pct').textContent = '0%';
+    document.getElementById('sync-progress-speed').textContent = '';
+    document.getElementById('sync-progress-overlay').style.display = 'flex';
+
+    syncPollTimer = setInterval(async () => {
+      const s = await api('get_sync_progress');
+      if (!s || s.status === 'idle') return;
+      document.getElementById('sync-progress-file').textContent = s.current_file || '';
+      document.getElementById('sync-progress-bar').style.width = (s.progress || 0) + '%';
+      document.getElementById('sync-progress-pct').textContent = (s.progress || 0) + '%';
+      if (s.speed) {
+        document.getElementById('sync-progress-speed').textContent = formatSpeed(s.speed);
+      }
+    }, 300);
+  }
+
+  const r = await api(method);
+  btn.disabled = false;
+  btn.textContent = origText;
+
+  if (syncPollTimer) { clearInterval(syncPollTimer); syncPollTimer = null; }
+
+  if (showProgress && !syncBg) {
+    document.getElementById('sync-progress-overlay').style.display = 'none';
+  }
+
+  if (r && r.ok) {
+    const uploaded = r.uploaded || r.downloaded || 0;
+    const skipped = r.skipped || 0;
+    const errors = r.errors || 0;
+    status.textContent = '完成: 成功 ' + uploaded + ', 跳过 ' + skipped + ', 错误 ' + errors;
+
+    if (showDone) {
+      document.getElementById('sync-done-title').textContent = title + '完成';
+      document.getElementById('sync-done-detail').textContent = '成功 ' + uploaded + ' 个';
+      document.getElementById('sync-done-overlay').style.display = 'flex';
+    }
+  } else {
+    status.textContent = '失败: ' + ((r && r.error) || '未知错误');
+  }
+
+  // 刷新主窗口
+  try { pywebview.api.refresh_memes?.(); } catch(_) {}
+  try { pywebview.api.refresh_tags?.(); } catch(_) {}
+  try { pywebview.api.refresh_collections?.(); } catch(_) {}
+}
+
+async function syncPush() {
+  await doSyncWithProgress('sync_push', '上传中...', 's-show-up-progress', 's-show-up-done', 'btn-sync-push', 's-sync-status');
 }
 
 async function syncPull() {
-  const sync = collectSyncSettings();
-  if (!validateSync(sync)) return;
-  const btn = document.getElementById('btn-sync-pull');
-  const status = document.getElementById('s-sync-status');
-  btn.disabled = true; btn.textContent = '下载中...'; status.textContent = '';
-  await api('save_settings', sync);
-  const r = await api('sync_pull');
-  btn.disabled = false; btn.textContent = '从远端下载';
-  if (r.ok) {
-    status.textContent = '下载完成: ' + (r.downloaded||0) + ' 个文件';
-  } else status.textContent = '下载失败: ' + (r.error||'');
+  await doSyncWithProgress('sync_pull', '下载中...', 's-show-dl-progress', 's-show-dl-done', 'btn-sync-pull', 's-sync-status');
 }
 
 /* Toast */
@@ -701,6 +886,64 @@ async function checkUpdateBackground() {
   if (ignored) return;
   showUpdateDialog(r.current, r.latest, r.download_url);
 }
+
+/* Danger zone */
+let dangerTarget = null;
+
+function showDangerConfirm(target) {
+  dangerTarget = target;
+  const title = document.getElementById('danger-title');
+  const desc = document.getElementById('danger-desc');
+  if (target === 'local') {
+    title.textContent = '删除本地所有表情包';
+    desc.textContent = '将永久删除全部表情包文件、缩略图及元数据，此操作不可撤销。';
+  } else {
+    title.textContent = '删除云端所有表情包';
+    desc.textContent = '将永久删除远端服务器上的全部表情包文件，本地文件不受影响。';
+  }
+  document.getElementById('danger-overlay').style.display = 'flex';
+  document.getElementById('danger-input-1').value = '';
+  document.getElementById('danger-input-2').value = '';
+  document.getElementById('danger-confirm-btn').disabled = true;
+  document.getElementById('danger-input-1').focus();
+}
+
+function dangerCancel() {
+  document.getElementById('danger-overlay').style.display = 'none';
+  dangerTarget = null;
+}
+
+document.getElementById('danger-input-1').addEventListener('input', checkDangerMatch);
+document.getElementById('danger-input-2').addEventListener('input', checkDangerMatch);
+
+function checkDangerMatch() {
+  const v1 = document.getElementById('danger-input-1').value;
+  const v2 = document.getElementById('danger-input-2').value;
+  const match = v1 === 'confirm' && v2 === 'confirm';
+  document.getElementById('danger-confirm-btn').disabled = !match;
+}
+
+async function dangerExec() {
+  if (!dangerTarget) return;
+  const btn = document.getElementById('danger-confirm-btn');
+  btn.disabled = true;
+  btn.textContent = '执行中...';
+  const r = await api('delete_all_' + dangerTarget);
+  btn.textContent = '确认执行';
+  document.getElementById('danger-overlay').style.display = 'none';
+  dangerTarget = null;
+  if (r && r.ok) {
+    showToast('操作已完成');
+  } else {
+    showToast('操作失败: ' + ((r && r.error) || '未知错误'));
+  }
+}
+
+document.addEventListener('keydown', (e) => {
+  if (e.key === 'Escape' && document.getElementById('danger-overlay').style.display === 'flex') {
+    dangerCancel();
+  }
+});
 
 /* Init */
 let initRetries = 0;

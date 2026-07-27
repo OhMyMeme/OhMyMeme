@@ -29,6 +29,7 @@ JsApi / SettingsApi → SQLite (WAL) + 本地缓存 + 远端同步
 ## 代码规范
 - 无类型标注（`database.py`/`updater.py` 除外可使用 `typing` 基本类型）
 - 无非必要注释（除非用户明确要求）
+- 每段函数需要有简单功能注释
 - 无 emoji（除非用户要求）
 - 无文档字符串（只对公开 API 使用极简单行 docstring）
 - 无冗余前缀/后缀说明（写完代码即结束，不加总结）
