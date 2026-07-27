@@ -261,7 +261,10 @@ class JsApi:
         return updater.get_download_progress()
 
     def run_downloaded_installer(self) -> bool:
-        return updater.run_downloaded_installer()
+        ok = updater.run_downloaded_installer()
+        if ok:
+            self._webui._schedule_quit()
+        return ok
 
     def download_update(self, url: str) -> dict:
         """同步下载（旧版，保留兼容）"""
@@ -339,9 +342,13 @@ class JsApi:
 
     def get_settings(self) -> dict:
         d = self._cfg.to_dict()
+        from .platform_util import is_auto_start_enabled
+
         return {
             "hotkey": d.get("hotkey", "Ctrl+Alt+M"),
             "auto_play_gif": d.get("auto_play_gif", True),
+            "auto_start": is_auto_start_enabled(),
+            "silent_start": d.get("silent_start", False),
             "sync_auto_fetch_index": d.get("sync_auto_fetch_index", False),
             "sync_auto_sync": d.get("sync_auto_sync", False),
             "sync_type": d.get("sync_type", ""),
@@ -372,6 +379,10 @@ class JsApi:
 
     def save_settings(self, settings: dict):
         if isinstance(settings, dict):
+            if "auto_start" in settings:
+                from .platform_util import set_auto_start
+
+                set_auto_start(settings["auto_start"])
             self._cfg.update_from_dict(settings)
             self._cfg.save()
             if "hotkey" in settings:
@@ -382,9 +393,14 @@ class JsApi:
         self._cfg.save()
         hotkey = self._cfg.get("hotkey", "Ctrl+Alt+M")
         self._webui._on_hotkey_change(hotkey)
+        from .platform_util import set_auto_start
+
+        set_auto_start(False)
         return {
             "hotkey": hotkey,
             "auto_play_gif": self._cfg.get("auto_play_gif", True),
+            "auto_start": False,
+            "silent_start": False,
             "sync_auto_fetch_index": False,
             "sync_auto_sync": False,
             "sync_type": "",
@@ -441,9 +457,13 @@ class SettingsApi:
 
     def get_settings(self) -> dict:
         d = self._cfg.to_dict()
+        from .platform_util import is_auto_start_enabled
+
         return {
             "hotkey": d.get("hotkey", "Ctrl+Alt+M"),
             "auto_play_gif": d.get("auto_play_gif", True),
+            "auto_start": is_auto_start_enabled(),
+            "silent_start": d.get("silent_start", False),
             "sync_auto_fetch_index": d.get("sync_auto_fetch_index", False),
             "sync_auto_sync": d.get("sync_auto_sync", False),
             "sync_type": d.get("sync_type", ""),
@@ -474,6 +494,10 @@ class SettingsApi:
 
     def save_settings(self, settings: dict):
         if isinstance(settings, dict):
+            if "auto_start" in settings:
+                from .platform_util import set_auto_start
+
+                set_auto_start(settings["auto_start"])
             self._cfg.update_from_dict(settings)
             self._cfg.save()
             if "hotkey" in settings:
@@ -484,9 +508,14 @@ class SettingsApi:
         self._cfg.save()
         hotkey = self._cfg.get("hotkey", "Ctrl+Alt+M")
         self._webui._on_hotkey_change(hotkey)
+        from .platform_util import set_auto_start
+
+        set_auto_start(False)
         return {
             "hotkey": hotkey,
             "auto_play_gif": self._cfg.get("auto_play_gif", True),
+            "auto_start": False,
+            "silent_start": False,
             "sync_auto_fetch_index": False,
             "sync_auto_sync": False,
             "sync_type": "",
@@ -542,7 +571,10 @@ class SettingsApi:
         return updater.get_download_progress()
 
     def run_downloaded_installer(self) -> bool:
-        return updater.run_downloaded_installer()
+        ok = updater.run_downloaded_installer()
+        if ok:
+            self._webui._schedule_quit()
+        return ok
 
     def download_update(self, url: str) -> dict:
         path = updater.download_release(url)
@@ -688,6 +720,14 @@ class WebUI:
         if self._pending_hide:
             self._pending_hide = False
             self.hide()
+
+    def _schedule_quit(self):
+        """在当前循环结束后关闭窗口并退出进程"""
+        if self._window:
+            try:
+                self._window.after(0, self.stop)
+            except Exception:
+                pass
 
     @property
     def is_visible(self) -> bool:

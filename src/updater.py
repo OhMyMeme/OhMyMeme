@@ -283,15 +283,12 @@ def download_release(url: str) -> Optional[str]:
 
 
 def run_installer(path: str) -> bool:
-    """静默运行安装程序"""
+    """启动安装程序（有 UI，非静默）"""
     if not path or not os.path.isfile(path):
         return False
     try:
         if platform.system() == "Windows":
-            subprocess.Popen(
-                [path, "/VERYSILENT", "/SUPPRESSMSGBOXES", "/NORESTART"],
-                shell=False,
-            )
+            os.startfile(path)
             return True
         elif platform.system() == "Linux":
             os.chmod(path, 0o755)

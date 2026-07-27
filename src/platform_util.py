@@ -42,7 +42,7 @@ def _get_executable_path() -> str:
 
 
 def _set_auto_start_windows(enabled: bool) -> bool:
-    """Windows: 使用注册表 Run 键（关闭时同时清理启动文件夹）"""
+    """Windows: 仅使用注册表 Run 键"""
     try:
         import winreg
 
@@ -64,14 +64,6 @@ def _set_auto_start_windows(enabled: bool) -> bool:
                 try:
                     winreg.DeleteValue(key, APP_NAME)
                 except FileNotFoundError:
-                    pass
-        # 关闭时同时清理 InnoSetup 安装程序创建的启动文件夹快捷方式
-        if not enabled:
-            startup_link = _startup_folder_path() / f"{APP_NAME}.lnk"
-            if startup_link.exists():
-                try:
-                    startup_link.unlink()
-                except OSError:
                     pass
         return True
     except Exception:
@@ -140,15 +132,30 @@ X-GNOME-Autostart-enabled=true
 
 
 def _startup_folder_path() -> Path:
+    """获取当前用户的 Startup 文件夹路径"""
+    if platform.system() == "Windows":
+        try:
+            import winreg
+
+            key_path = (
+                r"Software\Microsoft\Windows\CurrentVersion\Explorer\Shell Folders"
+            )
+            with winreg.OpenKey(
+                winreg.HKEY_CURRENT_USER, key_path, 0, winreg.KEY_QUERY_VALUE
+            ) as key:
+                val, _ = winreg.QueryValueEx(key, "Startup")
+                if val:
+                    return Path(val)
+        except Exception:
+            pass
     base = os.environ.get("APPDATA", "")
     return Path(base) / "Microsoft" / "Windows" / "Start Menu" / "Programs" / "Startup"
 
 
 def is_auto_start_enabled() -> bool:
-    """检查开机自启状态（检测注册表 Run 键 + 启动文件夹）"""
+    """检查开机自启状态（仅检测注册表 Run 键）"""
     system = platform.system()
     if system == "Windows":
-        # 检查注册表 Run 键
         try:
             import winreg
 
@@ -160,10 +167,6 @@ def is_auto_start_enabled() -> bool:
                 return True
         except (FileNotFoundError, OSError):
             pass
-        # 检查启动文件夹（兼容 InnoSetup 安装程序）
-        startup_link = _startup_folder_path() / f"{APP_NAME}.lnk"
-        if startup_link.exists():
-            return True
         return False
     elif system == "Darwin":
         plist_path = (

@@ -107,6 +107,12 @@ tests/
 - `push()`/`pull()` 内循环中更新 files_done/bytes_done/current_file 等字段
 - 前端 300ms 轮询 `get_sync_progress()` 显示进度条 + 实时速度
 - 设置页 4 个开关控制进度/完成弹窗是否显示
+- **多线程传输**: `push()`/`pull()` 使用 `ThreadPoolExecutor`，每个线程创建独立后端连接
+- 并发数: 配置项 `sync_threads`（默认 3，范围 1-8），通过 `config.json` 或 `SettingsApi` 修改
+- `_push_worker`/`_pull_worker`: 接收文件子列表，操作独立后端连接，原子递增 `_sync_state`
+- `_sync_lock` (`threading.Lock`) 保护 `_sync_state` 写操作；`_increment_sync_progress()` 提供原子递增
+- `_chunk_list(lst, n)` 将文件列表均匀切分给各线程
+- 缩略图上传统一由文件所在 worker 附带完成
 
 ### 更新
 - GitHub API 查询: `/releases/latest` → `/releases?per_page=5` 回退
