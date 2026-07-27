@@ -2,7 +2,7 @@
 
 轻量化跨平台表情包管理系统 — 突破表情包上限，快捷键呼出、搜索即复制。
 
-![picture](https://raw.githubusercontent.com/TNTXZ/OhMyMeme/refs/heads/dev/resource/picture.gif))
+![picture](https://raw.githubusercontent.com/TNTXZ/OhMyMeme/refs/heads/dev/resource/picture.gif)
 
 ## 功能
 
@@ -25,7 +25,7 @@
 
 ### 下载
 
-从 [Releases](https://github.com/TNTXZ/ohmymeme/releases) 下载对应系统的安装包或可执行文件，直接运行。
+从 [Releases](https://github.com/TNTXZ/OhMyMeme/releases/latest) 下载对应系统的安装包或可执行文件，直接运行。
 
 ### 从源码运行
 
