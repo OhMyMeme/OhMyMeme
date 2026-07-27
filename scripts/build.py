@@ -128,6 +128,7 @@ def build_pyinstaller(target=None):
         "--noconfirm",
         "--clean",
         "--add-data", str(SRC_DIR / "webui") + sep + "src/webui",
+        "--add-data", str(SRC_DIR / "adb-help.txt") + sep + "src/adb-help.txt",
         "--hidden-import", "src.main",
         str(PROJECT_ROOT / "scripts" / "launcher.py"),
     ]

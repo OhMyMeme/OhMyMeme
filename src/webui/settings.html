@@ -811,6 +811,7 @@ function showQQOverlay() {
 function closeQQOverlay() {
   document.getElementById('qq-import-overlay').style.display = 'none';
   if (qqPollTimer) { clearInterval(qqPollTimer); qqPollTimer = null; }
+  api('cancel_qq_import');
 }
 
 async function startQQImport() {

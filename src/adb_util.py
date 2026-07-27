@@ -33,6 +33,7 @@ _QQ_STATE = {
 }
 
 _QQ_LOCK = threading.Lock()
+_QQ_CANCEL = False
 
 _ADB_DEBUG = False
 
@@ -95,12 +96,10 @@ def detect_adb() -> str:
     if candidate.exists():
         return str(candidate)
     try:
-        r = subprocess.run(
-            ["adb", "--version"],
-            capture_output=True,
-            timeout=5,
-            shell=False,
-        )
+        kw = {"capture_output": True, "timeout": 5, "shell": False}
+        if os.name == "nt" and getattr(sys, "frozen", False):
+            kw["creationflags"] = subprocess.CREATE_NO_WINDOW
+        r = subprocess.run(["adb", "--version"], **kw)
         if r.returncode == 0:
             return "adb"
     except Exception:
@@ -192,7 +191,15 @@ def init_background():
     _ADB_STATE["done"] = True
 
 
+def cancel_qq_import():
+    global _QQ_CANCEL
+    _QQ_CANCEL = True
+    _update_qq(status="cancelled")
+
+
 def reset_qq_import():
+    global _QQ_CANCEL
+    _QQ_CANCEL = False
     with _QQ_LOCK:
         _QQ_STATE.clear()
         _QQ_STATE.update(
@@ -268,8 +275,11 @@ def _run_adb(adb_path, args, timeout=30):
     full_cmd = [adb_path] + args if adb_path != "adb" else ["adb"] + args
     if _ADB_DEBUG:
         logger.info("adb: %s", " ".join(str(a) for a in full_cmd))
+    kwargs = {"capture_output": True, "timeout": timeout, "text": True}
+    if os.name == "nt" and getattr(sys, "frozen", False):
+        kwargs["creationflags"] = subprocess.CREATE_NO_WINDOW
     try:
-        r = subprocess.run(full_cmd, capture_output=True, timeout=timeout, text=True)
+        r = subprocess.run(full_cmd, **kwargs)
     except subprocess.TimeoutExpired:
         if _ADB_DEBUG:
             logger.warning("adb timeout after %ss", timeout)
@@ -291,7 +301,17 @@ def _resolve_adb(adb_path):
 
 def start_qq_import():
     """后台启动 QQ 表情包导入流程"""
+    global _QQ_CANCEL
+    _QQ_CANCEL = False
     threading.Thread(target=_qq_worker, daemon=True).start()
+
+
+def _check_cancel():
+    """检查是否取消，是则清理并返回 True"""
+    if _QQ_CANCEL:
+        _update_qq(status="cancelled")
+        return True
+    return False
 
 
 def open_adb_folder():
@@ -313,6 +333,8 @@ def open_adb_help():
 def _qq_worker():
     _update_qq(status="downloading_adb", progress=0, message="检查 ADB...", error="")
     adb_path = detect_adb()
+    if _check_cancel():
+        return
     if not adb_path:
         _update_qq(status="downloading_adb", message="正在下载 ADB...")
         adb_path = _download_with_progress()
@@ -323,17 +345,23 @@ def _qq_worker():
                     error="ADB 下载失败，请手动下载并放入 .adb 文件夹",
                 )
             return
+    if _check_cancel():
+        return
     _update_qq(status="starting_adb", progress=10, message="正在启动 ADB 服务...")
     try:
         _run_adb(adb_path, ["start-server"], timeout=10)
     except Exception as e:
         _update_qq(status="error", error="ADB 启动失败: %s" % e)
         return
+    if _check_cancel():
+        return
     _update_qq(
         status="waiting_device", progress=20, message="请连接手机并开启 USB 调试"
     )
     detected = False
     for i in range(150):
+        if _check_cancel():
+            return
         try:
             r = _run_adb(adb_path, ["devices"], timeout=5)
             lines = r.stdout.strip().splitlines()
@@ -350,6 +378,8 @@ def _qq_worker():
         _update_qq(
             status="error", error="未检测到设备，请确认手机已连接并开启 USB 调试"
         )
+        return
+    if _check_cancel():
         return
     _update_qq(status="pulling", progress=30, message="正在拉取 QQ 缓存文件...")
     tmp_dir = Path(tempfile.mkdtemp(prefix="ohmymeme-qq-"))
@@ -376,6 +406,9 @@ def _qq_worker():
         _update_qq(status="error", error="拉取文件失败，请检查 USB 连接")
         shutil.rmtree(tmp_dir, ignore_errors=True)
         return
+    if _check_cancel():
+        shutil.rmtree(tmp_dir, ignore_errors=True)
+        return
     _update_qq(status="processing", progress=60, message="正在识别文件格式...")
     src_dir = tmp_dir / "QQ_Favorite"
     if not src_dir.exists():
@@ -392,6 +425,9 @@ def _qq_worker():
                 if ext:
                     f.rename(f.with_suffix(ext))
             count += 1
+    if _check_cancel():
+        shutil.rmtree(tmp_dir, ignore_errors=True)
+        return
     _update_qq(progress=80, message="正在打包 ZIP...")
     zip_name = "QQ_Favorite_%s.zip" % time.strftime("%Y%m%d_%H%M%S")
     zip_path = Path(tempfile.gettempdir()) / zip_name

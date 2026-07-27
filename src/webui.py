@@ -602,6 +602,9 @@ class SettingsApi:
         except Exception:
             return False
 
+    def cancel_qq_import(self):
+        adb_util.cancel_qq_import()
+
     def import_memes(self) -> bool:
         try:
             result = webview.windows[0].create_file_dialog(
