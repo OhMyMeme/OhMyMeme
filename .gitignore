@@ -24,6 +24,9 @@ ftp_test/
 .DS_Store
 Thumbs.db
 
+# ADB 自动下载
+.adb/
+
 # 打包输出
 *.exe
 *.AppImage

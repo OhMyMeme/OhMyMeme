@@ -58,12 +58,13 @@ def _create_default_icon():
 class TrayManager:
     """系统托盘管理器"""
 
-    def __init__(self, on_show=None, on_quit=None):
+    def __init__(self, on_show=None, on_quit=None, source_mode=False):
         self._icon = None
         self._thread = None
         self._on_show = on_show
         self._on_quit = on_quit
         self._running = False
+        self._source_mode = source_mode
 
     def start(self):
         """启动托盘"""
@@ -78,15 +79,21 @@ class TrayManager:
             logger.error("Cannot create tray icon (PIL missing)")
             return False
 
-        menu = pystray.Menu(
+        dev_tag = "（本地开发）" if self._source_mode else ""
+        title = "OhMyMeme" + dev_tag
+        menu_items = []
+        if self._source_mode:
+            menu_items.append(pystray.MenuItem(dev_tag, lambda: None, enabled=False))
+        menu_items += [
             pystray.MenuItem(
                 "显示/隐藏", self._on_show or (lambda: None), default=True
             ),
             pystray.Menu.SEPARATOR,
             pystray.MenuItem("退出", self._on_quit or (lambda: None)),
-        )
+        ]
+        menu = pystray.Menu(*menu_items)
 
-        self._icon = pystray.Icon("OhMyMeme", icon_image, "OhMyMeme", menu)
+        self._icon = pystray.Icon("OhMyMeme", icon_image, title, menu)
         self._running = True
         self._thread = threading.Thread(target=self._icon.run, daemon=True)
         self._thread.start()

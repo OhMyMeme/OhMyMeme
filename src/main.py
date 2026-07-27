@@ -3,7 +3,9 @@
 import logging
 import os
 import signal
+import subprocess
 import sys
+import threading
 
 from . import __app_name__, __version__
 from .config import get_config
@@ -51,6 +53,7 @@ class OhMyMemeApp:
             self._tray = TrayManager(
                 on_show=self._on_hotkey,
                 on_quit=self._on_quit,
+                source_mode=not getattr(sys, "frozen", False),
             )
             try:
                 self._tray.start()
@@ -85,6 +88,14 @@ class OhMyMemeApp:
                     set_auto_start(True)
                 except Exception as e:
                     logger.warning(f"开机自启失败: {e}")
+
+        # 5. 后台检测 ADB（不阻塞启动）
+        try:
+            from .adb_util import init_background as _adb_init
+
+            threading.Thread(target=_adb_init, daemon=True).start()
+        except Exception as e:
+            logger.debug("ADB init: %s", e)
 
         logger.info(f"{__app_name__} v{__version__} 已启动")
 
@@ -150,7 +161,7 @@ def main():
 
     parser = argparse.ArgumentParser(description="OhMyMeme")
     parser.add_argument(
-        "--update-debug",
+        "--debug-update",
         action="store_true",
         dest="update_debug",
         help="Force show update dialog for testing",
@@ -162,10 +173,16 @@ def main():
         help="Start minimized to tray",
     )
     parser.add_argument(
-        "--startup-debug",
+        "--debug-startup",
         action="store_true",
         dest="startup_debug",
         help="Print auto-start detection details",
+    )
+    parser.add_argument(
+        "--debug-adb",
+        action="store_true",
+        dest="adb_debug",
+        help="Print ADB detection details",
     )
     args, _ = parser.parse_known_args()
 
@@ -175,7 +192,7 @@ def main():
     )
 
     if args.startup_debug:
-        logger.info("=== startup-debug ===")
+        logger.info("=== debug-startup ===")
         if os.name == "nt":
             try:
                 import winreg
@@ -202,14 +219,46 @@ def main():
         logger.info("  is_auto_start_enabled() == %s", is_auto_start_enabled())
         logger.info("====================")
 
+    if args.adb_debug:
+        from .adb_util import (
+            _adb_binary_name,
+            _get_adb_dir,
+            detect_adb,
+            set_adb_debug,
+        )
+
+        set_adb_debug()
+        logger.info("=== debug-adb ===")
+        adb_dir = _get_adb_dir()
+        logger.info("  .adb dir: %s", adb_dir)
+        binary = _adb_binary_name()
+        logger.info("  binary name: %s", binary)
+        candidate = adb_dir / "platform-tools" / binary
+        logger.info("  local path exists: %s", candidate.exists())
+        result = detect_adb()
+        logger.info("  detect_adb(): %s", result)
+        if result:
+            try:
+                which_cmd = "where.exe" if os.name == "nt" else "which"
+                r = subprocess.run(
+                    [which_cmd, "adb"],
+                    capture_output=True,
+                    timeout=5,
+                    text=True,
+                    shell=False,
+                )
+                path = r.stdout.splitlines()[0].strip() if r.stdout else ""
+                logger.info("  adb path: %s", path or result)
+            except Exception:
+                pass
+        logger.info("================")
+
     if os.name != "nt":
         signal.signal(signal.SIGTERM, lambda *a: sys.exit(0))
 
     app = OhMyMemeApp()
     app._update_debug = args.update_debug
-    app._silent_start = args.silent or (
-        getattr(sys, "frozen", False) and get_config().get("silent_start", False)
-    )
+    app._silent_start = args.silent
     try:
         app.run()
     except Exception as e:

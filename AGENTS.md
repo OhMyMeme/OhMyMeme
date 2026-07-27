@@ -55,6 +55,7 @@ src/              # 主代码
   crypto_util.py  # 加密 (Fernet + PBKDF2, 降级 XOR)
   manifest.py     # meme-index.json 构建/加载
   platform_util.py # 平台工具 (WSL检测, 开机自启)
+  adb_util.py      # ADB 自动检测/下载 + QQ 表情包缓存导入（ADB 拉取 + 魔数识别扩展名 + ZIP 打包）
   webui/          # 前端静态文件
     index.html    # 主窗口 HTML+CSS+JS
     settings.html # 设置窗口 HTML+CSS+JS
@@ -159,6 +160,16 @@ tests/
 ### Manifest 自动清理
 - `build()` 中遍历分组时，若某分组无成员则自动 `delete_collection` 并跳过写入
 - 防止空分组累积并同步到所有远端
+
+### QQ 表情包导入 (adb_util.py)
+- **入口**: `start_qq_import()` — 后台线程执行完整流程
+- **流程**: 检测/下载 ADB → `adb start-server` → 轮询 `adb devices` 等待设备（最多 300s） → `adb pull` 拉取 `QQ_Favorite` 目录 → 魔数识别扩展名 → ZIP 打包到临时目录
+- **魔数识别** (`_detect_ext`): 支持 PNG (`\x89PNG`), JPEG (`\xff\xd8`), GIF (`GIF87a`/`GIF89a`), WebP (`RIFF`+`WEBP`), BMP (`BM`)
+- **ADB 下载** (`_download_with_progress`): 从 googledownloads.cn 下载 platform-tools ZIP，解压到 `.adb/platform-tools/`，更新 `dl_progress` 供前端显示下载百分比
+- **进度状态** (`_QQ_STATE`): `idle` → `downloading_adb` → `starting_adb` → `waiting_device` → `pulling` → `processing` → `done`/`error`，前端 300ms 轮询 `get_qq_import_progress()`
+- **保存**: `save_qq_zip()` 通过系统另存为对话框保存 ZIP 到用户位置
+- **前端 UI**: 设置页按钮"从手机版 QQ 缓存导入" + 进度覆盖层（显示阶段 + 进度条 + 错误信息）
+- `.adb/` 文件夹同时供 ADB 检测和 QQ 导入共用
 
 ## 构建 & 测试
 ```bash

@@ -41,8 +41,8 @@ try:
 except ImportError:
     HAS_BOTTLE = False
 
+from . import adb_util, updater
 from . import sync as sync_module
-from . import updater
 from .clipboard_util import copy_image_to_clipboard
 from .config import get_config
 from .database import get_db
@@ -551,6 +551,70 @@ class SettingsApi:
                 w.move(w.x + dx, w.y + dy)
             except Exception:
                 pass
+
+    def start_qq_import(self) -> dict:
+        adb_util.start_qq_import()
+        return {"ok": True}
+
+    def get_qq_import_progress(self) -> dict:
+        return adb_util.get_qq_progress()
+
+    def save_qq_zip(self) -> dict:
+        """把生成的 QQ ZIP 通过另存为对话框保存到用户选择的位置"""
+        st = adb_util.get_qq_progress()
+        if st["status"] != "done" or not st["zip_path"]:
+            return {"ok": False, "error": "no zip ready"}
+        try:
+            result = webview.windows[0].create_file_dialog(
+                webview.FileDialog.SAVE,
+                allow_multiple=False,
+                file_types=("ZIP 文件 (*.zip)",),
+            )
+        except Exception:
+            return {"ok": False, "error": "dialog failed"}
+        if not result:
+            return {"ok": False, "error": "cancelled"}
+        import shutil
+
+        dst = result[0] if isinstance(result, (tuple, list)) else result
+        if not dst.lower().endswith(".zip"):
+            dst += ".zip"
+        src = st["zip_path"]
+        shutil.copy2(src, dst)
+        try:
+            os.unlink(src)
+        except OSError:
+            pass
+        adb_util.reset_qq_import()
+        return {"ok": True, "path": dst}
+
+    def open_adb_folder(self) -> bool:
+        try:
+            adb_util.open_adb_folder()
+            return True
+        except Exception:
+            return False
+
+    def open_adb_help(self) -> bool:
+        try:
+            adb_util.open_adb_help()
+            return True
+        except Exception:
+            return False
+
+    def import_memes(self) -> bool:
+        try:
+            result = webview.windows[0].create_file_dialog(
+                webview.FileDialog.OPEN,
+                allow_multiple=True,
+                file_types=("图片文件 (*.png;*.jpg;*.jpeg;*.gif;*.webp;*.bmp)",),
+            )
+        except Exception:
+            return False
+        if not result:
+            return False
+        self._webui._do_import(result)
+        return True
 
     def close_settings(self):
         self._webui.close_settings()
