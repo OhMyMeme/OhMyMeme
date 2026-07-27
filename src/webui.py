@@ -838,6 +838,7 @@ class WebUI:
         def upload_memes():
             try:
                 import json
+
                 data = json.loads(bottle.request.body.read())
                 files = data.get("files", []) if isinstance(data, dict) else data
                 allowed = {".png", ".jpg", ".jpeg", ".gif", ".webp", ".bmp"}
@@ -850,10 +851,9 @@ class WebUI:
                         continue
                     import base64
                     import uuid
+
                     raw = base64.b64decode(b64)
-                    tmp = str(
-                        self._cfg.cache_dir / f"_upload_{uuid.uuid4().hex}{ext}"
-                    )
+                    tmp = str(self._cfg.cache_dir / f"_upload_{uuid.uuid4().hex}{ext}")
                     with open(tmp, "wb") as f:
                         f.write(raw)
                     paths.append(tmp)

@@ -65,6 +65,7 @@ def get_sync_progress() -> dict:
             s["progress"] = min(int(s["bytes_done"] * 100 / s["bytes_total"]), 99)
     return dict(s)
 
+
 REMOTE_INDEX = INDEX_FILENAME
 REMOTE_MEME_DIR = "memes"
 REMOTE_THUMB_DIR = "thumbnails"

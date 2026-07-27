@@ -38,6 +38,7 @@ JsApi / SettingsApi → SQLite (WAL) + 本地缓存 + 远端同步
 - `black src/` (line-length 88,  black 26.5.1)
 - `ruff check src/` (select F, E, W, I)
 - 新增依赖同时更新 `requirements.txt` 和 `environment.yml`
+- **PR 贡献必须确保 `black --check src/` 和 `ruff check src/` 全部通过**，CI 会检查这两项
 
 ## 关键目录
 ```
@@ -102,6 +103,10 @@ tests/
 - manifest 文件: `meme-index.json` (version 2)
 - SHA-256 差异对比, `push(delete_remote)`/`pull(remove_local)`
 - 远端路径: `{root}/memes/`, `{root}/thumbnails/`, `{root}/meme-index.json`
+- 同步进度: `_sync_state` 全局变量追踪进度，`get_sync_progress()` 供 JS 轮询
+- `push()`/`pull()` 内循环中更新 files_done/bytes_done/current_file 等字段
+- 前端 300ms 轮询 `get_sync_progress()` 显示进度条 + 实时速度
+- 设置页 4 个开关控制进度/完成弹窗是否显示
 
 ### 更新
 - GitHub API 查询: `/releases/latest` → `/releases?per_page=5` 回退
