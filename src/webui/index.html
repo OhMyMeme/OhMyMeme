@@ -507,7 +507,16 @@ document.getElementById('ctx-menu').addEventListener('click', async (e) => {
     }
     case 'favorite': {
       const ok = await api('toggle_favorite', m.id);
-      if (ok !== null) { refreshMemes(); refreshCollections(); showToast(ok ? '已收藏' : '已取消收藏'); }
+      if (ok !== null) {
+        await refreshCollections();
+        if (!ok && activeCollection === -1) {
+          const fav = collections.find(x => x.id === -1);
+          if (!fav || fav.count === 0) {
+            activeCollection = null;
+          }
+        }
+        refreshMemes(); showToast(ok ? '已收藏' : '已取消收藏');
+      }
       break;
     }
     case 'collection': {
