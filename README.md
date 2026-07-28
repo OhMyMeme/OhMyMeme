@@ -2,6 +2,8 @@
 
 轻量化跨平台表情包管理系统 — 突破表情包上限，快捷键呼出、搜索即复制。
 
+### **QQ交流群：891636253**
+
 ![picture](https://raw.githubusercontent.com/TNTXZ/OhMyMeme/refs/heads/dev/resource/picture.gif)
 
 ## 功能
