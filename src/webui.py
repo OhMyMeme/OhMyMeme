@@ -345,7 +345,7 @@ class JsApi:
         from .platform_util import is_auto_start_enabled
 
         return {
-            "hotkey": d.get("hotkey", "Ctrl+Alt+M"),
+            "hotkey": d.get("hotkey", "Ctrl+Alt+N"),
             "auto_play_gif": d.get("auto_play_gif", True),
             "auto_start": is_auto_start_enabled(),
             "silent_start": d.get("silent_start", False),
@@ -391,7 +391,7 @@ class JsApi:
     def reset_settings(self) -> dict:
         self._cfg.reset()
         self._cfg.save()
-        hotkey = self._cfg.get("hotkey", "Ctrl+Alt+M")
+        hotkey = self._cfg.get("hotkey", "Ctrl+Alt+N")
         self._webui._on_hotkey_change(hotkey)
         from .platform_util import set_auto_start
 
@@ -460,7 +460,7 @@ class SettingsApi:
         from .platform_util import is_auto_start_enabled
 
         return {
-            "hotkey": d.get("hotkey", "Ctrl+Alt+M"),
+            "hotkey": d.get("hotkey", "Ctrl+Alt+N"),
             "auto_play_gif": d.get("auto_play_gif", True),
             "auto_start": is_auto_start_enabled(),
             "silent_start": d.get("silent_start", False),
@@ -506,7 +506,7 @@ class SettingsApi:
     def reset_settings(self) -> dict:
         self._cfg.reset()
         self._cfg.save()
-        hotkey = self._cfg.get("hotkey", "Ctrl+Alt+M")
+        hotkey = self._cfg.get("hotkey", "Ctrl+Alt+N")
         self._webui._on_hotkey_change(hotkey)
         from .platform_util import set_auto_start
 

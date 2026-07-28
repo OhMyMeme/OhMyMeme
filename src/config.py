@@ -52,7 +52,7 @@ class Config:
         # 版本（用于数据迁移）
         "version": "",
         # 全局设置
-        "hotkey": "Ctrl+Alt+M",
+        "hotkey": "Ctrl+Alt+N",
         "auto_start": False,
         "silent_start": False,
         "language": "zh-CN",

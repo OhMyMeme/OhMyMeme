@@ -479,7 +479,13 @@ document.addEventListener('click', (e) => {
 });
 
 document.addEventListener('keydown', (e) => {
-  if (e.key === 'Escape') hideCtxMenu();
+  if (e.key === 'Escape') {
+    if (document.getElementById('ctx-menu')?.style.display === 'block') {
+      hideCtxMenu();
+    } else {
+      hide();
+    }
+  }
 });
 
 document.getElementById('ctx-menu').addEventListener('click', async (e) => {

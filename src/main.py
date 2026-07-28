@@ -31,7 +31,7 @@ class OhMyMemeApp:
         self._hotkey = None
         self._webui = None
         self._running = False
-        self._hotkey_str = self._cfg.get("hotkey", "Ctrl+Alt+M")
+        self._hotkey_str = self._cfg.get("hotkey", "Ctrl+Alt+N")
 
     def run(self):
         self._running = True
