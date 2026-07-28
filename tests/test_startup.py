@@ -46,7 +46,7 @@ def test_database_operations(tmp_path):
 
 def test_hotkey_init():
     hk = GlobalHotkey()
-    result = hk.register("Ctrl+Alt+M", lambda: None)
+    result = hk.register("Ctrl+Alt+N", lambda: None)
     assert result == True
     hk.unregister()
 
