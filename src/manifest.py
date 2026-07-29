@@ -18,6 +18,25 @@ def _index_path() -> Path:
     return get_config().data_dir / INDEX_FILENAME
 
 
+def _build_collection_tree(db, parent_id=None) -> list:
+    raw = db.get_collections()
+    items = []
+    for cid, cname, pid, _ in raw:
+        if pid != parent_id:
+            continue
+        member_rows = db.search(collection_id=cid, limit=999999)
+        filenames = [mr["filename"] for mr in member_rows]
+        children = _build_collection_tree(db, parent_id=cid)
+        if not filenames and not children:
+            db.delete_collection(cid)
+            continue
+        item = {"name": cname, "filenames": filenames}
+        if children:
+            item["children"] = children
+        items.append(item)
+    return items
+
+
 def build() -> List[Dict]:
     """从数据库重建完整索引并写入磁盘"""
     db = get_db()
@@ -45,18 +64,9 @@ def build() -> List[Dict]:
             }
         )
 
-    # 收集分组信息（跳过并清理空分组）
-    raw_colls = db.get_collections()
-    collections = []
-    for cid, cname in raw_colls:
-        member_rows = db.search(collection_id=cid, limit=999999)
-        filenames = [mr["filename"] for mr in member_rows]
-        if not filenames:
-            db.delete_collection(cid)
-            continue
-        collections.append({"name": cname, "filenames": filenames})
+    collections = _build_collection_tree(db)
 
-    data = {"version": 2, "memes": memes, "collections": collections}
+    data = {"version": 3, "memes": memes, "collections": collections}
     path = _index_path()
     try:
         path.parent.mkdir(parents=True, exist_ok=True)
@@ -76,9 +86,24 @@ def load() -> Dict:
     """加载索引文件，不存在时返回空结构"""
     path = _index_path()
     if not path.exists():
-        return {"version": 2, "memes": [], "collections": []}
+        return {"version": 3, "memes": [], "collections": []}
     try:
-        return json.loads(path.read_text(encoding="utf-8"))
+        data = json.loads(path.read_text(encoding="utf-8"))
+        if data.get("version", 2) < 3:
+            # 旧版 v2 扁平分组 → 新版 v3 嵌套：原地转换
+            if isinstance(data.get("collections"), list):
+                new_colls = []
+                for c in data["collections"]:
+                    if isinstance(c, dict) and "name" in c:
+                        new_colls.append(
+                            {
+                                "name": c["name"],
+                                "filenames": c.get("filenames", []),
+                            }
+                        )
+                data["collections"] = new_colls
+            data["version"] = 3
+        return data
     except Exception as e:
         logger.warning(f"manifest load failed: {e}")
-        return {"version": 2, "memes": [], "collections": []}
+        return {"version": 3, "memes": [], "collections": []}

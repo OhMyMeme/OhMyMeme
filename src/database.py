@@ -42,6 +42,7 @@ class MemeDB:
                 height      INTEGER DEFAULT 0,
                 file_size   INTEGER DEFAULT 0,
                 mime_type   TEXT    DEFAULT 'image/png',
+                sort_order  INTEGER DEFAULT 0,
                 created_at  TEXT    NOT NULL DEFAULT (datetime('now','localtime')),
                 updated_at  TEXT    NOT NULL DEFAULT (datetime('now','localtime'))
             );
@@ -58,14 +59,18 @@ class MemeDB:
             );
 
             CREATE TABLE IF NOT EXISTS collections (
-                id   INTEGER PRIMARY KEY AUTOINCREMENT,
-                name TEXT    NOT NULL UNIQUE COLLATE NOCASE
+                id          INTEGER PRIMARY KEY AUTOINCREMENT,
+                name        TEXT    NOT NULL COLLATE NOCASE,
+                parent_id   INTEGER DEFAULT NULL
+                              REFERENCES collections(id) ON DELETE CASCADE,
+                sort_order  INTEGER DEFAULT 0
             );
 
             CREATE TABLE IF NOT EXISTS meme_collections (
                 meme_id       INTEGER NOT NULL REFERENCES memes(id) ON DELETE CASCADE,
                 collection_id INTEGER NOT NULL
                               REFERENCES collections(id) ON DELETE CASCADE,
+                sort_order    INTEGER DEFAULT 0,
                 PRIMARY KEY (meme_id, collection_id)
             );
 
@@ -74,9 +79,32 @@ class MemeDB:
                 added_at  TEXT NOT NULL DEFAULT (datetime('now','localtime'))
             );
 
+            CREATE TABLE IF NOT EXISTS recent_uses (
+                meme_id   INTEGER NOT NULL REFERENCES memes(id) ON DELETE CASCADE,
+                used_at   TEXT NOT NULL DEFAULT (datetime('now','localtime')),
+                PRIMARY KEY (meme_id)
+            );
+
             CREATE INDEX IF NOT EXISTS idx_memes_hash ON memes(file_hash);
             CREATE INDEX IF NOT EXISTS idx_memes_name ON memes(filename);
+            CREATE INDEX IF NOT EXISTS idx_recent_uses_at ON recent_uses(used_at);
         """)
+        # 迁移旧表：添加可能缺失的列
+        migrates = [
+            ("memes", "sort_order", "INTEGER DEFAULT 0"),
+            (
+                "collections",
+                "parent_id",
+                "INTEGER DEFAULT NULL REFERENCES collections(id) ON DELETE CASCADE",
+            ),
+            ("collections", "sort_order", "INTEGER DEFAULT 0"),
+            ("meme_collections", "sort_order", "INTEGER DEFAULT 0"),
+        ]
+        for tbl, col, col_def in migrates:
+            try:
+                conn.execute(f"ALTER TABLE {tbl} ADD COLUMN {col} {col_def}")
+            except sqlite3.OperationalError:
+                pass  # 列已存在
         conn.commit()
 
     def close(self):
@@ -224,10 +252,18 @@ class MemeDB:
 
     # --- 收藏集 ---
 
-    def create_collection(self, name: str) -> int:
+    def create_collection(self, name: str, parent_id: int = None) -> int:
         with self._lock:
             conn = self._get_conn()
-            conn.execute("INSERT OR IGNORE INTO collections (name) VALUES (?)", (name,))
+            if parent_id is not None:
+                conn.execute(
+                    "INSERT OR IGNORE INTO collections (name, parent_id) VALUES (?, ?)",
+                    (name, parent_id),
+                )
+            else:
+                conn.execute(
+                    "INSERT OR IGNORE INTO collections (name) VALUES (?)", (name,)
+                )
             conn.commit()
             row = conn.execute(
                 "SELECT id FROM collections WHERE name=?", (name,)
@@ -253,14 +289,38 @@ class MemeDB:
             )
             conn.commit()
 
-    def get_collections(self) -> List[Tuple[int, str]]:
+    def get_collections(self) -> List[Tuple[int, str, int, int]]:
         conn = self._get_conn()
         return [
-            (r[0], r[1])
+            (r[0], r[1], r[2], r[3])
             for r in conn.execute(
-                "SELECT id, name FROM collections ORDER BY name"
+                "SELECT id, name, parent_id, sort_order FROM collections "
+                "ORDER BY sort_order ASC, name"
             ).fetchall()
         ]
+
+    def get_child_collections(self, parent_id: int) -> List[dict]:
+        conn = self._get_conn()
+        rows = conn.execute(
+            "SELECT id, name FROM collections WHERE parent_id=? "
+            "ORDER BY sort_order ASC, name",
+            (parent_id,),
+        ).fetchall()
+        return [{"id": r[0], "name": r[1]} for r in rows]
+
+    def get_collection_depth(self, cid: int) -> int:
+        depth = 0
+        cur = cid
+        conn = self._get_conn()
+        while cur is not None:
+            row = conn.execute(
+                "SELECT parent_id FROM collections WHERE id=?", (cur,)
+            ).fetchone()
+            if row is None or row[0] is None:
+                break
+            cur = row[0]
+            depth += 1
+        return depth
 
     def delete_all(self):
         """删除所有表情包及相关数据"""
@@ -326,7 +386,7 @@ class MemeDB:
         sql = "SELECT m.* FROM memes m"
         if where:
             sql += " WHERE " + " AND ".join(where)
-        sql += " ORDER BY m.updated_at DESC LIMIT ? OFFSET ?"
+        sql += " ORDER BY m.sort_order ASC, m.updated_at DESC LIMIT ? OFFSET ?"
         params.extend([limit, offset])
 
         rows = conn.execute(sql, params).fetchall()
@@ -377,8 +437,54 @@ class MemeDB:
     def get_all(self, offset: int = 0, limit: int = 100) -> List[dict]:
         conn = self._get_conn()
         rows = conn.execute(
-            "SELECT * FROM memes ORDER BY updated_at DESC LIMIT ? OFFSET ?",
+            "SELECT * FROM memes ORDER BY sort_order ASC, updated_at DESC "
+            "LIMIT ? OFFSET ?",
             (limit, offset),
+        ).fetchall()
+        return [dict(r) for r in rows]
+
+    def reorder_memes(self, meme_ids: List[int]):
+        with self._lock:
+            conn = self._get_conn()
+            for i, mid in enumerate(meme_ids):
+                conn.execute("UPDATE memes SET sort_order=? WHERE id=?", (i, mid))
+            conn.commit()
+
+    def reorder_collections(self, collection_ids: List[int]):
+        with self._lock:
+            conn = self._get_conn()
+            for i, cid in enumerate(collection_ids):
+                conn.execute("UPDATE collections SET sort_order=? WHERE id=?", (i, cid))
+            conn.commit()
+
+    def reorder_collection_members(self, collection_id: int, meme_ids: List[int]):
+        with self._lock:
+            conn = self._get_conn()
+            for i, mid in enumerate(meme_ids):
+                conn.execute(
+                    "UPDATE meme_collections SET sort_order=? "
+                    "WHERE meme_id=? AND collection_id=?",
+                    (i, mid, collection_id),
+                )
+            conn.commit()
+
+    def record_use(self, meme_id: int):
+        with self._lock:
+            conn = self._get_conn()
+            conn.execute(
+                "INSERT OR REPLACE INTO recent_uses (meme_id, used_at) "
+                "VALUES (?, datetime('now','localtime'))",
+                (meme_id,),
+            )
+            conn.commit()
+
+    def get_recent(self, limit: int = 50) -> List[dict]:
+        conn = self._get_conn()
+        rows = conn.execute(
+            "SELECT m.* FROM memes m "
+            "JOIN recent_uses r ON r.meme_id = m.id "
+            "ORDER BY r.used_at DESC LIMIT ?",
+            (limit,),
         ).fetchall()
         return [dict(r) for r in rows]
 

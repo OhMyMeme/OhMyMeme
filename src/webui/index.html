@@ -201,6 +201,29 @@ body {
 .ctx-item.disabled { color: var(--muted); cursor: not-allowed; }
 .ctx-item.disabled:hover { background: transparent; }
 .ctx-divider { height: 1px; background: var(--border); margin: 4px 8px; }
+.ctx-submenu {
+  position: fixed; z-index: 210;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  box-shadow: var(--shadow-lg);
+  min-width: 180px; max-height: 300px; overflow-y: auto;
+  padding: 4px;
+  display: none;
+  animation: fadeIn .1s ease;
+}
+.ctx-submenu.show { display: block; }
+
+/* Folder cards */
+.meme-card.folder-card { cursor: pointer; border: 1px dashed var(--border-light); }
+.meme-card.folder-card:hover { border-color: var(--accent); background: var(--accent-muted) !important; }
+.meme-card.folder-card img { display: none; }
+.meme-card.folder-card .name { display: none; }
+
+/* Drag and drop */
+.meme-card.dragging { opacity: .5; transform: scale(.95); }
+.meme-card.drag-over { border-color: var(--accent); }
+#meme-grid.drag-active .meme-card:not(.folder-card) { transition: transform 200ms ease; }
 
 /* Buttons */
 .btn {
@@ -297,14 +320,18 @@ body {
   <button class="ctx-item" data-action="rename">重命名</button>
   <button class="ctx-item" data-action="favorite">收藏</button>
   <button class="ctx-item" data-action="collection">添加分组</button>
-  <button class="ctx-item" data-action="remove-collection" style="display:none">从分组移除</button>
+  <button class="ctx-item" data-action="add-to-subgroup" style="display:none">加入小分组</button>
+  <button class="ctx-item" data-action="remove-collection" style="display:none">移至上级分组</button>
+  <button class="ctx-item danger" data-action="delete-folder" style="display:none">删除小分组</button>
   <div class="ctx-divider"></div>
   <button class="ctx-item danger" data-action="delete">删除</button>
 </div>
+<div id="ctx-subgroup-menu" class="ctx-submenu"></div>
 
 <script>
 let allTags = [], activeTags = new Set(), memes = [], pending = false;
 let collections = [], activeCollection = null;
+let dragSrcId = null;
 
 async function api(method, ...args) {
   try { return await pywebview.api[method](...args); }
@@ -348,8 +375,32 @@ function toggleTag(tag) {
   refreshMemes();
 }
 
+let activePath = new Set();
+
+function computeActivePath() {
+  activePath.clear();
+  if (activeCollection == null || activeCollection <= 0) return;
+  function search(items, target) {
+    for (const c of items) {
+      if (c.id === target) {
+        activePath.add(c.id);
+        return true;
+      }
+      if (c.children) {
+        if (search(c.children, target)) {
+          activePath.add(c.id);
+          return true;
+        }
+      }
+    }
+    return false;
+  }
+  search(collections, activeCollection);
+}
+
 async function refreshCollections() {
   try { collections = await api('get_collections') || []; } catch(e) { collections = []; }
+  computeActivePath();
   renderCollections();
 }
 
@@ -357,11 +408,25 @@ function renderCollections() {
   const bar = document.getElementById('colbar');
   bar.innerHTML = '';
   if (collections.length === 0) return;
-  collections.forEach(c => {
-    if (c.count === 0) return;
+  const flat = [];
+  function flatten(items, parentActive) {
+    items.forEach(c => {
+      if (c.count === 0 && !c.children) return;
+      flat.push(c);
+      if (parentActive || activeCollection === c.id || activePath.has(c.id)) {
+        if (c.children) flatten(c.children, activeCollection === c.id);
+      }
+    });
+  }
+  flatten(collections, false);
+  flat.forEach(c => {
     const el = document.createElement('span');
-    el.className = 'col-tag' + (activeCollection === c.id ? ' active' : '');
-    el.textContent = c.name + ' (' + c.count + ')';
+    const isActive = activeCollection === c.id || activePath.has(c.id);
+    el.className = 'col-tag' + (isActive ? ' active' : '');
+    let label = c.name;
+    if (c.count > 0) label += ' (' + c.count + ')';
+    if (c.children && c.children.length > 0) label += ' \u25BC';
+    el.textContent = label;
     el.onclick = () => { toggleCollection(c.id); };
     bar.appendChild(el);
   });
@@ -370,19 +435,70 @@ function renderCollections() {
 function toggleCollection(cid) {
   if (activeCollection === cid) activeCollection = null;
   else activeCollection = cid;
+  computeActivePath();
   renderCollections();
   refreshMemes();
 }
 
+document.getElementById('colbar').addEventListener('contextmenu', async (e) => {
+  const targetCol = activeCollection && activeCollection > 0 ? activeCollection : null;
+  if (!targetCol) return;
+  e.preventDefault();
+  const name = await showPrompt('新建子分组', '');
+  if (!name) return;
+  const r = await api('create_subcollection', name, targetCol);
+  if (r && r.ok) { showToast('已创建子分组'); refreshCollections(); }
+  else showToast('创建失败');
+});
+
+document.getElementById('grid-wrap').addEventListener('contextmenu', async (e) => {
+  if (e.target.closest('.meme-card')) return;
+  const targetCol = activeCollection && activeCollection > 0 ? activeCollection : null;
+  if (!targetCol) return;
+  e.preventDefault();
+  const name = await showPrompt('新建子分组', '');
+  if (!name) return;
+  const r = await api('create_subcollection', name, targetCol);
+  if (r && r.ok) { showToast('已创建子分组'); refreshCollections(); refreshMemes(); }
+  else showToast('创建失败');
+});
+
 /* Context Menu State */
 let ctxMeme = null;
+let ctxFolder = null;
+let lastCtxX = 0, lastCtxY = 0;
 
 function renderGrid() {
   const grid = document.getElementById('meme-grid');
   const empty = document.getElementById('empty');
   grid.innerHTML = '';
+  const curCol = activeCollection && activeCollection > 0 ? activeCollection : null;
+  let hasFolderCards = false;
+  if (curCol) {
+    const parentCol = collections.find(c => c.id === curCol);
+    if (parentCol && parentCol.children) {
+      hasFolderCards = parentCol.children.length > 0;
+      parentCol.children.forEach(child => {
+        const card = document.createElement('div');
+        card.className = 'meme-card folder-card';
+        card.style.background = 'var(--surface)';
+        card.dataset.folderId = child.id;
+        const preview = document.createElement('div');
+        preview.style.cssText = 'width:100%;height:100%;display:flex;align-items:center;justify-content:center;font-size:24px;color:var(--muted);flex-direction:column;gap:4px';
+        preview.innerHTML = '<svg viewBox="0 0 24 24" width="32" height="32" fill="none" stroke="var(--accent)" stroke-width="1.5"><path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"/></svg><span style="font-size:11px;color:var(--fg-secondary)">' + child.name + '</span>';
+        card.appendChild(preview);
+        card.onclick = () => { activeCollection = child.id; computeActivePath(); refreshMemes(); renderCollections(); };
+        card.oncontextmenu = (e) => { e.preventDefault(); showFolderMenu(e, child.id, child.name); };
+        grid.appendChild(card);
+      });
+    }
+  }
+
   if (!memes || memes.length === 0) {
-    grid.style.display = 'none'; empty.style.display = 'flex'; return;
+    if (!hasFolderCards) {
+      grid.style.display = 'none'; empty.style.display = 'flex'; return;
+    }
+    grid.style.display = 'grid'; empty.style.display = 'none'; return;
   }
   grid.style.display = 'grid'; empty.style.display = 'none';
 
@@ -391,6 +507,7 @@ function renderGrid() {
     card.className = 'meme-card';
     card.title = m.name;
     card.style.background = 'var(--surface)';
+    card.dataset.memeId = m.id;
     const img = document.createElement('img');
     img.alt = m.name;
     img.loading = 'lazy';
@@ -418,11 +535,76 @@ function renderGrid() {
     card.oncontextmenu = (e) => { e.preventDefault(); showCtxMenu(e, m); };
     grid.appendChild(card);
   });
+
+  // Custom drag-to-reorder
+  let dragActive = false, dragStartY = 0, dragCard = null, dragIdx = -1;
+  grid.addEventListener('mousedown', (e) => {
+    dragCard = e.target.closest('.meme-card:not(.folder-card)');
+    if (!dragCard) return;
+    dragActive = false;
+    dragStartY = e.clientY;
+    dragIdx = Array.from(grid.children).indexOf(dragCard);
+  });
+  document.addEventListener('mousemove', (e) => {
+    if (!dragCard) return;
+    if (!dragActive && Math.abs(e.clientY - dragStartY) > 8) {
+      dragActive = true;
+      dragCard.classList.add('dragging');
+      grid.classList.add('drag-active');
+    }
+    if (!dragActive) return;
+    const rects = grid.querySelectorAll('.meme-card:not(.folder-card)');
+    for (const rc of rects) {
+      if (rc === dragCard) continue;
+      const r = rc.getBoundingClientRect();
+      if (e.clientY > r.top && e.clientY < r.bottom) {
+        const after = e.clientY > r.top + r.height / 2;
+        rc.style.borderBottom = after ? '2px solid var(--accent)' : '';
+        rc.style.borderTop = after ? '' : '2px solid var(--accent)';
+      } else {
+        rc.style.borderBottom = '';
+        rc.style.borderTop = '';
+      }
+    }
+  });
+  document.addEventListener('mouseup', async () => {
+    if (!dragCard) { dragActive = false; return; }
+    grid.classList.remove('drag-active');
+    dragCard.classList.remove('dragging');
+    grid.querySelectorAll('.meme-card').forEach(c => { c.style.borderBottom = ''; c.style.borderTop = ''; });
+    if (dragActive) {
+      const allCards = grid.querySelectorAll('.meme-card:not(.folder-card)');
+      let newIdx = memes.length - 1;
+      for (let i = 0; i < allCards.length; i++) {
+        const rc = allCards[i];
+        if (rc === dragCard) continue;
+        // Find where dragCard is inserted
+      }
+      // simpler: just rebuild memes from grid order
+      const ordered = [];
+      grid.querySelectorAll('.meme-card:not(.folder-card)').forEach(c => {
+        const id = parseInt(c.dataset.memeId);
+        const found = memes.find(x => x.id === id);
+        if (found) ordered.push(found);
+      });
+      if (ordered.length === memes.length) {
+        memes = ordered;
+        await api('reorder_memes', memes.map(x => x.id));
+      }
+    }
+    dragCard = null;
+    dragActive = false;
+  });
 }
 
 async function copyMeme(id, filename) {
   const ok = await api('copy_meme', id);
-  if (ok) { showToast(filename + ' 已复制'); setTimeout(hide, 300); }
+  if (ok) {
+    showToast(filename + ' 已复制');
+    setTimeout(hide, 300);
+    if (activeCollection === -3) refreshMemes();
+    refreshCollections();
+  }
   else { showToast('复制失败'); }
 }
 
@@ -474,8 +656,16 @@ async function rescanCache() {
 
 /* Context Menu */
 function showCtxMenu(e, meme) {
+  hideSubgroupMenu();
   ctxMeme = meme;
+  lastCtxX = e.clientX; lastCtxY = e.clientY;
   const menu = document.getElementById('ctx-menu');
+  // 恢复所有项目可见
+  menu.querySelectorAll('.ctx-item, .ctx-divider').forEach(el => {
+    el.style.display = '';
+  });
+  const dfBtn = menu.querySelector('[data-action="delete-folder"]');
+  if (dfBtn) dfBtn.style.display = 'none';
   const favBtn = menu.querySelector('[data-action="favorite"]');
   if (meme.favorited) {
     favBtn.textContent = '取消收藏';
@@ -488,6 +678,10 @@ function showCtxMenu(e, meme) {
   } else {
     rmBtn.style.display = 'none';
   }
+  const sgBtn = menu.querySelector('[data-action="add-to-subgroup"]');
+  if (sgBtn) {
+    sgBtn.style.display = (activeCollection && activeCollection > 0) ? 'flex' : 'none';
+  }
   menu.classList.add('show');
   const rect = menu.getBoundingClientRect();
   const overflowRight = rect.right - window.innerWidth;
@@ -499,13 +693,62 @@ function showCtxMenu(e, meme) {
   menu.style.top = e.clientY + 'px';
 }
 
+function showFolderMenu(e, folderId, folderName) {
+  hideCtxMenu();
+  ctxFolder = { id: folderId, name: folderName };
+  lastCtxX = e.clientX; lastCtxY = e.clientY;
+  const menu = document.getElementById('ctx-menu');
+  menu.querySelectorAll('.ctx-item, .ctx-divider').forEach(el => {
+    el.style.display = 'none';
+  });
+  const df = menu.querySelector('[data-action="delete-folder"]');
+  if (df) df.style.display = 'flex';
+  menu.classList.add('show');
+  const rect = menu.getBoundingClientRect();
+  let left = e.clientX, top = e.clientY;
+  if (left + rect.width > window.innerWidth) left = e.clientX - rect.width;
+  if (top + rect.height > window.innerHeight) top = window.innerHeight - rect.height - 4;
+  menu.style.left = left + 'px';
+  menu.style.top = top + 'px';
+}
+
 function hideCtxMenu() {
   document.getElementById('ctx-menu').classList.remove('show');
+  document.getElementById('ctx-subgroup-menu').classList.remove('show');
   ctxMeme = null;
+  ctxFolder = null;
+}
+
+async function showSubgroupPicker(items) {
+  return new Promise(resolve => {
+    const menu = document.getElementById('ctx-subgroup-menu');
+    menu.innerHTML = '';
+    items.forEach(([label, val]) => {
+      const btn = document.createElement('button');
+      btn.className = 'ctx-item';
+      btn.textContent = label;
+      btn.onclick = () => { menu.classList.remove('show'); resolve(val); };
+      menu.appendChild(btn);
+    });
+    menu.style.left = '';
+    menu.style.top = '';
+    menu.classList.add('show');
+    const mr = menu.getBoundingClientRect();
+    let left = lastCtxX;
+    let top = lastCtxY;
+    if (left + mr.width > window.innerWidth) left = window.innerWidth - mr.width - 4;
+    if (top + mr.height > window.innerHeight) top = window.innerHeight - mr.height - 4;
+    menu.style.left = left + 'px';
+    menu.style.top = top + 'px';
+  });
+}
+
+function hideSubgroupMenu() {
+  document.getElementById('ctx-subgroup-menu').classList.remove('show');
 }
 
 document.addEventListener('click', (e) => {
-  if (e.button === 0 && !e.target.closest('#ctx-menu')) hideCtxMenu();
+  if (e.button === 0 && !e.target.closest('#ctx-menu') && !e.target.closest('#ctx-subgroup-menu')) hideCtxMenu();
 });
 
 document.addEventListener('keydown', (e) => {
@@ -522,9 +765,27 @@ document.getElementById('ctx-menu').addEventListener('click', async (e) => {
   const item = e.target.closest('.ctx-item');
   if (!item || item.classList.contains('disabled')) return;
   const action = item.dataset.action;
+  const f = ctxFolder;
   const m = ctxMeme;
-  if (!m) return;
+  if (!m && action !== 'delete-folder') return;
   hideCtxMenu();
+
+  if (action === 'delete-folder') {
+    if (!f) return;
+    const confirmed = await showConfirm('删除小分组', '确定删除小分组「' + f.name + '」？分组内表情包将移回上层分组。');
+    if (!confirmed) return;
+    // 将所有表情包移回上层
+    const parentCol = collections.find(c => c.children && c.children.some(ch => ch.id === f.id));
+    const parentId = parentCol ? parentCol.id : null;
+    const memesInFolder = await api('search_memes', '', [], f.id) || [];
+    for (const mm of memesInFolder) {
+      if (parentId) await api('add_to_existing_collection', mm.id, parentId);
+    }
+    await api('delete_collection', f.id);
+    showToast('小分组已删除');
+    if (activeCollection === f.id) activeCollection = parentId;
+    refreshCollections(); refreshMemes(); return;
+  }
 
   switch (action) {
     case 'rename': {
@@ -557,14 +818,59 @@ document.getElementById('ctx-menu').addEventListener('click', async (e) => {
       else showToast('添加分组失败');
       break;
     }
+    case 'add-to-subgroup': {
+      const targetCol = activeCollection && activeCollection > 0 ? activeCollection : null;
+      const children = targetCol ? (await api('get_child_collections', targetCol) || []) : [];
+      const els = [['新建小分组', '__new__']];
+      children.forEach(ch => els.push([ch.name, ch.id]));
+      if (els.length === 0) {
+        const name = await showPrompt('新建小分组', '');
+        if (!name) break;
+        if (targetCol) {
+          const r = await api('create_subcollection', name, targetCol);
+          if (r.ok) await api('add_to_existing_collection', m.id, r.id);
+        } else {
+          await api('add_to_collection', m.id, name);
+        }
+        showToast('已添加'); refreshCollections(); refreshMemes(); break;
+      }
+      const picked = await showSubgroupPicker(els);
+      if (picked === '__new__') {
+        const name = await showPrompt('新建小分组', '');
+        if (!name) break;
+        if (targetCol) {
+          const r = await api('create_subcollection', name, targetCol);
+          if (r.ok) await api('add_to_existing_collection', m.id, r.id);
+        } else {
+          await api('add_to_collection', m.id, name);
+        }
+        showToast('已添加'); refreshCollections(); refreshMemes();
+      } else if (picked && picked > 0) {
+        await api('add_to_existing_collection', m.id, picked);
+        showToast('已添加'); refreshCollections(); refreshMemes();
+      }
+      break;
+    }
     case 'remove-collection': {
-      const ok = await api('remove_from_collection', m.id, activeCollection);
+      const removedFrom = activeCollection;
+      const ok = await api('remove_from_collection', m.id, removedFrom);
       if (ok) {
-        showToast('已从分组移除');
+        // 如果是从小分组移除，加回上层大分组
+        const allCols = collections;
+        let parentId = null;
+        for (const c of allCols) {
+          if (c.children) {
+            const found = c.children.find(ch => ch.id === removedFrom);
+            if (found) { parentId = c.id; break; }
+          }
+        }
+        if (parentId) await api('add_to_existing_collection', m.id, parentId);
+        showToast('已移回上层分组');
         await refreshCollections();
-        const c = collections.find(x => x.id === activeCollection);
+        const c = collections.find(x => x.id === removedFrom);
         if (!c || c.count === 0) {
-          activeCollection = null;
+          if (removedFrom > 0) await api('delete_collection', removedFrom);
+          activeCollection = parentId || null;
           renderCollections();
         }
         refreshMemes();

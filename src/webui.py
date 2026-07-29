@@ -66,15 +66,19 @@ class JsApi:
     ) -> list:
         if tags is not None and len(tags) == 0:
             tags = None
-        fav_only = collection_id == -1
-        cid = None if fav_only else collection_id
-        rows = self._db.search(
-            keyword=keyword,
-            tags=tags,
-            collection_id=cid,
-            favorite_only=fav_only,
-            limit=200,
-        )
+        fav_only = collection_id == -2
+        recent_only = collection_id == -3
+        cid = None if fav_only or recent_only else collection_id
+        if recent_only:
+            rows = self._db.get_recent(200)
+        else:
+            rows = self._db.search(
+                keyword=keyword,
+                tags=tags,
+                collection_id=cid,
+                favorite_only=fav_only,
+                limit=200,
+            )
         favorited_ids = set()
         try:
             conn = self._db._get_conn()
@@ -153,13 +157,7 @@ class JsApi:
                     "auto_play_gif": auto_gif,
                 }
             )
-        collections_raw = self._db.get_collections()
-        collections = [
-            {"id": -1, "name": "收藏夹", "count": self._db.count(favorite_only=True)}
-        ]
-        for cid, name in collections_raw:
-            cnt = self._db.count(collection_id=cid)
-            collections.append({"id": cid, "name": name, "count": cnt})
+        collections = self._build_collection_tree()
         return {
             "memes": memes,
             "tags": self._db.get_all_tags(),
@@ -175,6 +173,7 @@ class JsApi:
             return False
         ok = copy_image_to_clipboard(path)
         if ok:
+            self._db.record_use(meme_id)
             self._webui.schedule_hide()
         return ok
 
@@ -219,15 +218,30 @@ class JsApi:
         build_manifest()
         return True
 
-    def get_collections(self) -> list:
+    def _build_collection_tree(self, parent_id=None) -> list:
         raw = self._db.get_collections()
-        result = [
-            {"id": -1, "name": "收藏夹", "count": self._db.count(favorite_only=True)}
-        ]
-        for cid, name in raw:
+        result = []
+        for cid, name, pid, _ in raw:
+            if pid != parent_id:
+                continue
             cnt = self._db.count(collection_id=cid)
-            result.append({"id": cid, "name": name, "count": cnt})
+            children = self._build_collection_tree(parent_id=cid)
+            item = {"id": cid, "name": name, "count": cnt}
+            if children:
+                item["children"] = children
+            result.append(item)
         return result
+
+    def get_collections(self) -> list:
+        top = self._build_collection_tree()
+        recent = self._db.get_recent(9999)
+        return [
+            {"id": -2, "name": "收藏夹", "count": self._db.count(favorite_only=True)},
+            {"id": -3, "name": "最近使用", "count": len(recent)},
+        ] + top
+
+    def get_child_collections(self, parent_id: int) -> list:
+        return self._db.get_child_collections(parent_id)
 
     def add_to_collection(self, meme_id: int, name: str) -> bool:
         cid = self._db.create_collection(name)
@@ -235,6 +249,50 @@ class JsApi:
             return False
         self._db.add_to_collection(meme_id, cid)
         return True
+
+    def add_to_existing_collection(self, meme_id: int, collection_id: int) -> bool:
+        try:
+            self._db.add_to_collection(meme_id, collection_id)
+            return True
+        except Exception:
+            return False
+
+    def reorder_memes(self, meme_ids: list) -> bool:
+        try:
+            self._db.reorder_memes(meme_ids)
+            return True
+        except Exception:
+            return False
+
+    def reorder_collections(self, collection_ids: list) -> bool:
+        try:
+            self._db.reorder_collections(collection_ids)
+            return True
+        except Exception:
+            return False
+
+    def delete_collection(self, collection_id: int) -> bool:
+        try:
+            self._db.delete_collection(collection_id)
+            return True
+        except Exception:
+            return False
+
+    def create_subcollection(self, name: str, parent_id: int) -> dict:
+        depth = self._db.get_collection_depth(parent_id)
+        if depth >= 1:
+            return {"ok": False, "error": "最大支持1层小分组"}
+        cid = self._db.create_collection(name, parent_id=parent_id)
+        if cid < 0:
+            return {"ok": False}
+        return {"ok": True, "id": cid}
+
+    def record_meme_use(self, meme_id: int) -> bool:
+        try:
+            self._db.record_use(meme_id)
+            return True
+        except Exception:
+            return False
 
     def remove_from_collection(self, meme_id: int, collection_id: int) -> bool:
         self._db.remove_from_collection(meme_id, collection_id)

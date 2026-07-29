@@ -91,9 +91,13 @@ tests/
 - `#titlebar` 上可拖拽 (排除 `.title-btn` 按钮区域)
 
 ### 数据库
-- 6 表: `memes`, `tags`, `meme_tags`, `collections`, `meme_collections`, `favorites`
+- 7 表: `memes`, `tags`, `meme_tags`, `collections`, `meme_collections`, `favorites`, `recent_uses`
 - `PRAGMA journal_mode=WAL`, `PRAGMA foreign_keys=ON`
 - `MemeDB.search()`: 动态 WHERE, 多标签交集用 `HAVING COUNT = len(tags)`
+- `memes.sort_order`: 自定义排序（拖拽更新），默认 0，查询 `ORDER BY sort_order ASC, updated_at DESC`
+- `collections.parent_id`: 多级分组支持（最多 3 层），`NULL` 为顶层分组
+- `meme_collections.sort_order`: 分组内成员自定义排序
+- `recent_uses`: `meme_id` + `used_at`，复制时 `INSERT OR REPLACE`，按 `used_at DESC` 取最近使用
 
 ### 配置
 - `%APPDATA%/OhMyMeme/config.json` (Win), JSON 格式
@@ -157,9 +161,27 @@ tests/
 - `_apply_remote_collections` 以**并集**方式合并远端分组，不清除本地已有成员
 - 远端 manifest 中的 `collections` 用文件名关联（非 ID），跨设备稳定
 
-### Manifest 自动清理
-- `build()` 中遍历分组时，若某分组无成员则自动 `delete_collection` 并跳过写入
-- 防止空分组累积并同步到所有远端
+### Manifest (version 3)
+- `build()` 递归遍历嵌套分组树，空分组自动 `delete_collection`
+- 远端 manifest 中的 `collections` 以嵌套格式存储（`name`/`filenames`/`children`），version 2 旧格式启动时自动转换
+
+### 自定义排序
+- `memes.sort_order` 字段存储拖拽排序结果
+- JS 网格 dragstart/dragover/drop 事件实现换位，CSS transition 做动画
+- 拖拽完成后调用 `reorder_memes(id[])` 批量更新 sort_order
+
+### 多级分组（最多 3 层）
+- `collections.parent_id` 自引用实现嵌套
+- `create_subcollection(name, parent_id)` 自动检查深度（`get_collection_depth`），超出 2 层拒绝
+- 顶层分组在 `#colbar` 渲染为 tab，选中后展开子分组
+- 分组内右键空白区域 → 新建子分组
+- 右键表情包 → 加入分组 → 弹窗列出当前大分组下的子分组
+
+### 最近使用
+- `recent_uses` 表：`meme_id` + `used_at`
+- `copy_meme` 时自动 `record_use`（`INSERT OR REPLACE`）
+- `get_init_data` 中 `collection_id = -3` 标识最近使用，`search_memes` 路由到 `get_recent()`
+- 前端复制后自动刷新最近使用列表
 
 ### QQ 表情包导入 (adb_util.py)
 - **入口**: `start_qq_import()` — 后台线程执行完整流程
