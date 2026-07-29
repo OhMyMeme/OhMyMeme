@@ -78,7 +78,7 @@ class Config:
         "ftp_user": "",
         "ftp_password": "",
         "ftp_path": "/",
-        # S3（待实现）
+        # S3
         "s3_endpoint": "",
         "s3_region": "",
         "s3_bucket": "",

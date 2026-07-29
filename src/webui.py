@@ -337,6 +337,64 @@ class JsApi:
         self._webui._do_import(result)
         return True
 
+    def import_from_clipboard(self) -> dict:
+        import hashlib
+        import shutil
+        import tempfile
+
+        from PIL import ImageGrab
+
+        try:
+            clip = ImageGrab.grabclipboard()
+        except Exception:
+            return {"ok": False, "error": "读取剪贴板失败"}
+        if clip is None:
+            return {"ok": False, "error": "剪贴板中没有图片"}
+        try:
+            if isinstance(clip, list):
+                paths = [p for p in clip if os.path.isfile(p)]
+                if not paths:
+                    return {"ok": False, "error": "剪贴板中没有图片文件"}
+                ids = self._webui._do_import(paths)
+                if ids:
+                    row = self._db.get_by_id(ids[0])
+                    orig = row["original_name"] if row else ""
+                    return {"ok": True, "id": ids[0], "name": orig or "未命名"}
+                return {"ok": True, "id": 0, "name": "未命名"}
+            img = clip
+            tmp = tempfile.NamedTemporaryFile(suffix=".png", delete=False)
+            tmp_path = tmp.name
+            tmp.close()
+            img.save(tmp_path, "PNG")
+            sha256 = hashlib.sha256()
+            with open(tmp_path, "rb") as f:
+                for chunk in iter(lambda: f.read(65536), b""):
+                    sha256.update(chunk)
+            fhash = sha256.hexdigest()
+            db = self._db
+            if db.get_by_hash(fhash):
+                os.unlink(tmp_path)
+                return {"ok": False, "error": "该图片已存在"}
+            cache_dir = self._cfg.cache_dir
+            dst = cache_dir / f"{fhash[:16]}.png"
+            shutil.move(tmp_path, dst)
+            w, h = img.size
+            db.add_meme(
+                filename=dst.name,
+                file_hash=fhash,
+                width=w,
+                height=h,
+                file_size=os.path.getsize(dst),
+                mime_type="image/png",
+                original_name="",
+            )
+            build_manifest()
+            row = db.get_by_hash(fhash)
+            mid = row["id"] if row else 0
+            return {"ok": True, "id": mid, "name": "未命名"}
+        except Exception as e:
+            return {"ok": False, "error": str(e)}
+
     def open_settings(self):
         self._webui.open_settings()
 
@@ -502,6 +560,11 @@ class SettingsApi:
             self._cfg.save()
             if "hotkey" in settings:
                 self._webui._on_hotkey_change(settings["hotkey"])
+            try:
+                if len(webview.windows) > 0:
+                    webview.windows[0].evaluate_js("refreshMemes();")
+            except Exception:
+                pass
 
     def reset_settings(self) -> dict:
         self._cfg.reset()
@@ -511,6 +574,11 @@ class SettingsApi:
         from .platform_util import set_auto_start
 
         set_auto_start(False)
+        try:
+            if len(webview.windows) > 0:
+                webview.windows[0].evaluate_js("refreshMemes();")
+        except Exception:
+            pass
         return {
             "hotkey": hotkey,
             "auto_play_gif": self._cfg.get("auto_play_gif", True),
@@ -700,9 +768,16 @@ class SettingsApi:
                 for f in thumbs.iterdir():
                     if f.is_file():
                         f.unlink()
-            from .manifest import build_manifest
+            from .manifest import build as build_manifest
 
             build_manifest()
+            try:
+                if len(webview.windows) > 0:
+                    webview.windows[0].evaluate_js(
+                        "refreshMemes();refreshTags();refreshCollections();"
+                    )
+            except Exception:
+                pass
             return {"ok": True}
         except Exception as e:
             return {"ok": False, "error": str(e)}
@@ -711,6 +786,41 @@ class SettingsApi:
         """删除云端所有表情包"""
         try:
             return sync_module.delete_all_remote()
+        except Exception as e:
+            return {"ok": False, "error": str(e)}
+
+    def check_sync_status(self) -> dict:
+        """比较本地与云端同步状态"""
+        try:
+            from .sync import download_index
+
+            manifest = download_index()
+            if not manifest:
+                return {"ok": False, "error": "无法获取远端索引"}
+            db = get_db()
+            local_rows = db.search(keyword="", tags=None, limit=999999)
+            local_count = len(local_rows)
+            local_filenames = {r["filename"] for r in local_rows}
+            remote_memes = manifest.get("memes", [])
+            remote_count = len(remote_memes)
+            remote_filenames = {m["filename"] for m in remote_memes}
+            local_extra = local_filenames - remote_filenames
+            local_missing = remote_filenames - local_filenames
+            if not local_extra and not local_missing:
+                return {
+                    "ok": True,
+                    "synced": True,
+                    "local_count": local_count,
+                    "remote_count": remote_count,
+                }
+            return {
+                "ok": True,
+                "synced": False,
+                "local_count": local_count,
+                "remote_count": remote_count,
+                "local_extra": len(local_extra),
+                "local_missing": len(local_missing),
+            }
         except Exception as e:
             return {"ok": False, "error": str(e)}
 
@@ -848,6 +958,7 @@ class WebUI:
         db = get_db()
         cache_dir = cfg.cache_dir
         imported = 0
+        imported_ids = []
         for i, src in enumerate(file_paths):
             try:
                 sha256 = hashlib.sha256()
@@ -881,12 +992,16 @@ class WebUI:
                     mime_type=f"image/{ext[1:]}" if ext else "image/png",
                     original_name=oname,
                 )
+                row = db.get_by_hash(fhash)
+                if row:
+                    imported_ids.append(row["id"])
                 imported += 1
             except Exception as e:
                 logger.error(f"import {src}: {e}")
         if imported:
             build_manifest()
         logger.info(f"导入完成: {imported} 个")
+        return imported_ids
 
     def _on_hotkey_change(self, new_hotkey: str):
         if self._on_hotkey_change_cb:

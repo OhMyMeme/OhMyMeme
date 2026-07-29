@@ -61,26 +61,7 @@ class OhMyMemeApp:
                 logger.warning(f"托盘启动失败: {e}")
 
         # 4. 开机自启
-        is_frozen = getattr(sys, "frozen", False)
-        if not is_frozen:
-            # 源码运行时：仅清理指向 python.exe 的开机自启项，不误删发行版
-            try:
-                import winreg
-
-                key_path = r"Software\Microsoft\Windows\CurrentVersion\Run"
-                with winreg.OpenKey(
-                    winreg.HKEY_CURRENT_USER, key_path, 0, winreg.KEY_QUERY_VALUE
-                ) as key:
-                    val, _ = winreg.QueryValueEx(key, "OhMyMeme")
-                    if "python" in val.lower():
-                        set_auto_start(False)
-                        self._cfg.set("auto_start", False)
-                        logger.info("已清理源码运行残留的开机自启项")
-            except FileNotFoundError:
-                pass
-            except Exception as e:
-                logger.warning(f"查询开机自启失败: {e}")
-        else:
+        if getattr(sys, "frozen", False):
             if is_auto_start_enabled():
                 self._cfg.set("auto_start", True)
             if self._cfg.get("auto_start", False):

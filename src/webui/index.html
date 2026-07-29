@@ -270,7 +270,7 @@ body {
         <path transform="translate(0 1280) scale(1 -1)" d="M481.749333 353.792c16.682667-16.64 43.690667-16.64 60.373334 0l120.917333 120.832 3.541333 4.010667a42.666667 42.666667 0 0 1-63.872 56.32L554.666667 486.954667V896a42.666667 42.666667 0 0 1-85.333334 0v-409.173333l-48.170666 48.128a42.666667 42.666667 0 0 1-60.330667 0l-3.541333-4.010667a42.666667 42.666667 0 0 1 3.541333-56.32z"/>
       </svg>
     </button>
-    <button class="title-btn" onclick="importMemes()">导入</button>
+    <button class="title-btn" onclick="showImportMenu()">导入</button>
     <button class="title-btn" onclick="rescanCache()">刷新</button>
     <button class="title-btn" onclick="openSettings()">设置</button>
     <button class="title-btn" onclick="hide()" style="font-size: 15px; padding: 5px 10px; color: var(--muted);">x</button>
@@ -426,12 +426,42 @@ async function copyMeme(id, filename) {
   else { showToast('复制失败'); }
 }
 
-async function importMemes() {
+function showImportMenu() {
+  document.getElementById('import-overlay').style.display = 'flex';
+}
+
+function closeImportMenu() {
+  document.getElementById('import-overlay').style.display = 'none';
+}
+
+async function importLocal() {
+  closeImportMenu();
   if (pending) return;
   pending = true;
   const result = await api('import_memes');
   pending = false;
   if (result) { showToast('导入完成'); refreshMemes(); refreshTags(); refreshCollections(); }
+}
+
+async function importClipboard() {
+  closeImportMenu();
+  if (pending) return;
+  pending = true;
+  const result = await api('import_from_clipboard');
+  pending = false;
+  if (!result) { showToast('导入失败'); return; }
+  if (!result.ok) { showToast(result.error || '导入失败'); return; }
+  const newName = await showPrompt('重命名', result.name || '');
+  if (newName && newName !== result.name) {
+    await api('rename_meme', result.id, newName);
+  }
+  showToast('导入完成');
+  refreshMemes(); refreshTags(); refreshCollections();
+}
+
+function importQQ() {
+  closeImportMenu();
+  openSettings();  // opens settings.html which has the QQ import button
 }
 
 async function rescanCache() {
@@ -911,6 +941,18 @@ document.addEventListener('DOMContentLoaded', async () => {
     <div style="font-size:14px;font-weight:600;color:var(--fg);margin-bottom:8px" id="sync-done-title">同步完成</div>
     <div style="font-size:13px;color:var(--fg-secondary);line-height:1.6;margin-bottom:18px" id="sync-done-detail"></div>
     <button class="btn btn-primary" onclick="hideSyncDone()">关闭</button>
+  </div>
+</div>
+
+<div id="import-overlay" style="display:none;position:fixed;inset:0;background:rgba(0,0,0,.4);align-items:center;justify-content:center;z-index:400;animation:fadeIn .15s" onclick="if(event.target===this)closeImportMenu()">
+  <div style="background:var(--surface);border-radius:var(--radius-lg);padding:20px 24px;width:280px;border:1px solid var(--border);box-shadow:var(--shadow-lg)">
+    <div style="font-size:14px;font-weight:600;color:var(--fg);margin-bottom:14px">选择导入方式</div>
+    <button class="btn btn-primary" style="width:100%;margin-bottom:8px" onclick="importLocal()">本地导入</button>
+    <button class="btn btn-primary" style="width:100%;margin-bottom:8px" onclick="importClipboard()">从剪贴板导入</button>
+    <button class="btn btn-secondary" style="width:100%" onclick="importQQ()">从手机版 QQ 缓存获取</button>
+    <div style="margin-top:12px;text-align:center">
+      <button class="btn btn-ghost btn-sm" onclick="closeImportMenu()">取消</button>
+    </div>
   </div>
 </div>
 </body>

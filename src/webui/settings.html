@@ -319,6 +319,7 @@ select:hover { border-color: var(--border-light); }
       <div id="s-sync-buttons" style="display:none">
         <div style="display:flex;gap:8px;margin-top:14px">
           <button id="btn-ftp-test" class="btn btn-secondary btn-sm btn-flex" onclick="testSync()">测试连接</button>
+          <button class="btn btn-secondary btn-sm btn-flex" onclick="checkSyncStatus()">检查同步状态</button>
           <button id="btn-sync-push" class="btn btn-primary btn-sm btn-flex" onclick="syncPush()">上传到远端</button>
           <button id="btn-sync-pull" class="btn btn-primary btn-sm btn-flex" onclick="syncPull()">从远端下载</button>
         </div>
@@ -666,6 +667,26 @@ async function testSync() {
   const r = await api('sync_test');
   btn.disabled = false; btn.textContent = '测试连接';
   status.textContent = r === 'ok' ? '连接成功' : '连接失败: ' + r;
+}
+
+async function checkSyncStatus() {
+  const status = document.getElementById('s-sync-status');
+  status.textContent = '检查中...';
+  const r = await api('check_sync_status');
+  if (!r || !r.ok) {
+    status.textContent = '检查失败: ' + ((r && r.error) || '未知错误');
+    return;
+  }
+  if (r.synced) {
+    status.textContent = '本地云端已同步（本地 ' + r.local_count + ' 个，云端 ' + r.remote_count + ' 个）';
+    showToast('本地云端已同步');
+    return;
+  }
+  let msg = '本地共 ' + r.local_count + ' 个，云端共 ' + r.remote_count + ' 个';
+  if (r.local_extra > 0) msg += '，本地多余 ' + r.local_extra + ' 个';
+  if (r.local_missing > 0) msg += '，本地缺少 ' + r.local_missing + ' 个';
+  status.textContent = msg;
+  showToast('同步状态：' + msg);
 }
 
 async function showUploadWarning() {
