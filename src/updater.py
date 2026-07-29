@@ -24,6 +24,7 @@ _GH_MIRRORS = [
     "https://github.dpik.top/",
     "https://gh.dpik.top/",
     "https://gh-proxy.org/",
+    "https://proxy.starsfire.top/-----",
 ]
 
 

@@ -690,6 +690,11 @@ class SettingsApi:
     def close_settings(self):
         self._webui.close_settings()
 
+    def get_current_version(self) -> str:
+        from . import __version__
+
+        return __version__
+
     def check_update(self, debug: bool = False) -> dict:
         from . import __version__ as cur_ver
 

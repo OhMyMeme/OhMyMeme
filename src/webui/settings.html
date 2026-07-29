@@ -1135,10 +1135,9 @@ async function initSettings() {
 }
 
 async function initVersion() {
-  const r = await api('check_update');
-  if (!r) return;
+  const ver = await api('get_current_version');
   const el = document.getElementById('s-ver-current');
-  if (el) el.textContent = '当前版本: ' + (r.current || '--');
+  if (el) el.textContent = '当前版本: ' + (ver || '--');
 }
 document.addEventListener('DOMContentLoaded', () => {
   initSettings();
