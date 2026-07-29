@@ -204,12 +204,14 @@ def main():
         from .adb_util import (
             _adb_binary_name,
             _get_adb_dir,
+            _migrate_adb,
             detect_adb,
             set_adb_debug,
         )
 
         set_adb_debug()
         logger.info("=== debug-adb ===")
+        _migrate_adb()
         adb_dir = _get_adb_dir()
         logger.info("  .adb dir: %s", adb_dir)
         binary = _adb_binary_name()

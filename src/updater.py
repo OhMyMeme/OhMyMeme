@@ -176,7 +176,8 @@ def check_latest() -> dict:
         releases = _fetch_json(_GITHUB_LIST)
     except Exception as e:
         logger.warning("check update failed (list): %s", e)
-        return {"latest": "", "download_url": "", "has_update": False, "error": str(e)}
+        msg = "无法连接到 GitHub，请检查网络设置"
+        return {"latest": "", "download_url": "", "has_update": False, "error": msg}
 
     if not isinstance(releases, list) or not releases:
         return {

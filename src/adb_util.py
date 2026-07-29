@@ -77,8 +77,37 @@ def get_qq_progress() -> dict:
 
 def _get_adb_dir() -> Path:
     if getattr(sys, "frozen", False):
-        return Path(sys.executable).parent / ".adb"
+        base = os.environ.get("LOCALAPPDATA", Path.home() / "AppData" / "Local")
+        return base / "OhMyMeme" / ".adb"
     return Path(__file__).parent.parent / ".adb"
+
+
+def _get_old_adb_dir() -> Path:
+    """旧版（<0.3.5）打包版 .adb 路径：exe 所在目录"""
+    return Path(sys.executable).parent / ".adb"
+
+
+def _migrate_adb():
+    """将旧版 .adb 从 exe 目录迁移至 %LOCALAPPDATA%/OhMyMeme/.adb"""
+    if not getattr(sys, "frozen", False):
+        return
+    old = _get_old_adb_dir()
+    new = _get_adb_dir()
+    if not old.exists():
+        return
+    if new.exists():
+        try:
+            shutil.rmtree(old)
+            logger.info("旧版 .adb 已清理: %s", old)
+        except Exception as e:
+            logger.warning("清理旧版 .adb 失败: %s", e)
+        return
+    try:
+        new.parent.mkdir(parents=True, exist_ok=True)
+        shutil.move(str(old), str(new))
+        logger.info("旧版 .adb 已迁移至: %s", new)
+    except Exception as e:
+        logger.warning("迁移旧版 .adb 失败: %s", e)
 
 
 def _adb_binary_name() -> str:
@@ -184,6 +213,7 @@ def _download_task():
 def init_background():
     if _ADB_STATE["done"]:
         return
+    _migrate_adb()
     cached = detect_adb()
     if cached:
         _ADB_STATE["ready"] = True
