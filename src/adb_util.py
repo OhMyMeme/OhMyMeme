@@ -77,7 +77,7 @@ def get_qq_progress() -> dict:
 
 def _get_adb_dir() -> Path:
     if getattr(sys, "frozen", False):
-        base = os.environ.get("LOCALAPPDATA", Path.home() / "AppData" / "Local")
+        base =Path(os.environ.get("LOCALAPPDATA", Path.home() / "AppData" / "Local"))  
         return base / "OhMyMeme" / ".adb"
     return Path(__file__).parent.parent / ".adb"
 
