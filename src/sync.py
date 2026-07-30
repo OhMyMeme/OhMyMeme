@@ -2,9 +2,12 @@
 
 import json
 import logging
+import base64
+import hashlib
 import os
 import threading
 import time
+import urllib.request
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from ftplib import FTP, error_perm
 from pathlib import Path
@@ -235,6 +238,7 @@ class _S3Backend(_SyncBackend):
             raise SyncError("S3 endpoint or bucket not configured")
 
         import boto3
+        from botocore.config import Config as BotoConfig
 
         kwargs = {"endpoint_url": endpoint}
         if access_key and secret_key:
@@ -244,7 +248,8 @@ class _S3Backend(_SyncBackend):
             kwargs["region_name"] = region
 
         try:
-            self.client = boto3.client("s3", **kwargs)
+            config = BotoConfig(s3={"payload_signing_enabled": False})
+            self.client = boto3.client("s3", config=config, **kwargs)
             self.bucket = bucket
             prefix = self.cfg.get("s3_path", "").strip("/")
             self.prefix = (prefix + "/") if prefix else ""
@@ -259,9 +264,20 @@ class _S3Backend(_SyncBackend):
 
     def upload_file(self, local_path, remote_path):
         try:
-            self.client.upload_file(
-                str(local_path), self.bucket, self._key(remote_path)
+            with open(local_path, "rb") as f:
+                data = f.read()
+            key = self._key(remote_path)
+            url = self.client.generate_presigned_url(
+                ClientMethod="put_object",
+                Params={"Bucket": self.bucket, "Key": key},
+                ExpiresIn=3600,
             )
+            req = urllib.request.Request(url, data=data, method="PUT")
+            req.add_header("Content-Type", "application/octet-stream")
+            with urllib.request.urlopen(req) as resp:
+                if resp.status != 200:
+                    logger.warning("upload failed %s: HTTP %d", remote_path, resp.status)
+                    return False
             return True
         except Exception as e:
             logger.warning("upload failed %s: %s", remote_path, e)
@@ -270,20 +286,28 @@ class _S3Backend(_SyncBackend):
     def download_file(self, remote_path, local_path):
         try:
             local_path.parent.mkdir(parents=True, exist_ok=True)
-            self.client.download_file(
-                self.bucket, self._key(remote_path), str(local_path)
+            resp = self.client.get_object(
+                Bucket=self.bucket, Key=self._key(remote_path)
             )
+            raw = resp["Body"].read()
+            with open(local_path, "wb") as f:
+                f.write(raw)
             return True
         except Exception as e:
             logger.warning("download failed %s: %s", remote_path, e)
             return False
 
     def file_exists(self, path):
+        key = self._key(path)
         try:
-            self.client.head_object(Bucket=self.bucket, Key=self._key(path))
+            self.client.head_object(Bucket=self.bucket, Key=key)
             return True
         except Exception:
-            return False
+            try:
+                self.client.get_object(Bucket=self.bucket, Key=key)["Body"].close()
+                return True
+            except Exception:
+                return False
 
     def delete_file(self, path):
         try:
@@ -414,7 +438,8 @@ def _fetch_remote_memes(bk, remote_root):
     if not bk.download_file(remote_path, tmp):
         return {}
     try:
-        rdata = json.loads(tmp.read_text(encoding="utf-8"))
+        raw_bytes = tmp.read_bytes()
+        rdata = json.loads(raw_bytes.decode("utf-8"))
         return {m["filename"]: m for m in rdata.get("memes", [])}
     except Exception:
         return {}
@@ -556,9 +581,8 @@ def upload_index(bk=None) -> bool:
     """上传本地 manifest 到远端"""
     cfg = get_config()
     remote_root = cfg.get("ftp_path", "/") if cfg.get("sync_type", "") == "ftp" else ""
+    build_manifest()
     local_index = cfg.data_dir / INDEX_FILENAME
-    if not local_index.exists():
-        build_manifest()
     own_backend = bk is None
     if own_backend:
         bk = _get_backend()
@@ -585,11 +609,11 @@ def download_index() -> Optional[dict]:
     try:
         remote_path = remote_root.rstrip("/") + "/" + REMOTE_INDEX
         if not bk.file_exists(remote_path):
-            logger.info("no remote manifest found")
             return None
         if not bk.download_file(remote_path, tmp):
             return None
-        data = json.loads(tmp.read_text(encoding="utf-8"))
+        raw_bytes = tmp.read_bytes()
+        data = json.loads(raw_bytes.decode("utf-8"))
         return data
     except Exception as e:
         logger.warning("download_index failed: %s", e)
@@ -676,6 +700,7 @@ def push(delete_remote: bool = None) -> dict:
                     )
                     bk.delete_file(rem_thumb)
 
+        build_manifest()
         remote_manifest_path = remote_root.rstrip("/") + "/" + REMOTE_INDEX
         local_index = cfg.data_dir / INDEX_FILENAME
         bk.upload_file(local_index, remote_manifest_path)
