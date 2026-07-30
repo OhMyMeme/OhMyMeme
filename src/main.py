@@ -2,7 +2,7 @@
 
 import logging
 import os
-import platform  # DeepSeek V4 Flash
+import platform
 import signal
 import subprocess
 import sys
@@ -46,7 +46,7 @@ class OhMyMemeApp:
         # 2. 注册全局快捷键
         self._register_hotkey()
 
-        # 3. 启动系统托盘 (DeepSeek V4 Flash)
+        # 3. 启动系统托盘
         if platform.system() == "Linux":
             logger.warning("Linux 环境：跳过系统托盘（GTK 线程冲突）")
         else:

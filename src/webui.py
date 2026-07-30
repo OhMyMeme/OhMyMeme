@@ -52,7 +52,7 @@ logger = logging.getLogger(__name__)
 
 HTML_DIR = Path(__file__).resolve().parent / "webui"
 
-# ─── 工具函数 (DeepSeek V4 Flash) ───
+# ─── 工具函数  ───
 
 
 def _strip_url_modifiers(url: str) -> str:
@@ -76,7 +76,7 @@ def _strip_url_modifiers(url: str) -> str:
     )
 
 
-def _check_connectivity() -> dict:  # DeepSeek V4 Flash
+def _check_connectivity() -> dict:
     """检查互联网连接，返回 {ok, latency}"""
     import socket as _socket
 
@@ -372,10 +372,10 @@ class JsApi:
         ok = updater.run_installer(path)
         return {"ok": ok, "error": "" if ok else "run installer failed"}
 
-    def check_connectivity(self) -> dict:  # DeepSeek V4 Flash
+    def check_connectivity(self) -> dict:
         return _check_connectivity()
 
-    def download_original_image(self, url: str) -> dict:  # DeepSeek V4 Flash
+    def download_original_image(self, url: str) -> dict:
         """下载浏览器来源的原始图片（去掉 @ 修饰），导入到缓存"""
         if not self._cfg.get("try_original_image", False):
             return {"ok": False, "error": "功能未启用"}
@@ -540,7 +540,6 @@ class JsApi:
         return {
             "hotkey": d.get("hotkey", "Ctrl+Alt+N"),
             "auto_play_gif": d.get("auto_play_gif", True),
-            # DeepSeek V4 Flash
             "try_original_image": d.get("try_original_image", False),
             "auto_start": is_auto_start_enabled(),
             "silent_start": d.get("silent_start", False),
@@ -650,7 +649,7 @@ class SettingsApi:
         self._webui = webui
         self._cfg = get_config()
 
-    def check_connectivity(self) -> dict:  # DeepSeek V4 Flash
+    def check_connectivity(self) -> dict:
         return _check_connectivity()
 
     def get_settings(self) -> dict:
@@ -660,7 +659,6 @@ class SettingsApi:
         return {
             "hotkey": d.get("hotkey", "Ctrl+Alt+N"),
             "auto_play_gif": d.get("auto_play_gif", True),
-            # DeepSeek V4 Flash
             "try_original_image": d.get("try_original_image", False),
             "auto_start": is_auto_start_enabled(),
             "silent_start": d.get("silent_start", False),
@@ -1337,7 +1335,6 @@ class WebUI:
 
         self._started = True
         # start() blocks - 在调用线程运行 GUI 循环
-        # DeepSeek V4 Flash
         gui = "gtk" if platform.system() == "Linux" else None
         webview.start(debug=False, http_server=False, gui=gui)
         return True

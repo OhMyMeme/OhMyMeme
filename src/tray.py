@@ -79,7 +79,6 @@ class TrayManager:
             logger.error("Cannot create tray icon (PIL missing)")
             return False
 
-        # DeepSeek V4 Flash
         dev_tag = " (dev)" if self._source_mode else ""
         title = "OhMyMeme" + dev_tag
         menu_items = []
