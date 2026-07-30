@@ -206,9 +206,9 @@ python scripts/build.py --lang en  # 指定语言构建
 
 `make` 命令仅供参考（`make run`/`make test`/`make lint`/`make format`/`make build`），macOS/Linux 下可能不可用，优先使用原生 Python 命令。
 
-## CI (GitHub Actions)
-- `check` job: Ubuntu, lint + test, 所有分支推送触发
-- `build` job: Windows, 仅 `main` 分支推送或 `workflow_dispatch` 触发
+## CI (GitHub Actions) — 两个独立 workflow
+- **check.yml**: Ubuntu, lint + test, push 和 PR 到任意分支均触发
+- **build.yml**: Windows, 仅在 `check` 通过 main 分支后自动触发，也支持 `workflow_dispatch` 手动触发
 - 上传 `dist/OhMyMeme-*-setup.exe` 作为 artifact
 
 ## 版本管理

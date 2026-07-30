@@ -1,57 +1,36 @@
-name: Build Windows Installer
+name: Build
 
 on:
-  push:
-    branches: ["**"]
-  pull_request:
+  workflow_run:
+    workflows: ["Check"]
+    types:
+      - completed
     branches: [main]
   workflow_dispatch:
 
 jobs:
-  check:
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
-        with:
-          python-version: "3.12"
-      - name: Install dependencies
-        run: |
-          pip install -r requirements.txt
-          pip install ruff black pytest
-      - name: Lint
-        run: |
-          ruff check src/
-          black --check src/
-      - name: Test
-        run: python -m pytest tests/ -v
-
   build:
-    needs: check
-    if: (github.event_name == 'push' && github.ref == 'refs/heads/main') || github.event_name == 'workflow_dispatch'
+    if: ${{ github.event_name == 'workflow_dispatch' || github.event.workflow_run.conclusion == 'success' }}
     runs-on: windows-latest
     steps:
       - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.workflow_run.head_sha || github.ref }}
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
-
       - name: Install dependencies
         run: |
           pip install -r requirements.txt
           pip install pyinstaller
-
       - name: Build with PyInstaller
         run: python scripts/build.py --build-only
-
       - name: Install InnoSetup
         run: |
           choco install innosetup --no-progress
           echo "ISCC_DIR=C:\Program Files (x86)\Inno Setup 6\ISCC.exe" | Out-File -FilePath $env:GITHUB_ENV -Append
-
       - name: Build installer
         run: python scripts/build.py --installer-only
-
       - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
