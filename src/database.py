@@ -478,6 +478,12 @@ class MemeDB:
             )
             conn.commit()
 
+    def remove_from_recent(self, meme_id: int):
+        with self._lock:
+            conn = self._get_conn()
+            conn.execute("DELETE FROM recent_uses WHERE meme_id=?", (meme_id,))
+            conn.commit()
+
     def get_recent(self, limit: int = 50) -> List[dict]:
         conn = self._get_conn()
         rows = conn.execute(

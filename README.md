@@ -178,6 +178,12 @@ python -m pytest tests/ -v  # 测试
 
 CI 会自动运行 lint+test。
 
+## 贡献者
+
+<a href="https://github.com/TNTXZ/OhMyMeme/graphs/contributors">
+  <img src="https://contrib.rocks/image?repo=TNTXZ/OhMyMeme&max=20" />
+</a>
+
 ## AI 辅助开发
 
 本项目包含 `AGENTS.md` 文件，供 AI 编码助手读取以了解项目结构、代码规范和关键实现细节。若通过 AI 修改代码，请确保 AI 读取该文件后再进行操作。

@@ -323,6 +323,7 @@ body {
   <button class="ctx-item" data-action="add-to-subgroup" style="display:none">加入小分组</button>
   <button class="ctx-item" data-action="remove-collection" style="display:none">移至上级分组</button>
   <button class="ctx-item danger" data-action="delete-folder" style="display:none">删除小分组</button>
+  <button class="ctx-item danger" data-action="remove-recent" style="display:none">从最近使用中删除</button>
   <div class="ctx-divider"></div>
   <button class="ctx-item danger" data-action="delete">删除</button>
 </div>
@@ -682,6 +683,10 @@ function showCtxMenu(e, meme) {
   if (sgBtn) {
     sgBtn.style.display = (activeCollection && activeCollection > 0) ? 'flex' : 'none';
   }
+  const rrBtn = menu.querySelector('[data-action="remove-recent"]');
+  if (rrBtn) {
+    rrBtn.style.display = activeCollection === -3 ? 'flex' : 'none';
+  }
   menu.classList.add('show');
   const rect = menu.getBoundingClientRect();
   const overflowRight = rect.right - window.innerWidth;
@@ -883,6 +888,17 @@ document.getElementById('ctx-menu').addEventListener('click', async (e) => {
       const ok = await api('delete_meme', m.id);
       if (ok) { showToast('已删除'); refreshMemes(); refreshTags(); refreshCollections(); }
       else { showToast('删除失败'); }
+      break;
+    }
+    case 'remove-recent': {
+      const ok = await api('remove_from_recent', m.id);
+      if (ok) {
+        showToast('已从最近使用中删除');
+        await refreshCollections();
+        const rc = collections.find(x => x.id === -3);
+        if (!rc || rc.count === 0) { activeCollection = null; }
+        refreshMemes();
+      } else { showToast('操作失败'); }
       break;
     }
   }

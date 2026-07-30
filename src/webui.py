@@ -197,7 +197,11 @@ class JsApi:
                     "auto_play_gif": auto_gif,
                 }
             )
-        collections = self._build_collection_tree()
+        sys_cols = [
+            {"id": -2, "name": "收藏夹", "count": self._db.count(favorite_only=True)},
+            {"id": -3, "name": "最近使用", "count": len(self._db.get_recent(9999))},
+        ]
+        collections = sys_cols + self._build_collection_tree()
         return {
             "memes": memes,
             "tags": self._db.get_all_tags(),
@@ -330,6 +334,13 @@ class JsApi:
     def record_meme_use(self, meme_id: int) -> bool:
         try:
             self._db.record_use(meme_id)
+            return True
+        except Exception:
+            return False
+
+    def remove_from_recent(self, meme_id: int) -> bool:
+        try:
+            self._db.remove_from_recent(meme_id)
             return True
         except Exception:
             return False
