@@ -129,15 +129,20 @@ python -m src
 
 依赖 PyInstaller 6.0+。
 
+> **⚠️ 注意**: PyInstaller **不支持交叉编译**。`--windows` 参数只能在 Windows 系统上使用，`--linux` 参数只能在 Linux 系统上使用。
+> 如需在 Linux 上构建 Windows 安装包，请使用 [GitHub Actions](#ci-github-actions)（推送到 `main` 分支自动触发，或手动运行 workflow）。
+
 ```bash
 pip install pyinstaller
 
 # 自动检测当前系统打包
 python scripts/build.py
 
-# 指定目标系统
-python scripts/build.py --windows          # Windows 目标
-python scripts/build.py --linux            # Linux 目标
+# Windows 目标（仅在 Windows 上运行）
+python scripts/build.py --windows
+
+# Linux 目标（仅在 Linux 上运行）
+python scripts/build.py --linux
 
 # 仅打包，跳过安装包
 python scripts/build.py --build-only

@@ -53,6 +53,10 @@ _MSGS = {
         "zh": "错误: --installer-only 不支持当前目标 %s",
         "en": "ERROR: --installer-only not supported for target %s",
     },
+    "cross_compile_not_supported": {
+        "zh": "错误: PyInstaller 不支持交叉编译，在 Linux 上无法生成 Windows 可执行文件。\n      请使用 GitHub Actions（推送到 main 或手动触发 workflow）或在 Windows 机器上运行此脚本。",
+        "en": "ERROR: PyInstaller does not support cross-compilation. Cannot produce a Windows executable from Linux.\n       Use GitHub Actions (push to main or trigger workflow_dispatch) or run this script on a Windows machine.",
+    },
 }
 
 _lang = "zh"
@@ -286,6 +290,9 @@ if __name__ == "__main__":
         _set_lang("zh")
 
     if args.target_windows:
+        if not IS_WINDOWS:
+            print(L("cross_compile_not_supported"))
+            sys.exit(1)
         target = "Windows"
     elif args.target_linux:
         target = "Linux"

@@ -1151,7 +1151,7 @@ function openSettings() { try { pywebview.api.open_settings(); } catch(e) {} }
     e.preventDefault();
     dragCounter = 0;
     overlay.classList.remove('drag-over');
-    // DeepSeek V4 Flash: 尝试通过 URL 获取原图（从浏览器拖入时有 text/uri-list）
+    // DeepSeek V4 Flash
     let uri = '';
     try {
       const types = e.dataTransfer.types;

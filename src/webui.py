@@ -1337,7 +1337,7 @@ class WebUI:
 
         self._started = True
         # start() blocks - 在调用线程运行 GUI 循环
-        # DeepSeek V4 Flash: Linux 强制 GTK 后端（Qt WebEngine Wayland 下崩溃）
+        # DeepSeek V4 Flash
         gui = "gtk" if platform.system() == "Linux" else None
         webview.start(debug=False, http_server=False, gui=gui)
         return True
