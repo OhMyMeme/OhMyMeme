@@ -43,7 +43,7 @@ except ImportError:
 
 from . import adb_util, updater
 from . import sync as sync_module
-from .clipboard_util import copy_image_to_clipboard
+from .clipboard_util import _is_animated, copy_image_to_clipboard
 from .config import get_config
 from .database import get_db
 from .manifest import build as build_manifest
@@ -129,9 +129,16 @@ class JsApi:
         auto_gif = self._cfg.get("auto_play_gif", True)
         result = []
         for r in rows:
-            is_gif = r.get("mime_type", "").endswith("gif") or r[
-                "filename"
-            ].lower().endswith(".gif")
+            fname = r["filename"].lower()
+            is_gif = r.get("mime_type", "").endswith("gif") or fname.endswith(".gif")
+            # 动画检测：GIF 或 WebP 动图
+            if is_gif:
+                is_animated = True
+            elif fname.endswith(".webp"):
+                path = self._find_meme_file(r["filename"])
+                is_animated = _is_animated(path) if path else False
+            else:
+                is_animated = False
             oname = r.get("original_name", "")
             if not oname:
                 oname = os.path.splitext(r["filename"])[0]
@@ -145,6 +152,7 @@ class JsApi:
                     "height": r.get("height", 0),
                     "mime_type": r.get("mime_type", ""),
                     "is_gif": is_gif,
+                    "is_animated": is_animated,
                     "favorited": r["id"] in favorited_ids,
                     "auto_play_gif": auto_gif,
                 }
@@ -177,9 +185,15 @@ class JsApi:
         auto_gif = self._cfg.get("auto_play_gif", True)
         memes = []
         for r in rows:
-            is_gif = r.get("mime_type", "").endswith("gif") or r[
-                "filename"
-            ].lower().endswith(".gif")
+            fname = r["filename"].lower()
+            is_gif = r.get("mime_type", "").endswith("gif") or fname.endswith(".gif")
+            if is_gif:
+                is_animated = True
+            elif fname.endswith(".webp"):
+                path = self._find_meme_file(r["filename"])
+                is_animated = _is_animated(path) if path else False
+            else:
+                is_animated = False
             oname = r.get("original_name", "")
             if not oname:
                 oname = os.path.splitext(r["filename"])[0]
@@ -193,6 +207,7 @@ class JsApi:
                     "height": r.get("height", 0),
                     "mime_type": r.get("mime_type", ""),
                     "is_gif": is_gif,
+                    "is_animated": is_animated,
                     "favorited": r["id"] in favorited_ids,
                     "auto_play_gif": auto_gif,
                 }
@@ -349,6 +364,10 @@ class JsApi:
         self._db.remove_from_collection(meme_id, collection_id)
         return True
 
+    def log(self, msg, level="info"):
+        """供前端输出调试日志到终端"""
+        getattr(logger, level, logger.info)(msg)
+
     def rescan_cache(self) -> bool:
         self._webui.scan_cache()
         return True
@@ -387,13 +406,36 @@ class JsApi:
         return _check_connectivity()
 
     def download_original_image(self, url: str) -> dict:
-        """下载浏览器来源的原始图片（去掉 @ 修饰），导入到缓存"""
+        """下载浏览器来源的原始图片，或导入本地文件"""
+        s = url.strip()
+        # 本地文件：file:// URI 或裸绝对路径
+        local_path = None
+        if s.startswith("file://"):
+            from urllib.parse import unquote, urlparse
+
+            local_path = unquote(urlparse(s).path)
+            # Windows: file:///C:/path → /C:/path → 去掉前导 /
+            if len(local_path) > 3 and local_path[2] == ":":
+                local_path = local_path.lstrip("/")
+        elif s.startswith("/") and os.path.isfile(s):
+            local_path = s
+        elif len(s) > 2 and s[1] == ":" and os.path.isfile(s):
+            # Windows 裸路径: C:\Users\...
+            local_path = s
+        if local_path:
+            ids = self._webui._do_import([local_path])
+            if ids:
+                return {"ok": True, "id": ids[0]}
+            return {"ok": False, "error": "导入失败"}
+
+        clean_url = _strip_url_modifiers(s)
+
+        # 网络图片原图下载
         if not self._cfg.get("try_original_image", False):
             return {"ok": False, "error": "功能未启用"}
         conn = _check_connectivity()
         if not conn["ok"]:
             return {"ok": False, "error": "无网络连接"}
-        clean_url = _strip_url_modifiers(url)
         import shutil
         import tempfile
         from urllib.error import URLError

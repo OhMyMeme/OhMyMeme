@@ -4,6 +4,7 @@ import io
 import logging
 import os
 import struct
+import tempfile
 
 logger = logging.getLogger(__name__)
 
@@ -20,6 +21,59 @@ try:
     HAS_PYPERCLIP = True
 except ImportError:
     HAS_PYPERCLIP = False
+
+
+def _is_animated(path: str) -> bool:
+    """检测文件是否为动图（GIF / WebP）"""
+    try:
+        with open(path, "rb") as f:
+            header = f.read(50)
+        # GIF89a 一般为动图
+        if header[:6] == b"GIF89a":
+            return True
+        # WebP: ANIM chunk 在 VP8X 之后（约偏移 30+），扫描整个头
+        if header[:4] == b"RIFF" and header[8:12] == b"WEBP":
+            return b"ANIM" in header
+        return False
+    except Exception:
+        return False
+
+
+def _webp_to_gif(webp_path):
+    """WebP 动图转临时 GIF，返回路径，调用方负责清理"""
+    if not HAS_PIL:
+        return None
+    try:
+        img = PILImage.open(webp_path)
+        if not getattr(img, "is_animated", False):
+            return None
+        # 收集所有帧
+        frames, durations = [], []
+        try:
+            while True:
+                frames.append(img.copy())
+                durations.append(img.info.get("duration", 100))
+                img.seek(img.tell() + 1)
+        except EOFError:
+            pass
+        if not frames:
+            return None
+        tmp = tempfile.NamedTemporaryFile(delete=False, suffix=".gif")
+        tmp_path = tmp.name
+        tmp.close()
+        frames[0].save(
+            tmp_path,
+            format="GIF",
+            save_all=True,
+            append_images=frames[1:],
+            duration=durations,
+            loop=0,
+        )
+        img.close()
+        return tmp_path
+    except Exception as e:
+        logger.warning(f"_webp_to_gif: {e}")
+        return None
 
 
 def copy_image_to_clipboard(image_path: str) -> bool:
@@ -48,6 +102,18 @@ def _copy_image_windows(image_path: str, ext: str) -> bool:
     if ext == ".gif":
         if _copy_gif_windows(image_path):
             return True
+
+    # WebP 动图：转 GIF 后走动画路径
+    if ext == ".webp" and _is_animated(image_path):
+        gif_path = _webp_to_gif(image_path)
+        if gif_path:
+            ok = _copy_gif_windows(gif_path)
+            try:
+                os.unlink(gif_path)
+            except Exception:
+                pass
+            if ok:
+                return True
 
     if HAS_PIL:
         try:
@@ -331,10 +397,12 @@ def _copy_image_linux(image_path: str, ext: str) -> bool:
         import subprocess
 
         abs_path = os.path.abspath(image_path)
+        # 动图（GIF / WebP 动图）用 image/gif MIME
+        mime = "image/gif" if _is_animated(image_path) else "image/png"
         # 尝试 xclip
         try:
             subprocess.run(
-                ["xclip", "-selection", "clipboard", "-t", "image/png", "-i", abs_path],
+                ["xclip", "-selection", "clipboard", "-t", mime, "-i", abs_path],
                 capture_output=True,
                 timeout=5,
                 check=True,
@@ -345,7 +413,7 @@ def _copy_image_linux(image_path: str, ext: str) -> bool:
         # 尝试 wl-copy (Wayland)
         try:
             subprocess.run(
-                ["wl-copy", "--type", "image/png", "-i", abs_path],
+                ["wl-copy", "--type", mime, "-i", abs_path],
                 capture_output=True,
                 timeout=5,
                 check=True,
