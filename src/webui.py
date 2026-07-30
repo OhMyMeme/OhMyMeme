@@ -386,16 +386,40 @@ class JsApi:
         import shutil
         import tempfile
         from urllib.error import URLError
+        from urllib.parse import urlparse
         from urllib.request import urlopen
 
-        tmp = tempfile.NamedTemporaryFile(delete=False, suffix=".tmp")
+        # 从 URL 路径推断扩展名
+        parsed_path = urlparse(clean_url).path
+        _, ext = os.path.splitext(parsed_path)
+        ext = ext.lower() if ext else ""
+        allowed_img_ext = {".png", ".jpg", ".jpeg", ".gif", ".webp", ".bmp"}
+
+        # URL 路径无扩展名时，从响应 Content-Type 推断
+        need_type = not ext or ext not in allowed_img_ext
+
+        tmp = tempfile.NamedTemporaryFile(delete=False, suffix=".download")
         tmp_path = tmp.name
         tmp.close()
         try:
             with urlopen(clean_url, timeout=15) as resp:
+                if need_type:
+                    ct = resp.headers.get("Content-Type", "")
+                    content_type = ct.split(";")[0].strip()
+                    type_map = {
+                        "image/gif": ".gif",
+                        "image/png": ".png",
+                        "image/jpeg": ".jpg",
+                        "image/webp": ".webp",
+                        "image/bmp": ".bmp",
+                    }
+                    ext = type_map.get(content_type, ".png")
                 with open(tmp_path, "wb") as f:
                     shutil.copyfileobj(resp, f)
-            ids = self._webui._do_import([tmp_path])
+            # 重命名为正确扩展名
+            final_path = tmp_path + ext
+            os.rename(tmp_path, final_path)
+            ids = self._webui._do_import([final_path])
             if ids:
                 return {"ok": True, "id": ids[0]}
             return {"ok": False, "error": "导入失败"}
@@ -406,6 +430,10 @@ class JsApi:
         finally:
             try:
                 os.unlink(tmp_path)
+            except Exception:
+                pass
+            try:
+                os.unlink(tmp_path + ext)
             except Exception:
                 pass
 

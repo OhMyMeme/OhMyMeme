@@ -1175,8 +1175,12 @@ function openSettings() { try { pywebview.api.open_settings(); } catch(e) {} }
     for (const file of files) {
       if (!imgExts.test(file.name)) continue;
       try {
-        const ab = await file.arrayBuffer();
-        const b64 = btoa(new Uint8Array(ab).reduce((s, b) => s + String.fromCharCode(b), ''));
+        const b64 = await new Promise((resolve, reject) => {
+          const reader = new FileReader();
+          reader.onload = () => resolve(reader.result.split(',')[1]);
+          reader.onerror = () => reject(reader.error);
+          reader.readAsDataURL(file);
+        });
         items.push({ name: file.name, data: b64 });
       } catch(_) {}
     }
