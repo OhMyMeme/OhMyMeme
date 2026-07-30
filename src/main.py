@@ -15,7 +15,6 @@ from .hotkey import GlobalHotkey
 from .platform_util import (
     _startup_folder_path,
     is_auto_start_enabled,
-    is_wsl,
     set_auto_start,
 )
 from .tray import TrayManager

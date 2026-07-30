@@ -79,7 +79,8 @@ class TrayManager:
             logger.error("Cannot create tray icon (PIL missing)")
             return False
 
-        dev_tag = " (dev)" if self._source_mode else ""  # DeepSeek V4 Flash: 原中文字符 latin-1 编码崩溃
+        # DeepSeek V4 Flash: 原中文字符 latin-1 编码崩溃，改为 ASCII
+        dev_tag = " (dev)" if self._source_mode else ""
         title = "OhMyMeme" + dev_tag
         menu_items = []
         if self._source_mode:

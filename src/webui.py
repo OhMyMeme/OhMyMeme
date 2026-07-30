@@ -65,7 +65,14 @@ def _strip_url_modifiers(url: str) -> str:
     else:
         clean_path = parsed.path
     return urlunparse(
-        (parsed.scheme, parsed.netloc, clean_path, parsed.params, parsed.query, parsed.fragment)
+        (
+            parsed.scheme,
+            parsed.netloc,
+            clean_path,
+            parsed.params,
+            parsed.query,
+            parsed.fragment,
+        )
     )
 
 
@@ -378,8 +385,8 @@ class JsApi:
         clean_url = _strip_url_modifiers(url)
         import shutil
         import tempfile
-        from urllib.request import urlopen
         from urllib.error import URLError
+        from urllib.request import urlopen
 
         tmp = tempfile.NamedTemporaryFile(delete=False, suffix=".tmp")
         tmp_path = tmp.name
@@ -389,7 +396,9 @@ class JsApi:
                 with open(tmp_path, "wb") as f:
                     shutil.copyfileobj(resp, f)
             ids = self._webui._do_import([tmp_path])
-            return {"ok": True, "id": ids[0]} if ids else {"ok": False, "error": "导入失败"}
+            if ids:
+                return {"ok": True, "id": ids[0]}
+            return {"ok": False, "error": "导入失败"}
         except URLError as e:
             return {"ok": False, "error": f"下载失败: {e.reason}"}
         except Exception as e:
@@ -531,7 +540,8 @@ class JsApi:
         return {
             "hotkey": d.get("hotkey", "Ctrl+Alt+N"),
             "auto_play_gif": d.get("auto_play_gif", True),
-            "try_original_image": d.get("try_original_image", False),  # DeepSeek V4 Flash
+            # DeepSeek V4 Flash
+            "try_original_image": d.get("try_original_image", False),
             "auto_start": is_auto_start_enabled(),
             "silent_start": d.get("silent_start", False),
             "sync_auto_fetch_index": d.get("sync_auto_fetch_index", False),
@@ -650,7 +660,8 @@ class SettingsApi:
         return {
             "hotkey": d.get("hotkey", "Ctrl+Alt+N"),
             "auto_play_gif": d.get("auto_play_gif", True),
-            "try_original_image": d.get("try_original_image", False),  # DeepSeek V4 Flash
+            # DeepSeek V4 Flash
+            "try_original_image": d.get("try_original_image", False),
             "auto_start": is_auto_start_enabled(),
             "silent_start": d.get("silent_start", False),
             "sync_auto_fetch_index": d.get("sync_auto_fetch_index", False),
