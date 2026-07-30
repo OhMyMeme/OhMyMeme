@@ -95,6 +95,8 @@ class Config:
         "window_x": -1,
         "window_y": -1,
         "auto_play_gif": True,
+        # 图片来源 (DeepSeek V4 Flash)
+        "try_original_image": False,
     }
 
     def __init__(self, path: Path = None):

@@ -79,17 +79,20 @@ class TrayManager:
             logger.error("Cannot create tray icon (PIL missing)")
             return False
 
-        dev_tag = "（本地开发）" if self._source_mode else ""
+        # DeepSeek V4 Flash
+        dev_tag = " (dev)" if self._source_mode else ""
         title = "OhMyMeme" + dev_tag
         menu_items = []
         if self._source_mode:
-            menu_items.append(pystray.MenuItem(dev_tag, lambda: None, enabled=False))
+            menu_items.append(
+                pystray.MenuItem("OhMyMeme (dev)", lambda: None, enabled=False)
+            )
         menu_items += [
             pystray.MenuItem(
-                "显示/隐藏", self._on_show or (lambda: None), default=True
+                "Show/Hide", self._on_show or (lambda: None), default=True
             ),
             pystray.Menu.SEPARATOR,
-            pystray.MenuItem("退出", self._on_quit or (lambda: None)),
+            pystray.MenuItem("Quit", self._on_quit or (lambda: None)),
         ]
         menu = pystray.Menu(*menu_items)
 
