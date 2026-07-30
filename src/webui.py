@@ -52,6 +52,39 @@ logger = logging.getLogger(__name__)
 
 HTML_DIR = Path(__file__).resolve().parent / "webui"
 
+# ─── 工具函数 (DeepSeek V4 Flash) ───
+
+
+def _strip_url_modifiers(url: str) -> str:
+    """去掉图片 URL 中的 @ 修饰参数，返回原图 URL"""
+    from urllib.parse import urlparse, urlunparse
+
+    parsed = urlparse(url)
+    if "@" in parsed.path:
+        clean_path = parsed.path[: parsed.path.index("@")]
+    else:
+        clean_path = parsed.path
+    return urlunparse(
+        (parsed.scheme, parsed.netloc, clean_path, parsed.params, parsed.query, parsed.fragment)
+    )
+
+
+def _check_connectivity() -> dict:  # DeepSeek V4 Flash
+    """检查互联网连接，返回 {ok, latency}"""
+    import socket as _socket
+
+    hosts = [("baidu.com", 80), ("www.baidu.com", 443)]
+    for host, port in hosts:
+        try:
+            t0 = time.time()
+            s = _socket.create_connection((host, port), timeout=3)
+            s.close()
+            latency = int((time.time() - t0) * 1000)
+            return {"ok": True, "latency": f"{latency}ms"}
+        except Exception:
+            continue
+    return {"ok": False, "latency": ""}
+
 
 class JsApi:
     """暴露给前端的 JS API"""
@@ -332,6 +365,41 @@ class JsApi:
         ok = updater.run_installer(path)
         return {"ok": ok, "error": "" if ok else "run installer failed"}
 
+    def check_connectivity(self) -> dict:  # DeepSeek V4 Flash
+        return _check_connectivity()
+
+    def download_original_image(self, url: str) -> dict:  # DeepSeek V4 Flash
+        """下载浏览器来源的原始图片（去掉 @ 修饰），导入到缓存"""
+        if not self._cfg.get("try_original_image", False):
+            return {"ok": False, "error": "功能未启用"}
+        conn = _check_connectivity()
+        if not conn["ok"]:
+            return {"ok": False, "error": "无网络连接"}
+        clean_url = _strip_url_modifiers(url)
+        import shutil
+        import tempfile
+        from urllib.request import urlopen
+        from urllib.error import URLError
+
+        tmp = tempfile.NamedTemporaryFile(delete=False, suffix=".tmp")
+        tmp_path = tmp.name
+        tmp.close()
+        try:
+            with urlopen(clean_url, timeout=15) as resp:
+                with open(tmp_path, "wb") as f:
+                    shutil.copyfileobj(resp, f)
+            ids = self._webui._do_import([tmp_path])
+            return {"ok": True, "id": ids[0]} if ids else {"ok": False, "error": "导入失败"}
+        except URLError as e:
+            return {"ok": False, "error": f"下载失败: {e.reason}"}
+        except Exception as e:
+            return {"ok": False, "error": str(e)}
+        finally:
+            try:
+                os.unlink(tmp_path)
+            except Exception:
+                pass
+
     def get_sync_progress(self) -> dict:
         return sync_module.get_sync_progress()
 
@@ -463,6 +531,7 @@ class JsApi:
         return {
             "hotkey": d.get("hotkey", "Ctrl+Alt+N"),
             "auto_play_gif": d.get("auto_play_gif", True),
+            "try_original_image": d.get("try_original_image", False),  # DeepSeek V4 Flash
             "auto_start": is_auto_start_enabled(),
             "silent_start": d.get("silent_start", False),
             "sync_auto_fetch_index": d.get("sync_auto_fetch_index", False),
@@ -571,6 +640,9 @@ class SettingsApi:
         self._webui = webui
         self._cfg = get_config()
 
+    def check_connectivity(self) -> dict:  # DeepSeek V4 Flash
+        return _check_connectivity()
+
     def get_settings(self) -> dict:
         d = self._cfg.to_dict()
         from .platform_util import is_auto_start_enabled
@@ -578,6 +650,7 @@ class SettingsApi:
         return {
             "hotkey": d.get("hotkey", "Ctrl+Alt+N"),
             "auto_play_gif": d.get("auto_play_gif", True),
+            "try_original_image": d.get("try_original_image", False),  # DeepSeek V4 Flash
             "auto_start": is_auto_start_enabled(),
             "silent_start": d.get("silent_start", False),
             "sync_auto_fetch_index": d.get("sync_auto_fetch_index", False),
@@ -1253,7 +1326,9 @@ class WebUI:
 
         self._started = True
         # start() blocks - 在调用线程运行 GUI 循环
-        webview.start(debug=False, http_server=False)
+        # DeepSeek V4 Flash: Linux 强制 GTK 后端（Qt WebEngine Wayland 下崩溃）
+        gui = "gtk" if platform.system() == "Linux" else None
+        webview.start(debug=False, http_server=False, gui=gui)
         return True
 
     def open_settings(self):

@@ -191,6 +191,15 @@ select:hover { border-color: var(--border-light); }
     </div>
 
     <div class="section">
+      <!-- DeepSeek V4 Flash -->
+      <div class="section-title">图片来源</div>
+      <label class="check-row">
+        <input id="s-try-original" type="checkbox" onchange="checkConnectivity()">浏览器来源尝试获取原图
+      </label>
+      <div id="s-net-status" style="font-size:12px;margin-top:4px;padding-left:4px;color:var(--muted)"></div>
+    </div>
+
+    <div class="section">
       <div class="section-title">从手机导入</div>
       <p style="font-size:11.5px;color:var(--muted);margin-bottom:10px;line-height:1.6">通过 ADB 从连接的 Android 手机拉取 QQ 表情包缓存并打包 ZIP</p>
       <div style="display:flex;gap:8px">
@@ -462,6 +471,26 @@ function toggleSilentStart() {
   if (row) row.style.display = autoStart ? '' : 'none';
 }
 
+async function checkConnectivity() {  // DeepSeek V4 Flash
+  const el = document.getElementById('s-net-status');
+  if (!el) return;
+  el.textContent = '正在检查网络...';
+  el.style.color = 'var(--muted)';
+  try {
+    const r = await api('check_connectivity');
+    if (r && r.ok) {
+      el.innerHTML = '● 已连接 <span style="opacity:.6">(' + (r.latency || '') + ')</span>';
+      el.style.color = '#4caf50';
+    } else {
+      el.textContent = '● 无网络连接';
+      el.style.color = '#f44336';
+    }
+  } catch(_) {
+    el.textContent = '● 检查失败';
+    el.style.color = '#f44336';
+  }
+}
+
 /* Load settings */
 async function getSettings() {
   const s = await api('get_settings');
@@ -472,6 +501,8 @@ async function getSettings() {
   const ss = document.getElementById('s-silent-start');
   if (hk && s.hotkey) hk.value = s.hotkey;
   if (gif) gif.checked = s.auto_play_gif !== false;
+  const to = document.getElementById('s-try-original');
+  if (to) to.checked = s.try_original_image === true;  // DeepSeek V4 Flash
   if (as) as.checked = s.auto_start === true;
   if (ss) ss.checked = s.silent_start === true;
   toggleSilentStart();
@@ -511,6 +542,7 @@ async function getSettings() {
   if (ud) ud.checked = s.show_upload_done !== false;
   if (dp) dp.checked = s.show_download_progress !== false;
   if (dd) dd.checked = s.show_download_done !== false;
+  checkConnectivity();  // DeepSeek V4 Flash
   return true;
 }
 
@@ -593,12 +625,14 @@ function validateSync(sync) {
 async function saveSettings() {
   const hotkey = document.getElementById('s-hotkey')?.value || 'Ctrl+Alt+N';
   const gif = document.getElementById('s-gif')?.checked !== false;
+  const try_original = document.getElementById('s-try-original')?.checked === true;  // DeepSeek V4 Flash
   const auto_start = document.getElementById('s-auto-start')?.checked === true;
   const silent_start = document.getElementById('s-silent-start')?.checked === true;
   const sync = collectSyncSettings();
   if (!validateSync(sync)) return;
   await api('save_settings', {
     hotkey, auto_play_gif: gif,
+    try_original_image: try_original,  // DeepSeek V4 Flash
     auto_start, silent_start,
     ...sync
   });
@@ -614,9 +648,12 @@ async function resetSettings() {
     const ss = document.getElementById('s-silent-start');
     if (hk) hk.value = s.hotkey;
     if (gif) gif.checked = s.auto_play_gif !== false;
+    const to = document.getElementById('s-try-original');  // DeepSeek V4 Flash
+    if (to) to.checked = false;
     if (as) as.checked = s.auto_start === true;
     if (ss) ss.checked = s.silent_start === true;
     toggleSilentStart();
+    checkConnectivity();  // DeepSeek V4 Flash
     const ff = document.getElementById('s-sync-fetch');
     const sa = document.getElementById('s-sync-auto');
     const st = document.getElementById('s-sync-type');

@@ -2,6 +2,7 @@
 
 import logging
 import os
+import platform  # DeepSeek V4 Flash
 import signal
 import subprocess
 import sys
@@ -46,9 +47,9 @@ class OhMyMemeApp:
         # 2. 注册全局快捷键
         self._register_hotkey()
 
-        # 3. 启动系统托盘（WSL 环境下跳过，避免 GTK 线程冲突）
-        if is_wsl():
-            logger.warning("WSL 环境：跳过系统托盘（缺少 DBus，存在 GTK 线程冲突）")
+        # 3. 启动系统托盘 (DeepSeek V4 Flash: Linux 下跳过 GTK 线程冲突)
+        if platform.system() == "Linux":
+            logger.warning("Linux 环境：跳过系统托盘（GTK 线程冲突）")
         else:
             self._tray = TrayManager(
                 on_show=self._on_hotkey,
