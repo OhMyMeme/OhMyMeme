@@ -5,7 +5,7 @@
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
-PROJECT_DIR="$(cd "$SCRIPT_DIR/../../" && pwd)"
+PROJECT_DIR="$(cd "$SCRIPT_DIR/../../../" && pwd)"
 DIST_DIR="$PROJECT_DIR/dist"
 APP_NAME="OhMyMeme"
 APP_VERSION="$(python3 -c "import re; print(re.search(r'__version__\s*=\s*\"([^\"]+)\"', open('$PROJECT_DIR/src/__init__.py').read())[1])")"

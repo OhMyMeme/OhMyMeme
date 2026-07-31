@@ -1,3 +1,47 @@
+# v0.4.1 — WebP 动图 / 浏览器拖入导入 / 核显优化
+
+## 新增
+
+- **WebP 动图支持** — 导入、存储、网格展示动画 WebP，剪贴板直接传送 WebP 原文件（CF_HDROP + 自定义 "WebP" 格式 + CF_DIB 回退），QQ/微信原生解码，保留动画与透明
+- **浏览器图片拖入导入** — 从浏览器直接拖拽图片到窗口即可导入，自动去掉 URL `@` 修饰参数，修正扩展名识别与 Base64 编码
+- **浏览器来源尝试获取原图** — 设置页新增开关，开启后从来源 URL 下载原图导入（无扩展名时按 Content-Type 推断），附网络连通性实时检测
+- **每日自动检测更新** — 每 24 小时静默检查一次更新，复用启动时的检测与弹窗逻辑
+- **从最近使用中删除** — 右键最近使用列表中的表情包可单独移除
+- **`--debug` 启动参数** — 输出全部 DEBUG 级别日志，便于排查
+
+## 变更
+
+- **核显优化** — 新增 `is_integrated_gpu()`（DXGI 检测主 GPU 专用显存 < 1GB 视为核显）；核显机器禁用 WebView2 GPU 合成（`--disable-gpu-compositing`），内存占用从 800MB 降至 120MB；独显保持完整硬件加速
+- **S3 上传重构** — 改用 presigned URL + `urllib` 替代 boto3 `put_object`，避免 chunked 编码污染上传文件
+- **托盘菜单英文化** — Show/Hide、Quit（原为中文）
+- **CI 拆分** — 独立 `check.yml`（lint+test）与 `build.yml`（Windows 打包），build 通过 `workflow_run` 在 check 通过后触发
+- **Linux 托盘判断** — 由 `is_wsl()` 改为 `platform.system() == "Linux"` 决定是否跳过系统托盘
+
+## 修复
+
+- **更新时软件未正常退出** — `shutdown()` 末尾 `os._exit(0)` 强制退出，清理残留非 daemon 线程（updater 线程池）
+- **平铺窗口管理器启动崩溃** — `window_x`/`window_y` 为 null 时不再抛 TypeError（#8）
+- **S3 同步检测失效** — `file_exists` 增加 `get_object` 回退，修复 `head_object` 误报 404（#7）
+- **拖拽排序真正生效** — 重写拖拽换位逻辑，修复 v0.4.0 遗留的拖拽排序 Bug
+- **浏览器拖拽图片导入异常** — 修正文件扩展名识别错误与 Base64 编码不正确问题
+- **ADB 路径拼接** — 修复路径拼接错误（#5）
+
+## 特别鸣谢
+
+### 代码贡献
+
+- [Ze514](https://github.com/Ze514) — 拖拽排序（#12）、WebP 剪贴板（#11）、WebP 存储（#9）、浏览器拖拽导入（#6）、浏览器原图下载（#3）
+- [LorienYang](https://github.com/LorienYang) — S3 上传与同步检测修复（#7）
+- [RainLuohua](https://github.com/RainLuohua) — 平铺窗口管理器启动崩溃修复（#10）
+- [oralrinse](https://github.com/oralrinse) — ADB 路径拼接修复（#5）
+
+### Issue 反馈
+
+- [Chiclats](https://github.com/Chiclats) — 反馈平铺窗口管理器 (Niri) 下启动崩溃（#8）
+- [ylhcqN](https://github.com/ylhcqN) — 反馈 Linux 原生环境（非 WSL）GTK 线程冲突（#2）
+- [LorienYang](https://github.com/LorienYang) — 反馈 FTP/S3 同步状态显示异常（#1）
+- [oralrinse](https://github.com/oralrinse) — 反馈 Win11 ADB 检测 0% 卡死及 TypeError（#4）
+
 # v0.4.0 — 自定义排序 / 多级分组 / 最近使用
 
 ## 新增
