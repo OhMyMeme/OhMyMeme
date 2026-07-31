@@ -1281,15 +1281,15 @@ titlebar.addEventListener('mousedown', async (e) => {
   if (e.target.closest('.title-btn')) return;
   const nativeDrag = await api('start_window_drag', e.button + 1, e.screenX, e.screenY);
   if (nativeDrag) return;   // Linux：交给合成器拖动
-  dragState = { x: e.clientX, y: e.clientY };
+  dragState = { sx: e.screenX, sy: e.screenY };
   e.preventDefault();
 });
 document.addEventListener('mousemove', (e) => {
   if (!dragState) return;
-  const dx = e.clientX - dragState.x, dy = e.clientY - dragState.y;
+  const dx = e.screenX - dragState.sx, dy = e.screenY - dragState.sy;
   if (dx !== 0 || dy !== 0) {
     api('move_window', dx, dy);
-    dragState.x = e.clientX; dragState.y = e.clientY;
+    dragState.sx = e.screenX; dragState.sy = e.screenY;
   }
 });
 document.addEventListener('mouseup', () => { dragState = null; });
