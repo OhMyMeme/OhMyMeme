@@ -2,8 +2,6 @@
 
 import json
 import logging
-import base64
-import hashlib
 import os
 import threading
 import time
@@ -276,7 +274,9 @@ class _S3Backend(_SyncBackend):
             req.add_header("Content-Type", "application/octet-stream")
             with urllib.request.urlopen(req) as resp:
                 if resp.status != 200:
-                    logger.warning("upload failed %s: HTTP %d", remote_path, resp.status)
+                    logger.warning(
+                        "upload failed %s: HTTP %d", remote_path, resp.status
+                    )
                     return False
             return True
         except Exception as e:
