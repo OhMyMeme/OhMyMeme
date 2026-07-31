@@ -135,6 +135,8 @@ class OhMyMemeApp:
                 pass
         self._cfg.save()
         logger.info("OhMyMeme 已退出")
+        # 强制退出，避免残留的非 daemon 线程阻止解释器正常退出
+        os._exit(0)
 
 
 def main():
@@ -165,10 +167,16 @@ def main():
         dest="adb_debug",
         help="Print ADB detection details",
     )
+    parser.add_argument(
+        "--debug",
+        action="store_true",
+        dest="debug",
+        help="Print all debug logs",
+    )
     args, _ = parser.parse_known_args()
 
     logging.basicConfig(
-        level=logging.INFO,
+        level=logging.DEBUG if args.debug else logging.INFO,
         format="[%(levelname)s] %(name)s: %(message)s",
     )
 
