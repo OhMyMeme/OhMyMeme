@@ -467,7 +467,7 @@ class _WebDAVBackend(_SyncBackend):
                     data=f,
                     headers={"Content-Length": str(size)},
                 ) as resp:
-                    return resp.status in (200, 201, 204)
+                    return 200 <= resp.status < 300
         except Exception as e:
             logger.warning("upload failed %s: %s", remote_path, e)
             return False
@@ -798,6 +798,11 @@ def push(delete_remote: bool = None) -> dict:
                 aggregated["errors"] += r["errors"]
                 aggregated["bytes"] += r["bytes"]
 
+        if aggregated["errors"] > 0:
+            msg = "%d 个文件上传失败，未更新远端 manifest" % aggregated["errors"]
+            logger.warning("sync push aborted: %s", msg)
+            raise SyncError(msg)
+
         results = {
             "uploaded": aggregated["uploaded"],
             "skipped": aggregated["skipped"],
@@ -821,7 +826,9 @@ def push(delete_remote: bool = None) -> dict:
         build_manifest()
         remote_manifest_path = remote_root.rstrip("/") + "/" + REMOTE_INDEX
         local_index = cfg.data_dir / INDEX_FILENAME
-        bk.upload_file(local_index, remote_manifest_path)
+        ok = bk.upload_file(local_index, remote_manifest_path)
+        if not ok:
+            raise SyncError("远端 manifest 上传失败")
 
         _update_sync_state(
             status="done",

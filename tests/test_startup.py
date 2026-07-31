@@ -7,12 +7,12 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 os.environ["OHMYMEME_TEST"] = "1"
 
+from src.clipboard_util import copy_image_to_clipboard, copy_text
 from src.config import Config
+from src.crypto_util import decrypt_data, encrypt_data
 from src.database import MemeDB
 from src.hotkey import GlobalHotkey
 from src.tray import _create_default_icon
-from src.clipboard_util import copy_image_to_clipboard, copy_text
-from src.crypto_util import encrypt_data, decrypt_data
 
 
 def test_config_io(tmp_path):
@@ -25,7 +25,7 @@ def test_config_io(tmp_path):
     cfg2 = Config(tmp_path / "config.json")
     assert cfg2.get("hotkey") == "Ctrl+Shift+X"
     assert cfg2.get("s3_secret_key") == "test_secret_123"
-    assert cfg2.get("auto_start") == True
+    assert cfg2.get("auto_start")
 
 
 def test_database_operations(tmp_path):
@@ -47,7 +47,7 @@ def test_database_operations(tmp_path):
 def test_hotkey_init():
     hk = GlobalHotkey()
     result = hk.register("Ctrl+Alt+N", lambda: None)
-    assert result == True
+    assert result
     hk.unregister()
 
 
@@ -56,6 +56,7 @@ def test_tray_icon():
     assert img is not None
     assert img.size == (64, 64)
     import io
+
     buf = io.BytesIO()
     img.save(buf, format="PNG")
     assert len(buf.getvalue()) > 0
@@ -72,18 +73,21 @@ def test_crypto():
 def test_clipboard():
     result = copy_text("test")
     assert isinstance(result, bool)
-    icon_path = Path(__file__).resolve().parent.parent / "src" / "resources" / "icon.png"
+    icon_path = (
+        Path(__file__).resolve().parent.parent / "src" / "resources" / "icon.png"
+    )
     if icon_path.exists():
         result = copy_image_to_clipboard(str(icon_path))
         assert isinstance(result, bool)
 
 
 def test_webui_import():
-    from src.webui import WebUI, JsApi
+    from src.webui import JsApi, WebUI
+
     w = WebUI()
     assert w._port > 0
     assert w._window is None
-    assert w.is_visible == False
+    assert not w.is_visible
     assert hasattr(w, "toggle_safe")
     assert hasattr(w, "show")
     assert hasattr(w, "hide")
@@ -97,6 +101,7 @@ def test_webui_import():
 
 def test_webui_html_exists():
     from src.webui import HTML_DIR
+
     assert HTML_DIR.exists()
     assert (HTML_DIR / "index.html").exists()
     html = (HTML_DIR / "index.html").read_text(encoding="utf-8")
