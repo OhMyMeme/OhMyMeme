@@ -225,6 +225,7 @@ select:hover { border-color: var(--border-light); }
           <option value="ftp">FTP</option>
           <option value="s3">S3 兼容存储</option>
           <option value="r2">Cloudflare R2</option>
+          <option value="webdav">WebDAV</option>
         </select>
       </div>
 
@@ -323,6 +324,24 @@ select:hover { border-color: var(--border-light); }
         <div class="form-group">
           <label>路径前缀（可选）</label>
           <input id="r2-path" placeholder="ohmy meme">
+        </div>
+      </div>
+      <div id="s-sync-webdav" style="display:none">
+        <div class="form-group">
+          <label>WebDAV URL</label>
+          <input id="wd-url" placeholder="https://example.com/remote.php/dav/files/user">
+        </div>
+        <div class="form-group">
+          <label>用户名</label>
+          <input id="wd-user">
+        </div>
+        <div class="form-group">
+          <label>密码</label>
+          <input id="wd-pass" type="password">
+        </div>
+        <div class="form-group">
+          <label>远程路径（可选）</label>
+          <input id="wd-path" placeholder="ohmy meme">
         </div>
       </div>
       <div id="s-sync-buttons" style="display:none">
@@ -528,6 +547,10 @@ async function getSettings() {
   document.getElementById('r2-secret-access-key').value = s.r2_secret_access_key || '';
   document.getElementById('r2-bucket').value = s.r2_bucket || '';
   document.getElementById('r2-path').value = s.r2_path || '';
+  document.getElementById('wd-url').value = s.webdav_url || '';
+  document.getElementById('wd-user').value = s.webdav_user || '';
+  document.getElementById('wd-pass').value = s.webdav_password || '';
+  document.getElementById('wd-path').value = s.webdav_path || '';
   const kr = document.getElementById('s-delete-remote');
   const rl = document.getElementById('s-remove-local');
   const hw = document.getElementById('s-hide-upload-warn');
@@ -551,11 +574,13 @@ function toggleSyncType() {
   const f = document.getElementById('s-sync-ftp');
   const s3 = document.getElementById('s-sync-s3');
   const r2 = document.getElementById('s-sync-r2');
+  const wd = document.getElementById('s-sync-webdav');
   const o = document.getElementById('s-sync-options');
   const b = document.getElementById('s-sync-buttons');
   if (f) f.style.display = t === 'ftp' ? 'block' : 'none';
   if (s3) s3.style.display = t === 's3' ? 'block' : 'none';
   if (r2) r2.style.display = t === 'r2' ? 'block' : 'none';
+  if (wd) wd.style.display = t === 'webdav' ? 'block' : 'none';
   if (o) o.style.display = t ? 'block' : 'none';
   if (b) b.style.display = t ? 'block' : 'none';
 }
@@ -584,6 +609,10 @@ function collectSyncSettings() {
     r2_secret_access_key: document.getElementById('r2-secret-access-key')?.value || '',
     r2_bucket: document.getElementById('r2-bucket')?.value || '',
     r2_path: document.getElementById('r2-path')?.value || '',
+    webdav_url: document.getElementById('wd-url')?.value || '',
+    webdav_user: document.getElementById('wd-user')?.value || '',
+    webdav_password: document.getElementById('wd-pass')?.value || '',
+    webdav_path: document.getElementById('wd-path')?.value || '',
   };
 }
 
@@ -616,6 +645,12 @@ function validateSync(sync) {
     }
     if (!sync.r2_bucket.trim()) {
       showToast('请输入 Bucket 名称');
+      return false;
+    }
+  }
+  if (sync.sync_type === 'webdav') {
+    if (!sync.webdav_url.trim()) {
+      showToast('请输入 WebDAV URL');
       return false;
     }
   }
@@ -676,6 +711,10 @@ async function resetSettings() {
     document.getElementById('r2-secret-access-key').value = '';
     document.getElementById('r2-bucket').value = '';
     document.getElementById('r2-path').value = '';
+    document.getElementById('wd-url').value = '';
+    document.getElementById('wd-user').value = '';
+    document.getElementById('wd-pass').value = '';
+    document.getElementById('wd-path').value = '';
     const kr = document.getElementById('s-delete-remote');
     const rl = document.getElementById('s-remove-local');
     const hw = document.getElementById('s-hide-upload-warn');

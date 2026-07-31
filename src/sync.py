@@ -5,6 +5,7 @@ import logging
 import os
 import threading
 import time
+import urllib.error
 import urllib.request
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from ftplib import FTP, error_perm
@@ -405,6 +406,102 @@ class _R2Backend(_SyncBackend):
         self.client = None
 
 
+# ─── WebDAV 后端 ───
+
+
+class _WebDAVBackend(_SyncBackend):
+    def __init__(self, cfg):
+        self.cfg = cfg
+        self.base_url = ""
+        self.auth_header = ""
+
+    def connect(self):
+        url = self.cfg.get("webdav_url", "")
+        user = self.cfg.get("webdav_user", "")
+        password = self.cfg.get("webdav_password", "")
+        if not url:
+            raise SyncError("WebDAV url not configured")
+        self.base_url = url.rstrip("/")
+        if user:
+            import base64
+
+            token = base64.b64encode(
+                ("%s:%s" % (user, password)).encode("utf-8")
+            ).decode("ascii")
+            self.auth_header = "Basic %s" % token
+
+    def _url(self, remote_path):
+        return self.base_url + "/" + remote_path.lstrip("/")
+
+    def _request(self, method, url, data=None, headers=None):
+        req = urllib.request.Request(url, data=data, method=method)
+        req.add_header("User-Agent", "OhMyMeme")
+        if self.auth_header:
+            req.add_header("Authorization", self.auth_header)
+        if headers:
+            for k, v in headers.items():
+                req.add_header(k, v)
+        return urllib.request.urlopen(req, timeout=30)
+
+    def ensure_remote_dir(self, path):
+        parts = [p for p in path.strip("/").split("/") if p]
+        cur = self.base_url
+        for p in parts:
+            cur += "/" + p
+            try:
+                with self._request("MKCOL", cur):
+                    pass
+            except urllib.error.HTTPError as e:
+                if e.code not in (405, 301):  # 405=已存在, 301=重定向到自身
+                    logger.warning("MKCOL %s -> HTTP %d", cur, e.code)
+            except Exception as e:
+                logger.warning("MKCOL %s failed: %s", cur, e)
+
+    def upload_file(self, local_path, remote_path):
+        try:
+            with open(local_path, "rb") as f:
+                data = f.read()
+            with self._request("PUT", self._url(remote_path), data=data) as resp:
+                return resp.status in (200, 201, 204)
+        except Exception as e:
+            logger.warning("upload failed %s: %s", remote_path, e)
+            return False
+
+    def download_file(self, remote_path, local_path):
+        try:
+            local_path.parent.mkdir(parents=True, exist_ok=True)
+            with self._request("GET", self._url(remote_path)) as resp:
+                raw = resp.read()
+            with open(local_path, "wb") as f:
+                f.write(raw)
+            return True
+        except Exception as e:
+            logger.warning("download failed %s: %s", remote_path, e)
+            return False
+
+    def file_exists(self, path):
+        try:
+            with self._request(
+                "PROPFIND", self._url(path), headers={"Depth": "0"}
+            ) as resp:
+                return resp.status in (200, 207)
+        except urllib.error.HTTPError as e:
+            return e.code != 404
+        except Exception:
+            return False
+
+    def delete_file(self, path):
+        try:
+            with self._request("DELETE", self._url(path)) as resp:
+                return resp.status in (200, 204)
+        except Exception as e:
+            logger.warning("delete failed %s: %s", path, e)
+            return False
+
+    def close(self):
+        pass
+
+
 # ─── 后端工厂 ───
 
 
@@ -417,6 +514,8 @@ def _get_backend():
         return _S3Backend(cfg)
     elif sync_type == "r2":
         return _R2Backend(cfg)
+    elif sync_type == "webdav":
+        return _WebDAVBackend(cfg)
     else:
         raise SyncError("No sync type configured")
 
@@ -426,6 +525,16 @@ def _connect():
     bk = _FtpBackend(get_config())
     bk.connect()
     return bk.ftp
+
+
+def _remote_root(cfg) -> str:
+    """返回远端根路径：FTP→ftp_path，WebDAV→webdav_path，对象存储→空"""
+    st = cfg.get("sync_type", "")
+    if st == "ftp":
+        return cfg.get("ftp_path", "/")
+    if st == "webdav":
+        return cfg.get("webdav_path", "")
+    return ""
 
 
 def _fetch_remote_memes(bk, remote_root):
@@ -580,7 +689,7 @@ def _pull_worker(entries, remote_root, cache_dir, thumb_dir, db):
 def upload_index(bk=None) -> bool:
     """上传本地 manifest 到远端"""
     cfg = get_config()
-    remote_root = cfg.get("ftp_path", "/") if cfg.get("sync_type", "") == "ftp" else ""
+    remote_root = _remote_root(cfg)
     build_manifest()
     local_index = cfg.data_dir / INDEX_FILENAME
     own_backend = bk is None
@@ -602,7 +711,7 @@ def upload_index(bk=None) -> bool:
 def download_index() -> Optional[dict]:
     """从远端下载 manifest，返回解析后的 dict 或 None"""
     cfg = get_config()
-    remote_root = cfg.get("ftp_path", "/") if cfg.get("sync_type", "") == "ftp" else ""
+    remote_root = _remote_root(cfg)
     tmp = cfg.data_dir / ".remote-index.json"
     bk = _get_backend()
     bk.connect()
@@ -629,7 +738,7 @@ def push(delete_remote: bool = None) -> dict:
     cfg = get_config()
     if delete_remote is None:
         delete_remote = cfg.get("sync_delete_remote", False)
-    remote_root = cfg.get("ftp_path", "/") if cfg.get("sync_type", "") == "ftp" else ""
+    remote_root = _remote_root(cfg)
     cache_dir = cfg.cache_dir
     thumb_dir = cfg.thumbnail_dir
     max_workers = max(1, min(8, int(cfg.get("sync_threads", 3))))
@@ -750,7 +859,7 @@ def pull(remove_local: bool = None) -> dict:
     cfg = get_config()
     if remove_local is None:
         remove_local = cfg.get("sync_remove_local", False)
-    remote_root = cfg.get("ftp_path", "/") if cfg.get("sync_type", "") == "ftp" else ""
+    remote_root = _remote_root(cfg)
     cache_dir = cfg.cache_dir
     thumb_dir = cfg.thumbnail_dir
     max_workers = max(1, min(8, int(cfg.get("sync_threads", 3))))
@@ -837,7 +946,7 @@ def delete_all_remote() -> dict:
     from .config import get_config
 
     cfg = get_config()
-    remote_root = cfg.get("ftp_path", "/") if cfg.get("sync_type", "") == "ftp" else ""
+    remote_root = _remote_root(cfg)
     bk = _get_backend()
     bk.connect()
     try:

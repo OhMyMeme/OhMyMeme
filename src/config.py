@@ -20,6 +20,7 @@ _SECRET_KEYS = {
     "r2_access_key_id",
     "r2_secret_access_key",
     "ftp_password",
+    "webdav_password",
 }
 
 
@@ -90,6 +91,11 @@ class Config:
         "r2_secret_access_key": "",
         "r2_bucket": "",
         "r2_path": "",
+        # WebDAV
+        "webdav_url": "",
+        "webdav_user": "",
+        "webdav_password": "",
+        "webdav_path": "",
         # UI
         "theme": "dark",
         "window_x": -1,
