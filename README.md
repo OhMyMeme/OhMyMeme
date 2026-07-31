@@ -151,17 +151,21 @@ python scripts/build.py --build-only
 
 # 仅制作安装包（PyInstaller 已打包完时，仅 Windows）
 python scripts/build.py --installer-only
+
+# Linux 目标指定包类型：all | appimage | deb | rpm（默认 all）
+python scripts/build.py --linux --installer-only --package deb
 ```
 
 **Windows 安装包**: 需 [InnoSetup 6/7](https://jrsoftware.org/isdl.php)。
 
-**Linux 包**: 支持 .deb / .rpm / AppImage，详见 `scripts/installer/linux/build.sh`。构建前需安装 GTK/WebKit 依赖（同上）。
+**Linux 包**: 支持 .deb / .rpm / AppImage，`--package` 指定包类型（`all` / `appimage` / `deb` / `rpm`，默认 `all`）。构建前需安装 GTK/WebKit 依赖（同上）。
 
 ```bash
-bash scripts/installer/linux/build.sh all      # AppImage + .deb
-bash scripts/installer/linux/build.sh deb      # 仅 .deb
-bash scripts/installer/linux/build.sh rpm      # 仅 .rpm
-bash scripts/installer/linux/build.sh appimage # 仅 AppImage
+# 等价于 bash scripts/installer/linux/build.sh all / deb / rpm / appimage
+python scripts/build.py --linux --installer-only --package all
+python scripts/build.py --linux --installer-only --package deb
+python scripts/build.py --linux --installer-only --package rpm
+python scripts/build.py --linux --installer-only --package appimage
 ```
 
 > 原 Nuitka 构建脚本已移至 `scripts/nuitka/build.py`，待申诉完成后重新启用。

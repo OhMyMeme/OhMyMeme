@@ -10,6 +10,7 @@ Usage:
     python scripts/build.py --linux          # Linux target
     python scripts/build.py --installer-only # installer only (assumes already built)
     python scripts/build.py --build-only     # build only, skip installer
+    python scripts/build.py --package deb    # Linux package type: all|appimage|deb|rpm
     python scripts/build.py --lang en        # force English output
 """
 
@@ -245,7 +246,7 @@ def build_installer(version, target=None):
         print(L("installer_not_found"), installer)
 
 
-def build_linux_packages(version):
+def build_linux_packages(version, package="all"):
     build_sh = PROJECT_ROOT / "scripts" / "installer" / "linux" / "build.sh"
     if not build_sh.exists():
         print(L("linux_sh_not_found", build_sh))
@@ -255,7 +256,7 @@ def build_linux_packages(version):
     env["SKIP_PYINSTALLER"] = "1"
     print(L("building_linux"))
     result = subprocess.run(
-        ["bash", str(build_sh), "all"],
+        ["bash", str(build_sh), package],
         cwd=str(PROJECT_ROOT),
         env=env,
     )
@@ -273,6 +274,8 @@ if __name__ == "__main__":
                         help="Only build installer (assumes PyInstaller already ran)")
     parser.add_argument("--build-only", action="store_true",
                         help="Only run PyInstaller, skip installer")
+    parser.add_argument("--package", choices=["all", "appimage", "deb", "rpm"], default="all",
+                        help="Linux package type to build (default: all)")
     target_group = parser.add_mutually_exclusive_group()
     target_group.add_argument("--windows", action="store_true", dest="target_windows",
                               help="Build for Windows")
@@ -303,7 +306,7 @@ if __name__ == "__main__":
         if target == "Windows":
             build_installer(get_version(), target=target)
         elif target == "Linux":
-            build_linux_packages(get_version())
+            build_linux_packages(get_version(), args.package)
         else:
             print(L("installer_only_unsupported", target))
             sys.exit(1)
@@ -314,4 +317,4 @@ if __name__ == "__main__":
         elif target == "Windows":
             build_installer(version, target=target)
         elif target == "Linux":
-            build_linux_packages(version)
+            build_linux_packages(version, args.package)

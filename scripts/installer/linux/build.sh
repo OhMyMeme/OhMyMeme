@@ -126,7 +126,7 @@ build_rpm() {
     mkdir -p "$rpm_root/BUILD" "$rpm_root/RPMS" "$rpm_root/SOURCES" \
              "$rpm_root/SPECS" "$rpm_root/SRPMS"
 
-    local src_tar="$DIST_DIR/ohmymeme-${APP_VERSION}.tar.gz"
+    local src_tar="$rpm_root/SOURCES/ohmymeme-${APP_VERSION}.tar.gz"
     cd "$DIST_DIR"
     tar czf "$src_tar" OhMyMeme/
 
@@ -143,12 +143,12 @@ Source0: ohmymeme-0.1.0.tar.gz
 轻量化表情包管理器，支持快捷键呼出、搜索、一键复制到剪贴板。
 
 %prep
-%setup -q
+%setup -q -n OhMyMeme
 
 %install
 mkdir -p %{buildroot}/%{_bindir}
-cp -r OhMyMeme/_internal %{buildroot}/%{_bindir}/
-cp OhMyMeme/OhMyMeme %{buildroot}/%{_bindir}/
+cp -r _internal %{buildroot}/%{_bindir}/
+cp OhMyMeme %{buildroot}/%{_bindir}/
 ln -sf %{_bindir}/OhMyMeme %{buildroot}/%{_bindir}/ohmymeme
 
 %files
