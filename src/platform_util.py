@@ -20,6 +20,79 @@ def is_wsl() -> bool:
         return False
 
 
+def is_integrated_gpu() -> bool:
+    """DXGI 检测主 GPU 是否为核显（专用显存 < 1GB 视为核显）"""
+    if platform.system() != "Windows":
+        return False
+    try:
+        import ctypes
+        from ctypes import wintypes
+
+        class GUID(ctypes.Structure):
+            _fields_ = [
+                ("Data1", wintypes.DWORD),
+                ("Data2", wintypes.WORD),
+                ("Data3", wintypes.WORD),
+                ("Data4", ctypes.c_ubyte * 8),
+            ]
+
+        class DXGI_ADAPTER_DESC(ctypes.Structure):
+            _fields_ = [
+                ("Description", ctypes.c_wchar * 128),
+                ("VendorId", wintypes.UINT),
+                ("DeviceId", wintypes.UINT),
+                ("SubSysId", wintypes.UINT),
+                ("Revision", wintypes.UINT),
+                ("DedicatedVideoMemory", ctypes.c_size_t),
+                ("DedicatedSystemMemory", ctypes.c_size_t),
+                ("SharedSystemMemory", ctypes.c_size_t),
+                ("AdapterLuid", ctypes.c_uint64),
+            ]
+
+        dxgi = ctypes.WinDLL("dxgi.dll")
+        create = dxgi.CreateDXGIFactory1
+        create.restype = ctypes.HRESULT
+        create.argtypes = [ctypes.POINTER(GUID), ctypes.POINTER(ctypes.c_void_p)]
+
+        iid = GUID(
+            0x770AAE78,
+            0xF26F,
+            0x4DBA,
+            (ctypes.c_ubyte * 8)(0xA8, 0x29, 0x25, 0x3C, 0x83, 0xD1, 0xB3, 0x87),
+        )
+        factory = ctypes.c_void_p()
+        if create(ctypes.byref(iid), ctypes.byref(factory)) < 0 or not factory.value:
+            return False
+
+        vtbl = ctypes.cast(
+            ctypes.cast(factory, ctypes.POINTER(ctypes.c_void_p))[0],
+            ctypes.POINTER(ctypes.c_void_p),
+        )
+        EnumAdapters = ctypes.WINFUNCTYPE(
+            ctypes.HRESULT,
+            ctypes.c_void_p,
+            wintypes.UINT,
+            ctypes.POINTER(ctypes.c_void_p),
+        )(vtbl[7])
+        adapter = ctypes.c_void_p()
+        if EnumAdapters(factory, 0, ctypes.byref(adapter)) < 0 or not adapter.value:
+            return False
+
+        vtbl2 = ctypes.cast(
+            ctypes.cast(adapter, ctypes.POINTER(ctypes.c_void_p))[0],
+            ctypes.POINTER(ctypes.c_void_p),
+        )
+        GetDesc = ctypes.WINFUNCTYPE(
+            ctypes.HRESULT, ctypes.c_void_p, ctypes.POINTER(DXGI_ADAPTER_DESC)
+        )(vtbl2[8])
+        desc = DXGI_ADAPTER_DESC()
+        if GetDesc(adapter, ctypes.byref(desc)) < 0:
+            return False
+        return desc.DedicatedVideoMemory < 1024 * 1024 * 1024
+    except Exception:
+        return False
+
+
 def set_auto_start(enabled: bool) -> bool:
     """设置开机自启"""
     system = platform.system()

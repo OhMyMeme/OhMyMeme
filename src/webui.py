@@ -20,6 +20,20 @@ if platform.system() == "Linux":
     except Exception:
         pass
 
+# 仅核显禁用 WebView2 GPU 合成，独显保持硬件加速避免 CPU 滥用
+if platform.system() == "Windows":
+    from .platform_util import is_integrated_gpu
+
+    if is_integrated_gpu():
+        logging.getLogger(__name__).debug(
+            "integrated GPU detected, disable gpu compositing"
+        )
+        _wv2_args = os.environ.get("WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS", "")
+        if "--disable-gpu-compositing" not in _wv2_args:
+            os.environ["WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS"] = (
+                f"{_wv2_args} --disable-gpu-compositing".strip()
+            )
+
 try:
     from PIL import Image as PILImage
 
