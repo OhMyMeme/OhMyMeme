@@ -221,9 +221,9 @@ body {
 .meme-card.folder-card .name { display: none; }
 
 /* Drag and drop */
-.meme-card.dragging { opacity: .5; transform: scale(.95); }
+.meme-card.dragging { opacity: .5; transform: scale(.95); z-index: 10; position: relative; transition: none; }
 .meme-card.drag-over { border-color: var(--accent); }
-#meme-grid.drag-active .meme-card:not(.folder-card) { transition: transform 200ms ease; }
+#meme-grid.drag-active .meme-card:not(.folder-card):not(.dragging) { transition: transform 200ms ease; }
 
 /* Buttons */
 .btn {
@@ -537,53 +537,88 @@ function renderGrid() {
     grid.appendChild(card);
   });
 
-  // Custom drag-to-reorder
-  let dragActive = false, dragStartY = 0, dragCard = null, dragIdx = -1;
+}
+
+/* Drag-to-reorder (only enabled in the unfiltered "all memes" view) */
+let memeDrag = null;
+let suppressClick = false;
+
+function canReorderMemes() {
+  const q = document.getElementById('search').value.trim();
+  return !q && activeTags.size === 0 && activeCollection == null;
+}
+
+function memeCardsInGrid() {
+  return Array.from(document.querySelectorAll('#meme-grid .meme-card:not(.folder-card)'));
+}
+
+function getDropIndex(x, y, cards) {
+  for (let i = 0; i < cards.length; i++) {
+    const r = cards[i].getBoundingClientRect();
+    if (y >= r.top && y <= r.bottom) {
+      if (x < r.left + r.width / 2) return i;
+    } else if (y < r.top) {
+      return i;
+    }
+  }
+  return cards.length;
+}
+
+function clearMemeDrag() {
+  const d = memeDrag;
+  if (!d) return;
+  memeDrag = null;
+  d.card.classList.remove('dragging');
+  d.card.style.transform = '';
+  document.getElementById('meme-grid').classList.remove('drag-active');
+  memeCardsInGrid().forEach(c => { c.style.borderTop = ''; c.style.borderBottom = ''; });
+}
+
+function initDragReorder() {
+  const grid = document.getElementById('meme-grid');
+  document.addEventListener('mousedown', () => { suppressClick = false; }, true);
   grid.addEventListener('mousedown', (e) => {
-    dragCard = e.target.closest('.meme-card:not(.folder-card)');
-    if (!dragCard) return;
-    dragActive = false;
-    dragStartY = e.clientY;
-    dragIdx = Array.from(grid.children).indexOf(dragCard);
+    if (e.button !== 0) return;
+    const card = e.target.closest('.meme-card:not(.folder-card)');
+    if (!card || !canReorderMemes()) return;
+    const rect = card.getBoundingClientRect();
+    memeDrag = { card, active: false, offX: e.clientX - rect.left, offY: e.clientY - rect.top, rect };
   });
   document.addEventListener('mousemove', (e) => {
-    if (!dragCard) return;
-    if (!dragActive && Math.abs(e.clientY - dragStartY) > 8) {
-      dragActive = true;
-      dragCard.classList.add('dragging');
+    const d = memeDrag;
+    if (!d) return;
+    if (!d.active && Math.hypot(e.clientX - (d.rect.left + d.offX), e.clientY - (d.rect.top + d.offY)) > 8) {
+      d.active = true;
+      d.card.classList.add('dragging');
       grid.classList.add('drag-active');
     }
-    if (!dragActive) return;
-    const rects = grid.querySelectorAll('.meme-card:not(.folder-card)');
-    for (const rc of rects) {
-      if (rc === dragCard) continue;
-      const r = rc.getBoundingClientRect();
-      if (e.clientY > r.top && e.clientY < r.bottom) {
-        const after = e.clientY > r.top + r.height / 2;
-        rc.style.borderBottom = after ? '2px solid var(--accent)' : '';
-        rc.style.borderTop = after ? '' : '2px solid var(--accent)';
-      } else {
-        rc.style.borderBottom = '';
-        rc.style.borderTop = '';
-      }
-    }
+    if (!d.active) return;
+    d.card.style.transform = 'translate(' + (e.clientX - d.offX - d.rect.left) + 'px,' + (e.clientY - d.offY - d.rect.top) + 'px) scale(0.95)';
+    const others = memeCardsInGrid().filter(c => c !== d.card);
+    const target = getDropIndex(e.clientX, e.clientY, others);
+    others.forEach(c => { c.style.borderTop = ''; c.style.borderBottom = ''; });
+    if (target < others.length) others[target].style.borderTop = '2px solid var(--accent)';
+    else if (others.length) others[others.length - 1].style.borderBottom = '2px solid var(--accent)';
   });
-  document.addEventListener('mouseup', async () => {
-    if (!dragCard) { dragActive = false; return; }
+  document.addEventListener('mouseup', async (e) => {
+    const d = memeDrag;
+    if (!d) return;
+    memeDrag = null;
+    d.card.classList.remove('dragging');
+    d.card.style.transform = '';
     grid.classList.remove('drag-active');
-    dragCard.classList.remove('dragging');
-    grid.querySelectorAll('.meme-card').forEach(c => { c.style.borderBottom = ''; c.style.borderTop = ''; });
-    if (dragActive) {
-      const allCards = grid.querySelectorAll('.meme-card:not(.folder-card)');
-      let newIdx = memes.length - 1;
-      for (let i = 0; i < allCards.length; i++) {
-        const rc = allCards[i];
-        if (rc === dragCard) continue;
-        // Find where dragCard is inserted
-      }
-      // simpler: just rebuild memes from grid order
+    memeCardsInGrid().forEach(c => { c.style.borderTop = ''; c.style.borderBottom = ''; });
+    if (!d.active) return;
+    suppressClick = true;
+    const all = memeCardsInGrid();
+    const others = all.filter(c => c !== d.card);
+    const cur = all.indexOf(d.card);
+    const target = getDropIndex(e.clientX, e.clientY, others);
+    if (target < cur) d.card.parentNode.insertBefore(d.card, others[target]);
+    else if (target > cur) d.card.parentNode.insertBefore(d.card, others[target - 1].nextSibling);
+    if (target !== cur) {
       const ordered = [];
-      grid.querySelectorAll('.meme-card:not(.folder-card)').forEach(c => {
+      memeCardsInGrid().forEach(c => {
         const id = parseInt(c.dataset.memeId);
         const found = memes.find(x => x.id === id);
         if (found) ordered.push(found);
@@ -593,12 +628,12 @@ function renderGrid() {
         await api('reorder_memes', memes.map(x => x.id));
       }
     }
-    dragCard = null;
-    dragActive = false;
   });
+  window.addEventListener('blur', clearMemeDrag);
 }
 
 async function copyMeme(id, filename) {
+  if (suppressClick) return;
   const ok = await api('copy_meme', id);
   if (ok) {
     showToast(filename + ' 已复制');
@@ -1260,6 +1295,7 @@ async function checkUpdateAndPrompt() {
 
 /* Init */
 document.addEventListener('DOMContentLoaded', async () => {
+  initDragReorder();
   document.getElementById('loading').classList.remove('hidden');
   const data = await api('get_init_data');
   if (data) {
