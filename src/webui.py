@@ -55,7 +55,7 @@ try:
 except ImportError:
     HAS_BOTTLE = False
 
-from . import adb_util, updater
+from . import adb_util, qqnt_extract, updater
 from . import sync as sync_module
 from .clipboard_util import _is_animated, copy_image_to_clipboard
 from .config import get_config
@@ -737,6 +737,102 @@ class JsApi:
         return ""
 
 
+# ─── QQNT 提取驱动（后台线程 + 状态，供设置页向导轮询） ───
+
+_QQNT_STATE = {
+    "status": "idle",  # idle|running|done|cancelled|error
+    "progress": 0,
+    "message": "",
+    "error": "",
+    "log": [],
+    "result": None,
+}
+_QQNT_LOCK = threading.Lock()
+_QQNT_CANCEL = False
+
+
+def _set_qqnt(**kw):
+    with _QQNT_LOCK:
+        _QQNT_STATE.update(**kw)
+
+
+def _append_qqnt_log(msg):
+    with _QQNT_LOCK:
+        _QQNT_STATE["log"] = (_QQNT_STATE["log"] + [msg])[-100:]
+
+
+def get_qqnt_progress() -> dict:
+    with _QQNT_LOCK:
+        return dict(_QQNT_STATE)
+
+
+def cancel_qqnt_extract():
+    global _QQNT_CANCEL
+    _QQNT_CANCEL = True
+
+
+def start_qqnt_extract(
+    qq_number: str,
+    output_dir: str,
+    image_only: bool = False,
+    overwrite: bool = False,
+    ini_path: str = None,
+    userdata_save_path: str = None,
+) -> bool:
+    global _QQNT_CANCEL
+    _QQNT_CANCEL = False
+    _set_qqnt(
+        status="running", progress=0, message="准备中", error="", log=[], result=None
+    )
+    threading.Thread(
+        target=_qqnt_worker,
+        args=(
+            qq_number,
+            output_dir,
+            image_only,
+            overwrite,
+            ini_path,
+            userdata_save_path,
+        ),
+        daemon=True,
+    ).start()
+    return True
+
+
+def _qqnt_worker(
+    qq_number, output_dir, image_only, overwrite, ini_path, userdata_save_path
+):
+    def on_progress(done, total, src, dst):
+        pct = int(done * 100 / total) if total else 0
+        _set_qqnt(progress=pct, message="复制中 %d/%d" % (done, total))
+
+    def on_error(src, msg):
+        _append_qqnt_log("失败: %s (%s)" % (src, msg))
+
+    def on_log(msg):
+        _append_qqnt_log(msg)
+
+    try:
+        result = qqnt_extract.extract_qq_emojis(
+            qq_number,
+            output_dir,
+            userdata_save_path=userdata_save_path,
+            ini_path=ini_path or qqnt_extract.DEFAULT_INI_PATH,
+            image_only=image_only,
+            overwrite=overwrite,
+            should_stop=lambda: _QQNT_CANCEL,
+            on_progress=on_progress,
+            on_error=on_error,
+            on_log=on_log,
+        )
+        if _QQNT_CANCEL:
+            _set_qqnt(status="cancelled", message="已取消", result=result)
+        else:
+            _set_qqnt(status="done", progress=100, message="提取完成", result=result)
+    except Exception as e:
+        _set_qqnt(status="error", message="提取失败", error=str(e))
+
+
 class SettingsApi:
     """暴露给设置窗口的 JS API（仅设置相关方法）"""
 
@@ -907,6 +1003,109 @@ class SettingsApi:
 
     def cancel_qq_import(self):
         adb_util.cancel_qq_import()
+
+    def qqnt_check_env(self) -> dict:
+        """检查 QQNT 提取环境，返回 get_extract_status 结果"""
+        return qqnt_extract.get_extract_status(
+            ini_path=self._cfg.get("qqnt_ini_path") or qqnt_extract.DEFAULT_INI_PATH,
+            userdata_save_path=self._cfg.get("qqnt_userdata_path") or None,
+            fetch_nicknames=True,
+        )
+
+    def qqnt_pick_ini(self) -> dict:
+        """选择 UserDataInfo.ini，保存到配置并返回环境状态"""
+        try:
+            result = webview.windows[0].create_file_dialog(
+                webview.FileDialog.OPEN,
+                allow_multiple=False,
+                file_types=("INI Files (*.ini);;All Files (*)",),
+            )
+        except Exception:
+            return {"ok": False}
+        if not result:
+            return {"ok": False, "cancelled": True}
+        path = result[0] if isinstance(result, (tuple, list)) else result
+        self._cfg.set("qqnt_ini_path", path)
+        self._cfg.set("qqnt_userdata_path", "")
+        self._cfg.save()
+        return self.qqnt_check_env()
+
+    def qqnt_pick_userdata(self) -> dict:
+        """选择用户数据目录，保存到配置并返回环境状态"""
+        try:
+            result = webview.windows[0].create_file_dialog(
+                webview.FileDialog.FOLDER, allow_multiple=False
+            )
+        except Exception:
+            return {"ok": False}
+        if not result:
+            return {"ok": False, "cancelled": True}
+        path = result[0] if isinstance(result, (tuple, list)) else result
+        self._cfg.set("qqnt_userdata_path", path)
+        self._cfg.save()
+        return self.qqnt_check_env()
+
+    def qqnt_pick_base(self) -> dict:
+        """选择保存基础目录"""
+        try:
+            result = webview.windows[0].create_file_dialog(
+                webview.FileDialog.FOLDER, allow_multiple=False
+            )
+        except Exception:
+            return {"ok": False}
+        if not result:
+            return {"ok": False, "cancelled": True}
+        path = result[0] if isinstance(result, (tuple, list)) else result
+        return {"ok": True, "base": path}
+
+    def qqnt_default_dir(self, base: str, qq_number: str) -> dict:
+        """按账号生成默认输出目录（昵称+QQ号）"""
+        try:
+            d = qqnt_extract.get_default_output_dir(
+                base, qq_number, fetch_nickname=True
+            )
+        except Exception:
+            return {"ok": False}
+        return {"ok": True, "dir": d}
+
+    def qqnt_start(
+        self,
+        qq_number: str,
+        output_dir: str,
+        image_only: bool = False,
+        overwrite: bool = False,
+    ) -> dict:
+        ok = start_qqnt_extract(
+            qq_number,
+            output_dir,
+            image_only=image_only,
+            overwrite=overwrite,
+            ini_path=self._cfg.get("qqnt_ini_path") or None,
+            userdata_save_path=self._cfg.get("qqnt_userdata_path") or None,
+        )
+        return {"ok": ok}
+
+    def qqnt_get_progress(self) -> dict:
+        return get_qqnt_progress()
+
+    def qqnt_cancel(self):
+        cancel_qqnt_extract()
+
+    def qqnt_open_dir(self, path: str) -> bool:
+        try:
+            if platform.system() == "Windows":
+                os.startfile(path)
+            elif platform.system() == "Darwin":
+                import subprocess
+
+                subprocess.Popen(["open", path])
+            else:
+                import subprocess
+
+                subprocess.Popen(["xdg-open", path])
+            return True
+        except Exception:
+            return False
 
     def import_memes(self) -> bool:
         try:
