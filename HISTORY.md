@@ -15,6 +15,7 @@
 ## 修复
 
 - **manifest 空分组自动清理** — 嵌套场景下递归删除空分组
+- **WebP 动图不再转 GIF** — 直接向剪贴板传送 WebP 原文件（`_copy_webp_windows`：CF_HDROP + 自定义 "WebP" 格式 + CF_DIB 回退），QQ/微信原生解码 WebP，保留动画与透明，避免 GIF 转换带来的黑底/残影问题；移除 `_webp_to_gif` 相关逻辑
 
 ## 已知问题
 

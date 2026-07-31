@@ -105,7 +105,7 @@ tests/
 - 全局单例: `get_config()`, `get_db()`
 
 ### 同步
-- manifest 文件: `meme-index.json` (version 2)
+- manifest 文件: `meme-index.json`
 - SHA-256 差异对比, `push(delete_remote)`/`pull(remove_local)`
 - 远端路径: `{root}/memes/`, `{root}/thumbnails/`, `{root}/meme-index.json`
 - 同步进度: `_sync_state` 全局变量追踪进度，`get_sync_progress()` 供 JS 轮询
@@ -122,7 +122,7 @@ tests/
 ### 更新
 - GitHub API 查询: `/releases/latest` → `/releases?per_page=5` 回退
 - 镜像并发: `_urlopen_mirror` / `_urlretrieve_mirror` 用 `ThreadPoolExecutor` + `as_completed`
-- 镜像列表: `github.dpik.top` → `gh.dpik.top` → `gh-proxy.org` → 直连 GitHub
+- 镜像列表: `github.dpik.top` → `gh.dpik.top` → `gh-proxy.org` → 自建镜像（仅用于版本查询）→ 直连 GitHub
 - 下载进度: `start_download()` → 后台线程 → JS 每 500ms 轮询 `get_download_progress()`
 
 ### 环境检测
@@ -145,11 +145,15 @@ tests/
 - **双重去重** — 文件名去重防止每次启动重复注册，哈希去重防止同图不同名重复
 - `_do_import`（拖入/导入对话框）同样有哈希去重，且文件重命名为 `{hash[:16]}{ext}`
 
-### 剪贴板 (GIF 三格式写入)
+### 剪贴板 (GIF/WebP 直接传送)
 - `_copy_gif_windows` 同时写入三个剪贴板格式:
   - **CF_DIB** — BMP 首帧（去掉 14 字节 BMP 头），旧应用兼容
   - **CF_HDROP** — `DROPFILES` 结构体 + 文件 UTF-16 路径，QQ/微信需要此格式才能粘贴动图
   - **自定义 "GIF"** — 原始 GIF 字节，注册 `RegisterClipboardFormatW("GIF")`
+- `_copy_webp_windows` 直接传送 WebP 原文件（不再转 GIF）:
+  - **CF_HDROP** — 指向 `.webp` 文件路径，QQ/微信原生解码 WebP（含动画+透明）
+  - **自定义 "WebP"** — 原始 WebP 字节，注册 `RegisterClipboardFormatW("WebP")`
+  - **CF_DIB** — 首帧 BMP 静态回退
 - **移除 CF_HDROP 会导致 QQ/微信粘贴 GIF 变静态图**
 
 ### 加密降级 (crypto_util)
@@ -161,7 +165,7 @@ tests/
 - `_apply_remote_collections` 以**并集**方式合并远端分组，不清除本地已有成员
 - 远端 manifest 中的 `collections` 用文件名关联（非 ID），跨设备稳定
 
-### Manifest (version 3)
+### Manifest
 - `build()` 递归遍历嵌套分组树，空分组自动 `delete_collection`
 - 远端 manifest 中的 `collections` 以嵌套格式存储（`name`/`filenames`/`children`），version 2 旧格式启动时自动转换
 
@@ -187,7 +191,7 @@ tests/
 - **入口**: `start_qq_import()` — 后台线程执行完整流程
 - **流程**: 检测/下载 ADB → `adb start-server` → 轮询 `adb devices` 等待设备（最多 300s） → `adb pull` 拉取 `QQ_Favorite` 目录 → 魔数识别扩展名 → ZIP 打包到临时目录
 - **魔数识别** (`_detect_ext`): 支持 PNG (`\x89PNG`), JPEG (`\xff\xd8`), GIF (`GIF87a`/`GIF89a`), WebP (`RIFF`+`WEBP`), BMP (`BM`)
-- **ADB 下载** (`_download_with_progress`): 从 googledownloads.cn 下载 platform-tools ZIP，解压到 `.adb/platform-tools/`，更新 `dl_progress` 供前端显示下载百分比
+- **ADB 下载** (`_download_with_progress`): 从 googledownloads.cn （国内同步镜像源） 下载 platform-tools ZIP，解压到 `.adb/platform-tools/`，更新 `dl_progress` 供前端显示下载百分比
 - **进度状态** (`_QQ_STATE`): `idle` → `downloading_adb` → `starting_adb` → `waiting_device` → `pulling` → `processing` → `done`/`error`，前端 300ms 轮询 `get_qq_import_progress()`
 - **保存**: `save_qq_zip()` 通过系统另存为对话框保存 ZIP 到用户位置
 - **前端 UI**: 设置页按钮"从手机版 QQ 缓存导入" + 进度覆盖层（显示阶段 + 进度条 + 错误信息）
