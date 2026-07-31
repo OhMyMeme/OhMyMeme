@@ -1269,17 +1269,20 @@ function openSettings() { try { pywebview.api.open_settings(); } catch(e) {} }
 /* Window Drag */
 let dragState = null;
 const titlebar = document.getElementById('titlebar');
-titlebar.addEventListener('mousedown', (e) => {
+titlebar.addEventListener('mousedown', async (e) => {
+  if (e.button !== 0) return;
   if (e.target.closest('.title-btn')) return;
-  dragState = { sx: e.screenX, sy: e.screenY };
+  const nativeDrag = await api('start_window_drag', e.button + 1, e.screenX, e.screenY);
+  if (nativeDrag) return;   // Linux：交给合成器拖动
+  dragState = { x: e.clientX, y: e.clientY };
   e.preventDefault();
 });
 document.addEventListener('mousemove', (e) => {
   if (!dragState) return;
-  const dx = e.screenX - dragState.sx, dy = e.screenY - dragState.sy;
+  const dx = e.clientX - dragState.x, dy = e.clientY - dragState.y;
   if (dx !== 0 || dy !== 0) {
     api('move_window', dx, dy);
-    dragState.sx = e.screenX; dragState.sy = e.screenY;
+    dragState.x = e.clientX; dragState.y = e.clientY;
   }
 });
 document.addEventListener('mouseup', () => { dragState = null; });
