@@ -512,7 +512,7 @@ function renderGrid() {
     const img = document.createElement('img');
     img.alt = m.name;
     img.loading = 'lazy';
-    if (m.is_gif && m.auto_play_gif) {
+    if (m.is_animated && m.auto_play_gif) {
       img.src = '/api/original/' + m.id + '/' + encodeURIComponent(m.filename);
     } else {
       img.src = '/api/thumb/' + m.id + '/' + encodeURIComponent(m.filename);
@@ -525,10 +525,10 @@ function renderGrid() {
     name.textContent = dn;
     card.appendChild(name);
 
-    if (m.is_gif) {
+    if (m.is_animated) {
       const badge = document.createElement('span');
       badge.className = 'gif-badge';
-      badge.textContent = 'GIF';
+      badge.textContent = m.is_gif ? 'GIF' : 'WebP';
       card.appendChild(badge);
     }
 
@@ -1167,29 +1167,53 @@ function openSettings() { try { pywebview.api.open_settings(); } catch(e) {} }
     e.preventDefault();
     dragCounter = 0;
     overlay.classList.remove('drag-over');
+    const dt = e.dataTransfer;
+    // 从 dataTransfer 提取文件路径
     let uri = '';
-    try {
-      const types = e.dataTransfer.types;
-      if (types && types.includes && types.includes('text/uri-list')) {
-        uri = e.dataTransfer.getData('text/uri-list');
-      }
-    } catch(_) {}
-    if (uri) {
+    let file = null;
+
+    // 方式1: getData('text/uri-list') — 浏览器拖入（HTTP URL）
+    if (!uri) { try { uri = dt.getData('text/uri-list') || ''; } catch(_) {} }
+    // 方式2: getData('text/plain') — 回退
+    if (!uri) { try { uri = dt.getData('text/plain') || ''; } catch(_) {} }
+    uri = uri.trim();
+    // 方式3: items text/html → 提取 file://（GNOME 文件管理器）
+    if (!uri) {
       try {
-        const r = await api('download_original_image', uri);
-        if (r && r.ok) {
-          location.reload();
-          return;
+        if (dt.items && dt.items.length) {
+          for (let i = 0; i < dt.items.length; i++) {
+            const item = dt.items[i];
+            if (item.kind === 'string' && item.type === 'text/html') {
+              const html = await new Promise(res => item.getAsString(res));
+              if (!html) continue;
+              const text = html.replace(/<[^>]+>/g, '').trim();
+              if (text.startsWith('file://')) { uri = text; break; }
+            }
+          }
         }
       } catch(_) {}
     }
-    // 回退：文件 base64 上传
-    const files = e.dataTransfer.files;
-    if (!files || files.length === 0) return;
-    const imgExts = /\.(png|jpg|jpeg|gif|webp|bmp)$/i;
-    const items = [];
-    for (const file of files) {
-      if (!imgExts.test(file.name)) continue;
+    // 方式3: files
+    if (!uri) { try { if (dt.files && dt.files.length) file = dt.files[0]; } catch(_) {} }
+    // 方式4: items → getAsFile
+    if (!uri && !file) {
+      try {
+        if (dt.items && dt.items.length) {
+          for (let i = 0; i < dt.items.length; i++) {
+            const it = dt.items[i];
+            if (it.kind === 'file') { file = it.getAsFile(); if (file) break; }
+          }
+        }
+      } catch(_) {}
+    }
+
+    if (uri) {
+      try {
+        const r = await api('download_original_image', uri);
+        if (r && r.ok) { location.reload(); return; }
+      } catch(_) {}
+    }
+    if (file) {
       try {
         const b64 = await new Promise((resolve, reject) => {
           const reader = new FileReader();
@@ -1197,18 +1221,13 @@ function openSettings() { try { pywebview.api.open_settings(); } catch(e) {} }
           reader.onerror = () => reject(reader.error);
           reader.readAsDataURL(file);
         });
-        items.push({ name: file.name, data: b64 });
+        const res = await fetch('/api/upload/', {
+          method: 'POST', headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ files: [{ name: file.name, data: b64 }] }),
+        });
+        if (res.ok) { location.reload(); }
       } catch(_) {}
     }
-    if (items.length === 0) return;
-    try {
-      const res = await fetch('/api/upload/', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ files: items }),
-      });
-      if (res.ok) { location.reload(); }
-    } catch(_) {}
   });
 })();
 

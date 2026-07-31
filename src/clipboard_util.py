@@ -22,6 +22,76 @@ except ImportError:
     HAS_PYPERCLIP = False
 
 
+def _is_animated(path: str) -> bool:
+    """检测文件是否为动图（GIF / WebP）"""
+    try:
+        with open(path, "rb") as f:
+            header = f.read(50)
+        # GIF89a 一般为动图
+        if header[:6] == b"GIF89a":
+            return True
+        # WebP: ANIM chunk 在 VP8X 之后（约偏移 30+），扫描整个头
+        if header[:4] == b"RIFF" and header[8:12] == b"WEBP":
+            return b"ANIM" in header
+        return False
+    except Exception:
+        return False
+
+
+def _webp_to_gif(webp_path):
+    """WebP 动图转 GIF，存入缓存（同 WebP 目录），返回路径"""
+    if not HAS_PIL:
+        return None
+    try:
+        # 目标路径：同目录下同名 .gif，持久存在
+        gif_path = os.path.splitext(webp_path)[0] + ".gif"
+        if os.path.isfile(gif_path):
+            return gif_path
+        img = PILImage.open(webp_path)
+        if not getattr(img, "is_animated", False):
+            img.close()
+            return None
+        # 收集所有帧
+        frames, durations = [], []
+        try:
+            while True:
+                frames.append(img.copy())
+                d = img.info.get("duration", 100) or 100
+                if d < 50:
+                    d = 100
+                durations.append(d)
+                img.seek(img.tell() + 1)
+        except EOFError:
+            pass
+        img.close()
+        if not frames:
+            return None
+        # 统一量化到 256 色调色板
+        for i, f in enumerate(frames):
+            mode = f.mode
+            if mode in ("RGBA", "PA"):
+                if mode == "PA":
+                    f = f.convert("RGBA")
+                # PIL 内建量化：alpha ≤ 128 变透明，> 128 变不透明
+                # 边缘用 Floyd-Steinberg 抖动模拟平滑过渡
+                # 全透明区域 (alpha=0) 保持为 GIF 透明色
+                frames[i] = f.quantize(colors=256)
+            elif mode not in ("P",):
+                frames[i] = f.quantize(colors=256)
+        frames[0].save(
+            gif_path,
+            format="GIF",
+            save_all=True,
+            append_images=frames[1:],
+            duration=durations,
+            loop=0,
+        )
+        return gif_path
+    except Exception as e:
+        logger.warning(f"_webp_to_gif: {e}")
+        return None
+
+
 def copy_image_to_clipboard(image_path: str) -> bool:
     """将图片文件复制到系统剪贴板，支持跨平台"""
     if not os.path.isfile(image_path):
@@ -47,6 +117,12 @@ def _copy_image_windows(image_path: str, ext: str) -> bool:
     # GIF：优先尝试保留动画的专用路径
     if ext == ".gif":
         if _copy_gif_windows(image_path):
+            return True
+
+    # WebP 动图：转 GIF 后走动画路径
+    if ext == ".webp" and _is_animated(image_path):
+        gif_path = _webp_to_gif(image_path)
+        if gif_path and _copy_gif_windows(gif_path):
             return True
 
     if HAS_PIL:
@@ -331,10 +407,12 @@ def _copy_image_linux(image_path: str, ext: str) -> bool:
         import subprocess
 
         abs_path = os.path.abspath(image_path)
+        # 动图（GIF / WebP 动图）用 image/gif MIME
+        mime = "image/gif" if _is_animated(image_path) else "image/png"
         # 尝试 xclip
         try:
             subprocess.run(
-                ["xclip", "-selection", "clipboard", "-t", "image/png", "-i", abs_path],
+                ["xclip", "-selection", "clipboard", "-t", mime, "-i", abs_path],
                 capture_output=True,
                 timeout=5,
                 check=True,
@@ -345,7 +423,7 @@ def _copy_image_linux(image_path: str, ext: str) -> bool:
         # 尝试 wl-copy (Wayland)
         try:
             subprocess.run(
-                ["wl-copy", "--type", "image/png", "-i", abs_path],
+                ["wl-copy", "--type", mime, "-i", abs_path],
                 capture_output=True,
                 timeout=5,
                 check=True,
