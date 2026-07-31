@@ -724,13 +724,20 @@ function showCtxMenu(e, meme) {
   }
   menu.classList.add('show');
   const rect = menu.getBoundingClientRect();
-  const overflowRight = rect.right - window.innerWidth;
-  if (overflowRight > 0) {
-    menu.style.left = (e.clientX - rect.width) + 'px';
-  } else {
-    menu.style.left = e.clientX + 'px';
+  let left = e.clientX;
+  let top = e.clientY;
+
+  if (left + rect.width > window.innerWidth) {
+    left = window.innerWidth - rect.width - 4;
   }
-  menu.style.top = e.clientY + 'px';
+  if (top + rect.height > window.innerHeight) {
+    top = window.innerHeight - rect.height - 4;
+  }
+  if (left < 0) left = 4;
+  if (top < 0) top = 4;
+
+  menu.style.left = left + 'px';
+  menu.style.top = top + 'px';
 }
 
 function showFolderMenu(e, folderId, folderName) {
