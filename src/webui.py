@@ -748,12 +748,16 @@ class JsApi:
         if not w:
             return False
         try:
-            from gi.repository import GLib
+            from gi.repository import Gdk, GLib
 
             native = getattr(w, "native", None)
             if native is None:
                 return False
-            GLib.idle_add(native.begin_move_drag, button, root_x, root_y, 0)
+            # Gdk.CURRENT_TIME(0)：GDK 文档明确允许未知时间时用它，X11 下回填最近
+            # 一次真实输入事件时间，Wayland 下该参数不参与合成器拖动
+            GLib.idle_add(
+                native.begin_move_drag, button, root_x, root_y, Gdk.CURRENT_TIME
+            )
             return True
         except Exception:
             return False
@@ -1005,12 +1009,16 @@ class SettingsApi:
         if not w:
             return False
         try:
-            from gi.repository import GLib
+            from gi.repository import Gdk, GLib
 
             native = getattr(w, "native", None)
             if native is None:
                 return False
-            GLib.idle_add(native.begin_move_drag, button, root_x, root_y, 0)
+            # Gdk.CURRENT_TIME(0)：GDK 文档明确允许未知时间时用它，X11 下回填最近
+            # 一次真实输入事件时间，Wayland 下该参数不参与合成器拖动
+            GLib.idle_add(
+                native.begin_move_drag, button, root_x, root_y, Gdk.CURRENT_TIME
+            )
             return True
         except Exception:
             return False

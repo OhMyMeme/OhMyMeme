@@ -90,7 +90,7 @@ tests/
 - 主窗口 ~700×500 frameless, 设置窗口 460×560 frameless
 - 自定义 JS 拖拽: 鼠标事件 → `pywebview.api.move_window(dx, dy)`
 - 拖拽增量用 `clientX/clientY`（**勿改回 `screenX/screenY`** — Linux/Wayland 下 WebKitGTK 的 screenX 恒为 0 导致拖不动）；后端 `move_window` 用 `_drag_pos` 累加器避免每次 mousemove 走 `Window.x` 的 GTK 线程往返
-- **Linux 拖拽必须走合成器**：`w.move()` 在 Wayland 下无效（合成器不允许客户端自定位），mousedown 时 JS 调 `start_window_drag()` → 后端 `GLib.idle_add(native.begin_move_drag, ...)` 交给合成器交互式拖动；Windows/macOS 才走增量回退
+- **Linux 拖拽必须走合成器**：`w.move()` 在 Wayland 下无效（合成器不允许客户端自定位），mousedown 时 JS 调 `start_window_drag()` → 后端 `GLib.idle_add(native.begin_move_drag, ...)` 交给合成器交互式拖动；时间戳用 `Gdk.CURRENT_TIME`（GDK 文档允许未知时间时用它，X11 回填最近输入事件时间、Wayland 不参与）；Windows/macOS 才走增量回退
 - `#titlebar` 上可拖拽 (排除 `.title-btn` 按钮区域)
 
 ### 数据库
