@@ -59,6 +59,7 @@ python -m src
 | `--debug-update` | 强制弹出更新对话框（测试用） |
 | `--debug-startup` | 输出开机自启检测详情（注册表键、启动文件夹） |
 | `--debug-adb` | 输出 ADB 检测详情及运行时日志（路径、版本、adb 命令） |
+| `--debug` | 输出所有 DEBUG 级别日志 |
 | `--silent` | 启动时最小化到托盘（源码模式下需显式传入） |
 
 或使用 conda：

@@ -1102,35 +1102,33 @@ class WebUI:
             self.show()
 
     def toggle_safe(self):
+        # show/hide 底层为 Invoke 调度，任意线程调用均安全
         if self._window:
-            if threading.current_thread() is threading.main_thread():
-                self.toggle()
-            else:
-                try:
-                    self._window.after(0, self.toggle)
-                except Exception:
-                    self.toggle()
+            self.toggle()
 
     def schedule_hide(self):
         self._pending_hide = True
         if self._window:
-            try:
-                self._window.after(100, self._process_pending_hide)
-            except Exception:
-                pass
+            self._run_on_gui(0.1, self._process_pending_hide)
 
     def _process_pending_hide(self):
         if self._pending_hide:
             self._pending_hide = False
             self.hide()
 
+    def _run_on_gui(self, delay: float, func):
+        """延时在 GUI 线程执行（pywebview Window 无 after 方法）"""
+        if threading.current_thread() is threading.main_thread() and delay <= 0:
+            func()
+            return
+        t = threading.Timer(delay, func)
+        t.daemon = True
+        t.start()
+
     def _schedule_quit(self):
         """在当前循环结束后关闭窗口并退出进程"""
         if self._window:
-            try:
-                self._window.after(0, self.stop)
-            except Exception:
-                pass
+            self._run_on_gui(0.2, self.stop)
 
     @property
     def is_visible(self) -> bool:
