@@ -114,7 +114,6 @@ class JsApi:
         self._webui = webui
         self._cfg = get_config()
         self._db = get_db()
-        self._drag_pos = None
 
     def search_memes(
         self, keyword: str = "", tags: list = None, collection_id: int = None
@@ -729,16 +728,11 @@ class JsApi:
 
     def move_window(self, dx: int, dy: int):
         w = self._webui._window
-        if not w:
-            return
-        try:
-            if self._drag_pos is None:
-                self._drag_pos = [w.x, w.y]
-            self._drag_pos[0] += dx
-            self._drag_pos[1] += dy
-            w.move(self._drag_pos[0], self._drag_pos[1])
-        except Exception:
-            pass
+        if w:
+            try:
+                w.move(w.x + dx, w.y + dy)
+            except Exception:
+                pass
 
     def start_window_drag(self, button: int, root_x: int, root_y: int) -> bool:
         """Linux 用 GTK begin_move_drag 合成器拖动；其他平台走增量回退"""
@@ -875,7 +869,6 @@ class SettingsApi:
     def __init__(self, webui):
         self._webui = webui
         self._cfg = get_config()
-        self._drag_pos = None
 
     def check_connectivity(self) -> dict:
         return _check_connectivity()
@@ -990,16 +983,11 @@ class SettingsApi:
 
     def move_window(self, dx: int, dy: int):
         w = self._webui._settings_window
-        if not w:
-            return
-        try:
-            if self._drag_pos is None:
-                self._drag_pos = [w.x, w.y]
-            self._drag_pos[0] += dx
-            self._drag_pos[1] += dy
-            w.move(self._drag_pos[0], self._drag_pos[1])
-        except Exception:
-            pass
+        if w:
+            try:
+                w.move(w.x + dx, w.y + dy)
+            except Exception:
+                pass
 
     def start_window_drag(self, button: int, root_x: int, root_y: int) -> bool:
         """Linux 用 GTK begin_move_drag 合成器拖动；其他平台走增量回退"""
