@@ -38,60 +38,6 @@ def _is_animated(path: str) -> bool:
         return False
 
 
-def _webp_to_gif(webp_path):
-    """WebP 动图转 GIF，存入缓存（同 WebP 目录），返回路径"""
-    if not HAS_PIL:
-        return None
-    try:
-        # 目标路径：同目录下同名 .gif，持久存在
-        gif_path = os.path.splitext(webp_path)[0] + ".gif"
-        if os.path.isfile(gif_path):
-            return gif_path
-        img = PILImage.open(webp_path)
-        if not getattr(img, "is_animated", False):
-            img.close()
-            return None
-        # 收集所有帧
-        frames, durations = [], []
-        try:
-            while True:
-                frames.append(img.copy())
-                d = img.info.get("duration", 100) or 100
-                if d < 50:
-                    d = 100
-                durations.append(d)
-                img.seek(img.tell() + 1)
-        except EOFError:
-            pass
-        img.close()
-        if not frames:
-            return None
-        # 统一量化到 256 色调色板
-        for i, f in enumerate(frames):
-            mode = f.mode
-            if mode in ("RGBA", "PA"):
-                if mode == "PA":
-                    f = f.convert("RGBA")
-                # PIL 内建量化：alpha ≤ 128 变透明，> 128 变不透明
-                # 边缘用 Floyd-Steinberg 抖动模拟平滑过渡
-                # 全透明区域 (alpha=0) 保持为 GIF 透明色
-                frames[i] = f.quantize(colors=256)
-            elif mode not in ("P",):
-                frames[i] = f.quantize(colors=256)
-        frames[0].save(
-            gif_path,
-            format="GIF",
-            save_all=True,
-            append_images=frames[1:],
-            duration=durations,
-            loop=0,
-        )
-        return gif_path
-    except Exception as e:
-        logger.warning(f"_webp_to_gif: {e}")
-        return None
-
-
 def copy_image_to_clipboard(image_path: str) -> bool:
     """将图片文件复制到系统剪贴板，支持跨平台"""
     if not os.path.isfile(image_path):
@@ -119,10 +65,9 @@ def _copy_image_windows(image_path: str, ext: str) -> bool:
         if _copy_gif_windows(image_path):
             return True
 
-    # WebP 动图：转 GIF 后走动画路径
-    if ext == ".webp" and _is_animated(image_path):
-        gif_path = _webp_to_gif(image_path)
-        if gif_path and _copy_gif_windows(gif_path):
+    # WebP：直接传送原文件（QQ/微信原生支持 WebP，无需转 GIF）
+    if ext == ".webp":
+        if _copy_webp_windows(image_path):
             return True
 
     if HAS_PIL:
@@ -373,6 +318,158 @@ def _copy_gif_windows(gif_path: str) -> bool:
     return False
 
 
+def _copy_webp_windows(webp_path: str) -> bool:
+    """复制 WebP 到剪贴板，直接传送原文件（QQ/微信原生支持 WebP）"""
+    try:
+        import ctypes
+        from ctypes import wintypes
+
+        GMEM_MOVEABLE = 0x0002
+        CF_DIB = 8
+        CF_HDROP = 15
+        user32 = ctypes.windll.user32
+        kernel32 = ctypes.windll.kernel32
+
+        kernel32.GlobalAlloc.restype = wintypes.HGLOBAL
+        kernel32.GlobalAlloc.argtypes = [wintypes.UINT, ctypes.c_size_t]
+        kernel32.GlobalLock.restype = wintypes.LPVOID
+        kernel32.GlobalLock.argtypes = [wintypes.HGLOBAL]
+        kernel32.GlobalFree.argtypes = [wintypes.HGLOBAL]
+        kernel32.GlobalUnlock.argtypes = [wintypes.HGLOBAL]
+        user32.OpenClipboard.argtypes = [wintypes.HWND]
+        user32.RegisterClipboardFormatW.restype = wintypes.UINT
+        user32.RegisterClipboardFormatW.argtypes = [wintypes.LPCWSTR]
+        user32.SetClipboardData.restype = wintypes.HANDLE
+        user32.SetClipboardData.argtypes = [wintypes.UINT, wintypes.HANDLE]
+
+        with open(webp_path, "rb") as f:
+            raw_webp = f.read()
+
+        abspath = os.path.abspath(webp_path)
+
+        # CF_DIB: 首帧转 BMP（静态回退）
+        dib_data = None
+        if HAS_PIL:
+            try:
+                img = PILImage.open(webp_path)
+                output = io.BytesIO()
+                img.convert("RGB").save(output, format="BMP")
+                dib_data = output.getvalue()[14:]
+                output.close()
+            except Exception as e:
+                logger.warning(f"_copy_webp_windows PIL->DIB: {e}")
+
+        # CF_HDROP 数据（文件拖放，QQ/微信用这个）
+        path_utf16 = (abspath + "\0").encode("utf-16-le")
+        dropfile_size = 20
+        hdrop_data = (
+            struct.pack("<IiiII", dropfile_size, 0, 0, 0, 1) + path_utf16 + b"\0\0"
+        )
+
+        # 注册自定义 WebP 格式
+        webp_fmt = user32.RegisterClipboardFormatW("WebP")
+        if not webp_fmt:
+            raise OSError("RegisterClipboardFormatW failed")
+
+        # 分配全局内存：WebP 字节
+        h_webp = kernel32.GlobalAlloc(GMEM_MOVEABLE, len(raw_webp))
+        if not h_webp:
+            raise OSError("GlobalAlloc failed for WebP")
+        p_webp = kernel32.GlobalLock(h_webp)
+        if not p_webp:
+            kernel32.GlobalFree(h_webp)
+            raise OSError("GlobalLock failed for WebP")
+        ctypes.memmove(p_webp, raw_webp, len(raw_webp))
+        kernel32.GlobalUnlock(h_webp)
+
+        # 分配全局内存：CF_DIB
+        h_dib = None
+        if dib_data:
+            h_dib = kernel32.GlobalAlloc(GMEM_MOVEABLE, len(dib_data))
+            if h_dib:
+                p_dib = kernel32.GlobalLock(h_dib)
+                if p_dib:
+                    ctypes.memmove(p_dib, dib_data, len(dib_data))
+                    kernel32.GlobalUnlock(h_dib)
+                else:
+                    kernel32.GlobalFree(h_dib)
+                    h_dib = None
+
+        # 分配全局内存：CF_HDROP
+        h_hdrop = kernel32.GlobalAlloc(GMEM_MOVEABLE, len(hdrop_data))
+        if not h_hdrop:
+            kernel32.GlobalFree(h_webp)
+            if h_dib:
+                kernel32.GlobalFree(h_dib)
+            raise OSError("GlobalAlloc failed for HDROP")
+        p_hdrop = kernel32.GlobalLock(h_hdrop)
+        if not p_hdrop:
+            kernel32.GlobalFree(h_webp)
+            kernel32.GlobalFree(h_hdrop)
+            if h_dib:
+                kernel32.GlobalFree(h_dib)
+            raise OSError("GlobalLock failed for HDROP")
+        ctypes.memmove(p_hdrop, hdrop_data, len(hdrop_data))
+        kernel32.GlobalUnlock(h_hdrop)
+
+        # 打开剪贴板，设置所有格式
+        if not user32.OpenClipboard(None):
+            kernel32.GlobalFree(h_webp)
+            kernel32.GlobalFree(h_hdrop)
+            if h_dib:
+                kernel32.GlobalFree(h_dib)
+            raise OSError("OpenClipboard failed")
+
+        user32.EmptyClipboard()
+        ok = False
+
+        if user32.SetClipboardData(webp_fmt, h_webp):
+            ok = True
+        else:
+            kernel32.GlobalFree(h_webp)
+
+        if user32.SetClipboardData(CF_HDROP, h_hdrop):
+            ok = True
+        else:
+            kernel32.GlobalFree(h_hdrop)
+
+        if h_dib:
+            if user32.SetClipboardData(CF_DIB, h_dib):
+                ok = True
+            else:
+                kernel32.GlobalFree(h_dib)
+
+        user32.CloseClipboard()
+
+        if not ok:
+            raise OSError("SetClipboardData failed for all formats")
+        return True
+    except Exception as e:
+        logger.warning(f"_copy_webp_windows ctypes: {e}")
+
+    # 方案2: PowerShell 回退
+    try:
+        import subprocess
+
+        abspath = os.path.abspath(webp_path)
+        ps = (
+            f"Add-Type -AssemblyName System.Windows.Forms; "
+            f'$data = [System.IO.File]::ReadAllBytes("{abspath}"); '
+            f'[System.Windows.Forms.Clipboard]::SetData("WebP", $data);'
+        )
+        subprocess.run(
+            ["powershell", "-NoProfile", "-Command", ps],
+            capture_output=True,
+            timeout=10,
+            check=True,
+        )
+        return True
+    except Exception:
+        pass
+
+    return False
+
+
 def _copy_image_macos(image_path: str, ext: str) -> bool:
     """macOS: 使用 osascript"""
     try:
@@ -407,8 +504,14 @@ def _copy_image_linux(image_path: str, ext: str) -> bool:
         import subprocess
 
         abs_path = os.path.abspath(image_path)
-        # 动图（GIF / WebP 动图）用 image/gif MIME
-        mime = "image/gif" if _is_animated(image_path) else "image/png"
+        # WebP 直接传原文件，动图（GIF）用 image/gif MIME
+        ext = os.path.splitext(image_path)[1].lower()
+        if ext == ".webp":
+            mime = "image/webp"
+        elif _is_animated(image_path):
+            mime = "image/gif"
+        else:
+            mime = "image/png"
         # 尝试 xclip
         try:
             subprocess.run(

@@ -145,11 +145,15 @@ tests/
 - **双重去重** — 文件名去重防止每次启动重复注册，哈希去重防止同图不同名重复
 - `_do_import`（拖入/导入对话框）同样有哈希去重，且文件重命名为 `{hash[:16]}{ext}`
 
-### 剪贴板 (GIF 三格式写入)
+### 剪贴板 (GIF/WebP 直接传送)
 - `_copy_gif_windows` 同时写入三个剪贴板格式:
   - **CF_DIB** — BMP 首帧（去掉 14 字节 BMP 头），旧应用兼容
   - **CF_HDROP** — `DROPFILES` 结构体 + 文件 UTF-16 路径，QQ/微信需要此格式才能粘贴动图
   - **自定义 "GIF"** — 原始 GIF 字节，注册 `RegisterClipboardFormatW("GIF")`
+- `_copy_webp_windows` 直接传送 WebP 原文件（不再转 GIF）:
+  - **CF_HDROP** — 指向 `.webp` 文件路径，QQ/微信原生解码 WebP（含动画+透明）
+  - **自定义 "WebP"** — 原始 WebP 字节，注册 `RegisterClipboardFormatW("WebP")`
+  - **CF_DIB** — 首帧 BMP 静态回退
 - **移除 CF_HDROP 会导致 QQ/微信粘贴 GIF 变静态图**
 
 ### 加密降级 (crypto_util)
