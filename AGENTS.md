@@ -171,8 +171,9 @@ tests/
 
 ### 自定义排序
 - `memes.sort_order` 字段存储拖拽排序结果
-- JS 网格 dragstart/dragover/drop 事件实现换位，CSS transition 做动画
-- 拖拽完成后调用 `reorder_memes(id[])` 批量更新 sort_order
+- JS 网格 mousedown/mousemove/mouseup 自定义拖拽换位（**仅未过滤的"全部表情"视图启用**），拖拽卡片以 transform 跟随指针，插入点按指针 X/Y 相对卡片中心计算（`getDropIndex`），监听器在 `initDragReorder()` 中只绑定一次（委托）
+- 拖拽完成后按新 DOM 顺序调用 `reorder_memes(id[])` 批量更新 sort_order
+- 拖拽后通过 `suppressClick` 抑制误触发的 `click`（防止误复制），下次 `mousedown` 时重置
 
 ### 多级分组（最多 3 层）
 - `collections.parent_id` 自引用实现嵌套
