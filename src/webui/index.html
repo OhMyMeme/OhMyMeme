@@ -1249,6 +1249,15 @@ document.addEventListener('mousemove', (e) => {
 });
 document.addEventListener('mouseup', () => { dragState = null; });
 
+async function checkUpdateAndPrompt() {
+  try {
+    const upd = await api('check_update');
+    if (upd && upd.has_update) {
+      showUpdateDialogFromMain(upd.current, upd.latest, upd.download_url);
+    }
+  } catch(e) {}
+}
+
 /* Init */
 document.addEventListener('DOMContentLoaded', async () => {
   document.getElementById('loading').classList.remove('hidden');
@@ -1272,13 +1281,10 @@ document.addEventListener('DOMContentLoaded', async () => {
     renderTags();
     collections = await api('get_collections') || [];
     renderCollections();
-    try {
-      const upd = await api('check_update');
-      if (upd && upd.has_update) {
-        showUpdateDialogFromMain(upd.current, upd.latest, upd.download_url);
-      }
-    } catch(e) {}
+    await checkUpdateAndPrompt();
   }, 300);
+  // 每日检测更新（复用启动时的检测与弹窗逻辑）
+  setInterval(checkUpdateAndPrompt, 24 * 60 * 60 * 1000);
 });
 </script>
 
