@@ -459,10 +459,15 @@ class _WebDAVBackend(_SyncBackend):
 
     def upload_file(self, local_path, remote_path):
         try:
+            size = local_path.stat().st_size
             with open(local_path, "rb") as f:
-                data = f.read()
-            with self._request("PUT", self._url(remote_path), data=data) as resp:
-                return resp.status in (200, 201, 204)
+                with self._request(
+                    "PUT",
+                    self._url(remote_path),
+                    data=f,
+                    headers={"Content-Length": str(size)},
+                ) as resp:
+                    return resp.status in (200, 201, 204)
         except Exception as e:
             logger.warning("upload failed %s: %s", remote_path, e)
             return False
@@ -486,8 +491,12 @@ class _WebDAVBackend(_SyncBackend):
             ) as resp:
                 return resp.status in (200, 207)
         except urllib.error.HTTPError as e:
-            return e.code != 404
-        except Exception:
+            if e.code == 404:
+                return False
+            logger.warning("file_exists %s -> HTTP %d", path, e.code)
+            return False
+        except Exception as e:
+            logger.warning("file_exists %s failed: %s", path, e)
             return False
 
     def delete_file(self, path):
