@@ -9,7 +9,7 @@ on:
   workflow_dispatch:
 
 jobs:
-  build:
+  build-windows:
     if: ${{ github.event_name == 'workflow_dispatch' || github.event.workflow_run.conclusion == 'success' }}
     runs-on: windows-latest
     steps:
@@ -36,3 +36,30 @@ jobs:
         with:
           name: OhMyMeme-Windows
           path: dist/OhMyMeme-*-setup.exe
+
+  build-linux:
+    if: ${{ github.event_name == 'workflow_dispatch' || github.event.workflow_run.conclusion == 'success' }}
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.workflow_run.head_sha || github.ref }}
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y rpm
+          pip install -r requirements.txt
+          pip install pyinstaller
+      - name: Build Linux packages
+        run: python scripts/build.py --linux
+      - name: Upload artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: OhMyMeme-Linux
+          path: |
+            dist/OhMyMeme-v*-x86_64.AppImage
+            dist/OhMyMeme-v*-amd64.deb
+            dist/OhMyMeme-v*-x86_64.rpm

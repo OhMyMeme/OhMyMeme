@@ -70,7 +70,7 @@ PYEOF
     fi
 
     cd "$DIST_DIR"
-    ARCH=x86_64 ./appimagetool OhMyMeme.AppDir \
+    ARCH=x86_64 ./appimagetool --appimage-extract-and-run OhMyMeme.AppDir \
         "OhMyMeme-v${APP_VERSION}-x86_64.AppImage"
     echo "AppImage: $DIST_DIR/OhMyMeme-v${APP_VERSION}-x86_64.AppImage"
 }
@@ -169,10 +169,12 @@ EOF
 SPEC
 
     sed -i "s/Version: 0.1.0/Version: $APP_VERSION/" "$rpm_root/SPECS/ohmymeme.spec"
+    sed -i "s/Source0: ohmymeme-0.1.0.tar.gz/Source0: ohmymeme-${APP_VERSION}.tar.gz/" "$rpm_root/SPECS/ohmymeme.spec"
 
     rpmbuild --define "_topdir $rpm_root" -bb "$rpm_root/SPECS/ohmymeme.spec"
     cp "$rpm_root/RPMS/x86_64/"*.rpm "$DIST_DIR/"
-    echo "rpm:  $DIST_DIR/*.rpm"
+    mv "$DIST_DIR"/*.rpm "$DIST_DIR/OhMyMeme-v${APP_VERSION}-x86_64.rpm"
+    echo "rpm:  $DIST_DIR/OhMyMeme-v${APP_VERSION}-x86_64.rpm"
 }
 
 main() {
@@ -196,10 +198,12 @@ main() {
             build_pyinstaller
             build_appimage
             build_deb
+            build_rpm
             echo ""
             echo "=== 构建完成 ==="
             echo "AppImage: $DIST_DIR/OhMyMeme-v${APP_VERSION}-x86_64.AppImage"
             echo "deb:      $DIST_DIR/OhMyMeme-v${APP_VERSION}-amd64.deb"
+            echo "rpm:      $DIST_DIR/OhMyMeme-v${APP_VERSION}-x86_64.rpm"
             ;;
     esac
 }
