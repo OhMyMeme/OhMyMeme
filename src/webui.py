@@ -1347,6 +1347,10 @@ class WebUI:
                 fpath = os.path.join(root, fname)
                 if "thumbnails" in fpath:
                     continue
+                # 跳过由 WebP 动图自动生成的 GIF（同名 .webp 存在即为生成物）
+                stem = os.path.splitext(fname)[0]
+                if ext == ".gif" and os.path.isfile(os.path.join(root, stem + ".webp")):
+                    continue
                 if db.get_by_filename(fname):
                     continue
                 try:
