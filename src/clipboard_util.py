@@ -128,6 +128,18 @@ def _copy_image_windows(image_path: str, ext: str) -> bool:
         if _copy_webp_windows(image_path):
             return True
 
+    # PNG 带透明：走专用路径保留 alpha（QQ/微信经 CF_HDROP 读 PNG 原文件）
+    if ext == ".png" and HAS_PIL:
+        try:
+            img = PILImage.open(image_path)
+            if img.mode in ("RGBA", "LA") or (
+                img.mode == "P" and "transparency" in img.info
+            ):
+                if _copy_png_windows(image_path):
+                    return True
+        except Exception:
+            pass
+
     if HAS_PIL:
         try:
             img = PILImage.open(image_path)
@@ -514,6 +526,161 @@ def _copy_webp_windows(webp_path: str) -> bool:
             f"Add-Type -AssemblyName System.Windows.Forms; "
             f'$data = [System.IO.File]::ReadAllBytes("{abspath}"); '
             f'[System.Windows.Forms.Clipboard]::SetData("WebP", $data);'
+        )
+        subprocess.run(
+            ["powershell", "-NoProfile", "-Command", ps],
+            capture_output=True,
+            timeout=10,
+            check=True,
+        )
+        return True
+    except Exception:
+        pass
+
+    return False
+
+
+def _copy_png_windows(png_path: str) -> bool:
+    """复制 PNG 到剪贴板，保留透明（CF_HDROP + 自定义 PNG 格式 + CF_DIB 回退）"""
+    try:
+        import ctypes
+        from ctypes import wintypes
+
+        GMEM_MOVEABLE = 0x0002
+        CF_DIB = 8
+        CF_HDROP = 15
+        user32 = ctypes.windll.user32
+        kernel32 = ctypes.windll.kernel32
+
+        kernel32.GlobalAlloc.restype = wintypes.HGLOBAL
+        kernel32.GlobalAlloc.argtypes = [wintypes.UINT, ctypes.c_size_t]
+        kernel32.GlobalLock.restype = wintypes.LPVOID
+        kernel32.GlobalLock.argtypes = [wintypes.HGLOBAL]
+        kernel32.GlobalFree.argtypes = [wintypes.HGLOBAL]
+        kernel32.GlobalUnlock.argtypes = [wintypes.HGLOBAL]
+        user32.OpenClipboard.argtypes = [wintypes.HWND]
+        user32.RegisterClipboardFormatW.restype = wintypes.UINT
+        user32.RegisterClipboardFormatW.argtypes = [wintypes.LPCWSTR]
+        user32.SetClipboardData.restype = wintypes.HANDLE
+        user32.SetClipboardData.argtypes = [wintypes.UINT, wintypes.HANDLE]
+
+        with open(png_path, "rb") as f:
+            raw_png = f.read()
+
+        abspath = os.path.abspath(png_path)
+
+        # CF_DIB: 首帧转 BMP（静态回退）
+        dib_data = None
+        if HAS_PIL:
+            try:
+                img = PILImage.open(png_path)
+                output = io.BytesIO()
+                img.convert("RGB").save(output, format="BMP")
+                dib_data = output.getvalue()[14:]
+                output.close()
+            except Exception as e:
+                logger.warning(f"_copy_png_windows PIL->DIB: {e}")
+
+        # CF_HDROP 数据（文件拖放，QQ/微信用这个）
+        path_utf16 = (abspath + "\0").encode("utf-16-le")
+        dropfile_size = 20
+        hdrop_data = (
+            struct.pack("<IiiII", dropfile_size, 0, 0, 0, 1) + path_utf16 + b"\0\0"
+        )
+
+        # 注册自定义 PNG 格式
+        png_fmt = user32.RegisterClipboardFormatW("PNG")
+        if not png_fmt:
+            raise OSError("RegisterClipboardFormatW failed")
+
+        # 分配全局内存：PNG 字节
+        h_png = kernel32.GlobalAlloc(GMEM_MOVEABLE, len(raw_png))
+        if not h_png:
+            raise OSError("GlobalAlloc failed for PNG")
+        p_png = kernel32.GlobalLock(h_png)
+        if not p_png:
+            kernel32.GlobalFree(h_png)
+            raise OSError("GlobalLock failed for PNG")
+        ctypes.memmove(p_png, raw_png, len(raw_png))
+        kernel32.GlobalUnlock(h_png)
+
+        # 分配全局内存：CF_DIB
+        h_dib = None
+        if dib_data:
+            h_dib = kernel32.GlobalAlloc(GMEM_MOVEABLE, len(dib_data))
+            if h_dib:
+                p_dib = kernel32.GlobalLock(h_dib)
+                if p_dib:
+                    ctypes.memmove(p_dib, dib_data, len(dib_data))
+                    kernel32.GlobalUnlock(h_dib)
+                else:
+                    kernel32.GlobalFree(h_dib)
+                    h_dib = None
+
+        # 分配全局内存：CF_HDROP
+        h_hdrop = kernel32.GlobalAlloc(GMEM_MOVEABLE, len(hdrop_data))
+        if not h_hdrop:
+            kernel32.GlobalFree(h_png)
+            if h_dib:
+                kernel32.GlobalFree(h_dib)
+            raise OSError("GlobalAlloc failed for HDROP")
+        p_hdrop = kernel32.GlobalLock(h_hdrop)
+        if not p_hdrop:
+            kernel32.GlobalFree(h_png)
+            kernel32.GlobalFree(h_hdrop)
+            if h_dib:
+                kernel32.GlobalFree(h_dib)
+            raise OSError("GlobalLock failed for HDROP")
+        ctypes.memmove(p_hdrop, hdrop_data, len(hdrop_data))
+        kernel32.GlobalUnlock(h_hdrop)
+
+        # 打开剪贴板，设置所有格式
+        if not user32.OpenClipboard(None):
+            kernel32.GlobalFree(h_png)
+            kernel32.GlobalFree(h_hdrop)
+            if h_dib:
+                kernel32.GlobalFree(h_dib)
+            raise OSError("OpenClipboard failed")
+
+        user32.EmptyClipboard()
+        ok = False
+
+        # 自定义 PNG 格式
+        if user32.SetClipboardData(png_fmt, h_png):
+            ok = True
+        else:
+            kernel32.GlobalFree(h_png)
+
+        # CF_HDROP — QQ/微信通过此格式读取文件路径
+        if user32.SetClipboardData(CF_HDROP, h_hdrop):
+            ok = True
+        else:
+            kernel32.GlobalFree(h_hdrop)
+
+        # CF_DIB — 静态回退
+        if h_dib:
+            if user32.SetClipboardData(CF_DIB, h_dib):
+                ok = True
+            else:
+                kernel32.GlobalFree(h_dib)
+
+        user32.CloseClipboard()
+
+        if not ok:
+            raise OSError("SetClipboardData failed for all formats")
+        return True
+    except Exception as e:
+        logger.warning(f"_copy_png_windows ctypes: {e}")
+
+    # 方案2: PowerShell 回退
+    try:
+        import subprocess
+
+        abspath = os.path.abspath(png_path)
+        ps = (
+            f"Add-Type -AssemblyName System.Windows.Forms; "
+            f'$data = [System.IO.File]::ReadAllBytes("{abspath}"); '
+            f'[System.Windows.Forms.Clipboard]::SetData("PNG", $data);'
         )
         subprocess.run(
             ["powershell", "-NoProfile", "-Command", ps],
