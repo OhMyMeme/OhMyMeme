@@ -43,6 +43,8 @@ class MemeDB:
                 file_size   INTEGER DEFAULT 0,
                 mime_type   TEXT    DEFAULT 'image/png',
                 sort_order  INTEGER DEFAULT 0,
+                stego_of_hash TEXT DEFAULT NULL,
+                from_stego  INTEGER DEFAULT 0,
                 created_at  TEXT    NOT NULL DEFAULT (datetime('now','localtime')),
                 updated_at  TEXT    NOT NULL DEFAULT (datetime('now','localtime'))
             );
@@ -87,11 +89,14 @@ class MemeDB:
 
             CREATE INDEX IF NOT EXISTS idx_memes_hash ON memes(file_hash);
             CREATE INDEX IF NOT EXISTS idx_memes_name ON memes(filename);
+            CREATE INDEX IF NOT EXISTS idx_memes_stego ON memes(stego_of_hash);
             CREATE INDEX IF NOT EXISTS idx_recent_uses_at ON recent_uses(used_at);
         """)
         # 迁移旧表：添加可能缺失的列
         migrates = [
             ("memes", "sort_order", "INTEGER DEFAULT 0"),
+            ("memes", "stego_of_hash", "TEXT DEFAULT NULL"),
+            ("memes", "from_stego", "INTEGER DEFAULT 0"),
             (
                 "collections",
                 "parent_id",
@@ -124,14 +129,16 @@ class MemeDB:
         mime_type: str = "image/png",
         original_name: str = "",
         tags: List[str] = None,
+        stego_of_hash: str = None,
+        from_stego: int = 0,
     ) -> int:
         with self._lock:
             conn = self._get_conn()
             cur = conn.execute(
                 """INSERT INTO memes
                    (filename, file_hash, width, height,
-                    file_size, mime_type, original_name)
-                   VALUES (?, ?, ?, ?, ?, ?, ?)""",
+                    file_size, mime_type, original_name, stego_of_hash, from_stego)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""",
                 (
                     filename,
                     file_hash,
@@ -140,6 +147,8 @@ class MemeDB:
                     file_size,
                     mime_type,
                     original_name,
+                    stego_of_hash,
+                    from_stego,
                 ),
             )
             meme_id = cur.lastrowid
@@ -164,6 +173,8 @@ class MemeDB:
             "file_size",
             "mime_type",
             "original_name",
+            "stego_of_hash",
+            "from_stego",
         }
         sets = []
         vals = []
@@ -355,7 +366,7 @@ class MemeDB:
         limit: int = 100,
     ) -> List[dict]:
         conn = self._get_conn()
-        where = []
+        where = ["(m.stego_of_hash IS NULL OR m.stego_of_hash = '')"]
         params = []
 
         if keyword:
@@ -396,7 +407,7 @@ class MemeDB:
         self, keyword: str = "", collection_id: int = None, favorite_only: bool = False
     ) -> int:
         conn = self._get_conn()
-        where = []
+        where = ["(stego_of_hash IS NULL OR stego_of_hash = '')"]
         params = []
         if keyword:
             where.append("(filename LIKE ? OR original_name LIKE ?)")
@@ -419,6 +430,14 @@ class MemeDB:
         conn = self._get_conn()
         row = conn.execute(
             "SELECT * FROM memes WHERE file_hash=? LIMIT 1", (file_hash,)
+        ).fetchone()
+        return dict(row) if row else None
+
+    def get_by_stego_of(self, file_hash: str) -> Optional[dict]:
+        """查找携带指定原图哈希的隐写 GIF 表情"""
+        conn = self._get_conn()
+        row = conn.execute(
+            "SELECT * FROM memes WHERE stego_of_hash=? LIMIT 1", (file_hash,)
         ).fetchone()
         return dict(row) if row else None
 
@@ -489,6 +508,7 @@ class MemeDB:
         rows = conn.execute(
             "SELECT m.* FROM memes m "
             "JOIN recent_uses r ON r.meme_id = m.id "
+            "WHERE (m.stego_of_hash IS NULL OR m.stego_of_hash = '') "
             "ORDER BY r.used_at DESC LIMIT ?",
             (limit,),
         ).fetchall()

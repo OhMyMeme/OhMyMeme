@@ -92,13 +92,73 @@ def _resize_static_to_webp(image_path: str, max_side: int):
         return None
 
 
-def copy_image_to_clipboard(image_path: str, resize_max: int = 0) -> bool:
-    """复制图片到系统剪贴板；resize_max>0 时超限静态图转 WebP 重采样"""
+def _is_valid_gif(path: str) -> bool:
+    """校验 GIF 文件是否完整有效"""
+    try:
+        with PILImage.open(path) as im:
+            if im.format != "GIF":
+                return False
+            im.verify()
+        return True
+    except Exception:
+        return False
+
+
+def _make_stego_gif(image_path: str, max_side: int):
+    """实验性：把超限静态图转为携带无损原图的隐写 GIF；不适用/失败返回 None"""
+    if not HAS_PIL:
+        return None
+    try:
+        from .gif_stego import make_stego_gif as _stego
+    except Exception:
+        try:
+            from gif_stego import make_stego_gif as _stego
+        except Exception as e:
+            logger.warning(f"_make_stego_gif import: {e}")
+            return None
+    try:
+        img = PILImage.open(image_path)
+        if getattr(img, "is_animated", False):
+            return None
+        w, h = img.size
+        if max(w, h) <= max_side:
+            return None
+        md5 = hashlib.md5()
+        with open(image_path, "rb") as f:
+            for chunk in iter(lambda: f.read(65536), b""):
+                md5.update(chunk)
+        # 故意不删除：CF_HDROP 需在粘贴时仍存在；缓存键含版本号，命中时校验完整性
+        tmp_path = os.path.join(
+            tempfile.gettempdir(), f"ohmm_stego_{md5.hexdigest()}_v1.gif"
+        )
+        if os.path.isfile(tmp_path) and _is_valid_gif(tmp_path):
+            return tmp_path
+        _stego(image_path, tmp_path, quiet=True)
+        if os.path.isfile(tmp_path) and _is_valid_gif(tmp_path):
+            return tmp_path
+        return None
+    except Exception as e:
+        logger.warning(f"_make_stego_gif: {e}")
+        return None
+
+
+def copy_image_to_clipboard(
+    image_path: str, resize_max: int = 0, stego: bool = False
+) -> bool:
+    """复制图片到系统剪贴板；支持超限静态图重采样 / 实验性 GIF 隐写"""
     if not os.path.isfile(image_path):
         logger.warning(f"copy_image_to_clipboard: file not found {image_path}")
         return False
 
-    if resize_max > 0:
+    if stego:
+        steg_path = _make_stego_gif(image_path, resize_max)
+        if steg_path:
+            image_path = steg_path
+        elif resize_max > 0:
+            resized = _resize_static_to_webp(image_path, resize_max)
+            if resized:
+                image_path = resized
+    elif resize_max > 0:
         resized = _resize_static_to_webp(image_path, resize_max)
         if resized:
             image_path = resized

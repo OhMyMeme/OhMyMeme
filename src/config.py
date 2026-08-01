@@ -100,6 +100,7 @@ class Config:
         # 复制设置
         "copy_resize_enabled": True,  # 复制超限尺寸的静态图时缩放到小尺寸
         "copy_resize_max": 200,  # 缩放后最长边像素
+        "experimental_stego": False,  # 实验性：复制超限静态图用 GIF 隐写，可无损还原
         # UI
         "theme": "dark",
         "window_x": -1,

@@ -166,6 +166,9 @@ body {
   border-radius: 4px; letter-spacing: 0.04em;
   backdrop-filter: blur(4px);
 }
+.meme-card .gif-badge.stego-badge {
+  background: rgba(176,120,42,.9);
+}
 
 /* Empty */
 #empty {
@@ -553,7 +556,12 @@ function renderGrid() {
     name.textContent = dn;
     card.appendChild(name);
 
-    if (m.is_animated) {
+    if (m.from_stego) {
+      const badge = document.createElement('span');
+      badge.className = 'gif-badge stego-badge';
+      badge.textContent = '隐写导入';
+      card.appendChild(badge);
+    } else if (m.is_animated) {
       const badge = document.createElement('span');
       badge.className = 'gif-badge';
       badge.textContent = m.is_gif ? 'GIF' : 'WebP';
