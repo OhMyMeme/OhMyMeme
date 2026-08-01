@@ -3,6 +3,7 @@
 import json
 import os
 import platform
+import threading
 from pathlib import Path
 
 from . import __version__
@@ -96,6 +97,9 @@ class Config:
         "webdav_user": "",
         "webdav_password": "",
         "webdav_path": "",
+        # 复制设置
+        "copy_resize_enabled": True,  # 复制超限尺寸的静态图时缩放到小尺寸
+        "copy_resize_max": 200,  # 缩放后最长边像素
         # UI
         "theme": "dark",
         "window_x": -1,
@@ -108,6 +112,7 @@ class Config:
         self._path = path or (_get_config_dir() / "config.json")
         self._data = dict(self.DEFAULTS)
         self._dirty = False
+        self._lock = threading.Lock()
         self._load()
 
     # --- 公开属性访问 ---
@@ -186,10 +191,12 @@ class Config:
         self._dirty = True
 
     def save(self):
-        self._path.parent.mkdir(parents=True, exist_ok=True)
-        with open(self._path, "w", encoding="utf-8") as f:
-            json.dump(self._data, f, ensure_ascii=False, indent=2)
-        self._dirty = False
+        """持久化到磁盘（加锁，防止 pywebview 多线程并发写坏文件）"""
+        with self._lock:
+            self._path.parent.mkdir(parents=True, exist_ok=True)
+            with open(self._path, "w", encoding="utf-8") as f:
+                json.dump(self._data, f, ensure_ascii=False, indent=2)
+            self._dirty = False
 
     @property
     def config_dir(self) -> Path:
