@@ -175,10 +175,13 @@ def main():
     )
     args, _ = parser.parse_known_args()
 
-    logging.basicConfig(
-        level=logging.DEBUG if args.debug else logging.INFO,
-        format="[%(levelname)s] %(name)s: %(message)s",
-    )
+    # 根 logger 固定 DEBUG（内存缓冲始终收集）；控制台级别按 --debug 调整
+    root = logging.getLogger()
+    root.setLevel(logging.DEBUG)
+    console = logging.StreamHandler()
+    console.setLevel(logging.DEBUG if args.debug else logging.INFO)
+    console.setFormatter(logging.Formatter("[%(levelname)s] %(name)s: %(message)s"))
+    root.addHandler(console)
 
     if args.startup_debug:
         logger.info("=== debug-startup ===")

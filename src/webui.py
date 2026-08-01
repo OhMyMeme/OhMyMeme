@@ -64,6 +64,39 @@ from .manifest import build as build_manifest
 
 logger = logging.getLogger(__name__)
 
+# 内存日志缓冲：固定收集 DEBUG 级日志，供设置页"导出日志"
+_LOG_BUFFER = []
+_LOG_LOCK = threading.Lock()
+_LOG_MAX = 5000
+
+
+class _LogBufferHandler(logging.Handler):
+    """把 DEBUG 级日志缓存在内存中（限量 5000 条）"""
+
+    def emit(self, record):
+        try:
+            line = self.format(record)
+        except Exception:
+            line = record.getMessage()
+        with _LOG_LOCK:
+            _LOG_BUFFER.append(line)
+            if len(_LOG_BUFFER) > _LOG_MAX:
+                del _LOG_BUFFER[: len(_LOG_BUFFER) - _LOG_MAX]
+
+
+def install_log_buffer():
+    """挂载内存日志缓冲，根 logger 固定 DEBUG（控制台级别由 main 控制）"""
+    root = logging.getLogger()
+    root.setLevel(logging.DEBUG)
+    handler = _LogBufferHandler()
+    handler.setLevel(logging.DEBUG)
+    handler.setFormatter(logging.Formatter("[%(levelname)s] %(name)s: %(message)s"))
+    root.addHandler(handler)
+    return handler
+
+
+install_log_buffer()
+
 HTML_DIR = Path(__file__).resolve().parent / "webui"
 
 # ─── 工具函数  ───
@@ -1054,6 +1087,39 @@ class SettingsApi:
         except Exception:
             return False
 
+    def export_logs(self) -> dict:
+        """导出本次运行收集的日志（DEBUG 级）到用户选择的位置"""
+        win = self._webui._settings_window or (
+            webview.windows[0] if webview.windows else None
+        )
+        if not win:
+            return {"ok": False, "error": "no window"}
+        try:
+            result = win.create_file_dialog(
+                webview.FileDialog.SAVE,
+                allow_multiple=False,
+                save_filename="OhMyMeme-logs.txt",
+                file_types=("文本文件 (*.txt)",),
+            )
+        except Exception as e:
+            logger.warning(f"export_logs dialog error: {e!r}")
+            return {"ok": False, "error": "dialog failed"}
+        if not result:
+            return {"ok": False, "error": "cancelled"}
+        dst = result[0] if isinstance(result, (tuple, list)) else result
+        if not dst.lower().endswith(".txt"):
+            dst += ".txt"
+        with _LOG_LOCK:
+            lines = list(_LOG_BUFFER)
+        if not lines:
+            return {"ok": False, "error": "no logs"}
+        try:
+            with open(dst, "w", encoding="utf-8") as f:
+                f.write("\n".join(lines) + "\n")
+        except OSError as e:
+            return {"ok": False, "error": str(e)}
+        return {"ok": True, "path": dst, "count": len(lines)}
+
     def open_adb_help(self) -> bool:
         try:
             adb_util.open_adb_help()
@@ -1399,9 +1465,22 @@ class WebUI:
         t.start()
 
     def _schedule_quit(self):
-        """在当前循环结束后关闭窗口并退出进程"""
-        if self._window:
-            self._run_on_gui(0.2, self.stop)
+        """更新安装程序启动后，短暂等待并强制结束当前进程（确保 exe 不被占用）"""
+
+        def _force_kill():
+            time.sleep(1.5)
+            if os.name == "nt":
+                try:
+                    import ctypes
+
+                    ctypes.windll.kernel32.TerminateProcess(
+                        ctypes.windll.kernel32.GetCurrentProcess(), 0
+                    )
+                except Exception:
+                    pass
+            os._exit(0)
+
+        threading.Thread(target=_force_kill, daemon=True).start()
 
     @property
     def is_visible(self) -> bool:
