@@ -70,9 +70,9 @@ def build() -> List[Dict]:
     path = _index_path()
     try:
         path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_text(
-            json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8"
-        )
+        tmp = path.with_name(path.name + ".tmp")
+        tmp.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
+        os.replace(tmp, path)  # 原子替换，避免中断留下半写清单
         logger.debug(
             f"manifest written: {len(memes)} memes, {len(collections)} collections"
         )

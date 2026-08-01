@@ -201,7 +201,9 @@ class _FtpBackend(_SyncBackend):
         try:
             self.ftp.delete(path)
             return True
-        except error_perm:
+        except error_perm as e:
+            if "550" in str(e):  # 550说明文件不存在，视为删除成功
+                return True
             return False
         except Exception as e:
             logger.warning("delete failed %s: %s", path, e)
@@ -503,6 +505,11 @@ class _WebDAVBackend(_SyncBackend):
         try:
             with self._request("DELETE", self._url(path)) as resp:
                 return resp.status in (200, 204)
+        except urllib.error.HTTPError as e:
+            if e.code == 404:  # 404说明目标不存在，视为删除成功
+                return True
+            logger.warning("delete failed %s -> HTTP %d", path, e.code)
+            return False
         except Exception as e:
             logger.warning("delete failed %s: %s", path, e)
             return False
@@ -547,20 +554,20 @@ def _remote_root(cfg) -> str:
 
 
 def _fetch_remote_memes(bk, remote_root):
-    """下载远端 manifest 并返回 {filename: entry} 字典"""
+    """下载远端 manifest 并返回 {filename: entry} 字典（无 manifest 返回 {}）"""
     cfg = get_config()
     remote_path = remote_root.rstrip("/") + "/" + REMOTE_INDEX
     if not bk.file_exists(remote_path):
         return {}
     tmp = cfg.data_dir / ".remote-index.json"
     if not bk.download_file(remote_path, tmp):
-        return {}
+        raise SyncError("远端 manifest 下载失败")
     try:
         raw_bytes = tmp.read_bytes()
         rdata = json.loads(raw_bytes.decode("utf-8"))
         return {m["filename"]: m for m in rdata.get("memes", [])}
-    except Exception:
-        return {}
+    except Exception as e:
+        raise SyncError("远端 manifest 解析失败: %s" % e)
     finally:
         if tmp.exists():
             tmp.unlink()
@@ -637,7 +644,11 @@ def _pull_worker(entries, remote_root, cache_dir, thumb_dir, db):
     try:
         for fname, rentry in entries:
             local_entry = local_idx.get(fname)
-            if local_entry and local_entry.get("sha256") == rentry.get("sha256"):
+            if (
+                local_entry
+                and local_entry.get("sha256") == rentry.get("sha256")
+                and (cache_dir / fname).exists()
+            ):
                 local_results["skipped"] += 1
                 _increment_sync_progress(files_add=1)
                 continue
@@ -645,27 +656,47 @@ def _pull_worker(entries, remote_root, cache_dir, thumb_dir, db):
             local_path = cache_dir / fname
             fsize = rentry.get("file_size", 0)
             if bk.download_file(rem_path, local_path):
-                row = db.get_by_filename(fname)
-                if not row:
-                    ext = os.path.splitext(fname)[1].lower()
-                    w = h = 0
+                if local_path.stat().st_size == 0:
+                    # 下载到空文件视为失败：清理并计错误，避免污染本地清单
+                    local_results["errors"] += 1
+                    _increment_sync_progress(files_add=1)
                     try:
-                        from PIL import Image as PILImage
-
-                        img = PILImage.open(local_path)
-                        w, h = img.size
+                        local_path.unlink()
                     except Exception:
                         pass
-                    oname = rentry.get("name", "") or os.path.splitext(fname)[0]
-                    db.add_meme(
-                        filename=fname,
-                        file_hash=rentry.get("sha256", ""),
-                        width=w,
-                        height=h,
-                        file_size=local_path.stat().st_size,
-                        mime_type="image/%s" % ext[1:] if ext else "image/png",
-                        original_name=oname,
-                    )
+                    continue
+                row = db.get_by_filename(fname)
+                if not row:
+                    try:
+                        ext = os.path.splitext(fname)[1].lower()
+                        w = h = 0
+                        try:
+                            from PIL import Image as PILImage
+
+                            img = PILImage.open(local_path)
+                            w, h = img.size
+                        except Exception:
+                            pass
+                        oname = rentry.get("name", "") or os.path.splitext(fname)[0]
+                        db.add_meme(
+                            filename=fname,
+                            file_hash=rentry.get("sha256", ""),
+                            width=w,
+                            height=h,
+                            file_size=local_path.stat().st_size,
+                            mime_type="image/%s" % ext[1:] if ext else "image/png",
+                            original_name=oname,
+                        )
+                    except Exception as e:
+                        # DB 写入失败：清理残留 cache，避免“文件在但无记录”的游离态
+                        logger.warning("pull db add failed %s: %s", fname, e)
+                        local_results["errors"] += 1
+                        _increment_sync_progress(files_add=1)
+                        try:
+                            local_path.unlink()
+                        except Exception:
+                            pass
+                        continue
                 local_results["downloaded"] += 1
                 local_results["bytes"] += fsize
                 _increment_sync_progress(files_add=1, bytes_add=fsize)
@@ -718,7 +749,10 @@ def upload_index(bk=None) -> bool:
 
 
 def download_index() -> Optional[dict]:
-    """从远端下载 manifest，返回解析后的 dict 或 None"""
+    """从远端下载 manifest。
+
+    无 manifest 返回 None；读取/解析失败抛 SyncError。
+    """
     cfg = get_config()
     remote_root = _remote_root(cfg)
     tmp = cfg.data_dir / ".remote-index.json"
@@ -729,13 +763,15 @@ def download_index() -> Optional[dict]:
         if not bk.file_exists(remote_path):
             return None
         if not bk.download_file(remote_path, tmp):
-            return None
+            raise SyncError("远端 manifest 下载失败")
         raw_bytes = tmp.read_bytes()
         data = json.loads(raw_bytes.decode("utf-8"))
         return data
+    except SyncError:
+        raise
     except Exception as e:
         logger.warning("download_index failed: %s", e)
-        return None
+        raise SyncError("远端 manifest 解析失败: %s" % e)
     finally:
         bk.close()
         if tmp.exists():
@@ -810,6 +846,7 @@ def push(delete_remote: bool = None) -> dict:
             "deleted": 0,
         }
 
+        deleted_fnames = set()
         if delete_remote:
             for fname in list(remote_memes.keys()):
                 if fname not in local_idx:
@@ -817,7 +854,19 @@ def push(delete_remote: bool = None) -> dict:
                         remote_root.rstrip("/") + "/" + REMOTE_MEME_DIR + "/" + fname
                     )
                     if bk.delete_file(rem_path):
+                        deleted_fnames.add(fname)
                         results["deleted"] += 1
+                    else:
+                        # 删除结果不确定：复核远端是否真的已删
+                        try:
+                            still = bk.file_exists(rem_path)
+                        except Exception:
+                            still = True  # 复核异常 → unknown，保留待下次重查
+                        if not still:
+                            # 复核确认已删 → 视为删除成功
+                            deleted_fnames.add(fname)
+                            results["deleted"] += 1
+                        # still=True（仍在或复核异常）→ 保留在远端 manifest
                     rem_thumb = (
                         remote_root.rstrip("/") + "/" + REMOTE_THUMB_DIR + "/" + fname
                     )
@@ -825,10 +874,33 @@ def push(delete_remote: bool = None) -> dict:
 
         build_manifest()
         remote_manifest_path = remote_root.rstrip("/") + "/" + REMOTE_INDEX
-        local_index = cfg.data_dir / INDEX_FILENAME
-        ok = bk.upload_file(local_index, remote_manifest_path)
-        if not ok:
-            raise SyncError("远端 manifest 上传失败")
+        merged_file = None
+        try:
+            # 远端仍保留、但本地清单没有的项合并进待上传清单，避免孤儿
+            data = load_manifest()
+            local_fnames = {m["filename"] for m in data["memes"]}
+            kept = [
+                m
+                for fname, m in remote_memes.items()
+                if fname not in local_fnames and fname not in deleted_fnames
+            ]
+            manifest_file = cfg.data_dir / INDEX_FILENAME
+            if kept:
+                data["memes"].extend(kept)
+                merged_file = cfg.data_dir / ".remote-merged.json"
+                merged_file.write_text(
+                    json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8"
+                )
+                manifest_file = merged_file
+            ok = bk.upload_file(manifest_file, remote_manifest_path)
+            if not ok:
+                raise SyncError("远端 manifest 上传失败")
+        finally:
+            if merged_file is not None and merged_file.exists():
+                try:
+                    merged_file.unlink()
+                except Exception:
+                    pass
 
         _update_sync_state(
             status="done",
@@ -881,80 +953,89 @@ def pull(remove_local: bool = None) -> dict:
     max_workers = max(1, min(8, int(cfg.get("sync_threads", 3))))
     db = get_db()
 
-    remote_data = download_index()
-    if not remote_data:
-        raise SyncError("no remote manifest available")
+    try:
+        remote_data = download_index()
+        if not remote_data:
+            raise SyncError("no remote manifest available")
 
-    remote_idx = {m["filename"]: m for m in remote_data.get("memes", [])}
-    local_data = load_manifest()
-    local_idx = {m["filename"]: m for m in local_data.get("memes", [])}
+        remote_idx = {m["filename"]: m for m in remote_data.get("memes", [])}
+        local_data = load_manifest()
+        local_idx = {m["filename"]: m for m in local_data.get("memes", [])}
 
-    files_total = len(remote_idx)
-    bytes_total = 0
-    for m in remote_data.get("memes", []):
-        bytes_total += m.get("file_size", 0)
+        files_total = len(remote_idx)
+        bytes_total = 0
+        for m in remote_data.get("memes", []):
+            bytes_total += m.get("file_size", 0)
 
-    _reset_sync_state("download", files_total, bytes_total)
-    start = time.time()
-    _update_sync_state(status="downloading", start_time=start)
+        _reset_sync_state("download", files_total, bytes_total)
+        start = time.time()
+        _update_sync_state(status="downloading", start_time=start)
 
-    entries = list(remote_idx.items())
-    if max_workers <= 1 or len(entries) <= 1:
-        chunks = [entries]
-    else:
-        chunks = _chunk_list(entries, min(max_workers, len(entries)))
+        entries = list(remote_idx.items())
+        if max_workers <= 1 or len(entries) <= 1:
+            chunks = [entries]
+        else:
+            chunks = _chunk_list(entries, min(max_workers, len(entries)))
 
-    aggregated = {"downloaded": 0, "skipped": 0, "errors": 0, "bytes": 0}
-    with ThreadPoolExecutor(max_workers=len(chunks)) as executor:
-        futures = [
-            executor.submit(_pull_worker, ch, remote_root, cache_dir, thumb_dir, db)
-            for ch in chunks
-        ]
-        for future in as_completed(futures):
-            r = future.result()
-            aggregated["downloaded"] += r["downloaded"]
-            aggregated["skipped"] += r["skipped"]
-            aggregated["errors"] += r["errors"]
-            aggregated["bytes"] += r["bytes"]
+        aggregated = {"downloaded": 0, "skipped": 0, "errors": 0, "bytes": 0}
+        with ThreadPoolExecutor(max_workers=len(chunks)) as executor:
+            futures = [
+                executor.submit(_pull_worker, ch, remote_root, cache_dir, thumb_dir, db)
+                for ch in chunks
+            ]
+            for future in as_completed(futures):
+                r = future.result()
+                aggregated["downloaded"] += r["downloaded"]
+                aggregated["skipped"] += r["skipped"]
+                aggregated["errors"] += r["errors"]
+                aggregated["bytes"] += r["bytes"]
 
-    results = {
-        "downloaded": aggregated["downloaded"],
-        "skipped": aggregated["skipped"],
-        "errors": aggregated["errors"],
-        "removed_local": 0,
-    }
+        results = {
+            "downloaded": aggregated["downloaded"],
+            "skipped": aggregated["skipped"],
+            "errors": aggregated["errors"],
+            "removed_local": 0,
+        }
 
-    if remove_local:
-        for fname in list(local_idx.keys()):
-            if fname not in remote_idx:
-                row = db.get_by_filename(fname)
-                if row:
-                    db.delete_meme(row["id"])
-                local_path = cache_dir / fname
-                if local_path.exists():
-                    try:
-                        local_path.unlink()
-                        results["removed_local"] += 1
-                    except Exception:
-                        pass
-                thumb_path = thumb_dir / fname
-                if thumb_path.exists():
-                    try:
-                        thumb_path.unlink()
-                    except Exception:
-                        pass
+        if remove_local:
+            for fname in list(local_idx.keys()):
+                if fname not in remote_idx:
+                    row = db.get_by_filename(fname)
+                    if row:
+                        db.delete_meme(row["id"])
+                    local_path = cache_dir / fname
+                    if local_path.exists():
+                        try:
+                            local_path.unlink()
+                            results["removed_local"] += 1
+                        except Exception:
+                            pass
+                    thumb_path = thumb_dir / fname
+                    if thumb_path.exists():
+                        try:
+                            thumb_path.unlink()
+                        except Exception:
+                            pass
 
-    _apply_remote_collections(remote_data)
-    build_manifest()
-    _update_sync_state(
-        status="done",
-        progress=100,
-        files_done=files_total,
-        bytes_done=bytes_total,
-        results=results,
-    )
-    logger.info("sync pull done: %s", results)
-    return results
+        _apply_remote_collections(remote_data)
+        build_manifest()
+        if aggregated["errors"] > 0:
+            msg = "%d 个文件下载失败，本地清单仅包含成功项" % aggregated["errors"]
+            logger.warning("sync pull aborted: %s", msg)
+            raise SyncError(msg)
+
+        _update_sync_state(
+            status="done",
+            progress=100,
+            files_done=files_total,
+            bytes_done=bytes_total,
+            results=results,
+        )
+        logger.info("sync pull done: %s", results)
+        return results
+    except Exception as e:
+        _update_sync_state(status="error", error=str(e))
+        raise
 
 
 def delete_all_remote() -> dict:
