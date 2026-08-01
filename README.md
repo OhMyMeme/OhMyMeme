@@ -205,7 +205,7 @@ CI 会自动运行 lint+test。
 ## 贡献者
 
 <a href="https://github.com/TNTXZ/OhMyMeme/graphs/contributors">
-  <img src="https://contrib.rocks/image?repo=TNTXZ/OhMyMeme&max=20" />
+  <img src="https://contributor.starsfire.top/TNTXZ/OhMyMeme" />
 </a>
 
 ## AI 辅助开发
