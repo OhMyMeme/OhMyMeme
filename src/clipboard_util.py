@@ -1,9 +1,11 @@
 """剪贴板操作 - 复制图片到系统剪贴板"""
 
+import hashlib
 import io
 import logging
 import os
 import struct
+import tempfile
 
 logger = logging.getLogger(__name__)
 
@@ -38,12 +40,68 @@ def _is_animated(path: str) -> bool:
         return False
 
 
-def copy_image_to_clipboard(image_path: str) -> bool:
-    """将图片文件复制到系统剪贴板，支持跨平台"""
+# 重采样 WebP 编码参数（参与缓存键：改这里旧缓存自动失效）
+_RESIZE_WEBP_QUALITY = 90
+_RESIZE_CACHE_VERSION = 1
+
+
+def _is_valid_webp(path: str) -> bool:
+    """校验 WebP 文件是否完整有效"""
+    try:
+        with PILImage.open(path) as im:
+            if im.format != "WEBP":
+                return False
+            im.verify()
+        return True
+    except Exception:
+        return False
+
+
+def _resize_static_to_webp(image_path: str, max_side: int):
+    """超限的静态图重采样为 WebP 临时文件；不适用或失败返回 None"""
+    if not HAS_PIL:
+        return None
+    try:
+        img = PILImage.open(image_path)
+        if getattr(img, "is_animated", False):
+            return None
+        w, h = img.size
+        if max(w, h) <= max_side:
+            return None
+        md5 = hashlib.md5()
+        with open(image_path, "rb") as f:
+            for chunk in iter(lambda: f.read(65536), b""):
+                md5.update(chunk)
+        # 故意不删除：CF_HDROP 指向该路径，QQ 粘贴时才读文件；
+        # 缓存键含编码参数与版本号（改编码逻辑自动失效），命中时校验完整性
+        tmp_path = os.path.join(
+            tempfile.gettempdir(),
+            f"ohmm_resize_{md5.hexdigest()}_{max_side}"
+            f"_q{_RESIZE_WEBP_QUALITY}_v{_RESIZE_CACHE_VERSION}.webp",
+        )
+        if os.path.isfile(tmp_path) and _is_valid_webp(tmp_path):
+            return tmp_path
+        ratio = max_side / float(max(w, h))
+        img = img.resize(
+            (max(1, int(w * ratio)), max(1, int(h * ratio))), PILImage.LANCZOS
+        )
+        img.convert("RGBA").save(tmp_path, format="WEBP", quality=_RESIZE_WEBP_QUALITY)
+        return tmp_path
+    except Exception as e:
+        logger.warning(f"_resize_static_to_webp: {e}")
+        return None
+
+
+def copy_image_to_clipboard(image_path: str, resize_max: int = 0) -> bool:
+    """复制图片到系统剪贴板；resize_max>0 时超限静态图转 WebP 重采样"""
     if not os.path.isfile(image_path):
         logger.warning(f"copy_image_to_clipboard: file not found {image_path}")
         return False
 
+    if resize_max > 0:
+        resized = _resize_static_to_webp(image_path, resize_max)
+        if resized:
+            image_path = resized
     ext = os.path.splitext(image_path)[1].lower()
 
     if os.name == "nt":

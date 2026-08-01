@@ -158,6 +158,7 @@ tests/
   - **自定义 "WebP"** — 原始 WebP 字节，注册 `RegisterClipboardFormatW("WebP")`
   - **CF_DIB** — 首帧 BMP 静态回退
 - **移除 CF_HDROP 会导致 QQ/微信粘贴 GIF 变静态图**
+- **静态图缩放复制** — 主界面「小图」开关（config `copy_resize_enabled`，默认开）：复制超过 `copy_resize_max`（默认 200px）的静态图时，`_resize_static_to_webp` 转 WebP 缩放到限制内再写入剪贴板；动图（GIF/动画 WebP）不受影响。重采样结果存系统临时目录 `ohmm_resize_<md5>_<max>_q<质量>_v<版本>.webp`（**不删除**，CF_HDROP 需在 QQ 粘贴时仍可读取）；缓存键含编码参数与版本号，改编码逻辑后旧缓存自动失效，命中时校验完整性，同一表情重复复制复用
 
 ### 加密降级 (crypto_util)
 - 优先 `cryptography.fernet.Fernet` (AES-128-CBC + HMAC)

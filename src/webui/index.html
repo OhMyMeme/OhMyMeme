@@ -60,6 +60,29 @@ body {
 .title-btn:hover { background: var(--surface-2); color: var(--fg); }
 .title-btn:active { background: var(--card); transform: scale(0.97); }
 
+/* Resize toggle */
+.resize-toggle {
+  display: flex; align-items: center; gap: 6px;
+  cursor: pointer; padding: 4px 8px; border-radius: var(--radius-sm);
+  transition: background var(--transition);
+  -webkit-user-select: none; user-select: none;
+}
+.resize-toggle:hover { background: var(--surface-2); }
+.resize-toggle input { display: none; }
+.resize-toggle .track {
+  width: 26px; height: 14px; border-radius: 7px; flex-shrink: 0;
+  background: var(--surface-2); border: 1px solid var(--border);
+  position: relative; transition: all var(--transition);
+}
+.resize-toggle .track::after {
+  content: ""; position: absolute; top: 1px; left: 1px; width: 10px; height: 10px;
+  border-radius: 50%; background: var(--muted); transition: all var(--transition);
+}
+.resize-toggle input:checked + .track { background: var(--accent); border-color: var(--accent); }
+.resize-toggle input:checked + .track::after { left: 13px; background: #fff; }
+.resize-toggle .label { font-size: 12px; color: var(--muted); }
+.resize-toggle:hover .label { color: var(--fg); }
+
 /* Search */
 #search-wrap { position: relative; margin-bottom: 10px; flex-shrink: 0; }
 #search {
@@ -293,6 +316,11 @@ body {
         <path transform="translate(0 1280) scale(1 -1)" d="M481.749333 353.792c16.682667-16.64 43.690667-16.64 60.373334 0l120.917333 120.832 3.541333 4.010667a42.666667 42.666667 0 0 1-63.872 56.32L554.666667 486.954667V896a42.666667 42.666667 0 0 1-85.333334 0v-409.173333l-48.170666 48.128a42.666667 42.666667 0 0 1-60.330667 0l-3.541333-4.010667a42.666667 42.666667 0 0 1 3.541333-56.32z"/>
       </svg>
     </button>
+    <label class="resize-toggle" title="复制超限尺寸的静态图时重新调整为小尺寸(200px) WebP">
+      <input id="copy-resize" type="checkbox" onchange="onCopyResizeChange()">
+      <span class="track"></span>
+      <span class="label">小图</span>
+    </label>
     <button class="title-btn" onclick="showImportMenu()">导入</button>
     <button class="title-btn" onclick="rescanCache()">刷新</button>
     <button class="title-btn" onclick="openSettings()">设置</button>
@@ -1278,7 +1306,7 @@ let dragState = null;
 const titlebar = document.getElementById('titlebar');
 titlebar.addEventListener('mousedown', async (e) => {
   if (e.button !== 0) return;
-  if (e.target.closest('.title-btn')) return;
+  if (e.target.closest('.title-btn, .resize-toggle')) return;
   const nativeDrag = await api('start_window_drag', e.button + 1, e.screenX, e.screenY);
   if (nativeDrag) return;   // Linux：交给合成器拖动
   dragState = { sx: e.screenX, sy: e.screenY };
@@ -1293,6 +1321,11 @@ document.addEventListener('mousemove', (e) => {
   }
 });
 document.addEventListener('mouseup', () => { dragState = null; });
+
+function onCopyResizeChange() {
+  const on = document.getElementById('copy-resize').checked;
+  api('set_copy_resize', on);
+}
 
 async function checkUpdateAndPrompt() {
   try {
@@ -1315,6 +1348,8 @@ document.addEventListener('DOMContentLoaded', async () => {
     renderTags();
     collections = data.collections || [];
     renderCollections();
+    const cr = document.getElementById('copy-resize');
+    if (cr) cr.checked = data.copy_resize_enabled === true;
   }
   document.getElementById('loading').classList.add('hidden');
   document.getElementById('search').focus();

@@ -268,6 +268,7 @@ class JsApi:
             "memes": memes,
             "tags": self._db.get_all_tags(),
             "collections": collections,
+            "copy_resize_enabled": bool(self._cfg.get("copy_resize_enabled", True)),
         }
 
     def copy_meme(self, meme_id: int) -> bool:
@@ -277,11 +278,22 @@ class JsApi:
         path = self._find_meme_file(row["filename"])
         if not path:
             return False
-        ok = copy_image_to_clipboard(path)
+        resize_max = 0
+        if self._cfg.get("copy_resize_enabled", True):
+            resize_max = int(self._cfg.get("copy_resize_max", 200) or 200)
+        ok = copy_image_to_clipboard(path, resize_max=resize_max)
         if ok:
             self._db.record_use(meme_id)
             self._webui.schedule_hide()
         return ok
+
+    def get_copy_resize(self) -> bool:
+        return bool(self._cfg.get("copy_resize_enabled", True))
+
+    def set_copy_resize(self, enabled: bool) -> bool:
+        self._cfg.set("copy_resize_enabled", bool(enabled))
+        self._cfg.save()
+        return True
 
     def toggle_favorite(self, meme_id: int) -> bool:
         return self._db.toggle_favorite(meme_id)

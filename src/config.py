@@ -96,6 +96,9 @@ class Config:
         "webdav_user": "",
         "webdav_password": "",
         "webdav_path": "",
+        # 复制设置
+        "copy_resize_enabled": True,  # 复制超限尺寸的静态图时缩放到小尺寸
+        "copy_resize_max": 200,  # 缩放后最长边像素
         # UI
         "theme": "dark",
         "window_x": -1,
