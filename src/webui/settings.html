@@ -200,6 +200,14 @@ select:hover { border-color: var(--border-light); }
     </div>
 
     <div class="section">
+      <div class="section-title">实验性</div>
+      <label class="check-row">
+        <input id="s-stego" type="checkbox">复制超限静态图时使用 GIF 隐写（可无损还原原图）
+      </label>
+      <p style="font-size:11.5px;color:var(--muted);margin-top:4px;line-height:1.6">实验性功能，默认关闭。开启后配合「小图」模式：复制超限静态图时改用 GIF 隐写，粘贴显示为表情大小，原图信息随文件隐藏，接收方可运行解码工具还原。可能显著增大文件体积。</p>
+    </div>
+
+    <div class="section">
       <div class="section-title">从手机导入</div>
       <p style="font-size:11.5px;color:var(--muted);margin-bottom:10px;line-height:1.6">通过 ADB 从连接的 Android 手机拉取 QQ 表情包缓存并打包 ZIP</p>
       <div style="display:flex;gap:8px">
@@ -610,6 +618,8 @@ async function getSettings() {
   if (gif) gif.checked = s.auto_play_gif !== false;
   const to = document.getElementById('s-try-original');
   if (to) to.checked = s.try_original_image === true;  // DeepSeek V4 Flash
+  const stg = document.getElementById('s-stego');
+  if (stg) stg.checked = s.experimental_stego === true;
   if (as) as.checked = s.auto_start === true;
   if (ss) ss.checked = s.silent_start === true;
   toggleSilentStart();
@@ -749,6 +759,7 @@ async function saveSettings() {
   const hotkey = document.getElementById('s-hotkey')?.value || 'Ctrl+Alt+N';
   const gif = document.getElementById('s-gif')?.checked !== false;
   const try_original = document.getElementById('s-try-original')?.checked === true;  // DeepSeek V4 Flash
+  const stego = document.getElementById('s-stego')?.checked === true;
   const auto_start = document.getElementById('s-auto-start')?.checked === true;
   const silent_start = document.getElementById('s-silent-start')?.checked === true;
   const sync = collectSyncSettings();
@@ -756,6 +767,7 @@ async function saveSettings() {
   await api('save_settings', {
     hotkey, auto_play_gif: gif,
     try_original_image: try_original,  // DeepSeek V4 Flash
+    experimental_stego: stego,
     auto_start, silent_start,
     ...sync
   });
@@ -773,6 +785,8 @@ async function resetSettings() {
     if (gif) gif.checked = s.auto_play_gif !== false;
     const to = document.getElementById('s-try-original');  // DeepSeek V4 Flash
     if (to) to.checked = false;
+    const stg = document.getElementById('s-stego');
+    if (stg) stg.checked = false;
     if (as) as.checked = s.auto_start === true;
     if (ss) ss.checked = s.silent_start === true;
     toggleSilentStart();

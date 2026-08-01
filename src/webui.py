@@ -195,6 +195,7 @@ class JsApi:
                     "filename": r["filename"],
                     "name": oname,
                     "file_hash": r.get("file_hash", ""),
+                    "from_stego": r.get("from_stego", 0),
                     "width": r.get("width", 0),
                     "height": r.get("height", 0),
                     "mime_type": r.get("mime_type", ""),
@@ -250,6 +251,7 @@ class JsApi:
                     "filename": r["filename"],
                     "name": oname,
                     "file_hash": r.get("file_hash", ""),
+                    "from_stego": r.get("from_stego", 0),
                     "width": r.get("width", 0),
                     "height": r.get("height", 0),
                     "mime_type": r.get("mime_type", ""),
@@ -284,7 +286,23 @@ class JsApi:
         resize_max = 0
         if resize_enabled:
             resize_max = int(self._cfg.get("copy_resize_max", 200) or 200)
-        ok = copy_image_to_clipboard(path, resize_max=resize_max)
+        stego_enabled = bool(self._cfg.get("experimental_stego", False))
+        stego_flag = False
+        if row.get("stego_of_hash"):
+            # 本身就是隐写 GIF：原样复制，不再二次隐写
+            resize_max = 0
+        elif stego_enabled and resize_enabled:
+            # 优先复用已缓存（导入时解码得到）的隐写文件，否则现编码
+            cached = self._db.get_by_stego_of(row["file_hash"])
+            cached_path = None
+            if cached:
+                cached_path = self._find_meme_file(cached["filename"])
+            if cached_path:
+                path = cached_path
+                resize_max = 0
+            else:
+                stego_flag = True
+        ok = copy_image_to_clipboard(path, resize_max=resize_max, stego=stego_flag)
         if ok:
             self._db.record_use(meme_id)
             self._webui.schedule_hide()
@@ -929,6 +947,7 @@ class SettingsApi:
             "hotkey": d.get("hotkey", "Ctrl+Alt+N"),
             "auto_play_gif": d.get("auto_play_gif", True),
             "try_original_image": d.get("try_original_image", False),
+            "experimental_stego": d.get("experimental_stego", False),
             "auto_start": is_auto_start_enabled(),
             "silent_start": d.get("silent_start", False),
             "sync_auto_fetch_index": d.get("sync_auto_fetch_index", False),
@@ -1405,6 +1424,45 @@ class SettingsApi:
             return {"ok": False, "error": str(e)}
 
 
+def _file_sha256(path):
+    """计算文件 SHA-256"""
+    import hashlib
+
+    sha = hashlib.sha256()
+    with open(path, "rb") as f:
+        for chunk in iter(lambda: f.read(65536), b""):
+            sha.update(chunk)
+    return sha.hexdigest()
+
+
+def _try_decode_stego(gif_path):
+    """实验性：检测 GIF 隐写并解码还原原图到临时文件；非隐写/失败返回 None"""
+    try:
+        with open(gif_path, "rb") as f:
+            if b"STG3" not in f.read():
+                return None
+        from .gif_stego import decode as stego_decode
+    except Exception as e:
+        logger.warning(f"_try_decode_stego detect: {e}")
+        return None
+    try:
+        import glob
+        import tempfile
+        import uuid
+
+        base = os.path.join(tempfile.gettempdir(), f"ohmm_dec_{uuid.uuid4().hex}")
+        stego_decode(gif_path, base, quiet=True)
+        cands = [
+            c
+            for c in glob.glob(base + "*")
+            if os.path.isfile(c) and os.path.getsize(c) > 0
+        ]
+        return cands[0] if cands else None
+    except Exception as e:
+        logger.warning(f"_try_decode_stego decode: {e}")
+        return None
+
+
 class WebUI:
     """PyWebView UI 管理器"""
 
@@ -1542,7 +1600,6 @@ class WebUI:
         return ""
 
     def _do_import(self, file_paths, names=None):
-        import hashlib
         import shutil
 
         cfg = get_config()
@@ -1550,43 +1607,58 @@ class WebUI:
         cache_dir = cfg.cache_dir
         imported = 0
         imported_ids = []
+        stego_enabled = bool(cfg.get("experimental_stego", False))
         for i, src in enumerate(file_paths):
             try:
-                sha256 = hashlib.sha256()
-                with open(src, "rb") as f:
-                    for chunk in iter(lambda: f.read(65536), b""):
-                        sha256.update(chunk)
-                fhash = sha256.hexdigest()
-                if db.get_by_hash(fhash):
-                    continue
-                ext = os.path.splitext(src)[1] or ".png"
-                dst = cache_dir / f"{fhash[:16]}{ext}"
-                shutil.copy2(src, dst)
-                w = h = 0
-                if HAS_PIL:
-                    try:
-                        img = PILImage.open(src)
-                        w, h = img.size
-                    except Exception:
-                        pass
-                oname = (
+                base_name = (
                     names[i]
                     if names and i < len(names)
                     else os.path.splitext(os.path.basename(src))[0]
                 )
-                db.add_meme(
-                    filename=dst.name,
-                    file_hash=fhash,
-                    width=w,
-                    height=h,
-                    file_size=os.path.getsize(src),
-                    mime_type=f"image/{ext[1:]}" if ext else "image/png",
-                    original_name=oname,
-                )
-                row = db.get_by_hash(fhash)
-                if row:
-                    imported_ids.append(row["id"])
-                imported += 1
+                # 实验性：隐写 GIF 还原原图一并导入，并记录原图哈希便于复用
+                restored = None
+                stego_of = None
+                if stego_enabled and os.path.splitext(src)[1].lower() == ".gif":
+                    restored = _try_decode_stego(src)
+                    if restored:
+                        stego_of = _file_sha256(restored)
+                items = [(src, base_name, stego_of, 0)]
+                if restored:
+                    items.append((restored, base_name + " (还原原图)", None, 1))
+                for path, oname, stego_of_hash, from_stego in items:
+                    fhash = _file_sha256(path)
+                    if db.get_by_hash(fhash):
+                        continue
+                    ext = os.path.splitext(path)[1] or ".png"
+                    dst = cache_dir / f"{fhash[:16]}{ext}"
+                    shutil.copy2(path, dst)
+                    w = h = 0
+                    if HAS_PIL:
+                        try:
+                            img = PILImage.open(path)
+                            w, h = img.size
+                        except Exception:
+                            pass
+                    db.add_meme(
+                        filename=dst.name,
+                        file_hash=fhash,
+                        width=w,
+                        height=h,
+                        file_size=os.path.getsize(path),
+                        mime_type=f"image/{ext[1:]}" if ext else "image/png",
+                        original_name=oname,
+                        stego_of_hash=stego_of_hash,
+                        from_stego=from_stego,
+                    )
+                    row = db.get_by_hash(fhash)
+                    if row:
+                        imported_ids.append(row["id"])
+                    imported += 1
+                if restored:
+                    try:
+                        os.unlink(restored)
+                    except OSError:
+                        pass
             except Exception as e:
                 logger.error(f"import {src}: {e}")
         if imported:

@@ -52,6 +52,7 @@ src/              # 主代码
   tray.py         # TrayManager (pystray, 惰性导入)
   hotkey.py       # GlobalHotkey (三级降级: keyboard→pynput→轮询)
   clipboard_util.py # 剪贴板操作 (Win32 ctypes / macOS osascript / Linux xclip)
+  gif_stego.py     # GIF 增量隐写（实验性：粘贴表情大小 + 无损还原原图）
   crypto_util.py  # 加密 (Fernet + PBKDF2, 降级 XOR)
   manifest.py     # meme-index.json 构建/加载
   platform_util.py # 平台工具 (WSL检测, 开机自启)
@@ -160,6 +161,7 @@ tests/
 - `_copy_png_windows` — 带透明的 PNG 走此路径保留 alpha（CF_HDROP 指向 `.png` 文件 + 自定义 `"PNG"` 格式 + CF_DIB 回退）；不透明 PNG/JPG 仍走 CF_DIB（BMP）路径
 - **移除 CF_HDROP 会导致 QQ/微信粘贴 GIF 变静态图**
 - **静态图缩放复制** — 主界面「小图」开关（config `copy_resize_enabled`，默认开）：复制超过 `copy_resize_max`（默认 200px）的静态图时，`_resize_static_to_webp` 转 WebP 缩放到限制内再写入剪贴板；动图（GIF/动画 WebP）不受影响。重采样结果存系统临时目录 `ohmm_resize_<md5>_<max>_q<质量>_v<版本>.webp`（**不删除**，CF_HDROP 需在 QQ 粘贴时仍可读取）；缓存键含编码参数与版本号，改编码逻辑后旧缓存自动失效，命中时校验完整性，同一表情重复复制复用
+- **实验性 GIF 隐写** — config `experimental_stego`（默认关，设置页「实验性」开启）：①配合「小图」模式，复制超限静态图时 `_make_stego_gif` **懒加载** `gif_stego.make_stego_gif` 生成携带无损原图的隐写 GIF 再复制，失败自动回退 WebP 缩放；缓存 `ohmm_stego_<md5>_v1.gif`（不删除，CF_HDROP 需存在）。②开启时导入含 `STG3` 的 GIF 会自动解码还原原图并**一并入库**（`_try_decode_stego` → 还原原图 + 保留载体 GIF，名字后缀 `(还原原图)`）。③隐写缓存：导入时把还原原图的 SHA-256 写入 `memes.stego_of_hash` 关联到隐写 GIF 行；复制原图时 `get_by_stego_of` 优先复用已有隐写文件（不再二次编码），复制隐写 GIF 本身则原样直传（不再二次隐写）。④前端展示：隐写载体在查询层隐藏（`search`/`count`/`get_recent` 统一加 `stego_of_hash IS NULL` 过滤），网格只显示还原后的原图；原图行 `from_stego=1`（`memes.from_stego` 列），卡片正常渲染图像并叠加琥珀色「隐写导入」徽标。⑤本地生成（复制路径）的隐写文件通过临时缓存 `ohmm_stego_<md5>_v1.gif` 复用（命中即校验，不再重新编码），不写入 DB/不同步。`src/gif_stego.py` 支持 `encode`/`decode`/`make_stego_gif`/CLI，`quiet=True` 供应用调用
 
 ### 加密降级 (crypto_util)
 - 优先 `cryptography.fernet.Fernet` (AES-128-CBC + HMAC)
