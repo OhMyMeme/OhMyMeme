@@ -271,15 +271,18 @@ class JsApi:
             "copy_resize_enabled": bool(self._cfg.get("copy_resize_enabled", True)),
         }
 
-    def copy_meme(self, meme_id: int) -> bool:
+    def copy_meme(self, meme_id: int, resize_enabled: bool = None) -> bool:
+        """复制表情到剪贴板；resize_enabled 由前端开关传入，None 时回退读配置"""
         row = self._db.get_by_id(meme_id)
         if not row:
             return False
         path = self._find_meme_file(row["filename"])
         if not path:
             return False
+        if resize_enabled is None:
+            resize_enabled = bool(self._cfg.get("copy_resize_enabled", True))
         resize_max = 0
-        if self._cfg.get("copy_resize_enabled", True):
+        if resize_enabled:
             resize_max = int(self._cfg.get("copy_resize_max", 200) or 200)
         ok = copy_image_to_clipboard(path, resize_max=resize_max)
         if ok:

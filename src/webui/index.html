@@ -662,7 +662,9 @@ function initDragReorder() {
 
 async function copyMeme(id, filename) {
   if (suppressClick) return;
-  const ok = await api('copy_meme', id);
+  // 直接传当前开关状态，避免 config 未同步导致开关失效
+  const resize = document.getElementById('copy-resize').checked;
+  const ok = await api('copy_meme', id, resize);
   if (ok) {
     showToast(filename + ' 已复制');
     setTimeout(hide, 300);
@@ -1322,9 +1324,9 @@ document.addEventListener('mousemove', (e) => {
 });
 document.addEventListener('mouseup', () => { dragState = null; });
 
-function onCopyResizeChange() {
+async function onCopyResizeChange() {
   const on = document.getElementById('copy-resize').checked;
-  api('set_copy_resize', on);
+  await api('set_copy_resize', on);
 }
 
 async function checkUpdateAndPrompt() {
