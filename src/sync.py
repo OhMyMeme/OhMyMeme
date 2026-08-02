@@ -588,15 +588,20 @@ def _push_worker(entries, remote_root, cache_dir, thumb_dir, remote_memes):
             fsize = local_file.stat().st_size if local_file.exists() else 0
             local_hash = entry["sha256"]
             remote_entry = remote_memes.get(fname)
+            rem_path = remote_root.rstrip("/") + "/" + REMOTE_MEME_DIR + "/" + fname
             if remote_entry and remote_entry.get("sha256") == local_hash:
-                local_results["skipped"] += 1
-                _increment_sync_progress(files_add=1)
-                continue
+                try:
+                    remote_ok = bk.file_exists(rem_path)
+                except Exception:
+                    remote_ok = False
+                if remote_ok:
+                    local_results["skipped"] += 1
+                    _increment_sync_progress(files_add=1)
+                    continue
             if not local_file.exists():
                 local_results["errors"] += 1
                 _increment_sync_progress(files_add=1)
                 continue
-            rem_path = remote_root.rstrip("/") + "/" + REMOTE_MEME_DIR + "/" + fname
             bk.ensure_remote_dir(os.path.dirname(rem_path))
             if bk.upload_file(local_file, rem_path):
                 local_results["uploaded"] += 1

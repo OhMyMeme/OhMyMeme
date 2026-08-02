@@ -450,6 +450,33 @@ class TestSyncPush(unittest.TestCase):
         after = json.loads((self.data_dir / INDEX_FILENAME).read_text(encoding="utf-8"))
         self.assertEqual(after, old)
 
+    # ─── PR3 新增用例 ───
+
+    def test_push_skips_consistent_remote_file(self):
+        """远端真实存在且 hash 一致 → 跳过"""
+        self.fake_backend.remote_memes = {"test.png": _entry("test.png", "abc")}
+        result = sync.push()
+        self.assertEqual(result["skipped"], 1)
+        self.assertEqual(result["uploaded"], 0)
+
+    def test_push_reuploads_when_remote_file_missing(self):
+        """远端清单声称一致但真实文件缺失 → push 重新上传（污染自愈）"""
+        # 远端清单有 test.png(同hash)，但物理文件缺失
+        self.fake_backend.remote_memes = {"test.png": _entry("test.png", "abc")}
+        self.fake_backend.remote_files = set()  # 物理缺失
+        result = sync.push()
+        self.assertEqual(result["uploaded"], 1)  # 重新上传而非 skip
+        self.assertEqual(result["skipped"], 0)
+        self.assertIn("test.png", self.fake_backend.remote_files)  # 已补传
+
+    def test_push_reuploads_when_existence_check_fails(self):
+        """file_exists 复核异常 → 保守重传（不依赖污染清单）"""
+        self.fake_backend.remote_memes = {"test.png": _entry("test.png", "abc")}
+        self.fake_backend.raise_on_exists.add("test.png")
+        result = sync.push()
+        self.assertEqual(result["uploaded"], 1)
+        self.assertEqual(result["skipped"], 0)
+
 
 if __name__ == "__main__":
     unittest.main()
