@@ -98,9 +98,8 @@ class Config:
         "webdav_password": "",
         "webdav_path": "",
         # 复制设置
-        "copy_resize_enabled": True,  # 复制超限尺寸的静态图时缩放到小尺寸
+        "copy_resize_mode": 1,  # 0不处理；1webp缩放；2转gif；3转gif隐写原图
         "copy_resize_max": 200,  # 缩放后最长边像素
-        "experimental_stego": False,  # 实验性：复制超限静态图用 GIF 隐写，可无损还原
         # UI
         "theme": "dark",
         "window_x": -1,
@@ -188,6 +187,14 @@ class Config:
         # 0.2.0 及之前：删除 window_width/window_height
         for k in ("window_width", "window_height"):
             self._data.pop(k, None)
+        # 旧布尔开关迁移到 copy_resize_mode（旧配置里没有 copy_resize_mode 键）
+        if "copy_resize_mode" not in raw and (
+            "copy_resize_enabled" in raw or "experimental_stego" in raw
+        ):
+            if raw.get("experimental_stego"):
+                self._data["copy_resize_mode"] = 3
+            elif raw.get("copy_resize_enabled") is False:
+                self._data["copy_resize_mode"] = 0
         self._data["version"] = _CONFIG_VERSION
         self._dirty = True
 
