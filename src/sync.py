@@ -3,6 +3,7 @@
 import json
 import logging
 import os
+import shutil
 import tempfile
 import threading
 import time
@@ -12,6 +13,7 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 from ftplib import FTP, error_perm
 from pathlib import Path
 from typing import Optional
+from urllib.parse import quote, unquote, urlparse
 
 from .config import get_config
 from .database import get_db
@@ -96,7 +98,6 @@ def get_sync_progress() -> dict:
 
 REMOTE_INDEX = INDEX_FILENAME
 REMOTE_MEME_DIR = "memes"
-REMOTE_THUMB_DIR = "thumbnails"
 
 
 class SyncError(Exception):
@@ -130,6 +131,9 @@ class _SyncBackend:
     def list_files(self, path: str) -> list:
         """列出远端目录下的文件名（仅顶层）。不支持时抛 NotImplementedError。"""
         raise NotImplementedError
+
+    def test_connection(self):
+        """连接后做一次真实可达性/权限探测（可选）。失败抛 SyncError。"""
 
     def close(self):
         raise NotImplementedError
@@ -466,11 +470,17 @@ class _R2Backend(_SyncBackend):
 # ─── WebDAV 后端 ───
 
 
+def _quote_path(path: str) -> str:
+    """按路径段做百分号编码，/ 保留为路径分隔符"""
+    return "/".join(quote(part, safe="") for part in path.split("/"))
+
+
 class _WebDAVBackend(_SyncBackend):
     def __init__(self, cfg):
         self.cfg = cfg
         self.base_url = ""
         self.auth_header = ""
+        self.timeout = 30
 
     def connect(self):
         url = self.cfg.get("webdav_url", "")
@@ -478,7 +488,22 @@ class _WebDAVBackend(_SyncBackend):
         password = self.cfg.get("webdav_password", "")
         if not url:
             raise SyncError("WebDAV url not configured")
-        self.base_url = url.rstrip("/")
+        parsed = urlparse(url)
+        if parsed.scheme not in ("http", "https"):
+            raise SyncError("WebDAV URL 必须以 http:// 或 https:// 开头")
+        if not parsed.netloc:
+            raise SyncError("WebDAV URL 缺少主机名")
+        # 规范化 base_url 的 path：按段编码；保留 "/" 与已存在的 "%XX"，避免双重编码
+        enc_path = quote(parsed.path, safe="/%")
+        self.base_url = "%s://%s%s" % (
+            parsed.scheme,
+            parsed.netloc,
+            enc_path.rstrip("/"),
+        )
+        try:
+            self.timeout = int(self.cfg.get("webdav_timeout", 30))
+        except (TypeError, ValueError):
+            self.timeout = 30
         if user:
             import base64
 
@@ -488,7 +513,10 @@ class _WebDAVBackend(_SyncBackend):
             self.auth_header = "Basic %s" % token
 
     def _url(self, remote_path):
-        return self.base_url + "/" + remote_path.lstrip("/")
+        encoded = _quote_path(remote_path.lstrip("/"))
+        if encoded:
+            return self.base_url.rstrip("/") + "/" + encoded
+        return self.base_url.rstrip("/")
 
     def _request(self, method, url, data=None, headers=None):
         req = urllib.request.Request(url, data=data, method=method)
@@ -498,21 +526,27 @@ class _WebDAVBackend(_SyncBackend):
         if headers:
             for k, v in headers.items():
                 req.add_header(k, v)
-        return urllib.request.urlopen(req, timeout=30)
+        return urllib.request.urlopen(req, timeout=self.timeout)
 
     def ensure_remote_dir(self, path):
-        parts = [p for p in path.strip("/").split("/") if p]
-        cur = self.base_url
-        for p in parts:
-            cur += "/" + p
+        rel = ""
+        for p in [p for p in path.strip("/").split("/") if p]:
+            rel += "/" + p
+            url = self._url(rel)
             try:
-                with self._request("MKCOL", cur):
+                with self._request("MKCOL", url):
                     pass
             except urllib.error.HTTPError as e:
-                if e.code not in (405, 301):  # 405=已存在, 301=重定向到自身
-                    logger.warning("MKCOL %s -> HTTP %d", cur, e.code)
+                if e.code == 405:
+                    continue  # 标准"已存在"
+                if 300 <= e.code < 400:
+                    # 重定向：复核集合确实存在 → 幂等继续，否则判失败
+                    if self.file_exists(rel):
+                        continue
+                raise SyncError("MKCOL %s 失败: HTTP %d" % (url, e.code)) from e
             except Exception as e:
-                logger.warning("MKCOL %s failed: %s", cur, e)
+                raise SyncError("MKCOL %s 失败: %s" % (url, e)) from e
+        return True
 
     def upload_file(self, local_path, remote_path):
         try:
@@ -522,7 +556,10 @@ class _WebDAVBackend(_SyncBackend):
                     "PUT",
                     self._url(remote_path),
                     data=f,
-                    headers={"Content-Length": str(size)},
+                    headers={
+                        "Content-Length": str(size),
+                        "Content-Type": "application/octet-stream",
+                    },
                 ) as resp:
                     return 200 <= resp.status < 300
         except Exception as e:
@@ -530,14 +567,21 @@ class _WebDAVBackend(_SyncBackend):
             return False
 
     def download_file(self, remote_path, local_path):
+        tmp_path = local_path.with_suffix(local_path.suffix + ".tmp")
         try:
             local_path.parent.mkdir(parents=True, exist_ok=True)
-            with self._request("GET", self._url(remote_path)) as resp:
-                raw = resp.read()
-            with open(local_path, "wb") as f:
-                f.write(raw)
+            with self._request("GET", self._url(remote_path)) as resp, tmp_path.open(
+                "wb"
+            ) as f:
+                shutil.copyfileobj(resp, f, length=1024 * 1024)
+            os.replace(tmp_path, local_path)
             return True
         except Exception as e:
+            try:
+                if tmp_path.exists():
+                    tmp_path.unlink()
+            except Exception:
+                pass
             logger.warning("download failed %s: %s", remote_path, e)
             return False
 
@@ -550,11 +594,44 @@ class _WebDAVBackend(_SyncBackend):
         except urllib.error.HTTPError as e:
             if e.code == 404:
                 return False
-            logger.warning("file_exists %s -> HTTP %d", path, e.code)
-            return False
+            if e.code in (405, 501):
+                # 服务器不支持 PROPFIND → HEAD fallback
+                try:
+                    with self._request("HEAD", self._url(path)) as resp:
+                        return resp.status in (200, 204)
+                except urllib.error.HTTPError as e2:
+                    if e2.code == 404:
+                        return False
+                    raise SyncError(
+                        "WebDAV HEAD fallback failed: HTTP %d" % e2.code
+                    ) from e2
+                except Exception as e2:
+                    raise SyncError("WebDAV HEAD fallback failed: %s" % e2) from e2
+            raise SyncError("WebDAV PROPFIND failed: HTTP %d" % e.code) from e
         except Exception as e:
-            logger.warning("file_exists %s failed: %s", path, e)
-            return False
+            raise SyncError("WebDAV file_exists failed: %s" % e) from e
+
+    def test_connection(self):
+        """真实网络探测：对 webdav_path 目录发 PROPFIND Depth:0。失败抛 SyncError。"""
+        url = self._url(self.cfg.get("webdav_path", ""))
+        try:
+            with self._request("PROPFIND", url, headers={"Depth": "0"}) as resp:
+                if resp.status not in (200, 207):
+                    raise SyncError("WebDAV PROPFIND returned HTTP %d" % resp.status)
+        except urllib.error.HTTPError as e:
+            if e.code == 404:
+                raise SyncError(
+                    "WebDAV 目录不存在（HTTP 404），首次上传将自动创建"
+                ) from e
+            if e.code in (401, 403):
+                raise SyncError("WebDAV 鉴权失败（HTTP %d）" % e.code) from e
+            if e.code in (405, 501):
+                raise SyncError(
+                    "WebDAV 服务器不支持 PROPFIND（HTTP %d）" % e.code
+                ) from e
+            raise SyncError("WebDAV 连接测试失败: HTTP %d" % e.code) from e
+        except (urllib.error.URLError, OSError, TimeoutError) as e:
+            raise SyncError("WebDAV 网络不可达: %s" % e) from e
 
     def delete_file(self, path):
         try:
@@ -573,11 +650,23 @@ class _WebDAVBackend(_SyncBackend):
         import xml.etree.ElementTree as ET
 
         url = self._url(path)
-        with self._request("PROPFIND", url, headers={"Depth": "1"}) as resp:
-            raw = resp.read().decode("utf-8", errors="replace")
+        try:
+            with self._request("PROPFIND", url, headers={"Depth": "1"}) as resp:
+                raw = resp.read().decode("utf-8", errors="replace")
+        except urllib.error.HTTPError as e:
+            if e.code in (405, 501):
+                raise SyncError(
+                    "WebDAV 服务器不支持 PROPFIND（HTTP %d）" % e.code
+                ) from e
+            raise SyncError("WebDAV list_files failed: HTTP %d" % e.code) from e
+        except Exception as e:
+            raise SyncError("WebDAV list_files failed: %s" % e) from e
         base = url.rstrip("/") + "/"
         files = []
-        root = ET.fromstring(raw)
+        try:
+            root = ET.fromstring(raw)
+        except ET.ParseError as e:
+            raise SyncError("WebDAV PROPFIND 响应不是合法 XML: %s" % e) from e
         for response in root.findall("{DAV:}response"):
             href_el = response.find("{DAV:}href")
             if href_el is None or href_el.text is None:
@@ -591,6 +680,7 @@ class _WebDAVBackend(_SyncBackend):
                 name = href[len(base) :]
             else:
                 name = href.split("/")[-1]
+            name = unquote(name)
             if name:
                 files.append(name)
         return files
@@ -663,7 +753,7 @@ def _fetch_remote_memes(bk, remote_root):
 # ─── 多线程工作函数 ───
 
 
-def _push_worker(entries, remote_root, cache_dir, thumb_dir, remote_memes):
+def _push_worker(entries, remote_root, cache_dir, remote_memes):
     """单线程批量上传一批文件"""
     bk = _get_backend()
     bk.connect()
@@ -703,13 +793,6 @@ def _push_worker(entries, remote_root, cache_dir, thumb_dir, remote_memes):
                     {"filename": fname, "status": "error", "error": "上传失败"}
                 )
                 _increment_sync_progress(files_add=1)
-            thumb_file = thumb_dir / ("%s_thumb.png" % fname)
-            if thumb_file.exists():
-                rem_thumb = (
-                    remote_root.rstrip("/") + "/" + REMOTE_THUMB_DIR + "/" + fname
-                )
-                bk.ensure_remote_dir(os.path.dirname(rem_thumb))
-                bk.upload_file(thumb_file, rem_thumb)
         return local_results
     except Exception as e:
         logger.warning("push worker error: %s", e)
@@ -734,7 +817,7 @@ def _push_worker(entries, remote_root, cache_dir, thumb_dir, remote_memes):
         bk.close()
 
 
-def _pull_worker(entries, remote_root, cache_dir, thumb_dir, db):
+def _pull_worker(entries, remote_root, cache_dir, db):
     """单线程批量下载一批文件"""
     bk = _get_backend()
     bk.connect()
@@ -828,10 +911,6 @@ def _pull_worker(entries, remote_root, cache_dir, thumb_dir, db):
                     {"filename": fname, "status": "error", "error": "下载失败"}
                 )
                 _increment_sync_progress(files_add=1)
-            rem_thumb = remote_root.rstrip("/") + "/" + REMOTE_THUMB_DIR + "/" + fname
-            local_thumb = thumb_dir / fname
-            if bk.file_exists(rem_thumb):
-                bk.download_file(rem_thumb, local_thumb)
         return local_results
     except Exception as e:
         logger.warning("pull worker error: %s", e)
@@ -922,7 +1001,6 @@ def push(delete_remote: bool = None) -> dict:
         delete_remote = cfg.get("sync_delete_remote", False)
     remote_root = _remote_root(cfg)
     cache_dir = cfg.cache_dir
-    thumb_dir = cfg.thumbnail_dir
     max_workers = max(1, min(8, int(cfg.get("sync_threads", 3))))
     local = load_manifest()
     if not local.get("memes"):
@@ -969,9 +1047,7 @@ def push(delete_remote: bool = None) -> dict:
         }
         with ThreadPoolExecutor(max_workers=len(chunks)) as executor:
             futures = [
-                executor.submit(
-                    _push_worker, ch, remote_root, cache_dir, thumb_dir, remote_memes
-                )
+                executor.submit(_push_worker, ch, remote_root, cache_dir, remote_memes)
                 for ch in chunks
             ]
             for future in as_completed(futures):
@@ -1032,11 +1108,6 @@ def push(delete_remote: bool = None) -> dict:
                                     ),
                                 }
                             )
-                    rem_thumb = (
-                        remote_root.rstrip("/") + "/" + REMOTE_THUMB_DIR + "/" + fname
-                    )
-                    bk.delete_file(rem_thumb)
-
         build_manifest()
         remote_manifest_path = remote_root.rstrip("/") + "/" + REMOTE_INDEX
         merged_file = None
@@ -1095,6 +1166,7 @@ def sync_test() -> str:
     try:
         bk = _get_backend()
         bk.connect()
+        bk.test_connection()
         bk.close()
         return "ok"
     except Exception as e:
@@ -1161,7 +1233,7 @@ def pull(remove_local: bool = None) -> dict:
         }
         with ThreadPoolExecutor(max_workers=len(chunks)) as executor:
             futures = [
-                executor.submit(_pull_worker, ch, remote_root, cache_dir, thumb_dir, db)
+                executor.submit(_pull_worker, ch, remote_root, cache_dir, db)
                 for ch in chunks
             ]
             for future in as_completed(futures):
@@ -1299,20 +1371,20 @@ def cleanup_remote_orphans(delete: bool = False) -> dict:
 
 
 def cleanup_stale_temp_files() -> int:
-    """清理数据目录下中断遗留的临时文件（.remote-* / *.tmp），返回清理数量。"""
+    """清理中断遗留的临时文件（.remote-* / *.tmp，含 cache 目录），返回清理数量。"""
     cfg = get_config()
-    data_dir = cfg.data_dir
-    if not data_dir.exists():
-        return 0
     count = 0
-    for p in data_dir.iterdir():
-        if not p.is_file():
+    for base in (cfg.data_dir, cfg.cache_dir):
+        if not base.exists():
             continue
-        name = p.name
-        if name.startswith(".remote-") or name.endswith(".tmp"):
-            try:
-                p.unlink()
-                count += 1
-            except Exception:
-                pass
+        for p in base.iterdir():
+            if not p.is_file():
+                continue
+            name = p.name
+            if name.startswith(".remote-") or name.endswith(".tmp"):
+                try:
+                    p.unlink()
+                    count += 1
+                except Exception:
+                    pass
     return count

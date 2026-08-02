@@ -535,6 +535,16 @@ class TestSyncPush(unittest.TestCase):
         self.assertFalse((self.data_dir / "meme-index.json.tmp").exists())
         self.assertTrue((self.data_dir / "meme-index.json").exists())
 
+    def test_cleanup_stale_temp_files_covers_cache(self):
+        """启动清理：cache 子目录下的 *.tmp 也被清理"""
+        cache = self.data_dir / "cache"
+        (cache / "abc.png.tmp").write_text("x")
+        from src.sync import cleanup_stale_temp_files
+
+        count = cleanup_stale_temp_files()
+        self.assertGreaterEqual(count, 1)
+        self.assertFalse((cache / "abc.png.tmp").exists())
+
     def test_download_index_leaves_no_temp(self):
         """download_index 使用唯一临时文件且结束后清理，无残留"""
         self.fake_backend.remote_memes = {"a.png": _entry("a.png", "x")}
