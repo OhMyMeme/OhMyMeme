@@ -25,7 +25,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 from src import sync
 from src.config import Config
 from src.manifest import INDEX_FILENAME
-from src.sync import SyncError, get_sync_progress
+from src.sync import SyncError, cleanup_remote_orphans, get_sync_progress
 
 
 def _entry(fname, sha256, size=1):
@@ -58,6 +58,7 @@ class _FakeBackend:
         self.manifest_content = None  # 覆盖 manifest 下载内容（可注入损坏 JSON）
         self.empty_downloads = set()  # 下载后为空的文件
         self.download_paths = []
+        self.list_calls = []
 
     @property
     def remote_memes(self):
@@ -133,6 +134,10 @@ class _FakeBackend:
             return False
         self.remote_files.discard(self._basename(path))
         return True
+
+    def list_files(self, path):
+        self.list_calls.append(str(path))
+        return sorted(self.remote_files)
 
     def close(self):
         pass
@@ -476,6 +481,36 @@ class TestSyncPush(unittest.TestCase):
         result = sync.push()
         self.assertEqual(result["uploaded"], 1)
         self.assertEqual(result["skipped"], 0)
+
+    # ─── PR4 新增用例 ───
+
+    def test_cleanup_remote_orphans_lists(self):
+        """远端真实文件多于清单 → 识别孤儿（不删除）"""
+        self.fake_backend.remote_memes = {"a.png": _entry("a.png", "x")}
+        self.fake_backend.remote_files.add("orphan.png")  # 真实存在但清单无记录
+        result = cleanup_remote_orphans(delete=False)
+        self.assertTrue(result["ok"])
+        self.assertIn("orphan.png", result["orphans"])
+        self.assertNotIn("a.png", result["orphans"])
+
+    def test_cleanup_remote_orphans_deletes(self):
+        """清理孤儿：delete=True 删除真实孤儿文件"""
+        self.fake_backend.remote_memes = {"a.png": _entry("a.png", "x")}
+        self.fake_backend.remote_files.add("orphan.png")
+        result = cleanup_remote_orphans(delete=True)
+        self.assertTrue(result["ok"])
+        self.assertEqual(result["removed"], 1)
+        self.assertNotIn("orphan.png", self.fake_backend.remote_files)
+
+    def test_cleanup_remote_orphans_degraded(self):
+        """后端无 list_files → 降级返回空孤儿，不影响主同步"""
+        self.fake_backend.remote_memes = {"a.png": _entry("a.png", "x")}
+        with patch.object(
+            self.fake_backend, "list_files", side_effect=NotImplementedError
+        ):
+            result = cleanup_remote_orphans(delete=False)
+        self.assertTrue(result["ok"])
+        self.assertEqual(result["orphans"], [])
 
 
 if __name__ == "__main__":

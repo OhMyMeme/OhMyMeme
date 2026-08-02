@@ -375,6 +375,12 @@ select:hover { border-color: var(--border-light); }
           <button id="btn-sync-pull" class="btn btn-primary btn-sm btn-flex" onclick="syncPull()">从远端下载</button>
         </div>
         <div id="s-sync-status" style="margin-top:6px"></div>
+        <div style="display:flex;gap:8px;margin-top:12px;align-items:center;flex-wrap:wrap">
+          <span style="font-size:12px;color:var(--muted)">云端孤儿文件</span>
+          <button id="btn-orphan-scan" class="btn btn-secondary btn-sm" onclick="scanOrphans()">扫描</button>
+          <button id="btn-orphan-delete" class="btn btn-secondary btn-sm" style="border-color:#ef4444;color:#ef4444" onclick="deleteOrphans()" disabled>删除孤儿</button>
+          <span id="s-orphan-status" style="font-size:11.5px;color:var(--muted)"></span>
+        </div>
       </div>
     </div>
 
@@ -871,6 +877,37 @@ async function checkSyncStatus() {
   if (r.local_missing > 0) msg += '，本地缺少 ' + r.local_missing + ' 个';
   status.textContent = msg;
   showToast('同步状态：' + msg);
+}
+
+let _orphanFiles = [];
+
+async function scanOrphans() {
+  const status = document.getElementById('s-orphan-status');
+  const del = document.getElementById('btn-orphan-delete');
+  status.textContent = '扫描中...';
+  const r = await api('get_remote_orphans', false);
+  if (!r || !r.ok) {
+    status.textContent = '扫描失败: ' + ((r && r.error) || '未知错误');
+    return;
+  }
+  _orphanFiles = r.orphans || [];
+  status.textContent = _orphanFiles.length
+    ? '发现 ' + _orphanFiles.length + ' 个孤儿文件'
+    : '无孤儿文件';
+  del.disabled = _orphanFiles.length === 0;
+}
+
+async function deleteOrphans() {
+  if (!_orphanFiles.length) return;
+  const status = document.getElementById('s-orphan-status');
+  const r = await api('get_remote_orphans', true);
+  if (!r || !r.ok) {
+    status.textContent = '删除失败: ' + ((r && r.error) || '未知错误');
+    return;
+  }
+  status.textContent = '已删除 ' + r.removed + ' 个孤儿文件';
+  _orphanFiles = [];
+  document.getElementById('btn-orphan-delete').disabled = true;
 }
 
 async function showUploadWarning() {

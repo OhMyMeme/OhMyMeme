@@ -123,6 +123,10 @@ class _SyncBackend:
     def delete_file(self, path: str) -> bool:
         raise NotImplementedError
 
+    def list_files(self, path: str) -> list:
+        """列出远端目录下的文件名（仅顶层）。不支持时抛 NotImplementedError。"""
+        raise NotImplementedError
+
     def close(self):
         raise NotImplementedError
 
@@ -208,6 +212,15 @@ class _FtpBackend(_SyncBackend):
         except Exception as e:
             logger.warning("delete failed %s: %s", path, e)
             return False
+
+    def list_files(self, path):
+        try:
+            names = []
+            self.ftp.retrlines("NLST %s" % path, names.append)
+            return [n.split("/")[-1] for n in names if n and not n.endswith("/")]
+        except Exception as e:
+            logger.warning("list_files %s failed: %s", path, e)
+            raise
 
     def close(self):
         if self.ftp is not None:
@@ -320,6 +333,25 @@ class _S3Backend(_SyncBackend):
             logger.warning("delete failed %s: %s", path, e)
             return False
 
+    def list_files(self, path):
+        prefix = self._key(path)
+        if prefix and not prefix.endswith("/"):
+            prefix += "/"
+        keys = []
+        kwargs = {"Bucket": self.bucket, "Prefix": prefix}
+        while True:
+            resp = self.client.list_objects_v2(**kwargs)
+            for obj in resp.get("Contents", []):
+                key = obj["Key"]
+                if key.endswith("/"):
+                    continue
+                keys.append(key[len(prefix) :])
+            if resp.get("IsTruncated"):
+                kwargs["ContinuationToken"] = resp.get("NextContinuationToken")
+            else:
+                break
+        return keys
+
     def close(self):
         self.client = None
 
@@ -403,6 +435,25 @@ class _R2Backend(_SyncBackend):
         except Exception as e:
             logger.warning("delete failed %s: %s", path, e)
             return False
+
+    def list_files(self, path):
+        prefix = self._key(path)
+        if prefix and not prefix.endswith("/"):
+            prefix += "/"
+        keys = []
+        kwargs = {"Bucket": self.bucket, "Prefix": prefix}
+        while True:
+            resp = self.client.list_objects_v2(**kwargs)
+            for obj in resp.get("Contents", []):
+                key = obj["Key"]
+                if key.endswith("/"):
+                    continue
+                keys.append(key[len(prefix) :])
+            if resp.get("IsTruncated"):
+                kwargs["ContinuationToken"] = resp.get("NextContinuationToken")
+            else:
+                break
+        return keys
 
     def close(self):
         self.client = None
@@ -513,6 +564,32 @@ class _WebDAVBackend(_SyncBackend):
         except Exception as e:
             logger.warning("delete failed %s: %s", path, e)
             return False
+
+    def list_files(self, path):
+        import xml.etree.ElementTree as ET
+
+        url = self._url(path)
+        with self._request("PROPFIND", url, headers={"Depth": "1"}) as resp:
+            raw = resp.read().decode("utf-8", errors="replace")
+        base = url.rstrip("/") + "/"
+        files = []
+        root = ET.fromstring(raw)
+        for response in root.findall("{DAV:}response"):
+            href_el = response.find("{DAV:}href")
+            if href_el is None or href_el.text is None:
+                continue
+            href = href_el.text.strip()
+            if href.endswith("/"):
+                continue  # 目录条目跳过（仅顶层）
+            if href.rstrip("/") == url.rstrip("/"):
+                continue
+            if href.startswith(base):
+                name = href[len(base) :]
+            else:
+                name = href.split("/")[-1]
+            if name:
+                files.append(name)
+        return files
 
     def close(self):
         pass
@@ -1068,6 +1145,49 @@ def delete_all_remote() -> dict:
             pass
         return {"ok": True, "deleted": count}
     except Exception as e:
+        return {"ok": False, "error": str(e)}
+    finally:
+        bk.close()
+
+
+def list_remote_orphans(bk, remote_root) -> list:
+    """返回远端 memes/ 中真实存在但 manifest 未记录的孤儿文件名。
+
+    后端不支持 list_files 或目录不可枚举时返回 []（降级，不影响主同步）。
+    """
+    remote_path = remote_root.rstrip("/") + "/" + REMOTE_MEME_DIR
+    try:
+        remote_files = bk.list_files(remote_path)
+    except NotImplementedError:
+        return []
+    except Exception as e:
+        logger.warning("list_files %s failed: %s", remote_path, e)
+        return []
+    try:
+        remote_memes = _fetch_remote_memes(bk, remote_root)
+    except Exception as e:
+        logger.warning("list_remote_orphans fetch manifest failed: %s", e)
+        return []
+    return [fname for fname in remote_files if fname not in remote_memes]
+
+
+def cleanup_remote_orphans(delete: bool = False) -> dict:
+    """识别远端孤儿文件；delete=True 时物理删除，返回 {ok, orphans, removed}。"""
+    cfg = get_config()
+    remote_root = _remote_root(cfg)
+    bk = _get_backend()
+    bk.connect()
+    try:
+        orphans = list_remote_orphans(bk, remote_root)
+        removed = 0
+        if delete:
+            for fname in orphans:
+                rem_path = remote_root.rstrip("/") + "/" + REMOTE_MEME_DIR + "/" + fname
+                if bk.delete_file(rem_path):
+                    removed += 1
+        return {"ok": True, "orphans": orphans, "removed": removed}
+    except Exception as e:
+        logger.warning("cleanup_remote_orphans failed: %s", e)
         return {"ok": False, "error": str(e)}
     finally:
         bk.close()

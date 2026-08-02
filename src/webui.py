@@ -1375,6 +1375,13 @@ class SettingsApi:
         except Exception as e:
             return {"ok": False, "error": str(e)}
 
+    def get_remote_orphans(self, delete: bool = False) -> dict:
+        """扫描云端孤儿文件；delete=True 时物理删除"""
+        try:
+            return sync_module.cleanup_remote_orphans(delete=delete)
+        except Exception as e:
+            return {"ok": False, "error": str(e)}
+
     def check_sync_status(self) -> dict:
         """比较本地与云端同步状态"""
         try:
