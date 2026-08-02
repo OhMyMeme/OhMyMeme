@@ -3,6 +3,7 @@
 import json
 import logging
 import os
+import tempfile
 import threading
 import time
 import urllib.error
@@ -636,13 +637,19 @@ def _fetch_remote_memes(bk, remote_root):
     remote_path = remote_root.rstrip("/") + "/" + REMOTE_INDEX
     if not bk.file_exists(remote_path):
         return {}
-    tmp = cfg.data_dir / ".remote-index.json"
-    if not bk.download_file(remote_path, tmp):
-        raise SyncError("远端 manifest 下载失败")
+    fd, tmp_name = tempfile.mkstemp(
+        prefix=".remote-index-", suffix=".json", dir=str(cfg.data_dir)
+    )
+    os.close(fd)
+    tmp = Path(tmp_name)
     try:
+        if not bk.download_file(remote_path, tmp):
+            raise SyncError("远端 manifest 下载失败")
         raw_bytes = tmp.read_bytes()
         rdata = json.loads(raw_bytes.decode("utf-8"))
         return {m["filename"]: m for m in rdata.get("memes", [])}
+    except SyncError:
+        raise
     except Exception as e:
         raise SyncError("远端 manifest 解析失败: %s" % e)
     finally:
@@ -837,7 +844,11 @@ def download_index() -> Optional[dict]:
     """
     cfg = get_config()
     remote_root = _remote_root(cfg)
-    tmp = cfg.data_dir / ".remote-index.json"
+    fd, tmp_name = tempfile.mkstemp(
+        prefix=".remote-index-", suffix=".json", dir=str(cfg.data_dir)
+    )
+    os.close(fd)
+    tmp = Path(tmp_name)
     bk = _get_backend()
     bk.connect()
     try:
@@ -969,7 +980,11 @@ def push(delete_remote: bool = None) -> dict:
             manifest_file = cfg.data_dir / INDEX_FILENAME
             if kept:
                 data["memes"].extend(kept)
-                merged_file = cfg.data_dir / ".remote-merged.json"
+                fd, tmp_name = tempfile.mkstemp(
+                    prefix=".remote-merged-", suffix=".json", dir=str(cfg.data_dir)
+                )
+                os.close(fd)
+                merged_file = Path(tmp_name)
                 merged_file.write_text(
                     json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8"
                 )
@@ -1191,3 +1206,23 @@ def cleanup_remote_orphans(delete: bool = False) -> dict:
         return {"ok": False, "error": str(e)}
     finally:
         bk.close()
+
+
+def cleanup_stale_temp_files() -> int:
+    """清理数据目录下中断遗留的临时文件（.remote-* / *.tmp），返回清理数量。"""
+    cfg = get_config()
+    data_dir = cfg.data_dir
+    if not data_dir.exists():
+        return 0
+    count = 0
+    for p in data_dir.iterdir():
+        if not p.is_file():
+            continue
+        name = p.name
+        if name.startswith(".remote-") or name.endswith(".tmp"):
+            try:
+                p.unlink()
+                count += 1
+            except Exception:
+                pass
+    return count

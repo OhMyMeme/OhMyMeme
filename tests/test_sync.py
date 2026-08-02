@@ -371,12 +371,15 @@ class TestSyncPush(unittest.TestCase):
         self.assertIn("ghost.png", self._manifest_filenames())
 
     def test_push_manifest_failure_cleans_temp_merged(self):
-        """manifest 上传失败时 .remote-merged.json 被清理，不残留"""
+        """manifest 上传失败时合并临时文件被清理，不残留"""
         self.fake_backend.remote_memes = {"a.png": _entry("a.png", "x")}
         self.fake_backend.manifest_ok = False
         with self.assertRaises(SyncError):
             sync.push()
-        self.assertFalse((self.data_dir / ".remote-merged.json").exists())
+        leftovers = [
+            p for p in self.data_dir.iterdir() if p.name.startswith(".remote-merged-")
+        ]
+        self.assertEqual(leftovers, [])
 
     # ─── PR2 新增用例 ───
 
@@ -511,6 +514,44 @@ class TestSyncPush(unittest.TestCase):
             result = cleanup_remote_orphans(delete=False)
         self.assertTrue(result["ok"])
         self.assertEqual(result["orphans"], [])
+
+    # ─── PR5 新增用例 ───
+
+    def test_cleanup_stale_temp_files(self):
+        """启动清理：删除中断遗留临时文件，保留正式清单"""
+        (self.data_dir / ".remote-index-abc.json").write_text("x")
+        (self.data_dir / ".remote-merged-def.json").write_text("x")
+        (self.data_dir / "meme-index.json.tmp").write_text("x")
+        from src.sync import cleanup_stale_temp_files
+
+        count = cleanup_stale_temp_files()
+        self.assertEqual(count, 3)
+        self.assertFalse((self.data_dir / ".remote-index-abc.json").exists())
+        self.assertFalse((self.data_dir / ".remote-merged-def.json").exists())
+        self.assertFalse((self.data_dir / "meme-index.json.tmp").exists())
+        self.assertTrue((self.data_dir / "meme-index.json").exists())
+
+    def test_download_index_leaves_no_temp(self):
+        """download_index 使用唯一临时文件且结束后清理，无残留"""
+        self.fake_backend.remote_memes = {"a.png": _entry("a.png", "x")}
+        from src.sync import download_index
+
+        data = download_index()
+        self.assertIsNotNone(data)
+        leftovers = [
+            p for p in self.data_dir.iterdir() if p.name.startswith(".remote-")
+        ]
+        self.assertEqual(leftovers, [])
+
+    def test_fetch_remote_memes_download_failure_leaves_no_temp(self):
+        """远端 manifest 存在但下载失败 → 无 .remote-index-* 残留"""
+        self.fake_backend.manifest_download_ok = False
+        with self.assertRaises(SyncError):
+            sync.push()
+        leftovers = [
+            p for p in self.data_dir.iterdir() if p.name.startswith(".remote-index-")
+        ]
+        self.assertEqual(leftovers, [])
 
 
 if __name__ == "__main__":
