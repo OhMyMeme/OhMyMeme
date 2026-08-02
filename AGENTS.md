@@ -111,7 +111,7 @@ tests/
 ### 同步
 - manifest 文件: `meme-index.json`
 - SHA-256 差异对比, `push(delete_remote)`/`pull(remove_local)`
-- 远端路径: `{root}/memes/`, `{root}/thumbnails/`, `{root}/meme-index.json`
+- 远端路径: `{root}/memes/`, `{root}/meme-index.json`
 - 同步进度: `_sync_state` 全局变量追踪进度，`get_sync_progress()` 供 JS 轮询
 - `push()`/`pull()` 内循环中更新 files_done/bytes_done/current_file 等字段
 - 前端 300ms 轮询 `get_sync_progress()` 显示进度条 + 实时速度
@@ -121,7 +121,6 @@ tests/
 - `_push_worker`/`_pull_worker`: 接收文件子列表，操作独立后端连接，原子递增 `_sync_state`
 - `_sync_lock` (`threading.Lock`) 保护 `_sync_state` 写操作；`_increment_sync_progress()` 提供原子递增
 - `_chunk_list(lst, n)` 将文件列表均匀切分给各线程
-- 缩略图上传统一由文件所在 worker 附带完成
 
 ### 更新
 - GitHub API 查询: `/releases/latest` → `/releases?per_page=5` 回退

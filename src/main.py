@@ -36,6 +36,14 @@ class OhMyMemeApp:
     def run(self):
         self._running = True
 
+        # 0. 清理中断遗留的临时文件（.remote-* / *.tmp）
+        try:
+            from .sync import cleanup_stale_temp_files
+
+            cleanup_stale_temp_files()
+        except Exception as e:
+            logger.debug("cleanup stale temp files: %s", e)
+
         # 1. 创建 WebUI（先不启动 GUI 循环）
         self._webui = WebUI(
             update_debug=getattr(self, "_update_debug", False),

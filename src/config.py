@@ -97,6 +97,7 @@ class Config:
         "webdav_user": "",
         "webdav_password": "",
         "webdav_path": "",
+        "webdav_timeout": 30,  # WebDAV 请求超时（秒）
         # 复制设置
         "copy_resize_mode": 1,  # 0不处理；1webp缩放；2转gif；3转gif隐写原图
         "copy_resize_max": 200,  # 缩放后最长边像素

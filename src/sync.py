@@ -3,6 +3,8 @@
 import json
 import logging
 import os
+import shutil
+import tempfile
 import threading
 import time
 import urllib.error
@@ -11,6 +13,7 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 from ftplib import FTP, error_perm
 from pathlib import Path
 from typing import Optional
+from urllib.parse import quote, unquote, urlparse
 
 from .config import get_config
 from .database import get_db
@@ -21,6 +24,7 @@ from .manifest import load as load_manifest
 logger = logging.getLogger(__name__)
 
 _sync_lock = threading.Lock()
+_sync_run_lock = threading.Lock()  # 防止 push/pull 并发执行
 
 # 同步进度状态（全局，供 JS 轮询）
 _sync_state = {
@@ -36,6 +40,7 @@ _sync_state = {
     "start_time": 0,
     "results": None,
     "error": "",
+    "failed_items": [],  # [{filename, status: error|unknown, error}]
 }
 
 
@@ -54,6 +59,7 @@ def _reset_sync_state(direction, files_total, bytes_total):
         start_time=0,
         results=None,
         error="",
+        failed_items=[],
     )
 
 
@@ -92,7 +98,6 @@ def get_sync_progress() -> dict:
 
 REMOTE_INDEX = INDEX_FILENAME
 REMOTE_MEME_DIR = "memes"
-REMOTE_THUMB_DIR = "thumbnails"
 
 
 class SyncError(Exception):
@@ -122,6 +127,13 @@ class _SyncBackend:
 
     def delete_file(self, path: str) -> bool:
         raise NotImplementedError
+
+    def list_files(self, path: str) -> list:
+        """列出远端目录下的文件名（仅顶层）。不支持时抛 NotImplementedError。"""
+        raise NotImplementedError
+
+    def test_connection(self):
+        """连接后做一次真实可达性/权限探测（可选）。失败抛 SyncError。"""
 
     def close(self):
         raise NotImplementedError
@@ -201,11 +213,22 @@ class _FtpBackend(_SyncBackend):
         try:
             self.ftp.delete(path)
             return True
-        except error_perm:
+        except error_perm as e:
+            if "550" in str(e):  # 550说明文件不存在，视为删除成功
+                return True
             return False
         except Exception as e:
             logger.warning("delete failed %s: %s", path, e)
             return False
+
+    def list_files(self, path):
+        try:
+            names = []
+            self.ftp.retrlines("NLST %s" % path, names.append)
+            return [n.split("/")[-1] for n in names if n and not n.endswith("/")]
+        except Exception as e:
+            logger.warning("list_files %s failed: %s", path, e)
+            raise
 
     def close(self):
         if self.ftp is not None:
@@ -318,6 +341,25 @@ class _S3Backend(_SyncBackend):
             logger.warning("delete failed %s: %s", path, e)
             return False
 
+    def list_files(self, path):
+        prefix = self._key(path)
+        if prefix and not prefix.endswith("/"):
+            prefix += "/"
+        keys = []
+        kwargs = {"Bucket": self.bucket, "Prefix": prefix}
+        while True:
+            resp = self.client.list_objects_v2(**kwargs)
+            for obj in resp.get("Contents", []):
+                key = obj["Key"]
+                if key.endswith("/"):
+                    continue
+                keys.append(key[len(prefix) :])
+            if resp.get("IsTruncated"):
+                kwargs["ContinuationToken"] = resp.get("NextContinuationToken")
+            else:
+                break
+        return keys
+
     def close(self):
         self.client = None
 
@@ -402,6 +444,25 @@ class _R2Backend(_SyncBackend):
             logger.warning("delete failed %s: %s", path, e)
             return False
 
+    def list_files(self, path):
+        prefix = self._key(path)
+        if prefix and not prefix.endswith("/"):
+            prefix += "/"
+        keys = []
+        kwargs = {"Bucket": self.bucket, "Prefix": prefix}
+        while True:
+            resp = self.client.list_objects_v2(**kwargs)
+            for obj in resp.get("Contents", []):
+                key = obj["Key"]
+                if key.endswith("/"):
+                    continue
+                keys.append(key[len(prefix) :])
+            if resp.get("IsTruncated"):
+                kwargs["ContinuationToken"] = resp.get("NextContinuationToken")
+            else:
+                break
+        return keys
+
     def close(self):
         self.client = None
 
@@ -409,11 +470,17 @@ class _R2Backend(_SyncBackend):
 # ─── WebDAV 后端 ───
 
 
+def _quote_path(path: str) -> str:
+    """按路径段做百分号编码，/ 保留为路径分隔符"""
+    return "/".join(quote(part, safe="") for part in path.split("/"))
+
+
 class _WebDAVBackend(_SyncBackend):
     def __init__(self, cfg):
         self.cfg = cfg
         self.base_url = ""
         self.auth_header = ""
+        self.timeout = 30
 
     def connect(self):
         url = self.cfg.get("webdav_url", "")
@@ -421,7 +488,22 @@ class _WebDAVBackend(_SyncBackend):
         password = self.cfg.get("webdav_password", "")
         if not url:
             raise SyncError("WebDAV url not configured")
-        self.base_url = url.rstrip("/")
+        parsed = urlparse(url)
+        if parsed.scheme not in ("http", "https"):
+            raise SyncError("WebDAV URL 必须以 http:// 或 https:// 开头")
+        if not parsed.netloc:
+            raise SyncError("WebDAV URL 缺少主机名")
+        # 规范化 base_url 的 path：按段编码；保留 "/" 与已存在的 "%XX"，避免双重编码
+        enc_path = quote(parsed.path, safe="/%")
+        self.base_url = "%s://%s%s" % (
+            parsed.scheme,
+            parsed.netloc,
+            enc_path.rstrip("/"),
+        )
+        try:
+            self.timeout = int(self.cfg.get("webdav_timeout", 30))
+        except (TypeError, ValueError):
+            self.timeout = 30
         if user:
             import base64
 
@@ -431,7 +513,10 @@ class _WebDAVBackend(_SyncBackend):
             self.auth_header = "Basic %s" % token
 
     def _url(self, remote_path):
-        return self.base_url + "/" + remote_path.lstrip("/")
+        encoded = _quote_path(remote_path.lstrip("/"))
+        if encoded:
+            return self.base_url.rstrip("/") + "/" + encoded
+        return self.base_url.rstrip("/")
 
     def _request(self, method, url, data=None, headers=None):
         req = urllib.request.Request(url, data=data, method=method)
@@ -441,21 +526,27 @@ class _WebDAVBackend(_SyncBackend):
         if headers:
             for k, v in headers.items():
                 req.add_header(k, v)
-        return urllib.request.urlopen(req, timeout=30)
+        return urllib.request.urlopen(req, timeout=self.timeout)
 
     def ensure_remote_dir(self, path):
-        parts = [p for p in path.strip("/").split("/") if p]
-        cur = self.base_url
-        for p in parts:
-            cur += "/" + p
+        rel = ""
+        for p in [p for p in path.strip("/").split("/") if p]:
+            rel += "/" + p
+            url = self._url(rel)
             try:
-                with self._request("MKCOL", cur):
+                with self._request("MKCOL", url):
                     pass
             except urllib.error.HTTPError as e:
-                if e.code not in (405, 301):  # 405=已存在, 301=重定向到自身
-                    logger.warning("MKCOL %s -> HTTP %d", cur, e.code)
+                if e.code == 405:
+                    continue  # 标准"已存在"
+                if 300 <= e.code < 400:
+                    # 重定向：复核集合确实存在 → 幂等继续，否则判失败
+                    if self.file_exists(rel):
+                        continue
+                raise SyncError("MKCOL %s 失败: HTTP %d" % (url, e.code)) from e
             except Exception as e:
-                logger.warning("MKCOL %s failed: %s", cur, e)
+                raise SyncError("MKCOL %s 失败: %s" % (url, e)) from e
+        return True
 
     def upload_file(self, local_path, remote_path):
         try:
@@ -465,22 +556,32 @@ class _WebDAVBackend(_SyncBackend):
                     "PUT",
                     self._url(remote_path),
                     data=f,
-                    headers={"Content-Length": str(size)},
+                    headers={
+                        "Content-Length": str(size),
+                        "Content-Type": "application/octet-stream",
+                    },
                 ) as resp:
-                    return resp.status in (200, 201, 204)
+                    return 200 <= resp.status < 300
         except Exception as e:
             logger.warning("upload failed %s: %s", remote_path, e)
             return False
 
     def download_file(self, remote_path, local_path):
+        tmp_path = local_path.with_suffix(local_path.suffix + ".tmp")
         try:
             local_path.parent.mkdir(parents=True, exist_ok=True)
-            with self._request("GET", self._url(remote_path)) as resp:
-                raw = resp.read()
-            with open(local_path, "wb") as f:
-                f.write(raw)
+            with self._request("GET", self._url(remote_path)) as resp, tmp_path.open(
+                "wb"
+            ) as f:
+                shutil.copyfileobj(resp, f, length=1024 * 1024)
+            os.replace(tmp_path, local_path)
             return True
         except Exception as e:
+            try:
+                if tmp_path.exists():
+                    tmp_path.unlink()
+            except Exception:
+                pass
             logger.warning("download failed %s: %s", remote_path, e)
             return False
 
@@ -493,19 +594,96 @@ class _WebDAVBackend(_SyncBackend):
         except urllib.error.HTTPError as e:
             if e.code == 404:
                 return False
-            logger.warning("file_exists %s -> HTTP %d", path, e.code)
-            return False
+            if e.code in (405, 501):
+                # 服务器不支持 PROPFIND → HEAD fallback
+                try:
+                    with self._request("HEAD", self._url(path)) as resp:
+                        return resp.status in (200, 204)
+                except urllib.error.HTTPError as e2:
+                    if e2.code == 404:
+                        return False
+                    raise SyncError(
+                        "WebDAV HEAD fallback failed: HTTP %d" % e2.code
+                    ) from e2
+                except Exception as e2:
+                    raise SyncError("WebDAV HEAD fallback failed: %s" % e2) from e2
+            raise SyncError("WebDAV PROPFIND failed: HTTP %d" % e.code) from e
         except Exception as e:
-            logger.warning("file_exists %s failed: %s", path, e)
-            return False
+            raise SyncError("WebDAV file_exists failed: %s" % e) from e
+
+    def test_connection(self):
+        """真实网络探测：对 webdav_path 目录发 PROPFIND Depth:0。失败抛 SyncError。"""
+        url = self._url(self.cfg.get("webdav_path", ""))
+        try:
+            with self._request("PROPFIND", url, headers={"Depth": "0"}) as resp:
+                if resp.status not in (200, 207):
+                    raise SyncError("WebDAV PROPFIND returned HTTP %d" % resp.status)
+        except urllib.error.HTTPError as e:
+            if e.code == 404:
+                raise SyncError(
+                    "WebDAV 目录不存在（HTTP 404），首次上传将自动创建"
+                ) from e
+            if e.code in (401, 403):
+                raise SyncError("WebDAV 鉴权失败（HTTP %d）" % e.code) from e
+            if e.code in (405, 501):
+                raise SyncError(
+                    "WebDAV 服务器不支持 PROPFIND（HTTP %d）" % e.code
+                ) from e
+            raise SyncError("WebDAV 连接测试失败: HTTP %d" % e.code) from e
+        except (urllib.error.URLError, OSError, TimeoutError) as e:
+            raise SyncError("WebDAV 网络不可达: %s" % e) from e
 
     def delete_file(self, path):
         try:
             with self._request("DELETE", self._url(path)) as resp:
                 return resp.status in (200, 204)
+        except urllib.error.HTTPError as e:
+            if e.code == 404:  # 404说明目标不存在，视为删除成功
+                return True
+            logger.warning("delete failed %s -> HTTP %d", path, e.code)
+            return False
         except Exception as e:
             logger.warning("delete failed %s: %s", path, e)
             return False
+
+    def list_files(self, path):
+        import xml.etree.ElementTree as ET
+
+        url = self._url(path)
+        try:
+            with self._request("PROPFIND", url, headers={"Depth": "1"}) as resp:
+                raw = resp.read().decode("utf-8", errors="replace")
+        except urllib.error.HTTPError as e:
+            if e.code in (405, 501):
+                raise SyncError(
+                    "WebDAV 服务器不支持 PROPFIND（HTTP %d）" % e.code
+                ) from e
+            raise SyncError("WebDAV list_files failed: HTTP %d" % e.code) from e
+        except Exception as e:
+            raise SyncError("WebDAV list_files failed: %s" % e) from e
+        base = url.rstrip("/") + "/"
+        files = []
+        try:
+            root = ET.fromstring(raw)
+        except ET.ParseError as e:
+            raise SyncError("WebDAV PROPFIND 响应不是合法 XML: %s" % e) from e
+        for response in root.findall("{DAV:}response"):
+            href_el = response.find("{DAV:}href")
+            if href_el is None or href_el.text is None:
+                continue
+            href = href_el.text.strip()
+            if href.endswith("/"):
+                continue  # 目录条目跳过（仅顶层）
+            if href.rstrip("/") == url.rstrip("/"):
+                continue
+            if href.startswith(base):
+                name = href[len(base) :]
+            else:
+                name = href.split("/")[-1]
+            name = unquote(name)
+            if name:
+                files.append(name)
+        return files
 
     def close(self):
         pass
@@ -547,20 +725,26 @@ def _remote_root(cfg) -> str:
 
 
 def _fetch_remote_memes(bk, remote_root):
-    """下载远端 manifest 并返回 {filename: entry} 字典"""
+    """下载远端 manifest 并返回 {filename: entry} 字典（无 manifest 返回 {}）"""
     cfg = get_config()
     remote_path = remote_root.rstrip("/") + "/" + REMOTE_INDEX
     if not bk.file_exists(remote_path):
         return {}
-    tmp = cfg.data_dir / ".remote-index.json"
-    if not bk.download_file(remote_path, tmp):
-        return {}
+    fd, tmp_name = tempfile.mkstemp(
+        prefix=".remote-index-", suffix=".json", dir=str(cfg.data_dir)
+    )
+    os.close(fd)
+    tmp = Path(tmp_name)
     try:
+        if not bk.download_file(remote_path, tmp):
+            raise SyncError("远端 manifest 下载失败")
         raw_bytes = tmp.read_bytes()
         rdata = json.loads(raw_bytes.decode("utf-8"))
         return {m["filename"]: m for m in rdata.get("memes", [])}
-    except Exception:
-        return {}
+    except SyncError:
+        raise
+    except Exception as e:
+        raise SyncError("远端 manifest 解析失败: %s" % e)
     finally:
         if tmp.exists():
             tmp.unlink()
@@ -569,11 +753,11 @@ def _fetch_remote_memes(bk, remote_root):
 # ─── 多线程工作函数 ───
 
 
-def _push_worker(entries, remote_root, cache_dir, thumb_dir, remote_memes):
+def _push_worker(entries, remote_root, cache_dir, remote_memes):
     """单线程批量上传一批文件"""
     bk = _get_backend()
     bk.connect()
-    local_results = {"uploaded": 0, "skipped": 0, "errors": 0, "bytes": 0}
+    local_results = {"uploaded": 0, "skipped": 0, "errors": 0, "bytes": 0, "failed": []}
     try:
         for entry in entries:
             fname = entry["filename"]
@@ -581,15 +765,23 @@ def _push_worker(entries, remote_root, cache_dir, thumb_dir, remote_memes):
             fsize = local_file.stat().st_size if local_file.exists() else 0
             local_hash = entry["sha256"]
             remote_entry = remote_memes.get(fname)
+            rem_path = remote_root.rstrip("/") + "/" + REMOTE_MEME_DIR + "/" + fname
             if remote_entry and remote_entry.get("sha256") == local_hash:
-                local_results["skipped"] += 1
-                _increment_sync_progress(files_add=1)
-                continue
+                try:
+                    remote_ok = bk.file_exists(rem_path)
+                except Exception:
+                    remote_ok = False
+                if remote_ok:
+                    local_results["skipped"] += 1
+                    _increment_sync_progress(files_add=1)
+                    continue
             if not local_file.exists():
                 local_results["errors"] += 1
+                local_results["failed"].append(
+                    {"filename": fname, "status": "error", "error": "本地文件缺失"}
+                )
                 _increment_sync_progress(files_add=1)
                 continue
-            rem_path = remote_root.rstrip("/") + "/" + REMOTE_MEME_DIR + "/" + fname
             bk.ensure_remote_dir(os.path.dirname(rem_path))
             if bk.upload_file(local_file, rem_path):
                 local_results["uploaded"] += 1
@@ -597,35 +789,45 @@ def _push_worker(entries, remote_root, cache_dir, thumb_dir, remote_memes):
                 _increment_sync_progress(files_add=1, bytes_add=fsize)
             else:
                 local_results["errors"] += 1
-                _increment_sync_progress(files_add=1)
-            thumb_file = thumb_dir / ("%s_thumb.png" % fname)
-            if thumb_file.exists():
-                rem_thumb = (
-                    remote_root.rstrip("/") + "/" + REMOTE_THUMB_DIR + "/" + fname
+                local_results["failed"].append(
+                    {"filename": fname, "status": "error", "error": "上传失败"}
                 )
-                bk.ensure_remote_dir(os.path.dirname(rem_thumb))
-                bk.upload_file(thumb_file, rem_thumb)
+                _increment_sync_progress(files_add=1)
         return local_results
     except Exception as e:
         logger.warning("push worker error: %s", e)
-        local_results["errors"] += (
-            len(entries) - local_results["uploaded"] - local_results["skipped"]
+        done = (
+            local_results["uploaded"]
+            + local_results["skipped"]
+            + local_results["errors"]
         )
-        _increment_sync_progress(
-            files_add=len(entries)
-            - local_results["uploaded"]
-            - local_results["skipped"]
-        )
+        remaining = len(entries) - done
+        if remaining > 0:
+            local_results["errors"] += remaining
+            _increment_sync_progress(files_add=remaining)
+            local_results["failed"].append(
+                {
+                    "filename": "",
+                    "status": "error",
+                    "error": "%d 个文件因 worker 中断未处理" % remaining,
+                }
+            )
         return local_results
     finally:
         bk.close()
 
 
-def _pull_worker(entries, remote_root, cache_dir, thumb_dir, db):
+def _pull_worker(entries, remote_root, cache_dir, db):
     """单线程批量下载一批文件"""
     bk = _get_backend()
     bk.connect()
-    local_results = {"downloaded": 0, "skipped": 0, "errors": 0, "bytes": 0}
+    local_results = {
+        "downloaded": 0,
+        "skipped": 0,
+        "errors": 0,
+        "bytes": 0,
+        "failed": [],
+    }
     local_idx = {}
     try:
         from .manifest import load as _load_manifest
@@ -637,7 +839,11 @@ def _pull_worker(entries, remote_root, cache_dir, thumb_dir, db):
     try:
         for fname, rentry in entries:
             local_entry = local_idx.get(fname)
-            if local_entry and local_entry.get("sha256") == rentry.get("sha256"):
+            if (
+                local_entry
+                and local_entry.get("sha256") == rentry.get("sha256")
+                and (cache_dir / fname).exists()
+            ):
                 local_results["skipped"] += 1
                 _increment_sync_progress(files_add=1)
                 continue
@@ -645,48 +851,85 @@ def _pull_worker(entries, remote_root, cache_dir, thumb_dir, db):
             local_path = cache_dir / fname
             fsize = rentry.get("file_size", 0)
             if bk.download_file(rem_path, local_path):
-                row = db.get_by_filename(fname)
-                if not row:
-                    ext = os.path.splitext(fname)[1].lower()
-                    w = h = 0
+                if local_path.stat().st_size == 0:
+                    # 下载到空文件视为失败：清理并计错误，避免污染本地清单
+                    local_results["errors"] += 1
+                    local_results["failed"].append(
+                        {"filename": fname, "status": "error", "error": "下载内容为空"}
+                    )
+                    _increment_sync_progress(files_add=1)
                     try:
-                        from PIL import Image as PILImage
-
-                        img = PILImage.open(local_path)
-                        w, h = img.size
+                        local_path.unlink()
                     except Exception:
                         pass
-                    oname = rentry.get("name", "") or os.path.splitext(fname)[0]
-                    db.add_meme(
-                        filename=fname,
-                        file_hash=rentry.get("sha256", ""),
-                        width=w,
-                        height=h,
-                        file_size=local_path.stat().st_size,
-                        mime_type="image/%s" % ext[1:] if ext else "image/png",
-                        original_name=oname,
-                    )
+                    continue
+                row = db.get_by_filename(fname)
+                if not row:
+                    try:
+                        ext = os.path.splitext(fname)[1].lower()
+                        w = h = 0
+                        try:
+                            from PIL import Image as PILImage
+
+                            img = PILImage.open(local_path)
+                            w, h = img.size
+                        except Exception:
+                            pass
+                        oname = rentry.get("name", "") or os.path.splitext(fname)[0]
+                        db.add_meme(
+                            filename=fname,
+                            file_hash=rentry.get("sha256", ""),
+                            width=w,
+                            height=h,
+                            file_size=local_path.stat().st_size,
+                            mime_type="image/%s" % ext[1:] if ext else "image/png",
+                            original_name=oname,
+                        )
+                    except Exception as e:
+                        # DB 写入失败：清理残留 cache，避免“文件在但无记录”的游离态
+                        logger.warning("pull db add failed %s: %s", fname, e)
+                        local_results["errors"] += 1
+                        local_results["failed"].append(
+                            {
+                                "filename": fname,
+                                "status": "error",
+                                "error": "数据库写入失败",
+                            }
+                        )
+                        _increment_sync_progress(files_add=1)
+                        try:
+                            local_path.unlink()
+                        except Exception:
+                            pass
+                        continue
                 local_results["downloaded"] += 1
                 local_results["bytes"] += fsize
                 _increment_sync_progress(files_add=1, bytes_add=fsize)
             else:
                 local_results["errors"] += 1
+                local_results["failed"].append(
+                    {"filename": fname, "status": "error", "error": "下载失败"}
+                )
                 _increment_sync_progress(files_add=1)
-            rem_thumb = remote_root.rstrip("/") + "/" + REMOTE_THUMB_DIR + "/" + fname
-            local_thumb = thumb_dir / fname
-            if bk.file_exists(rem_thumb):
-                bk.download_file(rem_thumb, local_thumb)
         return local_results
     except Exception as e:
         logger.warning("pull worker error: %s", e)
-        local_results["errors"] += (
-            len(entries) - local_results["downloaded"] - local_results["skipped"]
+        done = (
+            local_results["downloaded"]
+            + local_results["skipped"]
+            + local_results["errors"]
         )
-        _increment_sync_progress(
-            files_add=len(entries)
-            - local_results["downloaded"]
-            - local_results["skipped"]
-        )
+        remaining = len(entries) - done
+        if remaining > 0:
+            local_results["errors"] += remaining
+            _increment_sync_progress(files_add=remaining)
+            local_results["failed"].append(
+                {
+                    "filename": "",
+                    "status": "error",
+                    "error": "%d 个文件因 worker 中断未处理" % remaining,
+                }
+            )
         return local_results
     finally:
         bk.close()
@@ -718,10 +961,17 @@ def upload_index(bk=None) -> bool:
 
 
 def download_index() -> Optional[dict]:
-    """从远端下载 manifest，返回解析后的 dict 或 None"""
+    """从远端下载 manifest。
+
+    无 manifest 返回 None；读取/解析失败抛 SyncError。
+    """
     cfg = get_config()
     remote_root = _remote_root(cfg)
-    tmp = cfg.data_dir / ".remote-index.json"
+    fd, tmp_name = tempfile.mkstemp(
+        prefix=".remote-index-", suffix=".json", dir=str(cfg.data_dir)
+    )
+    os.close(fd)
+    tmp = Path(tmp_name)
     bk = _get_backend()
     bk.connect()
     try:
@@ -729,13 +979,15 @@ def download_index() -> Optional[dict]:
         if not bk.file_exists(remote_path):
             return None
         if not bk.download_file(remote_path, tmp):
-            return None
+            raise SyncError("远端 manifest 下载失败")
         raw_bytes = tmp.read_bytes()
         data = json.loads(raw_bytes.decode("utf-8"))
         return data
+    except SyncError:
+        raise
     except Exception as e:
         logger.warning("download_index failed: %s", e)
-        return None
+        raise SyncError("远端 manifest 解析失败: %s" % e)
     finally:
         bk.close()
         if tmp.exists():
@@ -749,7 +1001,6 @@ def push(delete_remote: bool = None) -> dict:
         delete_remote = cfg.get("sync_delete_remote", False)
     remote_root = _remote_root(cfg)
     cache_dir = cfg.cache_dir
-    thumb_dir = cfg.thumbnail_dir
     max_workers = max(1, min(8, int(cfg.get("sync_threads", 3))))
     local = load_manifest()
     if not local.get("memes"):
@@ -766,13 +1017,17 @@ def push(delete_remote: bool = None) -> dict:
         if fp.exists():
             bytes_total += fp.stat().st_size
 
+    if not _sync_run_lock.acquire(blocking=False):
+        raise SyncError("同步正在进行中")
+
     _reset_sync_state("upload", files_total, bytes_total)
     start = time.time()
     _update_sync_state(status="uploading", start_time=start)
 
-    bk = _get_backend()
-    bk.connect()
+    bk = None
     try:
+        bk = _get_backend()
+        bk.connect()
         bk.ensure_remote_dir(remote_root)
         remote_memes = _fetch_remote_memes(bk, remote_root)
         local_idx = {m["filename"]: m for m in local["memes"]}
@@ -783,12 +1038,16 @@ def push(delete_remote: bool = None) -> dict:
         else:
             chunks = _chunk_list(entries, min(max_workers, len(entries)))
 
-        aggregated = {"uploaded": 0, "skipped": 0, "errors": 0, "bytes": 0}
+        aggregated = {
+            "uploaded": 0,
+            "skipped": 0,
+            "errors": 0,
+            "bytes": 0,
+            "failed": [],
+        }
         with ThreadPoolExecutor(max_workers=len(chunks)) as executor:
             futures = [
-                executor.submit(
-                    _push_worker, ch, remote_root, cache_dir, thumb_dir, remote_memes
-                )
+                executor.submit(_push_worker, ch, remote_root, cache_dir, remote_memes)
                 for ch in chunks
             ]
             for future in as_completed(futures):
@@ -797,14 +1056,24 @@ def push(delete_remote: bool = None) -> dict:
                 aggregated["skipped"] += r["skipped"]
                 aggregated["errors"] += r["errors"]
                 aggregated["bytes"] += r["bytes"]
+                aggregated["failed"].extend(r.get("failed", []))
 
+        if aggregated["errors"] > 0:
+            _update_sync_state(failed_items=aggregated["failed"])
+            msg = "%d 个文件上传失败，未更新远端 manifest" % aggregated["errors"]
+            logger.warning("sync push aborted: %s", msg)
+            raise SyncError(msg)
+
+        failed_files = list(aggregated["failed"])
         results = {
             "uploaded": aggregated["uploaded"],
             "skipped": aggregated["skipped"],
             "errors": aggregated["errors"],
             "deleted": 0,
+            "failed_files": failed_files,
         }
 
+        deleted_fnames = set()
         if delete_remote:
             for fname in list(remote_memes.keys()):
                 if fname not in local_idx:
@@ -812,16 +1081,66 @@ def push(delete_remote: bool = None) -> dict:
                         remote_root.rstrip("/") + "/" + REMOTE_MEME_DIR + "/" + fname
                     )
                     if bk.delete_file(rem_path):
+                        deleted_fnames.add(fname)
                         results["deleted"] += 1
-                    rem_thumb = (
-                        remote_root.rstrip("/") + "/" + REMOTE_THUMB_DIR + "/" + fname
-                    )
-                    bk.delete_file(rem_thumb)
-
+                    else:
+                        # 删除结果不确定：复核远端是否真的已删
+                        unknown = False
+                        try:
+                            still = bk.file_exists(rem_path)
+                        except Exception:
+                            still = True
+                            unknown = True  # 复核异常 → unknown，保留待下次重查
+                        if not still:
+                            # 复核确认已删 → 视为删除成功
+                            deleted_fnames.add(fname)
+                            results["deleted"] += 1
+                        else:
+                            # 仍在/未知 → 保留在远端 manifest，记录失败供 UI 展示
+                            failed_files.append(
+                                {
+                                    "filename": fname,
+                                    "status": "unknown" if unknown else "error",
+                                    "error": (
+                                        "删除结果不确定，将在下次同步复核"
+                                        if unknown
+                                        else "远端删除失败（文件仍存在）"
+                                    ),
+                                }
+                            )
         build_manifest()
         remote_manifest_path = remote_root.rstrip("/") + "/" + REMOTE_INDEX
-        local_index = cfg.data_dir / INDEX_FILENAME
-        bk.upload_file(local_index, remote_manifest_path)
+        merged_file = None
+        try:
+            # 远端仍保留、但本地清单没有的项合并进待上传清单，避免孤儿
+            data = load_manifest()
+            local_fnames = {m["filename"] for m in data["memes"]}
+            kept = [
+                m
+                for fname, m in remote_memes.items()
+                if fname not in local_fnames and fname not in deleted_fnames
+            ]
+            manifest_file = cfg.data_dir / INDEX_FILENAME
+            if kept:
+                data["memes"].extend(kept)
+                fd, tmp_name = tempfile.mkstemp(
+                    prefix=".remote-merged-", suffix=".json", dir=str(cfg.data_dir)
+                )
+                os.close(fd)
+                merged_file = Path(tmp_name)
+                merged_file.write_text(
+                    json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8"
+                )
+                manifest_file = merged_file
+            ok = bk.upload_file(manifest_file, remote_manifest_path)
+            if not ok:
+                raise SyncError("远端 manifest 上传失败")
+        finally:
+            if merged_file is not None and merged_file.exists():
+                try:
+                    merged_file.unlink()
+                except Exception:
+                    pass
 
         _update_sync_state(
             status="done",
@@ -829,6 +1148,7 @@ def push(delete_remote: bool = None) -> dict:
             files_done=files_total,
             bytes_done=bytes_total,
             results=results,
+            failed_items=results["failed_files"],
         )
         logger.info("sync push done: %s", results)
         return results
@@ -836,7 +1156,9 @@ def push(delete_remote: bool = None) -> dict:
         _update_sync_state(status="error", error=str(e))
         raise
     finally:
-        bk.close()
+        if bk is not None:
+            bk.close()
+        _sync_run_lock.release()
 
 
 def sync_test() -> str:
@@ -844,6 +1166,7 @@ def sync_test() -> str:
     try:
         bk = _get_backend()
         bk.connect()
+        bk.test_connection()
         bk.close()
         return "ok"
     except Exception as e:
@@ -874,80 +1197,104 @@ def pull(remove_local: bool = None) -> dict:
     max_workers = max(1, min(8, int(cfg.get("sync_threads", 3))))
     db = get_db()
 
-    remote_data = download_index()
-    if not remote_data:
-        raise SyncError("no remote manifest available")
+    if not _sync_run_lock.acquire(blocking=False):
+        raise SyncError("同步正在进行中")
 
-    remote_idx = {m["filename"]: m for m in remote_data.get("memes", [])}
-    local_data = load_manifest()
-    local_idx = {m["filename"]: m for m in local_data.get("memes", [])}
+    try:
+        remote_data = download_index()
+        if not remote_data:
+            raise SyncError("no remote manifest available")
 
-    files_total = len(remote_idx)
-    bytes_total = 0
-    for m in remote_data.get("memes", []):
-        bytes_total += m.get("file_size", 0)
+        remote_idx = {m["filename"]: m for m in remote_data.get("memes", [])}
+        local_data = load_manifest()
+        local_idx = {m["filename"]: m for m in local_data.get("memes", [])}
 
-    _reset_sync_state("download", files_total, bytes_total)
-    start = time.time()
-    _update_sync_state(status="downloading", start_time=start)
+        files_total = len(remote_idx)
+        bytes_total = 0
+        for m in remote_data.get("memes", []):
+            bytes_total += m.get("file_size", 0)
 
-    entries = list(remote_idx.items())
-    if max_workers <= 1 or len(entries) <= 1:
-        chunks = [entries]
-    else:
-        chunks = _chunk_list(entries, min(max_workers, len(entries)))
+        _reset_sync_state("download", files_total, bytes_total)
+        start = time.time()
+        _update_sync_state(status="downloading", start_time=start)
 
-    aggregated = {"downloaded": 0, "skipped": 0, "errors": 0, "bytes": 0}
-    with ThreadPoolExecutor(max_workers=len(chunks)) as executor:
-        futures = [
-            executor.submit(_pull_worker, ch, remote_root, cache_dir, thumb_dir, db)
-            for ch in chunks
-        ]
-        for future in as_completed(futures):
-            r = future.result()
-            aggregated["downloaded"] += r["downloaded"]
-            aggregated["skipped"] += r["skipped"]
-            aggregated["errors"] += r["errors"]
-            aggregated["bytes"] += r["bytes"]
+        entries = list(remote_idx.items())
+        if max_workers <= 1 or len(entries) <= 1:
+            chunks = [entries]
+        else:
+            chunks = _chunk_list(entries, min(max_workers, len(entries)))
 
-    results = {
-        "downloaded": aggregated["downloaded"],
-        "skipped": aggregated["skipped"],
-        "errors": aggregated["errors"],
-        "removed_local": 0,
-    }
+        aggregated = {
+            "downloaded": 0,
+            "skipped": 0,
+            "errors": 0,
+            "bytes": 0,
+            "failed": [],
+        }
+        with ThreadPoolExecutor(max_workers=len(chunks)) as executor:
+            futures = [
+                executor.submit(_pull_worker, ch, remote_root, cache_dir, db)
+                for ch in chunks
+            ]
+            for future in as_completed(futures):
+                r = future.result()
+                aggregated["downloaded"] += r["downloaded"]
+                aggregated["skipped"] += r["skipped"]
+                aggregated["errors"] += r["errors"]
+                aggregated["bytes"] += r["bytes"]
+                aggregated["failed"].extend(r.get("failed", []))
 
-    if remove_local:
-        for fname in list(local_idx.keys()):
-            if fname not in remote_idx:
-                row = db.get_by_filename(fname)
-                if row:
-                    db.delete_meme(row["id"])
-                local_path = cache_dir / fname
-                if local_path.exists():
-                    try:
-                        local_path.unlink()
-                        results["removed_local"] += 1
-                    except Exception:
-                        pass
-                thumb_path = thumb_dir / fname
-                if thumb_path.exists():
-                    try:
-                        thumb_path.unlink()
-                    except Exception:
-                        pass
+        results = {
+            "downloaded": aggregated["downloaded"],
+            "skipped": aggregated["skipped"],
+            "errors": aggregated["errors"],
+            "removed_local": 0,
+            "failed_files": aggregated["failed"],
+        }
 
-    _apply_remote_collections(remote_data)
-    build_manifest()
-    _update_sync_state(
-        status="done",
-        progress=100,
-        files_done=files_total,
-        bytes_done=bytes_total,
-        results=results,
-    )
-    logger.info("sync pull done: %s", results)
-    return results
+        if remove_local:
+            for fname in list(local_idx.keys()):
+                if fname not in remote_idx:
+                    row = db.get_by_filename(fname)
+                    if row:
+                        db.delete_meme(row["id"])
+                    local_path = cache_dir / fname
+                    if local_path.exists():
+                        try:
+                            local_path.unlink()
+                            results["removed_local"] += 1
+                        except Exception:
+                            pass
+                    thumb_path = thumb_dir / fname
+                    if thumb_path.exists():
+                        try:
+                            thumb_path.unlink()
+                        except Exception:
+                            pass
+
+        _apply_remote_collections(remote_data)
+        build_manifest()
+        if aggregated["errors"] > 0:
+            _update_sync_state(failed_items=aggregated["failed"])
+            msg = "%d 个文件下载失败，本地清单仅包含成功项" % aggregated["errors"]
+            logger.warning("sync pull aborted: %s", msg)
+            raise SyncError(msg)
+
+        _update_sync_state(
+            status="done",
+            progress=100,
+            files_done=files_total,
+            bytes_done=bytes_total,
+            results=results,
+            failed_items=results["failed_files"],
+        )
+        logger.info("sync pull done: %s", results)
+        return results
+    except Exception as e:
+        _update_sync_state(status="error", error=str(e))
+        raise
+    finally:
+        _sync_run_lock.release()
 
 
 def delete_all_remote() -> dict:
@@ -978,3 +1325,66 @@ def delete_all_remote() -> dict:
         return {"ok": False, "error": str(e)}
     finally:
         bk.close()
+
+
+def list_remote_orphans(bk, remote_root) -> list:
+    """返回远端 memes/ 中真实存在但 manifest 未记录的孤儿文件名。
+
+    后端不支持 list_files 或目录不可枚举时返回 []（降级，不影响主同步）。
+    """
+    remote_path = remote_root.rstrip("/") + "/" + REMOTE_MEME_DIR
+    try:
+        remote_files = bk.list_files(remote_path)
+    except NotImplementedError:
+        return []
+    except Exception as e:
+        logger.warning("list_files %s failed: %s", remote_path, e)
+        return []
+    try:
+        remote_memes = _fetch_remote_memes(bk, remote_root)
+    except Exception as e:
+        logger.warning("list_remote_orphans fetch manifest failed: %s", e)
+        return []
+    return [fname for fname in remote_files if fname not in remote_memes]
+
+
+def cleanup_remote_orphans(delete: bool = False) -> dict:
+    """识别远端孤儿文件；delete=True 时物理删除，返回 {ok, orphans, removed}。"""
+    cfg = get_config()
+    remote_root = _remote_root(cfg)
+    bk = _get_backend()
+    bk.connect()
+    try:
+        orphans = list_remote_orphans(bk, remote_root)
+        removed = 0
+        if delete:
+            for fname in orphans:
+                rem_path = remote_root.rstrip("/") + "/" + REMOTE_MEME_DIR + "/" + fname
+                if bk.delete_file(rem_path):
+                    removed += 1
+        return {"ok": True, "orphans": orphans, "removed": removed}
+    except Exception as e:
+        logger.warning("cleanup_remote_orphans failed: %s", e)
+        return {"ok": False, "error": str(e)}
+    finally:
+        bk.close()
+
+
+def cleanup_stale_temp_files() -> int:
+    """清理中断遗留的临时文件（.remote-* / *.tmp，含 cache 目录），返回清理数量。"""
+    cfg = get_config()
+    count = 0
+    for base in (cfg.data_dir, cfg.cache_dir):
+        if not base.exists():
+            continue
+        for p in base.iterdir():
+            if not p.is_file():
+                continue
+            name = p.name
+            if name.startswith(".remote-") or name.endswith(".tmp"):
+                try:
+                    p.unlink()
+                    count += 1
+                except Exception:
+                    pass
+    return count

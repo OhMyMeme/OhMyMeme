@@ -1,6 +1,5 @@
 """OhMyMeme 核心模块测试"""
 
-import os
 import re
 import sys
 import tempfile
@@ -10,10 +9,10 @@ from pathlib import Path
 # 确保 src 在导入路径中
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from src import __version__, __app_name__
+from src import __app_name__, __version__
 from src.config import Config
+from src.crypto_util import decrypt_data, encrypt_data
 from src.database import MemeDB
-from src.crypto_util import encrypt_data, decrypt_data
 
 
 class TestVersion(unittest.TestCase):
@@ -45,6 +44,7 @@ class TestConfig(unittest.TestCase):
 
     def tearDown(self):
         import shutil
+
         shutil.rmtree(self.tmp_dir, ignore_errors=True)
 
     def test_defaults(self):
@@ -94,6 +94,7 @@ class TestDatabase(unittest.TestCase):
     def tearDown(self):
         self.db.close()
         import shutil
+
         shutil.rmtree(self.tmp_dir, ignore_errors=True)
 
     def test_add_meme(self):
