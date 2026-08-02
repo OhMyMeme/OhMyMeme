@@ -142,7 +142,6 @@ def _make_stego_gif(image_path: str, max_side: int):
         return None
 
 
-
 # GIF 转换编码参数（参与缓存键：改这里旧缓存自动失效）
 _GIF_CACHE_VERSION = 1
 
@@ -183,6 +182,7 @@ def _static_to_gif(image_path: str, max_side: int):
 
 # convert_image_mode_x：返回处理完图片在 cache 中的路径
 
+
 def convert_image_mode_1(image_path: str, resize_max: int) -> str:
     if not os.path.isfile(image_path):
         logger.warning(f"convert_image_mode_1: file not found {image_path}")
@@ -219,11 +219,12 @@ def convert_image_mode_3(image_path: str, resize_max: int) -> str:
 
     return image_path
 
+
 def copy_image_to_clipboard(image_path: str) -> bool:
     if not os.path.isfile(image_path):
         logger.warning(f"copy_image_to_clipboard: file not found {image_path}")
         return False
-        
+
     ext = os.path.splitext(image_path)[1].lower()
     if os.name == "nt":
         return _copy_image_windows(image_path, ext)

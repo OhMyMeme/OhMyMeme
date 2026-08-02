@@ -57,7 +57,13 @@ except ImportError:
 
 from . import adb_util, qqnt_extract, updater
 from . import sync as sync_module
-from .clipboard_util import _is_animated, convert_image_mode_1, convert_image_mode_2, convert_image_mode_3, copy_image_to_clipboard
+from .clipboard_util import (
+    _is_animated,
+    convert_image_mode_1,
+    convert_image_mode_2,
+    convert_image_mode_3,
+    copy_image_to_clipboard,
+)
 from .config import get_config
 from .database import get_db
 from .manifest import build as build_manifest
