@@ -38,6 +38,7 @@ _sync_state = {
     "start_time": 0,
     "results": None,
     "error": "",
+    "failed_items": [],  # [{filename, status: error|unknown, error}]
 }
 
 
@@ -56,6 +57,7 @@ def _reset_sync_state(direction, files_total, bytes_total):
         start_time=0,
         results=None,
         error="",
+        failed_items=[],
     )
 
 
@@ -665,7 +667,7 @@ def _push_worker(entries, remote_root, cache_dir, thumb_dir, remote_memes):
     """单线程批量上传一批文件"""
     bk = _get_backend()
     bk.connect()
-    local_results = {"uploaded": 0, "skipped": 0, "errors": 0, "bytes": 0}
+    local_results = {"uploaded": 0, "skipped": 0, "errors": 0, "bytes": 0, "failed": []}
     try:
         for entry in entries:
             fname = entry["filename"]
@@ -685,6 +687,9 @@ def _push_worker(entries, remote_root, cache_dir, thumb_dir, remote_memes):
                     continue
             if not local_file.exists():
                 local_results["errors"] += 1
+                local_results["failed"].append(
+                    {"filename": fname, "status": "error", "error": "本地文件缺失"}
+                )
                 _increment_sync_progress(files_add=1)
                 continue
             bk.ensure_remote_dir(os.path.dirname(rem_path))
@@ -694,6 +699,9 @@ def _push_worker(entries, remote_root, cache_dir, thumb_dir, remote_memes):
                 _increment_sync_progress(files_add=1, bytes_add=fsize)
             else:
                 local_results["errors"] += 1
+                local_results["failed"].append(
+                    {"filename": fname, "status": "error", "error": "上传失败"}
+                )
                 _increment_sync_progress(files_add=1)
             thumb_file = thumb_dir / ("%s_thumb.png" % fname)
             if thumb_file.exists():
@@ -714,6 +722,13 @@ def _push_worker(entries, remote_root, cache_dir, thumb_dir, remote_memes):
         if remaining > 0:
             local_results["errors"] += remaining
             _increment_sync_progress(files_add=remaining)
+            local_results["failed"].append(
+                {
+                    "filename": "",
+                    "status": "error",
+                    "error": "%d 个文件因 worker 中断未处理" % remaining,
+                }
+            )
         return local_results
     finally:
         bk.close()
@@ -723,7 +738,13 @@ def _pull_worker(entries, remote_root, cache_dir, thumb_dir, db):
     """单线程批量下载一批文件"""
     bk = _get_backend()
     bk.connect()
-    local_results = {"downloaded": 0, "skipped": 0, "errors": 0, "bytes": 0}
+    local_results = {
+        "downloaded": 0,
+        "skipped": 0,
+        "errors": 0,
+        "bytes": 0,
+        "failed": [],
+    }
     local_idx = {}
     try:
         from .manifest import load as _load_manifest
@@ -750,6 +771,9 @@ def _pull_worker(entries, remote_root, cache_dir, thumb_dir, db):
                 if local_path.stat().st_size == 0:
                     # 下载到空文件视为失败：清理并计错误，避免污染本地清单
                     local_results["errors"] += 1
+                    local_results["failed"].append(
+                        {"filename": fname, "status": "error", "error": "下载内容为空"}
+                    )
                     _increment_sync_progress(files_add=1)
                     try:
                         local_path.unlink()
@@ -782,6 +806,13 @@ def _pull_worker(entries, remote_root, cache_dir, thumb_dir, db):
                         # DB 写入失败：清理残留 cache，避免“文件在但无记录”的游离态
                         logger.warning("pull db add failed %s: %s", fname, e)
                         local_results["errors"] += 1
+                        local_results["failed"].append(
+                            {
+                                "filename": fname,
+                                "status": "error",
+                                "error": "数据库写入失败",
+                            }
+                        )
                         _increment_sync_progress(files_add=1)
                         try:
                             local_path.unlink()
@@ -793,6 +824,9 @@ def _pull_worker(entries, remote_root, cache_dir, thumb_dir, db):
                 _increment_sync_progress(files_add=1, bytes_add=fsize)
             else:
                 local_results["errors"] += 1
+                local_results["failed"].append(
+                    {"filename": fname, "status": "error", "error": "下载失败"}
+                )
                 _increment_sync_progress(files_add=1)
             rem_thumb = remote_root.rstrip("/") + "/" + REMOTE_THUMB_DIR + "/" + fname
             local_thumb = thumb_dir / fname
@@ -810,6 +844,13 @@ def _pull_worker(entries, remote_root, cache_dir, thumb_dir, db):
         if remaining > 0:
             local_results["errors"] += remaining
             _increment_sync_progress(files_add=remaining)
+            local_results["failed"].append(
+                {
+                    "filename": "",
+                    "status": "error",
+                    "error": "%d 个文件因 worker 中断未处理" % remaining,
+                }
+            )
         return local_results
     finally:
         bk.close()
@@ -919,7 +960,13 @@ def push(delete_remote: bool = None) -> dict:
         else:
             chunks = _chunk_list(entries, min(max_workers, len(entries)))
 
-        aggregated = {"uploaded": 0, "skipped": 0, "errors": 0, "bytes": 0}
+        aggregated = {
+            "uploaded": 0,
+            "skipped": 0,
+            "errors": 0,
+            "bytes": 0,
+            "failed": [],
+        }
         with ThreadPoolExecutor(max_workers=len(chunks)) as executor:
             futures = [
                 executor.submit(
@@ -933,17 +980,21 @@ def push(delete_remote: bool = None) -> dict:
                 aggregated["skipped"] += r["skipped"]
                 aggregated["errors"] += r["errors"]
                 aggregated["bytes"] += r["bytes"]
+                aggregated["failed"].extend(r.get("failed", []))
 
         if aggregated["errors"] > 0:
+            _update_sync_state(failed_items=aggregated["failed"])
             msg = "%d 个文件上传失败，未更新远端 manifest" % aggregated["errors"]
             logger.warning("sync push aborted: %s", msg)
             raise SyncError(msg)
 
+        failed_files = list(aggregated["failed"])
         results = {
             "uploaded": aggregated["uploaded"],
             "skipped": aggregated["skipped"],
             "errors": aggregated["errors"],
             "deleted": 0,
+            "failed_files": failed_files,
         }
 
         deleted_fnames = set()
@@ -958,15 +1009,29 @@ def push(delete_remote: bool = None) -> dict:
                         results["deleted"] += 1
                     else:
                         # 删除结果不确定：复核远端是否真的已删
+                        unknown = False
                         try:
                             still = bk.file_exists(rem_path)
                         except Exception:
-                            still = True  # 复核异常 → unknown，保留待下次重查
+                            still = True
+                            unknown = True  # 复核异常 → unknown，保留待下次重查
                         if not still:
                             # 复核确认已删 → 视为删除成功
                             deleted_fnames.add(fname)
                             results["deleted"] += 1
-                        # still=True（仍在或复核异常）→ 保留在远端 manifest
+                        else:
+                            # 仍在/未知 → 保留在远端 manifest，记录失败供 UI 展示
+                            failed_files.append(
+                                {
+                                    "filename": fname,
+                                    "status": "unknown" if unknown else "error",
+                                    "error": (
+                                        "删除结果不确定，将在下次同步复核"
+                                        if unknown
+                                        else "远端删除失败（文件仍存在）"
+                                    ),
+                                }
+                            )
                     rem_thumb = (
                         remote_root.rstrip("/") + "/" + REMOTE_THUMB_DIR + "/" + fname
                     )
@@ -1012,6 +1077,7 @@ def push(delete_remote: bool = None) -> dict:
             files_done=files_total,
             bytes_done=bytes_total,
             results=results,
+            failed_items=results["failed_files"],
         )
         logger.info("sync push done: %s", results)
         return results
@@ -1086,7 +1152,13 @@ def pull(remove_local: bool = None) -> dict:
         else:
             chunks = _chunk_list(entries, min(max_workers, len(entries)))
 
-        aggregated = {"downloaded": 0, "skipped": 0, "errors": 0, "bytes": 0}
+        aggregated = {
+            "downloaded": 0,
+            "skipped": 0,
+            "errors": 0,
+            "bytes": 0,
+            "failed": [],
+        }
         with ThreadPoolExecutor(max_workers=len(chunks)) as executor:
             futures = [
                 executor.submit(_pull_worker, ch, remote_root, cache_dir, thumb_dir, db)
@@ -1098,12 +1170,14 @@ def pull(remove_local: bool = None) -> dict:
                 aggregated["skipped"] += r["skipped"]
                 aggregated["errors"] += r["errors"]
                 aggregated["bytes"] += r["bytes"]
+                aggregated["failed"].extend(r.get("failed", []))
 
         results = {
             "downloaded": aggregated["downloaded"],
             "skipped": aggregated["skipped"],
             "errors": aggregated["errors"],
             "removed_local": 0,
+            "failed_files": aggregated["failed"],
         }
 
         if remove_local:
@@ -1129,6 +1203,7 @@ def pull(remove_local: bool = None) -> dict:
         _apply_remote_collections(remote_data)
         build_manifest()
         if aggregated["errors"] > 0:
+            _update_sync_state(failed_items=aggregated["failed"])
             msg = "%d 个文件下载失败，本地清单仅包含成功项" % aggregated["errors"]
             logger.warning("sync pull aborted: %s", msg)
             raise SyncError(msg)
@@ -1139,6 +1214,7 @@ def pull(remove_local: bool = None) -> dict:
             files_done=files_total,
             bytes_done=bytes_total,
             results=results,
+            failed_items=results["failed_files"],
         )
         logger.info("sync pull done: %s", results)
         return results

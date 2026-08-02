@@ -564,7 +564,11 @@ class JsApi:
             r["ok"] = True
             return r
         except Exception as e:
-            return {"ok": False, "error": str(e)}
+            return {
+                "ok": False,
+                "error": str(e),
+                "failed_files": sync_module.get_sync_progress().get("failed_items", []),
+            }
 
     def sync_pull(self) -> dict:
         try:
@@ -572,7 +576,11 @@ class JsApi:
             r["ok"] = True
             return r
         except Exception as e:
-            return {"ok": False, "error": str(e)}
+            return {
+                "ok": False,
+                "error": str(e),
+                "failed_files": sync_module.get_sync_progress().get("failed_items", []),
+            }
 
     def run_auto_sync(self) -> dict:
         """启动时自动同步：根据配置拉取远端索引和/或全量同步"""
@@ -1313,7 +1321,11 @@ class SettingsApi:
             r["ok"] = True
             return r
         except Exception as e:
-            return {"ok": False, "error": str(e)}
+            return {
+                "ok": False,
+                "error": str(e),
+                "failed_files": sync_module.get_sync_progress().get("failed_items", []),
+            }
 
     def sync_pull(self, remove_local: bool = None) -> dict:
         try:
@@ -1329,7 +1341,11 @@ class SettingsApi:
                 pass
             return r
         except Exception as e:
-            return {"ok": False, "error": str(e)}
+            return {
+                "ok": False,
+                "error": str(e),
+                "failed_files": sync_module.get_sync_progress().get("failed_items", []),
+            }
 
     def sync_test(self) -> str:
         try:

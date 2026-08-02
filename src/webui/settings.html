@@ -1023,7 +1023,22 @@ async function doSyncWithProgress(method, title, progressSetting, doneSetting, b
       document.getElementById('sync-done-overlay').style.display = 'flex';
     }
   } else {
-    status.textContent = '失败: ' + ((r && r.error) || '未知错误');
+    let msg = '失败: ' + ((r && r.error) || '未知错误');
+    const ff = (r && r.failed_files) || [];
+    if (ff.length) {
+      const errors = ff.filter(f => f.status !== 'unknown');
+      const unknowns = ff.filter(f => f.status === 'unknown');
+      const parts = [];
+      if (errors.length) {
+        const names = errors.slice(0, 5).map(f => f.filename || '?').join(', ');
+        parts.push('失败 ' + errors.length + ' 个: ' + names);
+      }
+      if (unknowns.length) {
+        parts.push(unknowns.length + ' 个删除结果不确定，将在下次同步时复核');
+      }
+      msg += '（' + parts.join('；') + '）';
+    }
+    status.textContent = msg;
   }
 
   // 刷新主窗口

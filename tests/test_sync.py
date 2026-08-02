@@ -612,6 +612,52 @@ class TestSyncPush(unittest.TestCase):
         result = sync.push()
         self.assertEqual(result["uploaded"], 1)
 
+    # ─── PR8 新增用例 ───
+
+    def test_push_failed_items_reported(self):
+        """push 上传失败 → _sync_state.failed_items 记录失败文件"""
+        self._set_local_memes(
+            [
+                {"filename": "a.png", "sha256": "a"},
+                {"filename": "b.png", "sha256": "b"},
+            ]
+        )
+        self.fake_backend.meme_ok = False
+        with self.assertRaises(SyncError):
+            sync.push()
+        failed = get_sync_progress().get("failed_items", [])
+        self.assertEqual(len(failed), 2)
+        for item in failed:
+            self.assertEqual(item["status"], "error")
+            self.assertIn(item["filename"], {"a.png", "b.png"})
+
+    def test_push_delete_unknown_reported(self):
+        """delete_remote=True 删除复核异常 → failed_files 记录 unknown 状态"""
+        self.fake_backend.remote_memes = {"ghost.png": _entry("ghost.png", "x")}
+        self.fake_backend.delete_ok = False
+        self.fake_backend.raise_on_exists.add("ghost.png")
+        self.cfg.set("sync_delete_remote", True)
+        result = sync.push()
+        unknowns = [
+            f for f in result.get("failed_files", []) if f["status"] == "unknown"
+        ]
+        self.assertEqual(len(unknowns), 1)
+        self.assertEqual(unknowns[0]["filename"], "ghost.png")
+
+    def test_pull_failed_items_reported(self):
+        """pull 部分下载失败 → _sync_state.failed_items 记录失败文件"""
+        self.fake_backend.remote_memes = {
+            "test.png": _entry("test.png", "abc"),
+            "missing.png": _entry("missing.png", "x"),
+        }
+        self.fake_backend.remote_files = {"test.png"}
+        with self.assertRaises(SyncError):
+            sync.pull()
+        failed = get_sync_progress().get("failed_items", [])
+        self.assertEqual(len(failed), 1)
+        self.assertEqual(failed[0]["filename"], "missing.png")
+        self.assertEqual(failed[0]["status"], "error")
+
 
 if __name__ == "__main__":
     unittest.main()
