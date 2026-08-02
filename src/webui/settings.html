@@ -200,11 +200,17 @@ select:hover { border-color: var(--border-light); }
     </div>
 
     <div class="section">
-      <div class="section-title">实验性</div>
-      <label class="check-row">
-        <input id="s-stego" type="checkbox">复制超限静态图时使用 GIF 隐写（可无损还原原图）
+      <div class="section-title">复制处理</div>
+      <label class="check-row" style="gap:8px">
+        复制超限静态图时
+        <select id="s-copy-mode" style="flex:1">
+          <option value="0">不处理，直接复制原图</option>
+          <option value="1">缩放为 WebP</option>
+          <option value="2">转换为 GIF</option>
+          <option value="3">转换为 GIF 并隐写原图（可无损还原）</option>
+        </select>
       </label>
-      <p style="font-size:11.5px;color:var(--muted);margin-top:4px;line-height:1.6">实验性功能，默认关闭。开启后配合「小图」模式：复制超限静态图时改用 GIF 隐写，粘贴显示为表情大小，原图信息随文件隐藏，接收方可运行解码工具还原。可能显著增大文件体积。</p>
+      <p style="font-size:11.5px;color:var(--muted);margin-top:4px;line-height:1.6">复制超过尺寸上限的静态图时按此处模式处理；动图不受影响。隐写模式会把原图信息随 GIF 隐藏，接收方可运行解码工具还原，但会显著增大文件体积。</p>
     </div>
 
     <div class="section">
@@ -618,8 +624,8 @@ async function getSettings() {
   if (gif) gif.checked = s.auto_play_gif !== false;
   const to = document.getElementById('s-try-original');
   if (to) to.checked = s.try_original_image === true;  // DeepSeek V4 Flash
-  const stg = document.getElementById('s-stego');
-  if (stg) stg.checked = s.experimental_stego === true;
+  const cm = document.getElementById('s-copy-mode');
+  if (cm) cm.value = String(s.copy_resize_mode ?? 1);
   if (as) as.checked = s.auto_start === true;
   if (ss) ss.checked = s.silent_start === true;
   toggleSilentStart();
@@ -759,7 +765,7 @@ async function saveSettings() {
   const hotkey = document.getElementById('s-hotkey')?.value || 'Ctrl+Alt+N';
   const gif = document.getElementById('s-gif')?.checked !== false;
   const try_original = document.getElementById('s-try-original')?.checked === true;  // DeepSeek V4 Flash
-  const stego = document.getElementById('s-stego')?.checked === true;
+  const copy_mode = parseInt(document.getElementById('s-copy-mode')?.value || '1', 10);
   const auto_start = document.getElementById('s-auto-start')?.checked === true;
   const silent_start = document.getElementById('s-silent-start')?.checked === true;
   const sync = collectSyncSettings();
@@ -767,7 +773,7 @@ async function saveSettings() {
   await api('save_settings', {
     hotkey, auto_play_gif: gif,
     try_original_image: try_original,  // DeepSeek V4 Flash
-    experimental_stego: stego,
+    copy_resize_mode: copy_mode,
     auto_start, silent_start,
     ...sync
   });
@@ -785,8 +791,8 @@ async function resetSettings() {
     if (gif) gif.checked = s.auto_play_gif !== false;
     const to = document.getElementById('s-try-original');  // DeepSeek V4 Flash
     if (to) to.checked = false;
-    const stg = document.getElementById('s-stego');
-    if (stg) stg.checked = false;
+    const cm = document.getElementById('s-copy-mode');
+    if (cm) cm.value = String(s.copy_resize_mode ?? 1);
     if (as) as.checked = s.auto_start === true;
     if (ss) ss.checked = s.silent_start === true;
     toggleSilentStart();

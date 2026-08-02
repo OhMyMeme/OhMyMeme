@@ -142,28 +142,89 @@ def _make_stego_gif(image_path: str, max_side: int):
         return None
 
 
-def copy_image_to_clipboard(
-    image_path: str, resize_max: int = 0, stego: bool = False
-) -> bool:
-    """复制图片到系统剪贴板；支持超限静态图重采样 / 实验性 GIF 隐写"""
+
+# GIF 转换编码参数（参与缓存键：改这里旧缓存自动失效）
+_GIF_CACHE_VERSION = 1
+
+
+def _static_to_gif(image_path: str, max_side: int):
+    """超限的静态图按原分辨率转为普通 GIF（无隐写、不缩放）；不适用或失败返回 None"""
+    if not HAS_PIL:
+        return None
+    try:
+        img = PILImage.open(image_path)
+        if getattr(img, "is_animated", False):
+            return None
+        w, h = img.size
+        if max(w, h) <= max_side:
+            return None
+        md5 = hashlib.md5()
+        with open(image_path, "rb") as f:
+            for chunk in iter(lambda: f.read(65536), b""):
+                md5.update(chunk)
+        # 故意不删除：CF_HDROP 指向该路径，QQ 粘贴时才读文件；
+        # 缓存键含版本号（改编码逻辑自动失效），命中时校验完整性
+        tmp_path = os.path.join(
+            tempfile.gettempdir(),
+            f"ohmm_gif_{md5.hexdigest()}_v{_GIF_CACHE_VERSION}.gif",
+        )
+        if os.path.isfile(tmp_path) and _is_valid_gif(tmp_path):
+            return tmp_path
+        img.convert("P", palette=PILImage.ADAPTIVE, colors=256).save(
+            tmp_path, format="GIF", optimize=True
+        )
+        if os.path.isfile(tmp_path) and _is_valid_gif(tmp_path):
+            return tmp_path
+        return None
+    except Exception as e:
+        logger.warning(f"_static_to_gif: {e}")
+        return None
+
+
+# convert_image_mode_x：返回处理完图片在 cache 中的路径
+
+def convert_image_mode_1(image_path: str, resize_max: int) -> str:
+    if not os.path.isfile(image_path):
+        logger.warning(f"convert_image_mode_1: file not found {image_path}")
+        return ""
+
+    resized = _resize_static_to_webp(image_path, resize_max)
+    if resized:
+        image_path = resized
+
+    return image_path
+
+
+def convert_image_mode_2(image_path: str, resize_max: int) -> str:
+    if not os.path.isfile(image_path):
+        logger.warning(f"convert_image_mode_2: file not found {image_path}")
+        return ""
+
+    gif_path = _static_to_gif(image_path, resize_max)
+    if gif_path:
+        image_path = gif_path
+
+    return image_path
+
+
+def convert_image_mode_3(image_path: str, resize_max: int) -> str:
+    if not os.path.isfile(image_path):
+        logger.warning(f"convert_image_mode_3: file not found {image_path}")
+        return ""
+
+    # 隐写 GIF 与原图同分辨率（不缩放）；失败时原样复制原图
+    steg_path = _make_stego_gif(image_path, resize_max)
+    if steg_path:
+        return steg_path
+
+    return image_path
+
+def copy_image_to_clipboard(image_path: str) -> bool:
     if not os.path.isfile(image_path):
         logger.warning(f"copy_image_to_clipboard: file not found {image_path}")
         return False
-
-    if stego:
-        steg_path = _make_stego_gif(image_path, resize_max)
-        if steg_path:
-            image_path = steg_path
-        elif resize_max > 0:
-            resized = _resize_static_to_webp(image_path, resize_max)
-            if resized:
-                image_path = resized
-    elif resize_max > 0:
-        resized = _resize_static_to_webp(image_path, resize_max)
-        if resized:
-            image_path = resized
+        
     ext = os.path.splitext(image_path)[1].lower()
-
     if os.name == "nt":
         return _copy_image_windows(image_path, ext)
     elif os.name == "posix":

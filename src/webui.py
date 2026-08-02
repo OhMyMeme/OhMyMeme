@@ -57,7 +57,7 @@ except ImportError:
 
 from . import adb_util, qqnt_extract, updater
 from . import sync as sync_module
-from .clipboard_util import _is_animated, copy_image_to_clipboard
+from .clipboard_util import _is_animated, convert_image_mode_1, convert_image_mode_2, convert_image_mode_3, copy_image_to_clipboard
 from .config import get_config
 from .database import get_db
 from .manifest import build as build_manifest
@@ -270,51 +270,30 @@ class JsApi:
             "memes": memes,
             "tags": self._db.get_all_tags(),
             "collections": collections,
-            "copy_resize_enabled": bool(self._cfg.get("copy_resize_enabled", True)),
         }
 
-    def copy_meme(self, meme_id: int, resize_enabled: bool = None) -> bool:
-        """复制表情到剪贴板；resize_enabled 由前端开关传入，None 时回退读配置"""
+    def copy_meme(self, meme_id: int) -> bool:
+        # 复制表情到剪贴板；copy_resize_mode: 0不处理 1webp缩放 2转gif 3转gif隐写原图
         row = self._db.get_by_id(meme_id)
         if not row:
             return False
         path = self._find_meme_file(row["filename"])
         if not path:
             return False
-        if resize_enabled is None:
-            resize_enabled = bool(self._cfg.get("copy_resize_enabled", True))
-        resize_max = 0
-        if resize_enabled:
-            resize_max = int(self._cfg.get("copy_resize_max", 200) or 200)
-        stego_enabled = bool(self._cfg.get("experimental_stego", False))
-        stego_flag = False
-        if row.get("stego_of_hash"):
-            # 本身就是隐写 GIF：原样复制，不再二次隐写
-            resize_max = 0
-        elif stego_enabled and resize_enabled:
-            # 优先复用已缓存（导入时解码得到）的隐写文件，否则现编码
-            cached = self._db.get_by_stego_of(row["file_hash"])
-            cached_path = None
-            if cached:
-                cached_path = self._find_meme_file(cached["filename"])
-            if cached_path:
-                path = cached_path
-                resize_max = 0
-            else:
-                stego_flag = True
-        ok = copy_image_to_clipboard(path, resize_max=resize_max, stego=stego_flag)
+        resize_mode = int(self._cfg.get("copy_resize_mode", 1) or 0)
+        resize_max = int(self._cfg.get("copy_resize_max", 200) or 200)
+        match resize_mode:
+            case 1:
+                path = convert_image_mode_1(path, resize_max) or path
+            case 2:
+                path = convert_image_mode_2(path, resize_max) or path
+            case 3:
+                path = convert_image_mode_3(path, resize_max) or path
+        ok = copy_image_to_clipboard(path)
         if ok:
             self._db.record_use(meme_id)
             self._webui.schedule_hide()
         return ok
-
-    def get_copy_resize(self) -> bool:
-        return bool(self._cfg.get("copy_resize_enabled", True))
-
-    def set_copy_resize(self, enabled: bool) -> bool:
-        self._cfg.set("copy_resize_enabled", bool(enabled))
-        self._cfg.save()
-        return True
 
     def toggle_favorite(self, meme_id: int) -> bool:
         return self._db.toggle_favorite(meme_id)
@@ -758,6 +737,7 @@ class JsApi:
         return {
             "hotkey": hotkey,
             "auto_play_gif": self._cfg.get("auto_play_gif", True),
+            "copy_resize_mode": self._cfg.get("copy_resize_mode", 1),
             "auto_start": False,
             "silent_start": False,
             "sync_auto_fetch_index": False,
@@ -947,7 +927,7 @@ class SettingsApi:
             "hotkey": d.get("hotkey", "Ctrl+Alt+N"),
             "auto_play_gif": d.get("auto_play_gif", True),
             "try_original_image": d.get("try_original_image", False),
-            "experimental_stego": d.get("experimental_stego", False),
+            "copy_resize_mode": int(d.get("copy_resize_mode", 1) or 0),
             "auto_start": is_auto_start_enabled(),
             "silent_start": d.get("silent_start", False),
             "sync_auto_fetch_index": d.get("sync_auto_fetch_index", False),
@@ -1014,6 +994,7 @@ class SettingsApi:
         return {
             "hotkey": hotkey,
             "auto_play_gif": self._cfg.get("auto_play_gif", True),
+            "copy_resize_mode": self._cfg.get("copy_resize_mode", 1),
             "auto_start": False,
             "silent_start": False,
             "sync_auto_fetch_index": False,
@@ -1607,7 +1588,6 @@ class WebUI:
         cache_dir = cfg.cache_dir
         imported = 0
         imported_ids = []
-        stego_enabled = bool(cfg.get("experimental_stego", False))
         for i, src in enumerate(file_paths):
             try:
                 base_name = (
@@ -1615,16 +1595,14 @@ class WebUI:
                     if names and i < len(names)
                     else os.path.splitext(os.path.basename(src))[0]
                 )
-                # 实验性：隐写 GIF 还原原图一并导入，并记录原图哈希便于复用
+                # 隐写 GIF 无论开关与否都只入库解码还原的原图（开关仅控制复制输出）
                 restored = None
-                stego_of = None
-                if stego_enabled and os.path.splitext(src)[1].lower() == ".gif":
+                if os.path.splitext(src)[1].lower() == ".gif":
                     restored = _try_decode_stego(src)
-                    if restored:
-                        stego_of = _file_sha256(restored)
-                items = [(src, base_name, stego_of, 0)]
                 if restored:
-                    items.append((restored, base_name + " (还原原图)", None, 1))
+                    items = [(restored, base_name, None, 1)]
+                else:
+                    items = [(src, base_name, None, 0)]
                 for path, oname, stego_of_hash, from_stego in items:
                     fhash = _file_sha256(path)
                     if db.get_by_hash(fhash):
