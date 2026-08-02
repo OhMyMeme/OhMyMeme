@@ -59,6 +59,7 @@ class _FakeBackend:
         self.empty_downloads = set()  # 下载后为空的文件
         self.download_paths = []
         self.list_calls = []
+        self.upload_raises = set()  # 上传时抛异常的文件（触发 worker 异常路径）
 
     @property
     def remote_memes(self):
@@ -115,6 +116,9 @@ class _FakeBackend:
     def upload_file(self, local_path, remote_path):
         rp = str(remote_path)
         self.upload_paths.append(rp)
+        fname = self._basename(rp)
+        if fname in self.upload_raises:
+            raise RuntimeError("upload boom")
         if rp.endswith(INDEX_FILENAME):
             if self.manifest_ok:
                 try:
@@ -552,6 +556,61 @@ class TestSyncPush(unittest.TestCase):
             p for p in self.data_dir.iterdir() if p.name.startswith(".remote-index-")
         ]
         self.assertEqual(leftovers, [])
+
+    # ─── PR6 新增用例 ───
+
+    def test_concurrent_push_rejected(self):
+        """运行锁被占用时第二次 push 抛"同步正在进行中" """
+        from src.sync import _sync_run_lock
+
+        self.assertTrue(_sync_run_lock.acquire(blocking=False))
+        try:
+            with self.assertRaises(SyncError) as ctx:
+                sync.push()
+            self.assertIn("同步正在进行中", str(ctx.exception))
+        finally:
+            _sync_run_lock.release()
+
+    def test_concurrent_pull_rejected(self):
+        """运行锁被占用时 pull 抛"同步正在进行中" """
+        from src.sync import _sync_run_lock
+
+        self.assertTrue(_sync_run_lock.acquire(blocking=False))
+        try:
+            with self.assertRaises(SyncError) as ctx:
+                sync.pull()
+            self.assertIn("同步正在进行中", str(ctx.exception))
+        finally:
+            _sync_run_lock.release()
+
+    def test_push_worker_stats_no_overcount(self):
+        """worker 异常路径：errors 不重复计数（2 个文件各计 1 次）"""
+        self._set_local_memes(
+            [
+                {"filename": "a.png", "sha256": "a"},
+                {"filename": "b.png", "sha256": "b"},
+            ]
+        )
+        self.fake_backend.meme_ok = False  # 上传失败
+        self.fake_backend.upload_raises.add("b.png")  # b.png 上传时抛异常
+        with self.assertRaises(SyncError) as ctx:
+            sync.push()
+        # 旧实现会把 b.png 抛异常的剩余条目重复计数成 3
+        self.assertIn("2 个文件上传失败", str(ctx.exception))
+
+    def test_push_get_backend_failure_releases_lock(self):
+        """_get_backend 抛异常后运行锁被释放，后续 push 可正常执行"""
+        from src.sync import _sync_run_lock
+
+        with patch(
+            "src.sync._get_backend", side_effect=SyncError("No sync type configured")
+        ):
+            with self.assertRaises(SyncError):
+                sync.push()
+        self.assertFalse(_sync_run_lock.locked())
+        # 锁已释放，可再次正常 push
+        result = sync.push()
+        self.assertEqual(result["uploaded"], 1)
 
 
 if __name__ == "__main__":

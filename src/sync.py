@@ -22,6 +22,7 @@ from .manifest import load as load_manifest
 logger = logging.getLogger(__name__)
 
 _sync_lock = threading.Lock()
+_sync_run_lock = threading.Lock()  # 防止 push/pull 并发执行
 
 # 同步进度状态（全局，供 JS 轮询）
 _sync_state = {
@@ -704,14 +705,15 @@ def _push_worker(entries, remote_root, cache_dir, thumb_dir, remote_memes):
         return local_results
     except Exception as e:
         logger.warning("push worker error: %s", e)
-        local_results["errors"] += (
-            len(entries) - local_results["uploaded"] - local_results["skipped"]
+        done = (
+            local_results["uploaded"]
+            + local_results["skipped"]
+            + local_results["errors"]
         )
-        _increment_sync_progress(
-            files_add=len(entries)
-            - local_results["uploaded"]
-            - local_results["skipped"]
-        )
+        remaining = len(entries) - done
+        if remaining > 0:
+            local_results["errors"] += remaining
+            _increment_sync_progress(files_add=remaining)
         return local_results
     finally:
         bk.close()
@@ -799,14 +801,15 @@ def _pull_worker(entries, remote_root, cache_dir, thumb_dir, db):
         return local_results
     except Exception as e:
         logger.warning("pull worker error: %s", e)
-        local_results["errors"] += (
-            len(entries) - local_results["downloaded"] - local_results["skipped"]
+        done = (
+            local_results["downloaded"]
+            + local_results["skipped"]
+            + local_results["errors"]
         )
-        _increment_sync_progress(
-            files_add=len(entries)
-            - local_results["downloaded"]
-            - local_results["skipped"]
-        )
+        remaining = len(entries) - done
+        if remaining > 0:
+            local_results["errors"] += remaining
+            _increment_sync_progress(files_add=remaining)
         return local_results
     finally:
         bk.close()
@@ -895,13 +898,17 @@ def push(delete_remote: bool = None) -> dict:
         if fp.exists():
             bytes_total += fp.stat().st_size
 
+    if not _sync_run_lock.acquire(blocking=False):
+        raise SyncError("同步正在进行中")
+
     _reset_sync_state("upload", files_total, bytes_total)
     start = time.time()
     _update_sync_state(status="uploading", start_time=start)
 
-    bk = _get_backend()
-    bk.connect()
+    bk = None
     try:
+        bk = _get_backend()
+        bk.connect()
         bk.ensure_remote_dir(remote_root)
         remote_memes = _fetch_remote_memes(bk, remote_root)
         local_idx = {m["filename"]: m for m in local["memes"]}
@@ -1012,7 +1019,9 @@ def push(delete_remote: bool = None) -> dict:
         _update_sync_state(status="error", error=str(e))
         raise
     finally:
-        bk.close()
+        if bk is not None:
+            bk.close()
+        _sync_run_lock.release()
 
 
 def sync_test() -> str:
@@ -1049,6 +1058,9 @@ def pull(remove_local: bool = None) -> dict:
     thumb_dir = cfg.thumbnail_dir
     max_workers = max(1, min(8, int(cfg.get("sync_threads", 3))))
     db = get_db()
+
+    if not _sync_run_lock.acquire(blocking=False):
+        raise SyncError("同步正在进行中")
 
     try:
         remote_data = download_index()
@@ -1133,6 +1145,8 @@ def pull(remove_local: bool = None) -> dict:
     except Exception as e:
         _update_sync_state(status="error", error=str(e))
         raise
+    finally:
+        _sync_run_lock.release()
 
 
 def delete_all_remote() -> dict:
