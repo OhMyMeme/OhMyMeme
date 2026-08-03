@@ -89,7 +89,6 @@ class MemeDB:
 
             CREATE INDEX IF NOT EXISTS idx_memes_hash ON memes(file_hash);
             CREATE INDEX IF NOT EXISTS idx_memes_name ON memes(filename);
-            CREATE INDEX IF NOT EXISTS idx_memes_stego ON memes(stego_of_hash);
             CREATE INDEX IF NOT EXISTS idx_recent_uses_at ON recent_uses(used_at);
         """)
         # 迁移旧表：添加可能缺失的列
@@ -110,6 +109,11 @@ class MemeDB:
                 conn.execute(f"ALTER TABLE {tbl} ADD COLUMN {col} {col_def}")
             except sqlite3.OperationalError:
                 pass  # 列已存在
+        # 该索引依赖迁移新增的 stego_of_hash 列，必须放在迁移之后建，
+        # 否则旧库缺列时 CREATE INDEX 会抛 OperationalError 中断启动
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_memes_stego ON memes(stego_of_hash)"
+        )
         conn.commit()
 
     def close(self):
