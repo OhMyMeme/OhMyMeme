@@ -41,7 +41,8 @@ class GlobalHotkey:
         try:
             import keyboard
 
-            keyboard.add_hotkey(hotkey, callback, suppress=True)
+            # suppress=True 会安装 WH_KEYBOARD_LL 状态机，吞掉按键事件
+            keyboard.add_hotkey(hotkey, callback, suppress=False)
             self._backend = "keyboard"
             self._active = True
             logger.info(f"全局快捷键已注册 (keyboard): {hotkey}")
