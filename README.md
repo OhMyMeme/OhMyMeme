@@ -4,7 +4,7 @@
 
 ### **QQ交流群：891636253**
 
-![picture](https://raw.githubusercontent.com/TNTXZ/OhMyMeme/refs/heads/dev/resource/picture.gif)
+![picture](https://raw.githubusercontent.com/OhMyMeme/OhMyMeme/refs/heads/dev/resource/picture.gif)
 
 ## 功能
 
@@ -31,7 +31,7 @@
 
 ### 下载
 
-从 [Releases](https://github.com/TNTXZ/OhMyMeme/releases/latest) 下载对应系统的安装包或可执行文件，直接运行。
+从 [Releases](https://github.com/OhMyMeme/OhMyMeme/releases/latest) 下载对应系统的安装包或可执行文件，直接运行。
 
 ### 从源码运行
 
@@ -49,7 +49,7 @@ yay -S webkit2gtk  # 依赖 libsoup，通过 yay 安装
 ```
 
 ```bash
-git clone https://github.com/TNTXZ/ohmymeme.git
+git clone https://github.com/OhMyMeme/OhMyMeme.git
 cd ohmymeme
 pip install -r requirements.txt
 python -m src
@@ -206,7 +206,7 @@ CI 会自动运行 lint+test。
 
 ## 贡献者
 
-[![Contributors](https://contributor.starsfire.top/TNTXZ/OhMyMeme/)](https://github.com/TNTXZ/OhMyMeme/graphs/contributors)
+[![Contributors](https://contributor.starsfire.top/OhMyMeme/OhMyMeme/)](https://github.com/OhMyMeme/OhMyMeme/graphs/contributors)
 
 ## AI 辅助开发
 

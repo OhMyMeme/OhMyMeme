@@ -16,8 +16,8 @@ from . import __version__
 
 logger = logging.getLogger(__name__)
 
-_GITHUB_LATEST = "https://api.github.com/repos/TNTXZ/OhMyMeme/releases/latest"
-_GITHUB_LIST = "https://api.github.com/repos/TNTXZ/OhMyMeme/releases?per_page=5"
+_GITHUB_LATEST = "https://api.github.com/repos/OhMyMeme/OhMyMeme/releases/latest"
+_GITHUB_LIST = "https://api.github.com/repos/OhMyMeme/OhMyMeme/releases?per_page=5"
 
 # GitHub 镜像（按顺序逐个尝试）
 _GH_MIRRORS = [

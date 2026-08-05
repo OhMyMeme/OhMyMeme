@@ -24,7 +24,7 @@ setup(
     long_description=long_description,
     long_description_content_type="text/markdown",
     author="OhMyMeme Team",
-    url="https://github.com/ohmymeme/ohmymeme",
+    url="https://github.com/OhMyMeme/OhMyMeme",
     packages=find_packages(include=["src", "src.*"]),
     package_dir={"": "."},
     python_requires=">=3.10",
