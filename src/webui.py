@@ -1445,6 +1445,15 @@ def _file_sha256(path):
     return sha.hexdigest()
 
 
+def _detect_image_ext(path):
+    """读取文件头魔数识别真实扩展名（QQ 保存常为 .jpg，实为 png/webp 等），未知返回空串"""  # noqa: E501
+    try:
+        with open(path, "rb") as f:
+            return adb_util._detect_ext(f.read(16))
+    except OSError:
+        return ""
+
+
 def _try_decode_stego(gif_path):
     """实验性：检测 GIF 隐写并解码还原原图到临时文件；非隐写/失败返回 None"""
     try:
@@ -1626,7 +1635,7 @@ class WebUI:
                 )
                 # 隐写 GIF 无论开关与否都只入库解码还原的原图（开关仅控制复制输出）
                 restored = None
-                if os.path.splitext(src)[1].lower() == ".gif":
+                if _detect_image_ext(src) == ".gif":
                     restored = _try_decode_stego(src)
                 if restored:
                     items = [(restored, base_name, None, 1)]
@@ -1636,7 +1645,7 @@ class WebUI:
                     fhash = _file_sha256(path)
                     if db.get_by_hash(fhash):
                         continue
-                    ext = os.path.splitext(path)[1] or ".png"
+                    ext = _detect_image_ext(path) or os.path.splitext(path)[1] or ".png"
                     dst = cache_dir / f"{fhash[:16]}{ext}"
                     shutil.copy2(path, dst)
                     w = h = 0
