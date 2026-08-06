@@ -129,6 +129,30 @@ def _strip_url_modifiers(url: str) -> str:
     )
 
 
+def _safe_serve_filename(name: str) -> bool:
+    """校验用于文件服务/DB 查询的文件名，拒绝路径穿越与绝对路径"""
+    return (
+        bool(name)
+        and name not in (".", "..")
+        and not name.startswith((".", "/", "\\", "~", ".."))
+        and "/" not in name
+        and "\\" not in name
+    )
+
+
+def _host_allowed(host: str, port: int) -> bool:
+    """仅接受本地回环 Host，阻断 DNS rebinding / 跨站直连"""
+    host = (host or "").strip()
+    if not host:
+        return False
+    base = host.split(":")[0] if ":" in host else host
+    if base not in ("127.0.0.1", "localhost"):
+        return False
+    if ":" in host and host.rsplit(":", 1)[-1] != str(port):
+        return False
+    return True
+
+
 def _check_connectivity() -> dict:
     """检查互联网连接，返回 {ok, latency}"""
     import socket as _socket
@@ -1601,6 +1625,8 @@ class WebUI:
             return ""
 
     def _find_meme_file(self, filename: str) -> str:
+        if not _safe_serve_filename(filename):
+            return ""
         cache_dir = self._cfg.cache_dir
         direct = cache_dir / filename
         if direct.exists():
@@ -1690,6 +1716,31 @@ class WebUI:
 
     def _setup_bottle(self):
         app = bottle.Bottle()
+
+        @app.hook("before_request")
+        def _guard_cross_origin():
+            # 仅接受本地回环 Host，阻断 DNS rebinding 与外部直连
+            if not _host_allowed(bottle.request.headers.get("Host", ""), self._port):
+                bottle.abort(403, "Forbidden")
+            if bottle.request.method == "POST":
+                origin = bottle.request.headers.get("Origin", "")
+                if origin:
+                    allowed = (
+                        f"http://127.0.0.1:{self._port}",
+                        f"http://localhost:{self._port}",
+                    )
+                    if origin not in allowed:
+                        bottle.abort(403, "Forbidden")
+                if bottle.request.headers.get("Sec-Fetch-Site", "") == "cross-site":
+                    bottle.abort(403, "Forbidden")
+
+        @app.hook("after_request")
+        def _set_security_headers():
+            bottle.response.headers["X-Content-Type-Options"] = "nosniff"
+            bottle.response.headers["Referrer-Policy"] = "no-referrer"
+            bottle.response.headers["X-Frame-Options"] = "DENY"
+            if bottle.request.path.startswith("/api/"):
+                bottle.response.headers["Cache-Control"] = "no-store"
 
         @app.route("/")
         def index():

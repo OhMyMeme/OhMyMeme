@@ -724,6 +724,17 @@ def _remote_root(cfg) -> str:
     return ""
 
 
+def _safe_remote_fname(name: str) -> bool:
+    """校验远端 manifest 中的文件名，拒绝路径穿越与绝对路径"""
+    return (
+        bool(name)
+        and name not in (".", "..")
+        and not name.startswith((".", "/", "\\", "~", ".."))
+        and "/" not in name
+        and "\\" not in name
+    )
+
+
 def _fetch_remote_memes(bk, remote_root):
     """下载远端 manifest 并返回 {filename: entry} 字典（无 manifest 返回 {}）"""
     cfg = get_config()
@@ -740,7 +751,11 @@ def _fetch_remote_memes(bk, remote_root):
             raise SyncError("远端 manifest 下载失败")
         raw_bytes = tmp.read_bytes()
         rdata = json.loads(raw_bytes.decode("utf-8"))
-        return {m["filename"]: m for m in rdata.get("memes", [])}
+        return {
+            m["filename"]: m
+            for m in rdata.get("memes", [])
+            if _safe_remote_fname(m.get("filename", ""))
+        }
     except SyncError:
         raise
     except Exception as e:
@@ -838,6 +853,10 @@ def _pull_worker(entries, remote_root, cache_dir, db):
         pass
     try:
         for fname, rentry in entries:
+            if not _safe_remote_fname(fname):
+                local_results["skipped"] += 1
+                _increment_sync_progress(files_add=1)
+                continue
             local_entry = local_idx.get(fname)
             if (
                 local_entry

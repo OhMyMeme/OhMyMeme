@@ -7,6 +7,15 @@ function api(method, ...args) {
   catch(e) { console.error('api error', method, e); return null; }
 }
 
+function esc(s) {
+  return String(s)
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&#39;');
+}
+
 /* Close settings window */
 function closeSettings() {
   try { pywebview.api.close_settings(); } catch(e) {}
@@ -68,7 +77,7 @@ async function checkConnectivity() {  // DeepSeek V4 Flash
   try {
     const r = await api('check_connectivity');
     if (r && r.ok) {
-      el.innerHTML = '● 已连接 <span style="opacity:.6">(' + (r.latency || '') + ')</span>';
+      el.innerHTML = '● 已连接 <span style="opacity:.6">(' + esc(r.latency || '') + ')</span>';
       el.style.color = '#4caf50';
     } else {
       el.textContent = '● 无网络连接';
@@ -725,7 +734,7 @@ function qqntRenderEnv(st) {
     label.style.cssText = 'display:flex;align-items:center;gap:8px;padding:8px 10px;border:1px solid var(--border);border-radius:var(--radius-sm);margin-bottom:6px;cursor:pointer;background:var(--card)';
     const name = a.nickname ? a.nickname + '（' + a.qq + '）' : a.qq;
     label.innerHTML = '<input type="radio" name="qqnt-account" style="width:15px;height:15px;accent-color:var(--accent)">'
-      + '<span style="font-size:13px;color:var(--fg)">' + name + '</span>'
+      + '<span style="font-size:13px;color:var(--fg)">' + esc(name) + '</span>'
       + '<span style="margin-left:auto;font-size:11px;color:var(--muted)">' + a.count + ' 个</span>';
     const radio = label.querySelector('input');
     radio.checked = (idx === 0);
@@ -814,7 +823,7 @@ function qqntRenderDone(res, cancelled) {
   if (res.skipped > 0) txt += '，跳过 ' + res.skipped + ' 个';
   if (res.renamed > 0) txt += '，修正扩展名 ' + res.renamed + ' 个';
   if (res.unrecognized > 0) txt += '，未识别 ' + res.unrecognized + ' 个';
-  detail.innerHTML = txt + '<br>' + (res.output_dir || '');
+  detail.innerHTML = txt + '<br>' + esc(res.output_dir || '');
 }
 
 async function qqntOpenDir() {
@@ -884,7 +893,7 @@ function showUpdateDialog(current, latest, url) {
   const box = document.createElement('div');
   box.style.cssText = 'background:var(--surface);border-radius:var(--radius-lg);padding:24px 28px;width:380px;border:1px solid var(--border);box-shadow:var(--shadow-lg)';
   box.innerHTML = '<div style="margin-bottom:16px"><h2 style="font-size:15px;font-weight:600;color:var(--fg);margin-bottom:8px">发现新版本</h2>'
-    + '<p style="font-size:13px;color:var(--fg-secondary);line-height:1.6">当前版本: ' + current + '<br>最新版本: ' + latest + '</p></div>'
+    + '<p style="font-size:13px;color:var(--fg-secondary);line-height:1.6">当前版本: ' + esc(current) + '<br>最新版本: ' + esc(latest) + '</p></div>'
     + '<div style="display:flex;flex-direction:column;gap:8px">'
     + '<button id="upd-update" class="btn btn-primary" style="width:100%">更新</button>'
     + '<div style="display:flex;gap:8px">'
@@ -975,10 +984,12 @@ document.getElementById('danger-input-1').addEventListener('input', checkDangerM
 document.getElementById('danger-input-2').addEventListener('input', checkDangerMatch);
 
 function checkDangerMatch() {
-  const v1 = document.getElementById('danger-input-1').value;
-  const v2 = document.getElementById('danger-input-2').value;
-  const match = v1 === 'confirm' && v2 === 'confirm';
+  const i1 = document.getElementById('danger-input-1');
+  const i2 = document.getElementById('danger-input-2');
+  const match = i1.value === 'confirm' && i2.value === 'confirm';
   document.getElementById('danger-confirm-btn').disabled = !match;
+  i1.classList.toggle('match', i1.value === 'confirm');
+  i2.classList.toggle('match', i2.value === 'confirm');
 }
 
 async function dangerExec() {

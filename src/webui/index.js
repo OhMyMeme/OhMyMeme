@@ -7,6 +7,15 @@ async function api(method, ...args) {
   catch(e) { console.error('API error:', method, e); return null; }
 }
 
+function esc(s) {
+  return String(s)
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&#39;');
+}
+
 let searchTimer;
 function onSearch() {
   clearTimeout(searchTimer);
@@ -154,7 +163,7 @@ function renderGrid() {
         card.dataset.folderId = child.id;
         const preview = document.createElement('div');
         preview.style.cssText = 'width:100%;height:100%;display:flex;align-items:center;justify-content:center;font-size:24px;color:var(--muted);flex-direction:column;gap:4px';
-        preview.innerHTML = '<svg viewBox="0 0 24 24" width="32" height="32" fill="none" stroke="var(--accent)" stroke-width="1.5"><path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"/></svg><span style="font-size:11px;color:var(--fg-secondary)">' + child.name + '</span>';
+        preview.innerHTML = '<svg viewBox="0 0 24 24" width="32" height="32" fill="none" stroke="var(--accent)" stroke-width="1.5"><path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"/></svg><span style="font-size:11px;color:var(--fg-secondary)">' + esc(child.name) + '</span>';
         card.appendChild(preview);
         card.onclick = () => { activeCollection = child.id; computeActivePath(); refreshMemes(); renderCollections(); };
         card.oncontextmenu = (e) => { e.preventDefault(); showFolderMenu(e, child.id, child.name); };
@@ -542,7 +551,9 @@ document.addEventListener('click', (e) => {
 
 document.addEventListener('keydown', (e) => {
   if (e.key === 'Escape') {
-    if (document.getElementById('ctx-menu')?.style.display === 'block') {
+    const menu = document.getElementById('ctx-menu');
+    const sub = document.getElementById('ctx-subgroup-menu');
+    if ((menu && menu.classList.contains('show')) || (sub && sub.classList.contains('show'))) {
       hideCtxMenu();
     } else {
       hide();
@@ -696,8 +707,8 @@ function showPrompt(title, defaultValue) {
     overlay.onclick = (e) => { if (e.target === overlay) { overlay.remove(); resolve(null); } };
     const box = document.createElement('div');
     box.style.cssText = 'background:var(--surface);border-radius:var(--radius-lg);padding:24px 28px;width:360px;border:1px solid var(--border);box-shadow:var(--shadow-lg)';
-    box.innerHTML = '<div style="margin-bottom:16px"><h2 style="font-size:15px;font-weight:600;color:var(--fg);margin-bottom:4px">' + title + '</h2></div>'
-      + '<input id="modal-input" style="width:100%;padding:8px 12px;border:1px solid var(--border);border-radius:var(--radius-sm);background:var(--card);color:var(--fg);font-size:13px;outline:none;font-family:inherit;box-sizing:border-box" value="' + defaultValue.replace(/"/g, '&quot;') + '">'
+    box.innerHTML = '<div style="margin-bottom:16px"><h2 style="font-size:15px;font-weight:600;color:var(--fg);margin-bottom:4px">' + esc(title) + '</h2></div>'
+      + '<input id="modal-input" style="width:100%;padding:8px 12px;border:1px solid var(--border);border-radius:var(--radius-sm);background:var(--card);color:var(--fg);font-size:13px;outline:none;font-family:inherit;box-sizing:border-box" value="' + esc(defaultValue) + '">'
       + '<div style="display:flex;gap:8px;justify-content:flex-end;margin-top:16px">'
       + '<button id="modal-cancel" class="btn btn-secondary">取消</button>'
       + '<button id="modal-confirm" class="btn btn-primary">确定</button>'
@@ -724,7 +735,7 @@ function showUpdateDialogFromMain(current, latest, url) {
   const box = document.createElement('div');
   box.style.cssText = 'background:var(--surface);border-radius:var(--radius-lg);padding:24px 28px;width:380px;border:1px solid var(--border);box-shadow:var(--shadow-lg)';
   box.innerHTML = '<div style="margin-bottom:16px"><h2 style="font-size:15px;font-weight:600;color:var(--fg);margin-bottom:8px">发现新版本</h2>'
-    + '<p style="font-size:13px;color:var(--fg-secondary);line-height:1.6">当前版本: ' + current + '<br>最新版本: ' + latest + '</p></div>'
+    + '<p style="font-size:13px;color:var(--fg-secondary);line-height:1.6">当前版本: ' + esc(current) + '<br>最新版本: ' + esc(latest) + '</p></div>'
     + '<div style="display:flex;flex-direction:column;gap:8px">'
     + '<button id="upd-update" class="btn btn-primary" style="width:100%">更新</button>'
     + '<div style="display:flex;gap:8px">'
@@ -783,7 +794,7 @@ function showConfirm(title, message) {
     overlay.onclick = (e) => { if (e.target === overlay) { overlay.remove(); resolve(false); } };
     const box = document.createElement('div');
     box.style.cssText = 'background:var(--surface);border-radius:var(--radius-lg);padding:24px 28px;width:360px;border:1px solid var(--border);box-shadow:var(--shadow-lg)';
-    box.innerHTML = '<div style="margin-bottom:16px"><h2 style="font-size:15px;font-weight:600;color:var(--fg);margin-bottom:4px">' + title + '</h2><p style="font-size:13px;color:var(--fg-secondary)">' + message + '</p></div>'
+    box.innerHTML = '<div style="margin-bottom:16px"><h2 style="font-size:15px;font-weight:600;color:var(--fg);margin-bottom:4px">' + esc(title) + '</h2><p style="font-size:13px;color:var(--fg-secondary)">' + esc(message) + '</p></div>'
       + '<div style="display:flex;gap:8px;justify-content:flex-end">'
       + '<button id="modal-cancel" class="btn btn-secondary">取消</button>'
       + '<button id="modal-confirm" class="btn btn-danger">确定</button>'
