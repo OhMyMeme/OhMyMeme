@@ -669,5 +669,36 @@ class TestSyncPush(unittest.TestCase):
         self.assertEqual(failed[0]["status"], "error")
 
 
+class TestSafeRemoteFname(unittest.TestCase):
+    """远端 manifest 文件名安全校验（防路径穿越）"""
+
+    def test_accepts_normal_filenames(self):
+        for name in (
+            "a.png",
+            "abc123.png",
+            "表情.webp",
+            "a b.gif",
+            "ohmm_stego_abcdef.gif",
+        ):
+            self.assertTrue(sync._safe_remote_fname(name), name)
+
+    def test_rejects_traversal_and_absolute(self):
+        for name in (
+            "../evil.png",
+            "..",
+            ".",
+            "a/../../b.png",
+            "dir/file.png",
+            "/etc/passwd",
+            "\\windows\\system32\\cmd.exe",
+            "~/secret.png",
+            "",
+            ".hidden",
+            123,
+            None,
+        ):
+            self.assertFalse(sync._safe_remote_fname(name), name)
+
+
 if __name__ == "__main__":
     unittest.main()

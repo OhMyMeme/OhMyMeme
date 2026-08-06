@@ -107,3 +107,45 @@ def test_webui_html_exists():
     html = (HTML_DIR / "index.html").read_text(encoding="utf-8")
     assert "OhMyMeme" in html
     assert "search" in html
+    # 前端样式/脚本已从 HTML 拆分为独立静态文件
+    assert (HTML_DIR / "index.css").exists()
+    assert (HTML_DIR / "index.js").exists()
+    assert (HTML_DIR / "settings.html").exists()
+    assert (HTML_DIR / "settings.css").exists()
+    assert (HTML_DIR / "settings.js").exists()
+    assert 'src="/index.js"' in html
+    assert 'href="/index.css"' in html
+    settings_html = (HTML_DIR / "settings.html").read_text(encoding="utf-8")
+    assert 'src="/settings.js"' in settings_html
+    assert 'href="/settings.css"' in settings_html
+
+
+def test_webui_safe_serve_filename():
+    from src.webui import _safe_serve_filename
+
+    for name in ("a.png", "表情.webp", "a b.gif", "abc123.gif"):
+        assert _safe_serve_filename(name)
+    for name in (
+        "../evil.png",
+        "..",
+        ".",
+        "dir/file.png",
+        "/etc/passwd",
+        "\\win\\x.png",
+        "~/x.png",
+        "",
+        ".hidden",
+    ):
+        assert not _safe_serve_filename(name)
+
+
+def test_webui_host_allowed():
+    from src.webui import _host_allowed
+
+    assert _host_allowed("127.0.0.1", 12345)
+    assert _host_allowed("127.0.0.1:12345", 12345)
+    assert _host_allowed("localhost:12345", 12345)
+    assert not _host_allowed("evil.example.com", 12345)
+    assert not _host_allowed("evil.example.com:12345", 12345)
+    assert not _host_allowed("127.0.0.1:9999", 12345)
+    assert not _host_allowed("", 12345)

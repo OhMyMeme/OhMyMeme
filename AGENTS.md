@@ -58,9 +58,13 @@ src/              # 主代码
   platform_util.py # 平台工具 (WSL检测, 开机自启)
   adb_util.py      # ADB 自动检测/下载 + QQ 表情包缓存导入（ADB 拉取 + 魔数识别扩展名 + ZIP 打包）
   qqnt_extract.py  # QQNT 本地收藏表情提取（GPL-3.0 衍生模块，纯函数 + 回调接口，无 UI 依赖）
-  webui/          # 前端静态文件
-    index.html    # 主窗口 HTML+CSS+JS
-    settings.html # 设置窗口 HTML+CSS+JS
+  webui/          # 前端静态文件（HTML 与 CSS/JS 分离，经典脚本供内联 onclick 调用全局函数）
+    index.html    # 主窗口 HTML 骨架，引用 index.css + index.js
+    index.css     # 主窗口样式
+    index.js      # 主窗口逻辑（渲染/搜索/拖拽排序/同步/导入/更新）
+    settings.html # 设置窗口 HTML 骨架，引用 settings.css + settings.js
+    settings.css  # 设置窗口样式
+    settings.js   # 设置窗口逻辑（设置项/同步/QQ 导入向导）
 scripts/
   build.py        # PyInstaller + InnoSetup 构建脚本 (i18n zh/en)
   launcher.py     # PyInstaller 入口
@@ -129,6 +133,12 @@ tests/
 - 镜像列表: `github.dpik.top` → `gh.dpik.top` → `gh-proxy.org` → 自建镜像（仅用于版本查询）→ 直连 GitHub
 - 下载进度: `start_download()` → 后台线程 → JS 每 500ms 轮询 `get_download_progress()`
 
+### 本地 HTTP 安全加固
+- Bottle 只绑 `127.0.0.1` 随机端口；`before_request` 校验 `Host` 必须为本机回环（`_host_allowed`），POST 额外校验 `Origin` 同源且 `Sec-Fetch-Site` 非 `cross-site`，拒绝则 403（阻断 DNS rebinding / 跨站注入）
+- `after_request` 统一加 `X-Content-Type-Options: nosniff` / `Referrer-Policy: no-referrer` / `X-Frame-Options: DENY`，`/api/` 路由 `Cache-Control: no-store`
+- 文件名安全：`_safe_serve_filename`（webui）与 `_safe_remote_fname`（sync）拒绝含 `/` `\`、以 `.` `/` `\` `~` `..` 开头的名字；`_find_meme_file` 入口校验，远端 manifest 文件名在 `_fetch_remote_memes` 过滤 + `_pull_worker` 写盘前再防御
+- 前端 XSS：`index.js`/`settings.js` 的 `esc()` 转义所有拼入 innerHTML 的外部/动态数据（远端分组名、GitHub 版本号、QQ 昵称、输出目录、弹窗标题/正文等）
+
 ### 环境检测
 - WSL 检测: `/proc/version` 包含 "microsoft"
 - WSL 时设置 `MESA_LOADER_DRIVER_OVERRIDE=llvmpipe`, `LIBGL_ALWAYS_SOFTWARE=1` 等软渲染环境变量
@@ -178,9 +188,12 @@ tests/
 
 ### 自定义排序
 - `memes.sort_order` 字段存储拖拽排序结果
-- JS 网格 mousedown/mousemove/mouseup 自定义拖拽换位（**仅未过滤的"全部表情"视图启用**），拖拽卡片以 transform 跟随指针，插入点按指针 X/Y 相对卡片中心计算（`getDropIndex`），监听器在 `initDragReorder()` 中只绑定一次（委托）
-- 拖拽完成后按新 DOM 顺序调用 `reorder_memes(id[])` 批量更新 sort_order
-- 拖拽后通过 `suppressClick` 抑制误触发的 `click`（防止误复制），下次 `mousedown` 时重置
+- **模型驱动**：`memes` 数组为唯一真源，拖拽跨槽时先 `moveInArray` 同步模型、再挪 DOM 节点（不再以 DOM 顺序回读重建数组）；`initDragReorder()` 在 `#meme-grid` 上绑定一次
+- **Pointer Events + 指针捕获**：`pointerdown/pointermove/pointerup`，拖拽激活（位移 >8px）时才 `setPointerCapture`（避免普通点击被捕获重定向）；无 `PointerEvent` 的旧 WebView 自动回退 mouse 事件（`mousemove/mouseup` 挂 document）；`pointercancel`/`blur` 取消并回滚模型 + 重渲染
+- **网格感知插入点**：`gridMetrics()` 按首卡片实测宽/高 + `columnGap` 推算 `cols`，`gridSlotIndex(x,y)` 用 `row*cols+col` 定位目标槽并 clamp
+- **FLIP 让位动画**：跨槽时对被挤开卡片记录 First/Last rect，invert 后靠 `#meme-grid.drag-active .meme-card` 的 `transition: transform 200ms` 归位，实时显示空位跟随指针
+- 落点持久化：顺序变化时调用 `reorder_memes(id[])` 批量更新 sort_order；API 失败回滚 `originalOrder` 并重渲染 + toast
+- 拖拽后通过 `ignoreClick` 抑制误触发的 `click`（防止误复制），下一次 `pointerdown` 时重置
 
 ### 多级分组（最多 3 层）
 - `collections.parent_id` 自引用实现嵌套
