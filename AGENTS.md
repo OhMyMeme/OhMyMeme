@@ -96,6 +96,7 @@ tests/
 
 ### 数据库
 - 7 表: `memes`, `tags`, `meme_tags`, `collections`, `meme_collections`, `favorites`, `recent_uses`
+  - `tags`/`meme_tags` 已建表并有 DB 层方法（`get_all_tags`/`set_meme_tags`/`search` 标签筛选），但**当前无 UI 入口创建标签，表实际为空**，标签功能未启用（骨架保留，后续可能复用）
 - `PRAGMA journal_mode=WAL`, `PRAGMA foreign_keys=ON`
 - `MemeDB.search()`: 动态 WHERE, 多标签交集用 `HAVING COUNT = len(tags)`
 - `memes.sort_order`: 自定义排序（拖拽更新），默认 0，查询 `ORDER BY sort_order ASC, updated_at DESC`
