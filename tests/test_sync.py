@@ -694,6 +694,8 @@ class TestSafeRemoteFname(unittest.TestCase):
             "~/secret.png",
             "",
             ".hidden",
+            123,
+            None,
         ):
             self.assertFalse(sync._safe_remote_fname(name), name)
 

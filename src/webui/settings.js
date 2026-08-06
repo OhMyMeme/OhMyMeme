@@ -971,7 +971,7 @@ function showDangerConfirm(target) {
   document.getElementById('danger-overlay').style.display = 'flex';
   document.getElementById('danger-input-1').value = '';
   document.getElementById('danger-input-2').value = '';
-  document.getElementById('danger-confirm-btn').disabled = true;
+  checkDangerMatch();
   document.getElementById('danger-input-1').focus();
 }
 

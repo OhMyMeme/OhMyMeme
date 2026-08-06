@@ -145,6 +145,7 @@ document.getElementById('grid-wrap').addEventListener('contextmenu', async (e) =
 let ctxMeme = null;
 let ctxFolder = null;
 let lastCtxX = 0, lastCtxY = 0;
+let subgroupPickerResolve = null;
 
 function renderGrid() {
   const grid = document.getElementById('meme-grid');
@@ -511,6 +512,11 @@ function showFolderMenu(e, folderId, folderName) {
 }
 
 function hideCtxMenu() {
+  if (subgroupPickerResolve) {
+    const r = subgroupPickerResolve;
+    subgroupPickerResolve = null;
+    r(null);
+  }
   document.getElementById('ctx-menu').classList.remove('show');
   document.getElementById('ctx-subgroup-menu').classList.remove('show');
   ctxMeme = null;
@@ -519,13 +525,18 @@ function hideCtxMenu() {
 
 async function showSubgroupPicker(items) {
   return new Promise(resolve => {
+    subgroupPickerResolve = resolve;
     const menu = document.getElementById('ctx-subgroup-menu');
     menu.innerHTML = '';
     items.forEach(([label, val]) => {
       const btn = document.createElement('button');
       btn.className = 'ctx-item';
       btn.textContent = label;
-      btn.onclick = () => { menu.classList.remove('show'); resolve(val); };
+      btn.onclick = () => {
+        subgroupPickerResolve = null;
+        menu.classList.remove('show');
+        resolve(val);
+      };
       menu.appendChild(btn);
     });
     menu.style.left = '';
@@ -542,6 +553,11 @@ async function showSubgroupPicker(items) {
 }
 
 function hideSubgroupMenu() {
+  if (subgroupPickerResolve) {
+    const r = subgroupPickerResolve;
+    subgroupPickerResolve = null;
+    r(null);
+  }
   document.getElementById('ctx-subgroup-menu').classList.remove('show');
 }
 

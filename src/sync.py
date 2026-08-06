@@ -727,7 +727,8 @@ def _remote_root(cfg) -> str:
 def _safe_remote_fname(name: str) -> bool:
     """校验远端 manifest 中的文件名，拒绝路径穿越与绝对路径"""
     return (
-        bool(name)
+        isinstance(name, str)
+        and bool(name)
         and name not in (".", "..")
         and not name.startswith((".", "/", "\\", "~", ".."))
         and "/" not in name
