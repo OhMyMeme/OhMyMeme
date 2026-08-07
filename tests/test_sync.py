@@ -1,7 +1,8 @@
 """sync.push() 远端 manifest 一致性回归测试
 
 覆盖 push() 的修复：
-- 任一普通图片上传失败 → 抛 SyncError，且不上传新的远端 manifest
+- 任一普通图片上传失败 → 抛 SyncError；若已有文件成功上传，中断前仍上传反映远端真实状态的 manifest（成功项 + 远端已有项）
+- 上传过程中心跳式增量更新远端 manifest（崩溃/被杀后远端仍可下载）
 - manifest 上传失败 → 抛 SyncError
 - 上传失败不删除远端文件
 - delete_remote=False 时远端仍保留的文件合并进远端 manifest（避免孤儿）
@@ -15,6 +16,7 @@ import json
 import shutil
 import sys
 import tempfile
+import time
 import unittest
 from pathlib import Path
 from unittest.mock import patch
@@ -25,7 +27,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 from src import sync
 from src.config import Config
 from src.manifest import INDEX_FILENAME
-from src.sync import SyncError, cleanup_remote_orphans, get_sync_progress
+from src.sync import SyncError, _fetch_remote_memes, cleanup_remote_orphans, get_sync_progress
 
 
 def _entry(fname, sha256, size=1):
@@ -667,6 +669,130 @@ class TestSyncPush(unittest.TestCase):
         self.assertEqual(len(failed), 1)
         self.assertEqual(failed[0]["filename"], "missing.png")
         self.assertEqual(failed[0]["status"], "error")
+
+    # ─── PR9 新增用例：push 动态 manifest 维护 ───
+
+    def _manifest_upload_count(self):
+        return sum(
+            1 for p in self.fake_backend.upload_paths if p.endswith(INDEX_FILENAME)
+        )
+
+    def test_push_partial_failure_uploads_manifest_on_abort(self):
+        """部分上传失败 → 抛 SyncError，但中断前上传含成功项（不含失败项）的 manifest"""
+        self._set_local_memes(
+            [
+                {"filename": "a.png", "sha256": "a"},
+                {"filename": "b.png", "sha256": "b"},
+            ]
+        )
+        self.fake_backend.upload_raises.add("b.png")
+        with self.assertRaises(SyncError) as ctx:
+            sync.push()
+        self.assertIn("远端 manifest 已更新", str(ctx.exception))
+        self.assertGreaterEqual(self._manifest_upload_count(), 1)
+        payload = self.fake_backend.manifest_payload
+        self.assertEqual(
+            {m["filename"] for m in payload["memes"]}, {"a.png"}
+        )
+
+    def test_push_abort_after_mid_push_local_delete(self):
+        """上传中途本地被清空（模拟 delete_all_local）→ abort 后 manifest 仍含已上传文件"""
+        self._set_local_memes(
+            [
+                {"filename": "a.png", "sha256": "a"},
+                {"filename": "b.png", "sha256": "b"},
+            ]
+        )
+        real_upload = self.fake_backend.upload_file
+
+        def deleting_upload(local_path, remote_path):
+            rp = str(remote_path)
+            ok = real_upload(local_path, remote_path)
+            if ok and not rp.endswith(INDEX_FILENAME):
+                # 模拟 delete_all_local：删除剩余文件的 cache 并清空 DB
+                (self.data_dir / "cache" / "b.png").unlink(missing_ok=True)
+                self.fake_db.rows = []
+            return ok
+
+        self.fake_backend.upload_file = deleting_upload
+        with self.assertRaises(SyncError):
+            sync.push()
+        self.assertGreaterEqual(self._manifest_upload_count(), 1)
+        payload = self.fake_backend.manifest_payload
+        self.assertEqual(
+            {m["filename"] for m in payload["memes"]}, {"a.png"}
+        )
+
+    def test_heartbeat_updates_manifest_during_upload(self):
+        """上传过程中心跳增量更新 manifest（≥2 次上传，最终 payload 完整）"""
+        self._set_local_memes(
+            [
+                {"filename": "a.png", "sha256": "a"},
+                {"filename": "b.png", "sha256": "b"},
+                {"filename": "c.png", "sha256": "c"},
+                {"filename": "d.png", "sha256": "d"},
+            ]
+        )
+        real_upload = self.fake_backend.upload_file
+
+        def slow_upload(local_path, remote_path):
+            if not str(remote_path).endswith(INDEX_FILENAME):
+                time.sleep(0.05)
+            return real_upload(local_path, remote_path)
+
+        self.fake_backend.upload_file = slow_upload
+        with patch("src.sync._HEARTBEAT_INTERVAL", 0.01):
+            result = sync.push()
+        self.assertEqual(result["uploaded"], 4)
+        self.assertGreaterEqual(self._manifest_upload_count(), 2)
+        payload = self.fake_backend.manifest_payload
+        self.assertEqual(
+            {m["filename"] for m in payload["memes"]},
+            {"a.png", "b.png", "c.png", "d.png"},
+        )
+
+    def test_success_fallback_keeps_uploaded_after_late_delete(self):
+        """上传全部成功但本地 DB 被清空（删除发生在最终 manifest 前）→ 最终 manifest 仍含已上传文件"""
+        self._set_local_memes(
+            [
+                {"filename": "a.png", "sha256": "a"},
+                {"filename": "b.png", "sha256": "b"},
+            ]
+        )
+        real_upload = self.fake_backend.upload_file
+
+        def clearing_upload(local_path, remote_path):
+            rp = str(remote_path)
+            ok = real_upload(local_path, remote_path)
+            if ok and not rp.endswith(INDEX_FILENAME):
+                self.fake_db.rows = []  # 模拟 build_manifest 前 DB 已被清空
+            return ok
+
+        self.fake_backend.upload_file = clearing_upload
+        result = sync.push()
+        self.assertEqual(result["errors"], 0)
+        payload = self.fake_backend.manifest_payload
+        self.assertEqual(
+            {m["filename"] for m in payload["memes"]},
+            {"a.png", "b.png"},
+        )
+
+    def test_fetch_remote_memes_returns_collections(self):
+        """_fetch_remote_memes 返回 (memes, collections)，无 manifest 时返回 ({}, [])"""
+        self.fake_backend.manifest_content = json.dumps(
+            {
+                "version": 3,
+                "memes": [{"filename": "a.png", "sha256": "x"}],
+                "collections": [{"name": "grp", "filenames": ["a.png"]}],
+            }
+        )
+        memes, collections = _fetch_remote_memes(self.fake_backend, "/")
+        self.assertEqual(set(memes.keys()), {"a.png"})
+        self.assertEqual(collections, [{"name": "grp", "filenames": ["a.png"]}])
+        self.fake_backend.manifest_exists = False
+        memes, collections = _fetch_remote_memes(self.fake_backend, "/")
+        self.assertEqual(memes, {})
+        self.assertEqual(collections, [])
 
 
 class TestSafeRemoteFname(unittest.TestCase):
