@@ -9,7 +9,7 @@ import threading
 import time
 import urllib.error
 import urllib.request
-from concurrent.futures import ThreadPoolExecutor, as_completed
+from concurrent.futures import ThreadPoolExecutor, as_completed, wait
 from ftplib import FTP, error_perm
 from pathlib import Path
 from typing import Optional
@@ -98,6 +98,7 @@ def get_sync_progress() -> dict:
 
 REMOTE_INDEX = INDEX_FILENAME
 REMOTE_MEME_DIR = "memes"
+_HEARTBEAT_INTERVAL = 5  # push 上传过程中 manifest 增量更新的心跳间隔（秒）
 
 
 class SyncError(Exception):
@@ -737,11 +738,11 @@ def _safe_remote_fname(name: str) -> bool:
 
 
 def _fetch_remote_memes(bk, remote_root):
-    """下载远端 manifest 并返回 {filename: entry} 字典（无 manifest 返回 {}）"""
+    """下载远端 manifest，返回 (memes, collections)；无 manifest 返回 ({}, [])"""
     cfg = get_config()
     remote_path = remote_root.rstrip("/") + "/" + REMOTE_INDEX
     if not bk.file_exists(remote_path):
-        return {}
+        return {}, []
     fd, tmp_name = tempfile.mkstemp(
         prefix=".remote-index-", suffix=".json", dir=str(cfg.data_dir)
     )
@@ -752,11 +753,12 @@ def _fetch_remote_memes(bk, remote_root):
             raise SyncError("远端 manifest 下载失败")
         raw_bytes = tmp.read_bytes()
         rdata = json.loads(raw_bytes.decode("utf-8"))
-        return {
+        memes = {
             m["filename"]: m
             for m in rdata.get("memes", [])
-            if _safe_remote_fname(m.get("filename", ""))
+            if isinstance(m, dict) and _safe_remote_fname(m.get("filename", ""))
         }
+        return memes, rdata.get("collections", [])
     except SyncError:
         raise
     except Exception as e:
@@ -766,11 +768,44 @@ def _fetch_remote_memes(bk, remote_root):
             tmp.unlink()
 
 
+def _build_push_manifest(remote_memes, remote_collections, local_idx, uploaded):
+    """构建当前远端应呈现的 manifest 数据（远端已有 + 本次成功上传）"""
+    merged = dict(remote_memes)
+    for fname in uploaded:
+        entry = local_idx.get(fname)
+        if entry:
+            merged[fname] = entry
+    return {
+        "version": 3,
+        "memes": list(merged.values()),
+        "collections": remote_collections,
+    }
+
+
+def _upload_manifest_data(bk, remote_root, data):
+    """把 manifest 数据写入远端（临时文件，上传后清理），返回 bool"""
+    cfg = get_config()
+    fd, tmp_name = tempfile.mkstemp(
+        prefix=".remote-merged-", suffix=".json", dir=str(cfg.data_dir)
+    )
+    os.close(fd)
+    tmp = Path(tmp_name)
+    try:
+        tmp.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
+        return bk.upload_file(tmp, remote_root.rstrip("/") + "/" + REMOTE_INDEX)
+    finally:
+        if tmp.exists():
+            try:
+                tmp.unlink()
+            except Exception:
+                pass
+
+
 # ─── 多线程工作函数 ───
 
 
-def _push_worker(entries, remote_root, cache_dir, remote_memes):
-    """单线程批量上传一批文件"""
+def _push_worker(entries, remote_root, cache_dir, remote_memes, uploaded):
+    """单线程批量上传一批文件；uploaded 记录成功上传条目（受 _sync_lock 保护）"""
     bk = _get_backend()
     bk.connect()
     local_results = {"uploaded": 0, "skipped": 0, "errors": 0, "bytes": 0, "failed": []}
@@ -802,6 +837,8 @@ def _push_worker(entries, remote_root, cache_dir, remote_memes):
             if bk.upload_file(local_file, rem_path):
                 local_results["uploaded"] += 1
                 local_results["bytes"] += fsize
+                with _sync_lock:
+                    uploaded[fname] = entry
                 _increment_sync_progress(files_add=1, bytes_add=fsize)
             else:
                 local_results["errors"] += 1
@@ -1049,7 +1086,7 @@ def push(delete_remote: bool = None) -> dict:
         bk = _get_backend()
         bk.connect()
         bk.ensure_remote_dir(remote_root)
-        remote_memes = _fetch_remote_memes(bk, remote_root)
+        remote_memes, remote_collections = _fetch_remote_memes(bk, remote_root)
         local_idx = {m["filename"]: m for m in local["memes"]}
 
         entries = local["memes"]
@@ -1065,22 +1102,64 @@ def push(delete_remote: bool = None) -> dict:
             "bytes": 0,
             "failed": [],
         }
+        uploaded = {}
         with ThreadPoolExecutor(max_workers=len(chunks)) as executor:
             futures = [
-                executor.submit(_push_worker, ch, remote_root, cache_dir, remote_memes)
+                executor.submit(
+                    _push_worker, ch, remote_root, cache_dir, remote_memes, uploaded
+                )
                 for ch in chunks
             ]
-            for future in as_completed(futures):
-                r = future.result()
-                aggregated["uploaded"] += r["uploaded"]
-                aggregated["skipped"] += r["skipped"]
-                aggregated["errors"] += r["errors"]
-                aggregated["bytes"] += r["bytes"]
-                aggregated["failed"].extend(r.get("failed", []))
+            # 心跳：上传过程中周期性增量更新远端 manifest，中断/崩溃后远端仍可下载
+            last_hb = time.time()
+            pending = set(futures)
+            while pending:
+                done, pending = wait(pending, timeout=_HEARTBEAT_INTERVAL)
+                for future in done:
+                    r = future.result()
+                    aggregated["uploaded"] += r["uploaded"]
+                    aggregated["skipped"] += r["skipped"]
+                    aggregated["errors"] += r["errors"]
+                    aggregated["bytes"] += r["bytes"]
+                    aggregated["failed"].extend(r.get("failed", []))
+                if time.time() - last_hb >= _HEARTBEAT_INTERVAL:
+                    last_hb = time.time()
+                    with _sync_lock:
+                        snap = dict(uploaded)
+                    if snap:
+                        hb_data = _build_push_manifest(
+                            remote_memes, remote_collections, local_idx, snap
+                        )
+                        try:
+                            if not _upload_manifest_data(bk, remote_root, hb_data):
+                                logger.warning("sync heartbeat manifest upload failed")
+                        except Exception as e:
+                            logger.warning(
+                                "sync heartbeat manifest upload error: %s", e
+                            )
 
         if aggregated["errors"] > 0:
+            with _sync_lock:
+                snap = dict(uploaded)
+            manifest_note = "未更新远端 manifest"
+            if snap:
+                # 中断前把已上传文件写进远端 manifest，保证远端仍可下载
+                abort_data = _build_push_manifest(
+                    remote_memes, remote_collections, local_idx, snap
+                )
+                try:
+                    if _upload_manifest_data(bk, remote_root, abort_data):
+                        manifest_note = "远端 manifest 已更新为已上传项"
+                    else:
+                        logger.warning(
+                            "sync push aborted: remote manifest update failed"
+                        )
+                except Exception as e:
+                    logger.warning(
+                        "sync push aborted: remote manifest update error: %s", e
+                    )
             _update_sync_state(failed_items=aggregated["failed"])
-            msg = "%d 个文件上传失败，未更新远端 manifest" % aggregated["errors"]
+            msg = "%d 个文件上传失败，%s" % (aggregated["errors"], manifest_note)
             logger.warning("sync push aborted: %s", msg)
             raise SyncError(msg)
 
@@ -1140,9 +1219,17 @@ def push(delete_remote: bool = None) -> dict:
                 for fname, m in remote_memes.items()
                 if fname not in local_fnames and fname not in deleted_fnames
             ]
+            # 补：已上传但不在本地清单的项（如上传过程中本地被清空）
+            with _sync_lock:
+                snap = dict(uploaded)
+            in_manifest = set(local_fnames) | {m["filename"] for m in kept}
+            fallback = [
+                local_idx[f] for f in snap if f not in in_manifest and f in local_idx
+            ]
             manifest_file = cfg.data_dir / INDEX_FILENAME
-            if kept:
+            if kept or fallback:
                 data["memes"].extend(kept)
+                data["memes"].extend(fallback)
                 fd, tmp_name = tempfile.mkstemp(
                     prefix=".remote-merged-", suffix=".json", dir=str(cfg.data_dir)
                 )
@@ -1326,7 +1413,7 @@ def delete_all_remote() -> dict:
     bk = _get_backend()
     bk.connect()
     try:
-        remote_memes = _fetch_remote_memes(bk, remote_root)
+        remote_memes, _ = _fetch_remote_memes(bk, remote_root)
         count = 0
         for fname in remote_memes:
             rem_path = remote_root.rstrip("/") + "/" + REMOTE_MEME_DIR + "/" + fname
@@ -1361,7 +1448,7 @@ def list_remote_orphans(bk, remote_root) -> list:
         logger.warning("list_files %s failed: %s", remote_path, e)
         return []
     try:
-        remote_memes = _fetch_remote_memes(bk, remote_root)
+        remote_memes, _ = _fetch_remote_memes(bk, remote_root)
     except Exception as e:
         logger.warning("list_remote_orphans fetch manifest failed: %s", e)
         return []
@@ -1369,7 +1456,12 @@ def list_remote_orphans(bk, remote_root) -> list:
 
 
 def cleanup_remote_orphans(delete: bool = False) -> dict:
-    """识别远端孤儿文件；delete=True 时物理删除，返回 {ok, orphans, removed}。"""
+    """识别远端孤儿文件；delete=True 时物理删除，返回 {ok, orphans, removed}。
+
+    删除与 push/pull 互斥（_sync_run_lock），并通过 _sync_state 上报进度供前端轮询。
+    """
+    if delete and not _sync_run_lock.acquire(blocking=False):
+        return {"ok": False, "error": "同步正在进行中"}
     cfg = get_config()
     remote_root = _remote_root(cfg)
     bk = _get_backend()
@@ -1378,15 +1470,32 @@ def cleanup_remote_orphans(delete: bool = False) -> dict:
         orphans = list_remote_orphans(bk, remote_root)
         removed = 0
         if delete:
-            for fname in orphans:
-                rem_path = remote_root.rstrip("/") + "/" + REMOTE_MEME_DIR + "/" + fname
-                if bk.delete_file(rem_path):
-                    removed += 1
+            total = len(orphans)
+            if total:
+                _reset_sync_state("delete", total, 0)
+                _update_sync_state(status="deleting", start_time=time.time())
+                for i, fname in enumerate(orphans, 1):
+                    _update_sync_state(
+                        current_file=fname, files_done=i - 1, files_total=total
+                    )
+                    rem_path = (
+                        remote_root.rstrip("/") + "/" + REMOTE_MEME_DIR + "/" + fname
+                    )
+                    if bk.delete_file(rem_path):
+                        removed += 1
+                    _update_sync_state(progress=int(i * 100 / total))
+                _update_sync_state(
+                    status="done", progress=100, files_done=total, current_file=""
+                )
         return {"ok": True, "orphans": orphans, "removed": removed}
     except Exception as e:
         logger.warning("cleanup_remote_orphans failed: %s", e)
+        if delete:
+            _update_sync_state(status="error", error=str(e))
         return {"ok": False, "error": str(e)}
     finally:
+        if delete:
+            _sync_run_lock.release()
         bk.close()
 
 
