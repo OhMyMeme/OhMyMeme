@@ -1,3 +1,54 @@
+# v0.5.0 — WebDAV 同步 / 拖拽到聊天窗口 / 添加分组弹窗 / GIF 隐写
+
+## 新增
+
+- **WebDAV 同步后端** — 在 FTP/S3/R2 之外新增第四种云端同步后端（WebDAV，兼容 Nextcloud 等），设置页可配置 URL/账号密码/根路径
+- **拖拽到聊天窗口** — 表情包可直接拖拽到 QQ/微信/桌面等外部应用（WinForms `DoDragDrop` + CF_HDROP 原生文件拖拽，`native_drag.py` 懒加载 pythonnet；替代失效的 HTML5 拖拽方案）
+- **添加分组弹窗** — 标题栏新增「添加分组」按钮，弹窗内输入分组名（支持选择已有分组）、搜索表情、两栏列表间移动并带 FLIP 动画、右侧拖拽排序后一键保存
+- **复制处理模式** — 设置页「复制处理」下拉（0 不处理 / 1 webp 缩放 / 2 转 gif / 3 转 gif 隐写原图），复制超大静态图自动缩放到限制内；旧配置自动迁移
+- **GIF 增量隐写（实验性）** — 复制模式 3 生成携带无损原图的隐写 GIF（`gif_stego.py`），支持 encode/decode/CLI；导入含 `STG3` 标记的 GIF 自动解码还原原图入库（`from_stego=1`），载体不入库
+- **QQNT 电脑端表情提取** — 从电脑版 QQ 收藏目录（`nt_qq/nt_data/Emoji/personal_emoji/Ori`）提取表情，支持 INI 定位、昵称获取、逐文件容错复制与魔数扩展名修正（`qqnt_extract.py`，GPL-3.0 衍生）（来源于[[香草味的纳西妲](https://github.com/VanillaNahida)]）
+- **日志导出** — 日志内存缓冲（上限 5000 条），设置页可导出当前运行日志，便于排查问题
+- **分组拖拽排序** — 分组/子分组内成员支持拖拽排序（`meme_collections.sort_order`），从最近使用删除、清空最近使用右键菜单项
+- **分组右键菜单** — 右键分组可执行更多管理操作
+- **更新内容显示** — 更新弹窗展示 GitHub Release 更新说明（支持 Markdown 渲染）
+- **push 动态维护远端 manifest** — push 过程中每 5s 用「远端已有 + 本次已确认」快照增量更新远端 manifest，部分失败中断前也上传快照，杜绝远端有文件无有效清单
+- **孤儿清理互斥与进度** — 远端孤儿文件删除前非阻塞获取互斥锁（同步进行中拒绝并发删除），删除过程复用进度条展示
+- **导入文件自动检测** — 导入时按文件头魔数识别真实扩展名（QQ 保存常为 .jpg 实为 png/webp），GIF 隐写解码判定同步改为魔数检测
+- **Linux 打包** — `build.yml` 新增 `build-linux` job，`build.py --package` 支持 AppImage/deb/rpm
+
+## 变更
+
+- **开源协议 MIT → GPL-3.0** — 因引入 GPL-3.0 衍生代码（QQNT 提取模块）改为 GPL-3.0
+- **仓库迁移至 [OhMyMeme/OhMyMeme](https://github.com/OhMyMeme/OhMyMeme)** — 更新 README、安装脚本、更新器、setup.py 中地址
+- **前端代码拆分重构** — `index.html`/`settings.html` 内联 CSS/JS 拆分为独立文件（`index.css`/`index.js`/`settings.css`/`settings.js`），拖拽排序重写为事件委托 + Pointer Events + 指针捕获 + FLIP 动画，模型驱动（#24）
+- **复制逻辑解耦** — 图片修饰（缩放/转格式/隐写）与复制到剪贴板分离为不同函数；复制模式配置保存方式调整
+- **导入行为调整** — 导入流程与 UI 细节优化
+- **GitHub Actions** — build job 拆分为 `build-windows` / `build-linux` 两个任务
+
+## 修复
+
+- **Ctrl 按键异常** — 全局快捷键 `suppress=True` 会安装 `WH_KEYBOARD_LL` 状态机吞掉按键事件，改为 `suppress=False`（#23）
+- **旧库 stego_of_hash 启动崩溃** — 旧数据库缺 `stego_of_hash` 列时 `CREATE INDEX` 抛 OperationalError 中断启动，索引创建移到迁移之后（#23）
+- **WebDAV 同步加固** — 失败项显示 / 互斥锁 / 中断清理 / 远端孤儿 GC（#22）
+- **Windows 窗口拖拽抖动** — 增量回退改用 `screenX/screenY`（`clientX/clientY` 是相对坐标，窗口滞后位移被当作反向增量回传形成反馈振荡）（#18）
+- **Linux 无边框窗口无法拖动** — 改用合成器原生拖动（`begin_move_drag` + `Gdk.CURRENT_TIME`），Wayland 下 `w.move()` 无效（#15 #16）
+- **右键菜单超出窗口边框** — 窗口边缘弹出时自动换向，避免菜单溢出无法使用（#17）
+- **Linux 更新问题** — AppImage 资产选取、无 `/dev/fuse` 时 `--appimage-extract-and-run` 回退、下载文件名规范化
+- **安装时文件占用** — 更新器启动安装程序前自动退出应用，避免 exe 文件锁
+
+## 特别鸣谢
+
+### 代码贡献
+
+- [Ze514](https://github.com/Ze514) — QQNT 电脑端表情提取（#14）、WebDAV 同步后端
+
+- [LorienYang](https://github.com/LorienYang) — 拖拽排序修复、WebUI 重构协作
+
+- [lateworker](https://github.com/lateworker) — 同步后端与测试协作
+
+  [QQ电脑版表情包导出模块](https://github.com/VanillaNahida/QQFavoriteExtract)来源于[[香草味的纳西妲](https://github.com/VanillaNahida)]
+
 # v0.4.1 — WebP 动图 / 浏览器拖入导入 / 核显优化
 
 ## 新增
@@ -26,21 +77,25 @@
 - **浏览器拖拽图片导入异常** — 修正文件扩展名识别错误与 Base64 编码不正确问题
 - **ADB 路径拼接** — 修复路径拼接错误（#5）
 
-## 特别鸣谢
+- ## 特别鸣谢
 
-### 代码贡献
+  ### 代码贡献
 
-- [Ze514](https://github.com/Ze514) — 拖拽排序（#12）、WebP 剪贴板（#11）、WebP 存储（#9）、浏览器拖拽导入（#6）、浏览器原图下载（#3）
-- [LorienYang](https://github.com/LorienYang) — S3 上传与同步检测修复（#7）
-- [RainLuohua](https://github.com/RainLuohua) — 平铺窗口管理器启动崩溃修复（#10）
-- [oralrinse](https://github.com/oralrinse) — ADB 路径拼接修复（#5）
+  - [[Ze514](https://github.com/Ze514)] — 拖拽排序（#12）、WebP 剪贴板（#11）、WebP 存储（#9）、浏览器拖拽导入（#6）、浏览器原图下载（#3）
+  - [[LorienYang](https://github.com/LorienYang)] — S3 上传与同步检测修复（#7）
+  - [[RainLuohua](https://github.com/RainLuohua)] — 平铺窗口管理器启动崩溃修复（#10）
+  - [[oralrinse](https://github.com/oralrinse)] — ADB 路径拼接修复（#5）
 
-### Issue 反馈
+  ### Issue 反馈
 
-- [Chiclats](https://github.com/Chiclats) — 反馈平铺窗口管理器 (Niri) 下启动崩溃（#8）
-- [ylhcqN](https://github.com/ylhcqN) — 反馈 Linux 原生环境（非 WSL）GTK 线程冲突（#2）
-- [LorienYang](https://github.com/LorienYang) — 反馈 FTP/S3 同步状态显示异常（#1）
-- [oralrinse](https://github.com/oralrinse) — 反馈 Win11 ADB 检测 0% 卡死及 TypeError（#4）
+  - [[Chiclats](https://github.com/Chiclats)] — 反馈平铺窗口管理器 (Niri) 下启动崩溃（#8）
+  - [[ylhcqN](https://github.com/ylhcqN)] — 反馈 Linux 原生环境（非 WSL）GTK 线程冲突（#2）
+  - [[LorienYang](https://github.com/LorienYang)] — 反馈 FTP/S3 同步状态显示异常（#1）
+  - [[oralrinse](https://github.com/oralrinse)] — 反馈 Win11 ADB 检测 0% 卡死及 TypeError（#4）
+
+  ### 还有各位群友们及B友们
+
+  ### 还有[QQ电脑版表情包导出模块](https://github.com/VanillaNahida/QQFavoriteExtract)贡献者[[香草味的纳西妲](https://github.com/VanillaNahida)]
 
 # v0.4.0 — 自定义排序 / 多级分组 / 最近使用
 
