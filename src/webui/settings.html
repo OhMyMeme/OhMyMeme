@@ -72,6 +72,32 @@
     </div>
 
     <div class="section">
+      <div class="section-title">存储位置</div>
+      <p style="font-size:11.5px;color:var(--muted);margin-bottom:10px;line-height:1.6">表情包图片文件存放目录；数据库与缩略图仍保留在系统数据目录</p>
+      <div class="form-group">
+        <label>当前存储目录</label>
+        <input id="s-cache-dir" readonly placeholder="加载中...">
+      </div>
+      <div id="s-storage-pending" style="display:none;margin-bottom:10px">
+        <div class="form-group">
+          <label>新存储目录</label>
+          <input id="s-cache-dir-new" readonly>
+        </div>
+        <label class="check-row" style="margin-bottom:8px">
+          <input id="s-move-files" type="checkbox" checked>同时把现有表情包移动到新目录
+        </label>
+        <div style="display:flex;gap:8px">
+          <button id="btn-storage-apply" class="btn btn-primary btn-sm btn-flex" onclick="applyStorageDir()">应用更改</button>
+          <button class="btn btn-ghost btn-sm" onclick="cancelStoragePick()">取消</button>
+        </div>
+      </div>
+      <div style="display:flex;gap:8px">
+        <button id="btn-pick-storage" class="btn btn-secondary btn-sm btn-flex" onclick="pickStorageDir()">更改位置</button>
+      </div>
+      <div id="s-storage-status" style="font-size:11.5px;color:var(--muted);margin-top:6px;line-height:1.6"></div>
+    </div>
+
+    <div class="section">
       <div class="section-title">从手机导入</div>
       <p style="font-size:11.5px;color:var(--muted);margin-bottom:10px;line-height:1.6">通过 ADB 从连接的 Android 手机拉取 QQ 表情包缓存并打包 ZIP</p>
       <div style="display:flex;gap:8px">

@@ -84,6 +84,27 @@ class TestConfig(unittest.TestCase):
         cfg.auto_start = True
         self.assertTrue(cfg.auto_start)
 
+    def test_cache_dir_default_empty(self):
+        cfg = Config(self.config_path)
+        self.assertEqual(cfg.get("cache_dir"), "")
+
+    def test_cache_dir_custom(self):
+        cfg = Config(self.config_path)
+        custom = self.tmp_dir / "my_memes"
+        cfg.set("cache_dir", str(custom))
+        self.assertEqual(cfg.cache_dir, custom)
+        self.assertTrue(custom.exists())
+        cfg.save()
+        cfg2 = Config(self.config_path)
+        self.assertEqual(cfg2.cache_dir, custom)
+
+    def test_cache_dir_resolve(self):
+        cfg = Config(self.config_path)
+        raw = self.tmp_dir / "a" / ".." / "my_memes"
+        cfg.set("cache_dir", str(raw))
+        self.assertEqual(cfg.cache_dir, (self.tmp_dir / "my_memes").resolve())
+        self.assertTrue((self.tmp_dir / "my_memes").exists())
+
 
 class TestDatabase(unittest.TestCase):
     def setUp(self):

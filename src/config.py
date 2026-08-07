@@ -61,6 +61,7 @@ class Config:
         # 缓存设置
         "cache_max_size_mb": 500,
         "thumbnail_size": 150,
+        "cache_dir": "",  # 自定义表情包存储目录（空=默认 data_dir/cache）
         # 云端同步
         "sync_auto_fetch_index": False,
         "sync_auto_sync": False,
@@ -219,7 +220,11 @@ class Config:
 
     @property
     def cache_dir(self) -> Path:
-        d = self.data_dir / "cache"
+        custom = self.get("cache_dir")
+        if custom:
+            d = Path(custom).expanduser().resolve()
+        else:
+            d = self.data_dir / "cache"
         d.mkdir(parents=True, exist_ok=True)
         return d
 
