@@ -23,6 +23,7 @@
         <path transform="translate(0 1280) scale(1 -1)" d="M481.749333 353.792c16.682667-16.64 43.690667-16.64 60.373334 0l120.917333 120.832 3.541333 4.010667a42.666667 42.666667 0 0 1-63.872 56.32L554.666667 486.954667V896a42.666667 42.666667 0 0 1-85.333334 0v-409.173333l-48.170666 48.128a42.666667 42.666667 0 0 1-60.330667 0l-3.541333-4.010667a42.666667 42.666667 0 0 1 3.541333-56.32z"/>
       </svg>
     </button>
+    <button class="title-btn" onclick="showCollectionBuilder()">添加分组</button>
     <button class="title-btn" onclick="showImportMenu()">导入</button>
     <button class="title-btn" onclick="rescanCache()">刷新</button>
     <button class="title-btn" onclick="openSettings()">设置</button>
@@ -96,6 +97,36 @@
     <button class="btn btn-secondary" style="width:100%" onclick="importQQ()">从手机版 QQ 缓存获取</button>
     <div style="margin-top:12px;text-align:center">
       <button class="btn btn-ghost btn-sm" onclick="closeImportMenu()">取消</button>
+    </div>
+  </div>
+</div>
+
+<!-- 添加分组弹窗 -->
+<div id="cb-overlay" style="display:none;position:fixed;inset:0;background:rgba(0,0,0,.55);align-items:center;justify-content:center;z-index:450;animation:fadeIn .15s">
+  <div id="cb-box" style="background:var(--surface);border-radius:var(--radius-lg);border:1px solid var(--border);box-shadow:var(--shadow-lg);width:640px;height:min(92vh,680px);display:flex;flex-direction:column;overflow:hidden">
+    <div style="padding:16px 20px;border-bottom:1px solid var(--border)">
+      <div style="font-size:14px;font-weight:600;color:var(--fg);margin-bottom:10px">添加分组</div>
+      <div style="position:relative">
+        <input id="cb-name" type="text" placeholder="输入分组名或选择已有分组..." autocomplete="off" spellcheck="false">
+        <div id="cb-dropdown" class="cb-dropdown"></div>
+      </div>
+    </div>
+    <div style="padding:12px 20px;border-bottom:1px solid var(--border)">
+      <input id="cb-search" type="text" placeholder="搜索表情包添加到分组..." autocomplete="off" spellcheck="false">
+    </div>
+    <div id="cb-cols">
+      <div class="cb-col" id="cb-col-left">
+        <div class="cb-col-title">表情库</div>
+        <div class="cb-col-list" id="cb-left-list"></div>
+      </div>
+      <div class="cb-col cb-col-right" id="cb-col-right">
+        <div class="cb-col-title">已添加 (<span id="cb-right-count">0</span>)</div>
+        <div class="cb-col-list" id="cb-right-list"></div>
+      </div>
+    </div>
+    <div style="padding:12px 20px;border-top:1px solid var(--border);display:flex;justify-content:flex-end;gap:8px">
+      <button id="cb-cancel" class="btn cb-cancel">取消</button>
+      <button id="cb-confirm" class="btn cb-confirm">确定</button>
     </div>
   </div>
 </div>

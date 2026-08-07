@@ -295,6 +295,21 @@ class MemeDB:
             )
             conn.commit()
 
+    def collection_exists(self, name: str, parent_id: int = None) -> bool:
+        """检查同名分组是否已存在"""
+        conn = self._get_conn()
+        if parent_id is not None:
+            row = conn.execute(
+                "SELECT 1 FROM collections WHERE name=? AND parent_id=?",
+                (name, parent_id),
+            ).fetchone()
+        else:
+            row = conn.execute(
+                "SELECT 1 FROM collections WHERE name=? AND parent_id IS NULL",
+                (name,),
+            ).fetchone()
+        return row is not None
+
     def remove_from_collection(self, meme_id: int, collection_id: int):
         with self._lock:
             conn = self._get_conn()
@@ -302,6 +317,21 @@ class MemeDB:
                 "DELETE FROM meme_collections WHERE meme_id=? AND collection_id=?",
                 (meme_id, collection_id),
             )
+            conn.commit()
+
+    def set_collection_members(self, collection_id: int, meme_ids: List[int]):
+        """批量设置分组内成员（清空后按序写入，保留 sort_order）"""
+        with self._lock:
+            conn = self._get_conn()
+            conn.execute(
+                "DELETE FROM meme_collections WHERE collection_id=?", (collection_id,)
+            )
+            for i, mid in enumerate(meme_ids or []):
+                conn.execute(
+                    "INSERT OR IGNORE INTO meme_collections "
+                    "(meme_id, collection_id, sort_order) VALUES (?, ?, ?)",
+                    (mid, collection_id, i),
+                )
             conn.commit()
 
     def get_collections(self) -> List[Tuple[int, str, int, int]]:

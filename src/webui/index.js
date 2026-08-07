@@ -1298,3 +1298,302 @@ document.addEventListener('DOMContentLoaded', async () => {
   // 每日检测更新（复用启动时的检测与弹窗逻辑）
   setInterval(checkUpdateAndPrompt, 24 * 60 * 60 * 1000);
 });
+
+/* ─── 添加分组弹窗 ─── */
+let cbState = null;
+let cbDragSuppressClick = false;
+let cbSuppressInput = false;
+
+function cbMemeCard(m, side) {
+  const card = document.createElement('div');
+  card.className = 'cb-meme';
+  card.title = m.name;
+  card.dataset.memeId = m.id;
+  card.dataset.side = side;
+  const img = document.createElement('img');
+  img.loading = 'lazy';
+  img.draggable = false;
+  if (m.is_animated && m.auto_play_gif) {
+    img.src = '/api/original/' + m.id + '/' + encodeURIComponent(m.filename);
+  } else {
+    img.src = '/api/thumb/' + m.id + '/' + encodeURIComponent(m.filename);
+  }
+  card.appendChild(img);
+  if (m.is_animated) {
+    const badge = document.createElement('span');
+    badge.className = 'cb-badge';
+    badge.textContent = m.is_gif ? 'GIF' : 'WebP';
+    card.appendChild(badge);
+  }
+  return card;
+}
+
+function cbRenderList() {
+  const s = cbState;
+  const left = document.getElementById('cb-left-list');
+  const right = document.getElementById('cb-right-list');
+  const rightIds = new Set(s.right.map(x => x.id));
+  left.innerHTML = '';
+  right.innerHTML = '';
+  if (s.left.length === 0) {
+    left.innerHTML = '<div id="cb-empty-left">没有表情包，先在主页导入</div>';
+  }
+  s.left.forEach(m => {
+    if (rightIds.has(m.id)) return;
+    const card = cbMemeCard(m, 'left');
+    card.onclick = () => cbMoveMeme(m, 'left');
+    left.appendChild(card);
+  });
+  if (s.right.length === 0) {
+    right.innerHTML = '<div id="cb-empty-right">点击左侧表情添加到分组</div>';
+  }
+  s.right.forEach(m => {
+    const card = cbMemeCard(m, 'right');
+    card.onclick = () => cbMoveMeme(m, 'right');
+    right.appendChild(card);
+  });
+  document.getElementById('cb-right-count').textContent = s.right.length;
+}
+
+function cbFly(el, fromRect, toRect) {
+  // 克隆卡片做 FLIP 动画后移除
+  const clone = el.cloneNode(true);
+  clone.classList.add('fly');
+  document.body.appendChild(clone);
+  clone.style.left = fromRect.left + 'px';
+  clone.style.top = fromRect.top + 'px';
+  clone.style.width = fromRect.width + 'px';
+  clone.style.height = fromRect.height + 'px';
+  clone.style.transition = 'none';
+  clone.getBoundingClientRect();
+  clone.style.transition = 'transform 260ms cubic-bezier(.2,.8,.2,1), opacity 260ms';
+  clone.style.transform = 'translate(' + (toRect.left - fromRect.left) + 'px,' + (toRect.top - fromRect.top) + 'px)';
+  clone.style.opacity = '0';
+  setTimeout(() => clone.remove(), 280);
+}
+
+async function cbMoveMeme(m, from) {
+  const s = cbState;
+  if (cbDragSuppressClick) { cbDragSuppressClick = false; return; }
+  const el = document.querySelector('.cb-meme[data-side="' + from + '"][data-meme-id="' + m.id + '"]');
+  const fromRect = el ? el.getBoundingClientRect() : null;
+  const toSide = from === 'left' ? 'right' : 'left';
+  const toList = document.getElementById(toSide === 'left' ? 'cb-left-list' : 'cb-right-list');
+  const toRect = toList.getBoundingClientRect();
+  if (from === 'left') {
+    s.right.push(m);
+  } else {
+    s.right = s.right.filter(x => x.id !== m.id);
+  }
+  cbRenderList();
+  if (fromRect) {
+    const newEl = document.querySelector('.cb-meme[data-side="' + toSide + '"][data-meme-id="' + m.id + '"]');
+    const targetRect = newEl ? newEl.getBoundingClientRect() : toRect;
+    cbFly(el, fromRect, targetRect);
+  }
+}
+
+function cbSelectCollection(item) {
+  const s = cbState;
+  cbSuppressInput = true;
+  document.getElementById('cb-name').value = item.name;
+  cbSuppressInput = false;
+  s.selId = item.id;
+  s.selIsNew = false;
+  s.right = [];
+  cbCloseDropdown();
+  cbRenderList();
+  if (item.id != null && item.id > 0) {
+    api('get_collection_members', item.id).then(members => {
+      if (cbState && cbState.selId === item.id && !cbState.selIsNew) {
+        cbState.right = members || [];
+        cbRenderList();
+      }
+    });
+  }
+}
+
+function cbCloseDropdown() {
+  document.getElementById('cb-dropdown').classList.remove('show');
+}
+
+async function cbUpdateDropdown() {
+  const nameInput = document.getElementById('cb-name');
+  const dd = document.getElementById('cb-dropdown');
+  const val = nameInput.value.trim();
+  dd.innerHTML = '';
+  const mk = (label, val2, cls, depthLabel) => {
+    const item = document.createElement('div');
+    item.className = 'cb-dd-item';
+    item.innerHTML = '<span class="cb-dd-new">' + esc(label) + '</span>' + (depthLabel ? '<span class="cb-dd-depth">' + esc(depthLabel) + '</span>' : '');
+    item.onclick = () => {
+      if (cls === 'new') {
+        cbState.selId = null;
+        cbState.selIsNew = true;
+        cbState.right = [];
+        cbRenderList();
+        cbCloseDropdown();
+      } else {
+        cbSelectCollection(val2);
+      }
+    };
+    dd.appendChild(item);
+  };
+  mk('新建「' + (val || '未命名') + '」分组', null, 'new');
+  if (val) {
+    const results = await api('search_collections', val) || [];
+    results.forEach(r => {
+      const depthLabel = r.depth > 0 ? ('子分组' + (r.depth > 1 ? '·' + r.depth : '')) : '';
+      mk(r.name, { id: r.id, name: r.name }, 'exist', depthLabel);
+    });
+  } else {
+    const all = await api('search_collections', '') || [];
+    all.slice(0, 8).forEach(r => mk(r.name, { id: r.id, name: r.name }, 'exist'));
+  }
+  dd.classList.add('show');
+}
+
+function cbClose() {
+  document.getElementById('cb-overlay').style.display = 'none';
+  cbState = null;
+}
+
+async function cbConfirm() {
+  const s = cbState;
+  if (!s) return;
+  const name = document.getElementById('cb-name').value.trim();
+  if (!name) { showToast('请输入分组名'); return; }
+  const ids = s.right.map(x => x.id);
+  let ok = false;
+  let errMsg = '';
+  if (s.selIsNew || !s.selId) {
+    const r = await api('set_collection_members_new', name, ids);
+    ok = !!(r && r.ok);
+    errMsg = r && r.error ? r.error : '';
+  } else {
+    ok = await api('set_collection_members', s.selId, ids);
+  }
+  if (ok) {
+    showToast(s.selIsNew ? '分组已创建' : '分组已更新');
+    cbClose();
+    refreshCollections();
+    refreshMemes();
+  } else {
+    showToast(errMsg || '保存失败');
+  }
+}
+
+function showCollectionBuilder() {
+  cbState = { left: [], right: [], selId: null, selIsNew: true };
+  document.getElementById('cb-overlay').style.display = 'flex';
+  document.getElementById('cb-name').value = '';
+  document.getElementById('cb-search').value = '';
+  cbCloseDropdown();
+  cbRenderList();
+  api('search_memes', '', [], null).then(list => {
+    if (cbState) { cbState.left = list || []; cbRenderList(); }
+  });
+  document.getElementById('cb-name').focus();
+  cbUpdateDropdown();
+}
+
+document.getElementById('cb-overlay').addEventListener('click', (e) => {
+  if (e.target === document.getElementById('cb-overlay')) cbClose();
+});
+
+document.getElementById('cb-name').addEventListener('focus', () => {
+  if (cbState) cbUpdateDropdown();
+});
+
+document.getElementById('cb-name').addEventListener('input', () => {
+  if (!cbState || cbSuppressInput) return;
+  // 手动编辑视为新建模式，除非从下拉框明确选中已有分组
+  cbState.selIsNew = true;
+  cbState.selId = null;
+  cbUpdateDropdown();
+});
+
+document.getElementById('cb-name').addEventListener('blur', () => {
+  setTimeout(cbCloseDropdown, 150);
+});
+
+document.getElementById('cb-name').addEventListener('keydown', (e) => {
+  if (e.key === 'Enter' && cbState) {
+    // 回车选中第一个匹配项；无匹配则视为新建
+    const dd = document.getElementById('cb-dropdown');
+    const first = dd.querySelector('.cb-dd-item');
+    if (first) first.click();
+    else {
+      cbState.selId = null;
+      cbState.selIsNew = true;
+      cbCloseDropdown();
+    }
+  }
+  if (e.key === 'Escape') cbCloseDropdown();
+});
+
+let cbSearchTimer;
+document.getElementById('cb-search').addEventListener('input', () => {
+  if (!cbState) return;
+  clearTimeout(cbSearchTimer);
+  cbSearchTimer = setTimeout(() => {
+    const q = document.getElementById('cb-search').value.trim();
+    api('search_memes', q, [], null).then(list => {
+      if (cbState) { cbState.left = list || []; cbRenderList(); }
+    });
+  }, 250);
+});
+
+document.getElementById('cb-cancel').addEventListener('click', cbClose);
+document.getElementById('cb-confirm').addEventListener('click', cbConfirm);
+
+// 右侧已添加列表拖拽排序（拖拽排序开启时生效）
+(function cbDragInit() {
+  const rightList = document.getElementById('cb-right-list');
+  let drag = null;
+  rightList.addEventListener('pointerdown', (e) => {
+    if (!cbState || !dragSortEnabled) return;
+    const card = e.target.closest('.cb-meme');
+    if (!card) return;
+    cbDragSuppressClick = false;
+    drag = { card, x: e.clientX, y: e.clientY, active: false };
+  });
+  rightList.addEventListener('pointermove', (e) => {
+    const d = drag;
+    if (!d) return;
+    if (!d.active) {
+      if (Math.hypot(e.clientX - d.x, e.clientY - d.y) <= 8) return;
+      d.active = true;
+      cbDragSuppressClick = true;
+      d.card.classList.add('ghost');
+    }
+    const items = Array.from(rightList.querySelectorAll('.cb-meme'));
+    const cur = items.indexOf(d.card);
+    const rect = rightList.getBoundingClientRect();
+    const n = items.length;
+    const pitch = 64 + 8; // 卡片宽 + gap
+    const cols = Math.max(1, Math.floor((rect.width) / pitch));
+    const x = e.clientX - rect.left;
+    const y = e.clientY - rect.top;
+    const col = Math.max(0, Math.min(Math.floor(x / pitch), cols - 1));
+    const row = Math.max(0, Math.floor(y / pitch));
+    const target = Math.max(0, Math.min(col + row * cols, n - 1));
+    if (target === cur) return;
+    const [item] = cbState.right.splice(cur, 1);
+    cbState.right.splice(target, 0, item);
+    cbRenderList();
+    drag.card = document.querySelector('.cb-meme[data-meme-id="' + item.id + '"]');
+    const it = Array.from(rightList.querySelectorAll('.cb-meme'));
+    const c2 = it.indexOf(drag.card);
+    if (c2 > cur) rightList.insertBefore(drag.card, it[c2 + 1] ? it[c2 + 1].nextSibling : null);
+    else rightList.insertBefore(drag.card, it[c2]);
+  });
+  rightList.addEventListener('pointerup', () => {
+    if (drag && drag.active && drag.card) drag.card.classList.remove('ghost');
+    drag = null;
+  });
+  rightList.addEventListener('pointercancel', () => {
+    if (drag && drag.active && drag.card) drag.card.classList.remove('ghost');
+    drag = null;
+  });
+})();

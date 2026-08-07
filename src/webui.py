@@ -427,6 +427,38 @@ class JsApi:
     def get_child_collections(self, parent_id: int) -> list:
         return self._db.get_child_collections(parent_id)
 
+    def search_collections(self, keyword: str = "") -> list:
+        """按名称搜索已有分组（顶层 + 子分组），供添加分组弹窗下拉框"""
+        kw = (keyword or "").strip().lower()
+        out = []
+        for item in self._flatten_collections():
+            if not kw or kw in item["name"].lower():
+                out.append(
+                    {"id": item["id"], "name": item["name"], "depth": item["depth"]}
+                )
+        return out[:20]
+
+    def get_collection_members(self, collection_id: int) -> list:
+        """返回分组内表情成员，供添加分组弹窗右侧栏展示"""
+        try:
+            return self._db.search(collection_id=collection_id, limit=200) or []
+        except Exception:
+            return []
+
+    def _flatten_collections(self) -> list:
+        """展平分组树（含子分组），带 depth"""
+        out = []
+
+        def walk(items, depth):
+            for c in items:
+                if c.get("id", 0) > 0:
+                    out.append({"id": c["id"], "name": c["name"], "depth": depth})
+                for ch in c.get("children", []) or []:
+                    walk([ch], depth + 1)
+
+        walk(self._build_collection_tree(), 0)
+        return out
+
     def add_to_collection(self, meme_id: int, name: str) -> bool:
         cid = self._db.create_collection(name)
         if cid < 0:
@@ -440,6 +472,29 @@ class JsApi:
             return True
         except Exception:
             return False
+
+    def set_collection_members(self, collection_id: int, meme_ids: list) -> bool:
+        """批量设置分组内成员（先清空再写入），供添加分组弹窗确定时保存右侧列表"""
+        try:
+            self._db.set_collection_members(collection_id, meme_ids)
+            build_manifest()
+            return True
+        except Exception:
+            return False
+
+    def set_collection_members_new(self, name: str, meme_ids: list) -> dict:
+        """创建新分组并批量设置成员，返回 {ok, id}"""
+        try:
+            if self._db.collection_exists(name):
+                return {"ok": False, "error": "同名分组已存在，请从下拉框选择已有分组"}
+            cid = self._db.create_collection(name)
+            if cid < 0:
+                return {"ok": False}
+            self._db.set_collection_members(cid, meme_ids)
+            build_manifest()
+            return {"ok": True, "id": cid}
+        except Exception:
+            return {"ok": False}
 
     def reorder_memes(self, meme_ids: list) -> bool:
         try:
