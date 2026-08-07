@@ -380,30 +380,65 @@ let _orphanFiles = [];
 async function scanOrphans() {
   const status = document.getElementById('s-orphan-status');
   const del = document.getElementById('btn-orphan-delete');
+  const scan = document.getElementById('btn-orphan-scan');
+  scan.disabled = true;
+  del.disabled = true;
   status.textContent = '扫描中...';
-  const r = await api('get_remote_orphans', false);
-  if (!r || !r.ok) {
-    status.textContent = '扫描失败: ' + ((r && r.error) || '未知错误');
-    return;
+  try {
+    const r = await api('get_remote_orphans', false);
+    if (!r || !r.ok) {
+      status.textContent = '扫描失败: ' + ((r && r.error) || '未知错误');
+      return;
+    }
+    _orphanFiles = r.orphans || [];
+    status.textContent = _orphanFiles.length
+      ? '发现 ' + _orphanFiles.length + ' 个孤儿文件'
+      : '无孤儿文件';
+    del.disabled = _orphanFiles.length === 0;
+  } finally {
+    scan.disabled = false;
   }
-  _orphanFiles = r.orphans || [];
-  status.textContent = _orphanFiles.length
-    ? '发现 ' + _orphanFiles.length + ' 个孤儿文件'
-    : '无孤儿文件';
-  del.disabled = _orphanFiles.length === 0;
 }
 
 async function deleteOrphans() {
   if (!_orphanFiles.length) return;
   const status = document.getElementById('s-orphan-status');
+  const del = document.getElementById('btn-orphan-delete');
+  const scan = document.getElementById('btn-orphan-scan');
+  // 前置灰两个孤儿按钮，避免删除期间并发扫描/重复删除
+  del.disabled = true;
+  scan.disabled = true;
+  status.textContent = '删除中...';
+  // 复用同步进度条 overlay（隐藏“后台运行”按钮）
+  const bgBtn = document.getElementById('sync-progress-bg-btn');
+  document.getElementById('sync-progress-title').textContent = '删除孤儿文件...';
+  document.getElementById('sync-progress-file').textContent = '准备中...';
+  document.getElementById('sync-progress-bar').style.width = '0%';
+  document.getElementById('sync-progress-pct').textContent = '0%';
+  document.getElementById('sync-progress-speed').textContent = '';
+  bgBtn.style.display = 'none';
+  document.getElementById('sync-progress-overlay').style.display = 'flex';
+
+  const pollTimer = setInterval(async () => {
+    const s = await api('get_sync_progress');
+    if (!s || s.status === 'idle') return;
+    document.getElementById('sync-progress-file').textContent = s.current_file || '';
+    document.getElementById('sync-progress-bar').style.width = (s.progress || 0) + '%';
+    document.getElementById('sync-progress-pct').textContent = (s.progress || 0) + '%';
+  }, 300);
+
   const r = await api('get_remote_orphans', true);
+  clearInterval(pollTimer);
+  document.getElementById('sync-progress-overlay').style.display = 'none';
+  bgBtn.style.display = '';
+  scan.disabled = false;
   if (!r || !r.ok) {
     status.textContent = '删除失败: ' + ((r && r.error) || '未知错误');
     return;
   }
-  status.textContent = '已删除 ' + r.removed + ' 个孤儿文件';
   _orphanFiles = [];
-  document.getElementById('btn-orphan-delete').disabled = true;
+  del.disabled = true;
+  status.textContent = '已删除 ' + r.removed + ' 个孤儿文件';
 }
 
 async function showUploadWarning() {

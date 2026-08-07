@@ -521,6 +521,60 @@ class TestSyncPush(unittest.TestCase):
         self.assertTrue(result["ok"])
         self.assertEqual(result["orphans"], [])
 
+    def test_cleanup_orphans_delete_reports_progress(self):
+        """删除孤儿：向 _sync_state 上报进度（direction/files_total/files_done/progress）"""
+        self.fake_backend.remote_memes = {"a.png": _entry("a.png", "x")}
+        self.fake_backend.remote_files.add("o1.png")
+        self.fake_backend.remote_files.add("o2.png")
+        result = cleanup_remote_orphans(delete=True)
+        self.assertTrue(result["ok"])
+        self.assertEqual(result["removed"], 2)
+        s = get_sync_progress()
+        self.assertEqual(s["direction"], "delete")
+        self.assertEqual(s["status"], "done")
+        self.assertEqual(s["files_total"], 2)
+        self.assertEqual(s["files_done"], 2)
+        self.assertEqual(s["progress"], 100)
+
+    def test_cleanup_orphans_delete_respects_run_lock(self):
+        """删除孤儿：push/pull 进行中（_sync_run_lock 被持）→ 拒并发，不删任何文件"""
+        self.fake_backend.remote_memes = {"a.png": _entry("a.png", "x")}
+        self.fake_backend.remote_files.add("o1.png")
+        self.assertTrue(sync._sync_run_lock.acquire(blocking=False))
+        try:
+            result = cleanup_remote_orphans(delete=True)
+        finally:
+            sync._sync_run_lock.release()
+        self.assertFalse(result["ok"])
+        self.assertIn("同步正在进行中", result["error"])
+        self.assertIn("o1.png", self.fake_backend.remote_files)  # 未删除
+
+    def test_cleanup_orphans_delete_releases_run_lock(self):
+        """删除孤儿：完成后释放 _sync_run_lock，后续删除/同步可正常执行"""
+        self.fake_backend.remote_memes = {"a.png": _entry("a.png", "x")}
+        self.fake_backend.remote_files.add("o1.png")
+        result1 = cleanup_remote_orphans(delete=True)
+        self.assertTrue(result1["ok"])
+        # 锁已释放：可再次获取，且再次删除仍成功
+        self.assertTrue(sync._sync_run_lock.acquire(blocking=False))
+        sync._sync_run_lock.release()
+        self.fake_backend.remote_files.add("o2.png")
+        result2 = cleanup_remote_orphans(delete=True)
+        self.assertTrue(result2["ok"])
+        self.assertEqual(result2["removed"], 1)
+
+    def test_cleanup_orphans_scan_ignores_run_lock(self):
+        """扫描孤儿（delete=False）：不与 push/pull 互斥，持锁时仍可扫描"""
+        self.fake_backend.remote_memes = {"a.png": _entry("a.png", "x")}
+        self.fake_backend.remote_files.add("o1.png")
+        self.assertTrue(sync._sync_run_lock.acquire(blocking=False))
+        try:
+            result = cleanup_remote_orphans(delete=False)
+        finally:
+            sync._sync_run_lock.release()
+        self.assertTrue(result["ok"])
+        self.assertIn("o1.png", result["orphans"])
+
     # ─── PR5 新增用例 ───
 
     def test_cleanup_stale_temp_files(self):

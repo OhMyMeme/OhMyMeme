@@ -1456,7 +1456,12 @@ def list_remote_orphans(bk, remote_root) -> list:
 
 
 def cleanup_remote_orphans(delete: bool = False) -> dict:
-    """识别远端孤儿文件；delete=True 时物理删除，返回 {ok, orphans, removed}。"""
+    """识别远端孤儿文件；delete=True 时物理删除，返回 {ok, orphans, removed}。
+
+    删除与 push/pull 互斥（_sync_run_lock），并通过 _sync_state 上报进度供前端轮询。
+    """
+    if delete and not _sync_run_lock.acquire(blocking=False):
+        return {"ok": False, "error": "同步正在进行中"}
     cfg = get_config()
     remote_root = _remote_root(cfg)
     bk = _get_backend()
@@ -1465,15 +1470,32 @@ def cleanup_remote_orphans(delete: bool = False) -> dict:
         orphans = list_remote_orphans(bk, remote_root)
         removed = 0
         if delete:
-            for fname in orphans:
-                rem_path = remote_root.rstrip("/") + "/" + REMOTE_MEME_DIR + "/" + fname
-                if bk.delete_file(rem_path):
-                    removed += 1
+            total = len(orphans)
+            if total:
+                _reset_sync_state("delete", total, 0)
+                _update_sync_state(status="deleting", start_time=time.time())
+                for i, fname in enumerate(orphans, 1):
+                    _update_sync_state(
+                        current_file=fname, files_done=i - 1, files_total=total
+                    )
+                    rem_path = (
+                        remote_root.rstrip("/") + "/" + REMOTE_MEME_DIR + "/" + fname
+                    )
+                    if bk.delete_file(rem_path):
+                        removed += 1
+                    _update_sync_state(progress=int(i * 100 / total))
+                _update_sync_state(
+                    status="done", progress=100, files_done=total, current_file=""
+                )
         return {"ok": True, "orphans": orphans, "removed": removed}
     except Exception as e:
         logger.warning("cleanup_remote_orphans failed: %s", e)
+        if delete:
+            _update_sync_state(status="error", error=str(e))
         return {"ok": False, "error": str(e)}
     finally:
+        if delete:
+            _sync_run_lock.release()
         bk.close()
 
 
