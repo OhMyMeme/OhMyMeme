@@ -131,6 +131,12 @@ class OhMyMemeApp:
                 self._tray.stop()
             except Exception:
                 pass
+        try:
+            from . import lan
+
+            lan.stop()
+        except Exception:
+            pass
         if self._webui:
             try:
                 self._webui.stop()

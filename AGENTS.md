@@ -1,7 +1,7 @@
 # OhMyMeme — AI Agent Guide
 
 ## 项目概述
-轻量化跨平台表情包管理系统，突破表情包数量限制，支持全局快捷键呼出、搜索复制、FTP/S3/R2 同步。
+轻量化跨平台表情包管理系统，突破表情包数量限制，支持全局快捷键呼出、搜索复制、FTP/S3/R2 同步、局域网互联。
 
 ## 架构
 ```
@@ -48,7 +48,8 @@ src/              # 主代码
   updater.py      # 版本检查 + 并发镜像下载
   database.py     # MemeDB (SQLite, 6 表)
   config.py       # Config (JSON + Fernet 加密密钥)
-  sync.py         # 同步后端 (FTP/S3/R2)
+  sync.py         # 同步后端 (FTP/S3/R2/WebDAV)
+  lan.py          # 局域网互联 (UDP 发现 + TCP 握手 + AES-GCM 会话)
   tray.py         # TrayManager (pystray, 惰性导入)
   hotkey.py       # GlobalHotkey (三级降级: keyboard→pynput→轮询)
   clipboard_util.py # 剪贴板操作 (Win32 ctypes / macOS osascript / Linux xclip)
@@ -138,6 +139,16 @@ tests/
 - 镜像列表: `github.dpik.top` → `gh.dpik.top` → `gh-proxy.org` → 自建镜像（仅用于版本查询）→ 直连 GitHub
 - 下载进度: `start_download()` → 后台线程 → JS 每 500ms 轮询 `get_download_progress()`
 - Linux 更新: `_pick_asset_url` 选取 `.AppImage` 资产；`run_installer` Linux 分支 chmod +x 后直接 `Popen`（AppImage 是 ELF 非 shell 脚本），无 `/dev/fuse` 时追加 `--appimage-extract-and-run` 回退（`_needs_appimage_fallback`）；下载默认文件名走 `_default_asset_name()`（Linux 为 `OhMyMeme-v{version}-x86_64.AppImage`）
+
+### 局域网互联 (lan.py)
+- **入口**: `lan.start(port, secret)` / `lan.stop()`，`get_status()` 供设置页轮询；`set_allow_secret_config()` 控制配置同步是否含密钥字段（**仅内存生效，不落盘**）
+- **UDP 发现**: 绑定 `0.0.0.0:port`，收到 `{"t":"discover"}` → 单播回 `{"t":"hello","name","os","ver","need_secret"}`（**不含任何密钥信息**）
+- **TCP 握手（明文帧）**: `[4B 长度][JSON]`；服务端发 `challenge{nonce}` → 客户端回 `proof{HMAC-SHA256(secret, nonce)}` → 验 `ok`/`no`（3 次错误断开）；无密钥时直接放行
+- **数据帧（加密）**: `[4B 长度][12B IV][AES-GCM 密文+16B tag]`；密钥由 PBKDF2(secret, 100000) 派生；JSON 载荷，命令由手机（客户端）发起
+- **命令**: `pull_manifest` / `push_manifest`（复用 sync 的 `_apply_remote_order`/`_apply_remote_collections`）/ `pull_file` / `push_file`（base64 传输，哈希去重入库）/ `get_config` / `send_config` / `ping`
+- **配置同步默认剔除密钥字段**: `get_config`/`send_config` 在 `allow_secret_config=False`（默认）时过滤 `_SECRET_KEYS`（FTP/S3/R2/WebDAV 密码等）
+- **文件安全**: `_safe_fname` 拒绝路径穿越/绝对路径；`_import_bytes` 按 SHA-256 去重后存 `cache_dir/{hash[:16]}{ext}` 并入库
+- **生命周期**: 设置页开关临时启动（重启默认关，不写入 config）；`lan_port`/`lan_secret` 持久化（`lan_secret` 加密存储）；`main.py` `shutdown()` 兜底 `lan.stop()`
 
 ### 本地 HTTP 安全加固
 - Bottle 只绑 `127.0.0.1` 随机端口；`before_request` 校验 `Host` 必须为本机回环（`_host_allowed`），POST 额外校验 `Origin` 同源且 `Sec-Fetch-Site` 非 `cross-site`，拒绝则 403（阻断 DNS rebinding / 跨站注入）

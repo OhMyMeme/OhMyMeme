@@ -114,6 +114,74 @@ async function checkConnectivity() {  // DeepSeek V4 Flash
   }
 }
 
+/* 局域网互联 */
+let lanPollTimer = null;
+
+async function toggleLanSecretConfig() {
+  const cb = document.getElementById('s-lan-secret-config');
+  if (cb.checked) {
+    const ok = confirm('开启后配置同步将包含 FTP/S3/R2/WebDAV 等密钥字段，密钥将明文传输给局域网内配对设备。\n仅本次会话有效，不写入配置。是否继续？');
+    if (!ok) {
+      cb.checked = false;
+      return;
+    }
+  }
+  const r = await api('lan_set_allow_secret_config', cb.checked === true);
+  if (r && r.allow_secret_config !== undefined) cb.checked = r.allow_secret_config;
+}
+
+async function toggleLan() {
+  const cb = document.getElementById('s-lan-enable');
+  if (cb.checked) {
+    const port = parseInt(document.getElementById('s-lan-port')?.value) || 17852;
+    const secret = document.getElementById('s-lan-secret')?.value || '';
+    const r = await api('lan_start', port, secret);
+    if (!r || !r.ok) {
+      cb.checked = false;
+      const st = r && r.status ? r.status : {};
+      showToast('启动局域网服务失败：' + (st.last_error || '未知错误'));
+    }
+  } else {
+    await api('lan_stop');
+  }
+  refreshLanStatus();
+}
+
+async function refreshLanStatus() {
+  const el = document.getElementById('lan-status');
+  if (!el) return;
+  const r = await api('lan_get_status');
+  const ip = await api('lan_get_ip');
+  const cc = document.getElementById('s-lan-secret-config');
+  if (cc && r) cc.checked = r.allow_secret_config === true;
+  if (!r || r.status === 'stopped') {
+    el.innerHTML = '● 已停止 <span style="opacity:.6">(端口 ' + (r ? r.port : 17852) + ')</span>';
+    el.style.color = 'var(--muted)';
+    if (lanPollTimer) { clearInterval(lanPollTimer); lanPollTimer = null; }
+    return;
+  }
+  if (r.status === 'error') {
+    el.innerHTML = '● 启动失败 <span style="color:#ef4444">' + esc(r.last_error || '') + '</span>';
+    el.style.color = 'var(--muted)';
+    if (lanPollTimer) { clearInterval(lanPollTimer); lanPollTimer = null; }
+    return;
+  }
+  let html = '● 运行中 <span style="opacity:.6">(端口 ' + r.port + '，IP ' + esc(ip) + ')</span>';
+  if (r.clients && r.clients.length) {
+    html += '<br>已连接设备：' + r.clients.map(c => '<code>' + esc(c.addr) + '</code>').join('、');
+  }
+  el.innerHTML = html;
+  el.style.color = '#4caf50';
+  if (lanPollTimer) { clearInterval(lanPollTimer); }
+  lanPollTimer = setInterval(async () => {
+    const r2 = await api('lan_get_status');
+    if (!r2 || r2.status !== 'running') {
+      if (lanPollTimer) { clearInterval(lanPollTimer); lanPollTimer = null; }
+      refreshLanStatus();
+    }
+  }, 5000);
+}
+
 /* Load settings */
 async function getSettings() {
   const s = await api('get_settings');
@@ -171,8 +239,13 @@ async function getSettings() {
   if (ud) ud.checked = s.show_upload_done !== false;
   if (dp) dp.checked = s.show_download_progress !== false;
   if (dd) dd.checked = s.show_download_done !== false;
+  const lport = document.getElementById('s-lan-port');
+  if (lport) lport.value = s.lan_port || 17852;
+  const lsec = document.getElementById('s-lan-secret');
+  if (lsec) lsec.value = s.lan_secret || '';
   checkConnectivity();  // DeepSeek V4 Flash
   loadStorageInfo();
+  refreshLanStatus();
   return true;
 }
 
@@ -349,11 +422,14 @@ async function saveSettings() {
   const silent_start = document.getElementById('s-silent-start')?.checked === true;
   const sync = collectSyncSettings();
   if (!validateSync(sync)) return;
+  const lan_port = parseInt(document.getElementById('s-lan-port')?.value) || 17852;
+  const lan_secret = document.getElementById('s-lan-secret')?.value || '';
   await api('save_settings', {
     hotkey, auto_play_gif: gif,
     try_original_image: try_original,  // DeepSeek V4 Flash
     copy_resize_mode: copy_mode,
     auto_start, silent_start,
+    lan_port, lan_secret,
     ...sync
   });
   showToast('设置已保存');
@@ -416,6 +492,17 @@ async function resetSettings() {
     if (ud) ud.checked = true;
     if (dp) dp.checked = true;
     if (dd) dd.checked = true;
+    const lport = document.getElementById('s-lan-port');
+    if (lport) lport.value = '17852';
+    const lsec = document.getElementById('s-lan-secret');
+    if (lsec) lsec.value = '';
+    const le = document.getElementById('s-lan-enable');
+    if (le) le.checked = false;
+    const lcc = document.getElementById('s-lan-secret-config');
+    if (lcc) lcc.checked = false;
+    await api('lan_stop');
+    await api('lan_set_allow_secret_config', false);
+    refreshLanStatus();
     showToast('已恢复默认设置');
   }
 }

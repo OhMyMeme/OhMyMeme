@@ -1105,6 +1105,39 @@ class SettingsApi:
     def check_connectivity(self) -> dict:
         return _check_connectivity()
 
+    def lan_start(self, port: int = None, secret: str = None) -> dict:
+        from . import lan
+
+        p = int(port or self._cfg.get("lan_port", 17852))
+        s = secret if secret is not None else self._cfg.get("lan_secret", "")
+        ok = lan.start(p, s)
+        return {"ok": ok, "status": lan.get_status()}
+
+    def lan_stop(self) -> dict:
+        from . import lan
+
+        lan.stop()
+        return {"ok": True, "status": lan.get_status()}
+
+    def lan_get_status(self) -> dict:
+        from . import lan
+
+        return lan.get_status()
+
+    def lan_get_ip(self) -> str:
+        from . import lan
+
+        return lan.get_lan_ip()
+
+    def lan_set_allow_secret_config(self, enabled: bool) -> dict:
+        from . import lan
+
+        lan.set_allow_secret_config(bool(enabled))
+        return {
+            "ok": True,
+            "allow_secret_config": lan.get_status()["allow_secret_config"],
+        }
+
     def get_settings(self) -> dict:
         d = self._cfg.to_dict()
         from .platform_util import is_auto_start_enabled
@@ -1115,6 +1148,8 @@ class SettingsApi:
             "try_original_image": d.get("try_original_image", False),
             "copy_resize_mode": int(d.get("copy_resize_mode", 1) or 0),
             "cache_dir": str(self._cfg.cache_dir),
+            "lan_port": d.get("lan_port", 17852),
+            "lan_secret": d.get("lan_secret", ""),
             "auto_start": is_auto_start_enabled(),
             "silent_start": d.get("silent_start", False),
             "sync_auto_fetch_index": d.get("sync_auto_fetch_index", False),
@@ -1813,6 +1848,8 @@ class WebUI:
         self._visible = True
         if self._window:
             try:
+                self._window.on_top = True  # 置顶一下提升 z-order，随即复位不长期置顶
+                self._window.on_top = False
                 if callable(self._window.show):
                     self._window.show()
                 if callable(self._window.focus):

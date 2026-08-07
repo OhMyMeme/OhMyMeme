@@ -116,6 +116,29 @@
     </div>
 
     <div class="section">
+      <div class="section-title">局域网互联</div>
+      <p style="font-size:11.5px;color:var(--muted);margin-bottom:10px;line-height:1.6">与手机版 OhMyMeme 在同一局域网内配对，互相同步表情包与配置</p>
+      <div class="form-group">
+        <label>端口</label>
+        <input id="s-lan-port" value="17852">
+      </div>
+      <div class="form-group">
+        <label>连接密钥</label>
+        <input id="s-lan-secret" type="password" placeholder="留空表示同一局域网无需密钥">
+      </div>
+      <label class="check-row" style="margin-bottom:12px">
+        <input id="s-lan-enable" type="checkbox" onchange="toggleLan()">开启互联访问
+      </label>
+      <label class="check-row" style="margin-bottom:12px">
+        <input id="s-lan-secret-config" type="checkbox" onchange="toggleLanSecretConfig()">配置同步时包含密钥字段（请确认网络可信，密钥泄露风险自负）
+      </label>
+      <div style="display:flex;gap:8px">
+        <button id="btn-lan-refresh" class="btn btn-secondary btn-sm btn-flex" onclick="refreshLanStatus()">刷新状态</button>
+      </div>
+      <div id="lan-status" style="font-size:11.5px;color:var(--muted);margin-top:6px;line-height:1.8"></div>
+    </div>
+
+    <div class="section">
       <div class="section-title">云端同步</div>
 
       <label class="check-row">
