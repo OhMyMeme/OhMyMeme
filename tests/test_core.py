@@ -151,6 +151,41 @@ class TestDatabase(unittest.TestCase):
         collections = self.db.get_collections()
         self.assertEqual(len(collections), 1)
 
+    def test_collection_member_reorder(self):
+        # 分组内拖拽排序：按 meme_collections.sort_order 生效
+        mid1 = self.db.add_meme("a.png")
+        mid2 = self.db.add_meme("b.png")
+        mid3 = self.db.add_meme("c.png")
+        cid = self.db.create_collection("group")
+        for m in (mid1, mid2, mid3):
+            self.db.add_to_collection(m, cid)
+
+        self.db.reorder_collection_members(cid, [mid3, mid1, mid2])
+        results = self.db.search(collection_id=cid)
+        self.assertEqual([r["id"] for r in results], [mid3, mid1, mid2])
+
+        # 子分组独立排序，不影响父分组
+        sub = self.db.create_collection("sub", cid)
+        self.db.add_to_collection(mid2, sub)
+        self.db.add_to_collection(mid3, sub)
+        self.db.reorder_collection_members(sub, [mid3, mid2])
+        parent_results = self.db.search(collection_id=cid)
+        self.assertEqual([r["id"] for r in parent_results], [mid3, mid1, mid2])
+        sub_results = self.db.search(collection_id=sub)
+        self.assertEqual([r["id"] for r in sub_results], [mid3, mid2])
+
+    def test_global_reorder_independent_of_collection(self):
+        # 全局拖拽排序不受分组排序影响
+        mid1 = self.db.add_meme("a.png")
+        mid2 = self.db.add_meme("b.png")
+        cid = self.db.create_collection("group")
+        self.db.add_to_collection(mid1, cid)
+        self.db.add_to_collection(mid2, cid)
+        self.db.reorder_collection_members(cid, [mid2, mid1])
+        self.db.reorder_memes([mid1, mid2])
+        results = self.db.search()
+        self.assertEqual([r["id"] for r in results], [mid1, mid2])
+
     def test_hash_dedup(self):
         mid1 = self.db.add_meme("a.png", file_hash="hash1")
         mid2 = self.db.add_meme("b.png", file_hash="hash1")

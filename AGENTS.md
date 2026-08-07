@@ -188,12 +188,14 @@ tests/
 - 远端 manifest 中的 `collections` 以嵌套格式存储（`name`/`filenames`/`children`），version 2 旧格式启动时自动转换
 
 ### 自定义排序
-- `memes.sort_order` 字段存储拖拽排序结果
+- `memes.sort_order` 字段存储全局拖拽排序结果（全部视图）；分组/子分组内排序存 `meme_collections.sort_order`
 - **模型驱动**：`memes` 数组为唯一真源，拖拽跨槽时先 `moveInArray` 同步模型、再挪 DOM 节点（不再以 DOM 顺序回读重建数组）；`initDragReorder()` 在 `#meme-grid` 上绑定一次
 - **Pointer Events + 指针捕获**：`pointerdown/pointermove/pointerup`，拖拽激活（位移 >8px）时才 `setPointerCapture`（避免普通点击被捕获重定向）；无 `PointerEvent` 的旧 WebView 自动回退 mouse 事件（`mousemove/mouseup` 挂 document）；`pointercancel`/`blur` 取消并回滚模型 + 重渲染
-- **网格感知插入点**：`gridMetrics()` 按首卡片实测宽/高 + `columnGap` 推算 `cols`，`gridSlotIndex(x,y)` 用 `row*cols+col` 定位目标槽并 clamp
+- **网格感知插入点**：`gridMetrics()` 按首卡片实测宽/高 + `columnGap` 推算 `cols`，`gridSlotIndex(x,y)` 先定位绝对格子（含 folder-card 占位）再映射到非 folder 的 meme 卡数组索引并 clamp（分组内 folder 卡混排时插槽不串位）
 - **FLIP 让位动画**：跨槽时对被挤开卡片记录 First/Last rect，invert 后靠 `#meme-grid.drag-active .meme-card` 的 `transition: transform 200ms` 归位，实时显示空位跟随指针
-- 落点持久化：顺序变化时调用 `reorder_memes(id[])` 批量更新 sort_order；API 失败回滚 `originalOrder` 并重渲染 + toast
+- 落点持久化：全部视图调用 `reorder_memes(id[])` 更新全局 sort_order；分组/子分组内调用 `reorder_collection_members(collection_id, id[])` 更新 `meme_collections.sort_order`；API 失败回滚 `originalOrder` 并重渲染 + toast
+- `canReorderMemes()`: 搜索或标签筛选时禁用；全部（null）与分组（id>0，含子分组）视图可排序，收藏夹/最近使用等特殊集合（-2/-3）不可排
+- `search()` 带 `collection_id` 时按 `meme_collections.sort_order ASC, m.updated_at DESC` 排序（子查询取该 meme 在目标分组内的 sort_order）
 - 拖拽后通过 `ignoreClick` 抑制误触发的 `click`（防止误复制），下一次 `pointerdown` 时重置
 
 ### 多级分组（最多 3 层）
@@ -208,6 +210,7 @@ tests/
 - `copy_meme` 时自动 `record_use`（`INSERT OR REPLACE`）
 - `get_init_data` 中 `collection_id = -3` 标识最近使用，`search_memes` 路由到 `get_recent()`
 - 前端复制后自动刷新最近使用列表
+- 右键「最近使用」分组 → 「清空最近使用」菜单项（`clear_recent` 清空全表）；右键列表内表情 → 「从最近使用中删除」（`remove_from_recent`）
 
 ### QQ 表情包导入 (adb_util.py)
 - **入口**: `start_qq_import()` — 后台线程执行完整流程

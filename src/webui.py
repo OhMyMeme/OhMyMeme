@@ -419,6 +419,13 @@ class JsApi:
         except Exception:
             return False
 
+    def reorder_collection_members(self, collection_id: int, meme_ids: list) -> bool:
+        try:
+            self._db.reorder_collection_members(collection_id, meme_ids)
+            return True
+        except Exception:
+            return False
+
     def delete_collection(self, collection_id: int) -> bool:
         try:
             self._db.delete_collection(collection_id)
@@ -455,6 +462,13 @@ class JsApi:
     def remove_from_recent(self, meme_id: int) -> bool:
         try:
             self._db.remove_from_recent(meme_id)
+            return True
+        except Exception:
+            return False
+
+    def clear_recent(self) -> bool:
+        try:
+            self._db.clear_recent()
             return True
         except Exception:
             return False

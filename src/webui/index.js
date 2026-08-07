@@ -267,7 +267,8 @@ let ignoreClick = false;
 
 function canReorderMemes() {
   const q = document.getElementById('search').value.trim();
-  return !q && activeTags.size === 0 && activeCollection == null;
+  if (q || activeTags.size > 0) return false;
+  return activeCollection == null || activeCollection > 0;
 }
 
 function memeCardsInGrid() {
@@ -295,7 +296,14 @@ function gridSlotIndex(x, y) {
   const { gRect, pitchX, pitchY, cols } = m;
   const col = Math.max(0, Math.min(Math.floor((x - gRect.left) / pitchX), cols - 1));
   const row = Math.max(0, Math.floor((y - gRect.top) / pitchY));
-  return Math.min(row * cols + col, memeCardsInGrid().length - 1);
+  // 绝对格子索引（含 folder-card 占位），再映射到非 folder 的 meme 卡数组索引
+  const all = Array.from(document.querySelectorAll('#meme-grid .meme-card'));
+  const absSlot = Math.min(row * cols + col, all.length - 1);
+  let idx = -1;
+  for (let i = 0; i <= absSlot; i++) {
+    if (!all[i].classList.contains('folder-card')) idx++;
+  }
+  return Math.max(0, Math.min(idx, memeCardsInGrid().length - 1));
 }
 
 function moveInArray(arr, from, to) {
@@ -399,7 +407,12 @@ function initDragReorder() {
     ignoreClick = true;
     const ordered = memes.map(x => x.id).join(',');
     if (ordered !== d.originalOrder.map(x => x.id).join(',')) {
-      const ok = await api('reorder_memes', memes.map(x => x.id));
+      let ok;
+      if (activeCollection && activeCollection > 0) {
+        ok = await api('reorder_collection_members', activeCollection, memes.map(x => x.id));
+      } else {
+        ok = await api('reorder_memes', memes.map(x => x.id));
+      }
       if (!ok) {
         memes = d.originalOrder;
         renderGrid();
@@ -495,6 +508,8 @@ function showCtxMenu(e, meme) {
   if (rcBtn) rcBtn.style.display = 'none';
   const dcBtn = menu.querySelector('[data-action="delete-collection"]');
   if (dcBtn) dcBtn.style.display = 'none';
+  const crBtn = menu.querySelector('[data-action="clear-recent"]');
+  if (crBtn) crBtn.style.display = 'none';
   const favBtn = menu.querySelector('[data-action="favorite"]');
   if (meme.favorited) {
     favBtn.textContent = '取消收藏';
@@ -553,25 +568,45 @@ function showFolderMenu(e, folderId, folderName) {
 }
 
 function showColTagMenu(e, col) {
-  if (col.id <= 0) return;
-  hideCtxMenu();
-  ctxFolder = { id: col.id, name: col.name };
-  lastCtxX = e.clientX; lastCtxY = e.clientY;
-  const menu = document.getElementById('ctx-menu');
-  menu.querySelectorAll('.ctx-item, .ctx-divider').forEach(el => {
-    el.style.display = 'none';
-  });
-  const rc = menu.querySelector('[data-action="rename-collection"]');
-  if (rc) rc.style.display = 'flex';
-  const dc = menu.querySelector('[data-action="delete-collection"]');
-  if (dc) dc.style.display = 'flex';
-  menu.classList.add('show');
-  const rect = menu.getBoundingClientRect();
-  let left = e.clientX, top = e.clientY;
-  if (left + rect.width > window.innerWidth) left = e.clientX - rect.width;
-  if (top + rect.height > window.innerHeight) top = window.innerHeight - rect.height - 4;
-  menu.style.left = left + 'px';
-  menu.style.top = top + 'px';
+  if (col.id > 0) {
+    hideCtxMenu();
+    ctxFolder = { id: col.id, name: col.name };
+    lastCtxX = e.clientX; lastCtxY = e.clientY;
+    const menu = document.getElementById('ctx-menu');
+    menu.querySelectorAll('.ctx-item, .ctx-divider').forEach(el => {
+      el.style.display = 'none';
+    });
+    const rc = menu.querySelector('[data-action="rename-collection"]');
+    if (rc) rc.style.display = 'flex';
+    const dc = menu.querySelector('[data-action="delete-collection"]');
+    if (dc) dc.style.display = 'flex';
+    menu.classList.add('show');
+    const rect = menu.getBoundingClientRect();
+    let left = e.clientX, top = e.clientY;
+    if (left + rect.width > window.innerWidth) left = e.clientX - rect.width;
+    if (top + rect.height > window.innerHeight) top = window.innerHeight - rect.height - 4;
+    menu.style.left = left + 'px';
+    menu.style.top = top + 'px';
+    return;
+  }
+  if (col.id === -3) {
+    hideCtxMenu();
+    ctxFolder = null;
+    lastCtxX = e.clientX; lastCtxY = e.clientY;
+    const menu = document.getElementById('ctx-menu');
+    menu.querySelectorAll('.ctx-item, .ctx-divider').forEach(el => {
+      el.style.display = 'none';
+    });
+    const cr = menu.querySelector('[data-action="clear-recent"]');
+    if (cr) cr.style.display = 'flex';
+    menu.classList.add('show');
+    const rect = menu.getBoundingClientRect();
+    let left = e.clientX, top = e.clientY;
+    if (left + rect.width > window.innerWidth) left = e.clientX - rect.width;
+    if (top + rect.height > window.innerHeight) top = window.innerHeight - rect.height - 4;
+    menu.style.left = left + 'px';
+    menu.style.top = top + 'px';
+  }
 }
 
 function getColParentId(cols, cid) {
@@ -657,7 +692,7 @@ document.getElementById('ctx-menu').addEventListener('click', async (e) => {
   const action = item.dataset.action;
   const f = ctxFolder;
   const m = ctxMeme;
-  if (!m && action !== 'delete-folder' && action !== 'rename-collection' && action !== 'delete-collection') return;
+  if (!m && action !== 'delete-folder' && action !== 'rename-collection' && action !== 'delete-collection' && action !== 'clear-recent') return;
   hideCtxMenu();
 
   if (action === 'delete-folder') {
@@ -818,6 +853,18 @@ document.getElementById('ctx-menu').addEventListener('click', async (e) => {
         await refreshCollections();
         const rc = collections.find(x => x.id === -3);
         if (!rc || rc.count === 0) { activeCollection = null; }
+        refreshMemes();
+      } else { showToast('操作失败'); }
+      break;
+    }
+    case 'clear-recent': {
+      const confirmed = await showConfirm('清空最近使用', '确定清空最近使用列表？');
+      if (!confirmed) return;
+      const ok = await api('clear_recent');
+      if (ok) {
+        showToast('已清空最近使用');
+        await refreshCollections();
+        if (activeCollection === -3) activeCollection = null;
         refreshMemes();
       } else { showToast('操作失败'); }
       break;

@@ -409,8 +409,16 @@ class MemeDB:
         sql = "SELECT m.* FROM memes m"
         if where:
             sql += " WHERE " + " AND ".join(where)
-        sql += " ORDER BY m.sort_order ASC, m.updated_at DESC LIMIT ? OFFSET ?"
-        params.extend([limit, offset])
+        if collection_id is not None:
+            # 分组/子分组内按 meme_collections.sort_order 排序（拖拽排序结果）
+            sql += """ ORDER BY (
+                SELECT mc.sort_order FROM meme_collections mc
+                WHERE mc.meme_id = m.id AND mc.collection_id = ?
+            ) ASC, m.updated_at DESC LIMIT ? OFFSET ?"""
+            params.extend([collection_id, limit, offset])
+        else:
+            sql += " ORDER BY m.sort_order ASC, m.updated_at DESC LIMIT ? OFFSET ?"
+            params.extend([limit, offset])
 
         rows = conn.execute(sql, params).fetchall()
         return [dict(r) for r in rows]
@@ -513,6 +521,12 @@ class MemeDB:
         with self._lock:
             conn = self._get_conn()
             conn.execute("DELETE FROM recent_uses WHERE meme_id=?", (meme_id,))
+            conn.commit()
+
+    def clear_recent(self):
+        with self._lock:
+            conn = self._get_conn()
+            conn.execute("DELETE FROM recent_uses")
             conn.commit()
 
     def get_recent(self, limit: int = 50) -> List[dict]:
