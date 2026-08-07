@@ -186,6 +186,12 @@ tests/
 ### Sync pull 集合合并
 - `_apply_remote_collections` 以**并集**方式合并远端分组，不清除本地已有成员
 - 远端 manifest 中的 `collections` 用文件名关联（非 ID），跨设备稳定
+- `_apply_remote_order` 按远端 manifest 的 `memes` 顺序重排本地 `sort_order`（`reorder_memes`），确保 pull 后本地显示顺序与云端一致，再次 push 不致覆盖云端排序
+
+### 排序同步闭环
+- 拖拽排序：`reorder_memes`/`reorder_collections`/`reorder_collection_members` 更新 DB 后即调 `build_manifest()`，本地 `meme-index.json` 保持最新
+- push：末尾 `build_manifest()` 按 DB 当前 `sort_order` 重建并上传，云端 manifest 顺序反映本地排序
+- pull：`_apply_remote_order` 按云端 manifest 顺序回写本地 `sort_order`，实现双向闭环
 
 ### Manifest
 - `build()` 递归遍历嵌套分组树，空分组自动 `delete_collection`

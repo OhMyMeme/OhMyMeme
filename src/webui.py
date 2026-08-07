@@ -499,6 +499,7 @@ class JsApi:
     def reorder_memes(self, meme_ids: list) -> bool:
         try:
             self._db.reorder_memes(meme_ids)
+            build_manifest()
             return True
         except Exception:
             return False
@@ -506,6 +507,7 @@ class JsApi:
     def reorder_collections(self, collection_ids: list) -> bool:
         try:
             self._db.reorder_collections(collection_ids)
+            build_manifest()
             return True
         except Exception:
             return False
@@ -513,6 +515,7 @@ class JsApi:
     def reorder_collection_members(self, collection_id: int, meme_ids: list) -> bool:
         try:
             self._db.reorder_collection_members(collection_id, meme_ids)
+            build_manifest()
             return True
         except Exception:
             return False

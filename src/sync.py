@@ -1206,6 +1206,23 @@ def _apply_remote_collections(remote_data: dict):
                 db.add_to_collection(row["id"], cid)
 
 
+def _apply_remote_order(remote_data: dict):
+    """按远端 manifest 的 memes 顺序更新本地 sort_order，保留云端排序"""
+    db = get_db()
+    ordered_ids = []
+    for m in remote_data.get("memes", []):
+        if not isinstance(m, dict):
+            continue
+        fname = m.get("filename", "")
+        if not _safe_remote_fname(fname):
+            continue
+        row = db.get_by_filename(fname)
+        if row:
+            ordered_ids.append(row["id"])
+    if ordered_ids:
+        db.reorder_memes(ordered_ids)
+
+
 def pull(remove_local: bool = None) -> dict:
     """远端 -> 本地：下载缺失/变更的表情包和清单（多线程）"""
     cfg = get_config()
@@ -1293,6 +1310,7 @@ def pull(remove_local: bool = None) -> dict:
                             pass
 
         _apply_remote_collections(remote_data)
+        _apply_remote_order(remote_data)
         build_manifest()
         if aggregated["errors"] > 0:
             _update_sync_state(failed_items=aggregated["failed"])

@@ -163,6 +163,7 @@ class _FakeDb:
                 }
             ]
         )
+        self.order = []  # reorder_memes 记录的 id 顺序
 
     def search(self, keyword="", tags=None, limit=999999, collection_id=None):
         return list(self.rows)
@@ -171,10 +172,14 @@ class _FakeDb:
         return []
 
     def get_by_filename(self, filename):
-        for r in self.rows:
+        for i, r in enumerate(self.rows):
             if r["filename"] == filename:
-                return dict(r)
+                return dict(r, id=i + 1)
         return None
+
+    def reorder_memes(self, meme_ids):
+        id_to_name = {i + 1: r["filename"] for i, r in enumerate(self.rows)}
+        self.order = [id_to_name.get(i) for i in meme_ids]
 
     def add_meme(
         self,
@@ -409,6 +414,58 @@ class TestSyncPush(unittest.TestCase):
         self.assertEqual(result["downloaded"], 1)
         self.assertEqual(result["errors"], 0)
         self.assertTrue((self.data_dir / "cache" / "test.png").exists())
+
+    def test_pull_applies_remote_manifest_order(self):
+        """pull 按远端 manifest 顺序重排本地 sort_order，保留云端排序"""
+        self._set_local_memes([])  # 本地空，pull 全部远端文件
+        self.fake_backend.remote_memes = {
+            "b.png": _entry("b.png", "2"),
+            "a.png": _entry("a.png", "1"),
+            "c.png": _entry("c.png", "3"),
+        }
+        sync.pull()
+        # _apply_remote_order 按远端 memes 顺序调用 reorder_memes
+        self.assertEqual(self.fake_db.order, ["b.png", "a.png", "c.png"])
+        # 本地清单重建后顺序与远端一致
+        local = json.loads((self.data_dir / INDEX_FILENAME).read_text(encoding="utf-8"))
+        self.assertEqual(
+            [m["filename"] for m in local["memes"]], ["b.png", "a.png", "c.png"]
+        )
+
+    def test_push_uploads_manifest_in_local_sort_order(self):
+        """push 上传的远端 manifest 顺序与本地清单顺序一致"""
+        # 本地清单顺序 b,a（拖拽排序结果）
+        manifest = {
+            "version": 3,
+            "memes": [
+                {
+                    "filename": "b.png",
+                    "name": "b",
+                    "sha256": "2",
+                    "file_size": 8,
+                    "mtime": "",
+                },
+                {
+                    "filename": "a.png",
+                    "name": "a",
+                    "sha256": "1",
+                    "file_size": 8,
+                    "mtime": "",
+                },
+            ],
+            "collections": [],
+        }
+        (self.data_dir / INDEX_FILENAME).write_text(json.dumps(manifest))
+        self._set_local_memes(
+            [
+                {"filename": "b.png", "sha256": "2"},
+                {"filename": "a.png", "sha256": "1"},
+            ]
+        )
+        self.fake_backend.remote_memes = {}
+        sync.push()
+        order = [m["filename"] for m in self.fake_backend.manifest_payload["memes"]]
+        self.assertEqual(order, ["b.png", "a.png"])
 
     def test_pull_manifest_corrupted_raises(self):
         """远端 manifest 损坏 JSON → pull 抛 SyncError，不做文件操作"""
