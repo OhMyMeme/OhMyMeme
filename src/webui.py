@@ -302,6 +302,42 @@ class JsApi:
             "collections": collections,
         }
 
+    def get_meme_path(self, meme_id: int) -> str:
+        """返回表情本地文件路径（供拖拽到外部应用），不存在返回空串"""
+        row = self._db.get_by_id(meme_id)
+        if not row:
+            return ""
+        return self._find_meme_file(row["filename"])
+
+    def get_meme_paths(self, meme_ids: list) -> dict:
+        """批量返回表情本地文件路径 {id: path}，供拖拽到外部应用"""
+        out = {}
+        for mid in meme_ids:
+            try:
+                row = self._db.get_by_id(int(mid))
+                if row:
+                    p = self._find_meme_file(row["filename"])
+                    if p:
+                        out[int(mid)] = p
+            except Exception:
+                continue
+        return out
+
+    def start_native_drag(self, meme_id: int) -> bool:
+        """用 WinForms DoDragDrop 启动原生文件拖拽（QQ/微信可接收真实文件）"""
+        row = self._db.get_by_id(meme_id)
+        if not row:
+            return False
+        p = self._find_meme_file(row["filename"])
+        if not p:
+            return False
+        try:
+            from .native_drag import start_native_drag as _start
+
+            return bool(_start(p))
+        except Exception:
+            return False
+
     def copy_meme(self, meme_id: int) -> bool:
         # 复制表情到剪贴板；copy_resize_mode: 0不处理 1webp缩放 2转gif 3转gif隐写原图
         row = self._db.get_by_id(meme_id)

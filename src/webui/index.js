@@ -227,6 +227,7 @@ function renderGrid() {
     const img = document.createElement('img');
     img.alt = m.name;
     img.loading = 'lazy';
+    img.draggable = false;
     if (m.is_animated && m.auto_play_gif) {
       img.src = '/api/original/' + m.id + '/' + encodeURIComponent(m.filename);
     } else {
@@ -254,6 +255,7 @@ function renderGrid() {
 
     card.onclick = () => copyMeme(m.id, m.name);
     card.oncontextmenu = (e) => { e.preventDefault(); showCtxMenu(e, m); };
+    card.draggable = false;
     grid.appendChild(card);
   });
 
@@ -264,10 +266,22 @@ function renderGrid() {
  * Pointer Events + 指针捕获，网格感知插入点，FLIP 让位动画 */
 let memeDrag = null;
 let ignoreClick = false;
+let dragSortEnabled = true;
+
+function toggleDragSort() {
+  dragSortEnabled = !dragSortEnabled;
+  const btn = document.getElementById('drag-sort-toggle');
+  if (btn) {
+    btn.classList.toggle('sort-on', dragSortEnabled);
+    btn.classList.toggle('sort-off', !dragSortEnabled);
+  }
+  refreshMemes();
+}
 
 function canReorderMemes() {
   const q = document.getElementById('search').value.trim();
   if (q || activeTags.size > 0) return false;
+  if (!dragSortEnabled) return false;
   return activeCollection == null || activeCollection > 0;
 }
 
@@ -331,6 +345,7 @@ function cleanupMemeDrag() {
 function cancelMemeDrag() {
   const d = cleanupMemeDrag();
   if (!d || !d.active) return;
+  if (d.natDrag) return; // 原生拖拽路径不重置排序
   memes = d.originalOrder;
   renderGrid();
 }
@@ -344,7 +359,11 @@ function initDragReorder() {
     ignoreClick = false;
     if ((e.pointerType || 'mouse') === 'mouse' && e.button !== 0) return;
     const card = e.target.closest('.meme-card:not(.folder-card)');
-    if (!card || !canReorderMemes()) return;
+    if (!card) return;
+    const q = document.getElementById('search').value.trim();
+    if (q || activeTags.size > 0) return; // 搜索/筛选时禁止拖拽
+    // 排序开启时仅可排序视图记录 memeDrag；排序关闭时允许原生拖出
+    if (dragSortEnabled && !canReorderMemes()) return;
     const rect = card.getBoundingClientRect();
     memeDrag = {
       card,
@@ -353,12 +372,30 @@ function initDragReorder() {
       active: false,
       originalOrder: memes.slice(),
       base: rect,
+      // 排序关闭时用于原生拖拽（拖出到外部应用）的起点
+      startX: e.clientX,
+      startY: e.clientY,
+      natDrag: !dragSortEnabled,
     };
   };
 
   const onMove = (e) => {
     const d = memeDrag;
     if (!d) return;
+    // 排序关闭：检测移动阈值后启动原生拖拽（QQ/微信真实文件）
+    if (d.natDrag && !d.active) {
+      const dist = Math.hypot(e.clientX - d.startX, e.clientY - d.startY);
+      if (dist <= 8) return;
+      d.active = true;
+      const id = Number(d.card.dataset.memeId);
+      api('start_native_drag', id).then((ok) => {
+        ignoreClick = true;
+        if (!ok && memeDrag === d) { d.active = false; showToast('拖拽失败：本地文件不存在'); }
+        if (memeDrag === d) cleanupMemeDrag();
+      }).catch(() => { if (memeDrag === d) cleanupMemeDrag(); });
+      return;
+    }
+    if (d.natDrag) return; // 原生拖拽进行中，跳过排序逻辑
     if (!d.active) {
       const rect = d.card.getBoundingClientRect();
       if (Math.hypot(e.clientX - d.offX - rect.left, e.clientY - d.offY - rect.top) <= 8) return;
@@ -405,6 +442,7 @@ function initDragReorder() {
     cleanupMemeDrag();
     if (!wasActive) return;
     ignoreClick = true;
+    if (d.natDrag) return; // 原生拖拽路径不持久化排序
     const ordered = memes.map(x => x.id).join(',');
     if (ordered !== d.originalOrder.map(x => x.id).join(',')) {
       let ok;

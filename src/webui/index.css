@@ -44,15 +44,17 @@ body {
 }
 #titlebar .logo span { color: var(--accent); }
 #titlebar .spacer { flex: 1; cursor: move; }
-.title-btn {
-  background: transparent; border: none; color: var(--muted);
+.title-btn {  background: transparent; border: none; color: var(--muted);
   font-size: 12.5px; cursor: pointer; padding: 5px 12px;
   border-radius: var(--radius-sm); transition: all var(--transition);
   font-family: inherit; letter-spacing: 0.01em;
 }
 .title-btn:hover { background: var(--surface-2); color: var(--fg); }
 .title-btn:active { background: var(--card); transform: scale(0.97); }
-
+#drag-sort-toggle.sort-on svg path { fill: var(--accent); }
+#drag-sort-toggle.sort-on:hover svg path { fill: var(--accent); }
+#drag-sort-toggle.sort-off svg path { fill: var(--muted); opacity: 0.85; }
+#drag-sort-toggle.sort-off:hover svg path { fill: var(--fg); opacity: 1; }
 /* Search */
 #search-wrap { position: relative; margin-bottom: 10px; flex-shrink: 0; }
 #search {
