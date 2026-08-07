@@ -16,6 +16,42 @@ function esc(s) {
     .replace(/'/g, '&#39;');
 }
 
+function renderMarkdown(md) {
+  if (!md) return '';
+  let s = esc(md);
+  // 代码块 ```lang ... ```（先处理，避免内部被后续规则破坏）
+  s = s.replace(/```([\w+-]*)\n([\s\S]*?)```/g, (m, lang, code) => {
+    return '<pre class="md-pre"><code>' + code + '</code></pre>';
+  });
+  // 行内代码
+  s = s.replace(/`([^`\n]+)`/g, '<code class="md-code">$1</code>');
+  // 标题
+  s = s.replace(/^##### (.*)$/gm, '<h5 class="md-h">$1</h5>');
+  s = s.replace(/^#### (.*)$/gm, '<h4 class="md-h">$1</h4>');
+  s = s.replace(/^### (.*)$/gm, '<h3 class="md-h">$1</h3>');
+  s = s.replace(/^## (.*)$/gm, '<h2 class="md-h">$1</h2>');
+  s = s.replace(/^# (.*)$/gm, '<h1 class="md-h">$1</h1>');
+  // 引用
+  s = s.replace(/^&gt; (.*)$/gm, '<blockquote class="md-quote">$1</blockquote>');
+  // 无序列表
+  s = s.replace(/^[-*] (.*)$/gm, '<li class="md-li">$1</li>');
+  // 有序列表
+  s = s.replace(/^\d+\. (.*)$/gm, '<li class="md-li">$1</li>');
+  // 粗体 / 斜体
+  s = s.replace(/\*\*([^*]+)\*\*/g, '<strong>$1</strong>');
+  s = s.replace(/(^|[^*])\*([^*]+)\*/g, '$1<em>$2</em>');
+  // 链接
+  s = s.replace(/\[([^\]]+)\]\(([^)]+)\)/g, '<span class="md-link">$1</span>');
+  // 分割线
+  s = s.replace(/^-{3,}$/gm, '<hr class="md-hr">');
+  // 其余换行
+  s = s.replace(/\n/g, '<br>');
+  // 移除块级元素相邻的多余 <br>，避免文字之间空行
+  s = s.replace(/(<\/?(?:h[1-5]|pre|blockquote|li|hr)[^>]*>)\s*<br>/g, '$1');
+  s = s.replace(/<br>\s*(<\/?(?:h[1-5]|pre|blockquote|li|hr)[^>]*>)/g, '$1');
+  return s;
+}
+
 let searchTimer;
 function onSearch() {
   clearTimeout(searchTimer);
@@ -106,6 +142,7 @@ function renderCollections() {
     if (c.children && c.children.length > 0) label += ' \u25BC';
     el.textContent = label;
     el.onclick = () => { toggleCollection(c.id); };
+    el.oncontextmenu = (e) => { e.preventDefault(); e.stopPropagation(); showColTagMenu(e, c); };
     bar.appendChild(el);
   });
 }
@@ -454,6 +491,10 @@ function showCtxMenu(e, meme) {
   });
   const dfBtn = menu.querySelector('[data-action="delete-folder"]');
   if (dfBtn) dfBtn.style.display = 'none';
+  const rcBtn = menu.querySelector('[data-action="rename-collection"]');
+  if (rcBtn) rcBtn.style.display = 'none';
+  const dcBtn = menu.querySelector('[data-action="delete-collection"]');
+  if (dcBtn) dcBtn.style.display = 'none';
   const favBtn = menu.querySelector('[data-action="favorite"]');
   if (meme.favorited) {
     favBtn.textContent = '取消收藏';
@@ -509,6 +550,39 @@ function showFolderMenu(e, folderId, folderName) {
   if (top + rect.height > window.innerHeight) top = window.innerHeight - rect.height - 4;
   menu.style.left = left + 'px';
   menu.style.top = top + 'px';
+}
+
+function showColTagMenu(e, col) {
+  if (col.id <= 0) return;
+  hideCtxMenu();
+  ctxFolder = { id: col.id, name: col.name };
+  lastCtxX = e.clientX; lastCtxY = e.clientY;
+  const menu = document.getElementById('ctx-menu');
+  menu.querySelectorAll('.ctx-item, .ctx-divider').forEach(el => {
+    el.style.display = 'none';
+  });
+  const rc = menu.querySelector('[data-action="rename-collection"]');
+  if (rc) rc.style.display = 'flex';
+  const dc = menu.querySelector('[data-action="delete-collection"]');
+  if (dc) dc.style.display = 'flex';
+  menu.classList.add('show');
+  const rect = menu.getBoundingClientRect();
+  let left = e.clientX, top = e.clientY;
+  if (left + rect.width > window.innerWidth) left = e.clientX - rect.width;
+  if (top + rect.height > window.innerHeight) top = window.innerHeight - rect.height - 4;
+  menu.style.left = left + 'px';
+  menu.style.top = top + 'px';
+}
+
+function getColParentId(cols, cid) {
+  for (const c of cols) {
+    if (c.children && c.children.some(ch => ch.id === cid)) return c.id;
+    if (c.children) {
+      const r = getColParentId(c.children, cid);
+      if (r !== null) return r;
+    }
+  }
+  return null;
 }
 
 function hideCtxMenu() {
@@ -583,7 +657,7 @@ document.getElementById('ctx-menu').addEventListener('click', async (e) => {
   const action = item.dataset.action;
   const f = ctxFolder;
   const m = ctxMeme;
-  if (!m && action !== 'delete-folder') return;
+  if (!m && action !== 'delete-folder' && action !== 'rename-collection' && action !== 'delete-collection') return;
   hideCtxMenu();
 
   if (action === 'delete-folder') {
@@ -599,6 +673,32 @@ document.getElementById('ctx-menu').addEventListener('click', async (e) => {
     }
     await api('delete_collection', f.id);
     showToast('小分组已删除');
+    if (activeCollection === f.id) activeCollection = parentId;
+    refreshCollections(); refreshMemes(); return;
+  }
+
+  if (action === 'rename-collection') {
+    if (!f) return;
+    const newName = await showPrompt('重命名分组', f.name);
+    if (!newName || newName === f.name) return;
+    const ok = await api('rename_collection', f.id, newName);
+    if (ok) { showToast('已重命名'); refreshCollections(); }
+    else showToast('重命名失败');
+    return;
+  }
+
+  if (action === 'delete-collection') {
+    if (!f) return;
+    const confirmed = await showConfirm('删除分组', '确定删除分组「' + f.name + '」？分组内表情包将退回到上级分组。');
+    if (!confirmed) return;
+    // 将所有表情包移回上级分组（顶层分组的上级为全部）
+    const parentId = getColParentId(collections, f.id);
+    const memesInFolder = await api('search_memes', '', [], f.id) || [];
+    for (const mm of memesInFolder) {
+      if (parentId) await api('add_to_existing_collection', mm.id, parentId);
+    }
+    await api('delete_collection', f.id);
+    showToast('分组已删除');
     if (activeCollection === f.id) activeCollection = parentId;
     refreshCollections(); refreshMemes(); return;
   }
@@ -627,11 +727,21 @@ document.getElementById('ctx-menu').addEventListener('click', async (e) => {
       break;
     }
     case 'collection': {
-      const name = await showPrompt('添加分组', '');
-      if (!name) return;
-      const ok = await api('add_to_collection', m.id, name);
-      if (ok) { showToast('已添加到分组：' + name); refreshCollections(); }
-      else showToast('添加分组失败');
+      const topCols = (collections || []).filter(c => c.id > 0);
+      const els = [['新建分组', '__new__']];
+      topCols.forEach(c => els.push([c.name, c.id]));
+      const picked = await showSubgroupPicker(els);
+      if (picked === '__new__') {
+        const name = await showPrompt('添加分组', '');
+        if (!name) break;
+        const ok = await api('add_to_collection', m.id, name);
+        if (ok) { showToast('已添加到分组：' + name); refreshCollections(); }
+        else showToast('添加分组失败');
+      } else if (picked && picked > 0) {
+        const ok = await api('add_to_existing_collection', m.id, picked);
+        if (ok) { showToast('已添加到分组'); refreshCollections(); }
+        else showToast('添加分组失败');
+      }
       break;
     }
     case 'add-to-subgroup': {
@@ -744,14 +854,16 @@ function showPrompt(title, defaultValue) {
   });
 }
 
-function showUpdateDialogFromMain(current, latest, url) {
+function showUpdateDialogFromMain(current, latest, url, notes) {
   const overlay = document.createElement('div');
   overlay.style.cssText = 'position:fixed;inset:0;background:rgba(0,0,0,.55);display:flex;align-items:center;justify-content:center;z-index:300;animation:fadeIn .15s';
   overlay.onclick = (e) => { if (e.target === overlay) overlay.remove(); };
   const box = document.createElement('div');
-  box.style.cssText = 'background:var(--surface);border-radius:var(--radius-lg);padding:24px 28px;width:380px;border:1px solid var(--border);box-shadow:var(--shadow-lg)';
+  box.className = 'upd-dialog';
+  box.style.cssText = 'background:var(--surface);border-radius:var(--radius-lg);padding:24px 28px;width:440px;max-height:80vh;overflow-y:auto;border:1px solid var(--border);box-shadow:var(--shadow-lg)';
   box.innerHTML = '<div style="margin-bottom:16px"><h2 style="font-size:15px;font-weight:600;color:var(--fg);margin-bottom:8px">发现新版本</h2>'
     + '<p style="font-size:13px;color:var(--fg-secondary);line-height:1.6">当前版本: ' + esc(current) + '<br>最新版本: ' + esc(latest) + '</p></div>'
+    + (notes ? '<div style="margin-bottom:16px"><div style="font-size:13px;font-weight:600;color:var(--fg);margin-bottom:6px">更新内容</div><div class="upd-notes" style="font-size:12px;color:var(--fg-secondary);line-height:1.7;background:var(--bg-secondary);border:1px solid var(--border);border-radius:var(--radius-sm);padding:10px 12px;max-height:220px;overflow-y:auto;overflow-x:hidden">' + renderMarkdown(notes) + '</div></div>' : '')
     + '<div style="display:flex;flex-direction:column;gap:8px">'
     + '<button id="upd-update" class="btn btn-primary" style="width:100%">更新</button>'
     + '<div style="display:flex;gap:8px">'
@@ -1067,7 +1179,7 @@ async function checkUpdateAndPrompt() {
   try {
     const upd = await api('check_update');
     if (upd && upd.has_update) {
-      showUpdateDialogFromMain(upd.current, upd.latest, upd.download_url);
+      showUpdateDialogFromMain(upd.current, upd.latest, upd.download_url, upd.notes);
     }
   } catch(e) {}
 }

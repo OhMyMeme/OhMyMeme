@@ -83,7 +83,7 @@ def start_download(url: str) -> bool:
     def _task():
         try:
             tmp = tempfile.gettempdir()
-            fname = url.rstrip("/").split("/")[-1] or "OhMyMeme-setup.exe"
+            fname = url.rstrip("/").split("/")[-1] or _default_asset_name()
             dest = os.path.join(tmp, fname)
             _urlretrieve_mirror(url, dest, _download_progress)
             with _download_lock:
@@ -142,14 +142,15 @@ def _fetch_json(url: str):
 
 
 def _parse_release(rel: dict):
-    """解析单个 release，返回 (tag, version_tuple, download_url) 或 None"""
+    """解析单个 release，返回 (tag, version_tuple, download_url, notes) 或 None"""
     tag = (rel.get("tag_name") or "").lstrip("v")
     if not tag:
         return None
     url = _pick_asset_url(rel.get("assets", []))
     if not url:
         return None
-    return tag, _parse_version(tag), url
+    notes = (rel.get("body") or "").strip()
+    return tag, _parse_version(tag), url, notes
 
 
 def check_latest() -> dict:
@@ -161,11 +162,12 @@ def check_latest() -> dict:
         data = _fetch_json(_GITHUB_LATEST)
         parsed = _parse_release(data)
         if parsed:
-            tag, ver, url = parsed
+            tag, ver, url, notes = parsed
             return {
                 "latest": tag,
                 "download_url": url,
                 "has_update": ver > current,
+                "notes": notes,
                 "error": "",
             }
     except Exception as e:
@@ -178,33 +180,49 @@ def check_latest() -> dict:
     except Exception as e:
         logger.warning("check update failed (list): %s", e)
         msg = "无法连接到 GitHub，请检查网络设置"
-        return {"latest": "", "download_url": "", "has_update": False, "error": msg}
+        return {
+            "latest": "",
+            "download_url": "",
+            "has_update": False,
+            "notes": "",
+            "error": msg,
+        }
 
     if not isinstance(releases, list) or not releases:
         return {
             "latest": "",
             "download_url": "",
             "has_update": False,
+            "notes": "",
             "error": "no releases",
         }
 
     best_tag = ""
     best_ver = (0, 0, 0)
     best_url = ""
+    best_notes = ""
     for rel in releases:
         parsed = _parse_release(rel)
         if not parsed:
             continue
-        tag, ver, url = parsed
+        tag, ver, url, notes = parsed
         if ver > best_ver:
-            best_tag, best_ver, best_url = tag, ver, url
+            best_tag, best_ver, best_url, best_notes = tag, ver, url, notes
 
     return {
         "latest": best_tag,
         "download_url": best_url,
         "has_update": best_ver > current,
+        "notes": best_notes,
         "error": "",
     }
+
+
+def _default_asset_name() -> str:
+    """URL 无文件名时的平台默认资产名"""
+    if platform.system() == "Linux":
+        return f"OhMyMeme-v{__version__}-x86_64.AppImage"
+    return "OhMyMeme-setup.exe"
 
 
 def _try_download(url: str, dest: str, reporthook) -> str:
@@ -275,7 +293,7 @@ def download_release(url: str) -> Optional[str]:
         return None
     try:
         tmp = tempfile.gettempdir()
-        fname = url.rstrip("/").split("/")[-1] or "OhMyMeme-setup.exe"
+        fname = url.rstrip("/").split("/")[-1] or _default_asset_name()
         dest = os.path.join(tmp, fname)
         _urlretrieve_mirror(url, dest)
         return dest
@@ -293,10 +311,25 @@ def run_installer(path: str) -> bool:
             os.startfile(path)
             return True
         elif platform.system() == "Linux":
+            # AppImage 是 ELF 可执行文件：chmod +x 后直接运行；
+            # 无 FUSE 环境（容器/某些发行版）回退 --appimage-extract-and-run
             os.chmod(path, 0o755)
-            subprocess.Popen(["bash", path], shell=False)
+            cmd = [path]
+            if _needs_appimage_fallback(path):
+                cmd.append("--appimage-extract-and-run")
+            subprocess.Popen(cmd, shell=False, start_new_session=True)
             return True
         return False
     except Exception as e:
         logger.error("run installer failed: %s", e)
+        return False
+
+
+def _needs_appimage_fallback(path: str) -> bool:
+    """AppImage 直接运行依赖 FUSE；无 /dev/fuse 时回退 extract-and-run"""
+    if not path.lower().endswith(".appimage"):
+        return False
+    try:
+        return not os.path.exists("/dev/fuse")
+    except Exception:
         return False

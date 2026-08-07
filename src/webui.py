@@ -426,6 +426,16 @@ class JsApi:
         except Exception:
             return False
 
+    def rename_collection(self, collection_id: int, new_name: str) -> bool:
+        if not new_name:
+            return False
+        try:
+            self._db.rename_collection(collection_id, new_name)
+            build_manifest()
+            return True
+        except Exception:
+            return False
+
     def create_subcollection(self, name: str, parent_id: int) -> dict:
         depth = self._db.get_collection_depth(parent_id)
         if depth >= 1:

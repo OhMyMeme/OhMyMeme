@@ -16,6 +16,31 @@ function esc(s) {
     .replace(/'/g, '&#39;');
 }
 
+function renderMarkdown(md) {
+  if (!md) return '';
+  let s = esc(md);
+  s = s.replace(/```([\w+-]*)\n([\s\S]*?)```/g, (m, lang, code) => {
+    return '<pre class="md-pre"><code>' + code + '</code></pre>';
+  });
+  s = s.replace(/`([^`\n]+)`/g, '<code class="md-code">$1</code>');
+  s = s.replace(/^##### (.*)$/gm, '<h5 class="md-h">$1</h5>');
+  s = s.replace(/^#### (.*)$/gm, '<h4 class="md-h">$1</h4>');
+  s = s.replace(/^### (.*)$/gm, '<h3 class="md-h">$1</h3>');
+  s = s.replace(/^## (.*)$/gm, '<h2 class="md-h">$1</h2>');
+  s = s.replace(/^# (.*)$/gm, '<h1 class="md-h">$1</h1>');
+  s = s.replace(/^&gt; (.*)$/gm, '<blockquote class="md-quote">$1</blockquote>');
+  s = s.replace(/^[-*] (.*)$/gm, '<li class="md-li">$1</li>');
+  s = s.replace(/^\d+\. (.*)$/gm, '<li class="md-li">$1</li>');
+  s = s.replace(/\*\*([^*]+)\*\*/g, '<strong>$1</strong>');
+  s = s.replace(/(^|[^*])\*([^*]+)\*/g, '$1<em>$2</em>');
+  s = s.replace(/\[([^\]]+)\]\(([^)]+)\)/g, '<span class="md-link">$1</span>');
+  s = s.replace(/^-{3,}$/gm, '<hr class="md-hr">');
+  s = s.replace(/\n/g, '<br>');
+  s = s.replace(/(<\/?(?:h[1-5]|pre|blockquote|li|hr)[^>]*>)\s*<br>/g, '$1');
+  s = s.replace(/<br>\s*(<\/?(?:h[1-5]|pre|blockquote|li|hr)[^>]*>)/g, '$1');
+  return s;
+}
+
 /* Close settings window */
 function closeSettings() {
   try { pywebview.api.close_settings(); } catch(e) {}
@@ -879,21 +904,23 @@ async function checkUpdate() {
   if (r.error) { status.textContent = '检查失败: ' + r.error; return; }
   if (!r.latest) { status.textContent = '暂无版本信息'; return; }
   if (r.has_update) {
-    showUpdateDialog(r.current, r.latest, r.download_url);
+    showUpdateDialog(r.current, r.latest, r.download_url, r.notes);
   } else {
     status.textContent = '已是最新版本 (' + r.latest + ')';
   }
 }
 
-function showUpdateDialog(current, latest, url) {
+function showUpdateDialog(current, latest, url, notes) {
   const overlay = document.createElement('div');
   overlay.id = 'update-overlay';
   overlay.style.cssText = 'position:fixed;inset:0;background:rgba(0,0,0,.55);display:flex;align-items:center;justify-content:center;z-index:300;animation:fadeIn .15s';
   overlay.onclick = (e) => { if (e.target === overlay) overlay.remove(); };
   const box = document.createElement('div');
-  box.style.cssText = 'background:var(--surface);border-radius:var(--radius-lg);padding:24px 28px;width:380px;border:1px solid var(--border);box-shadow:var(--shadow-lg)';
+  box.className = 'upd-dialog';
+  box.style.cssText = 'background:var(--surface);border-radius:var(--radius-lg);padding:24px 28px;width:440px;max-height:80vh;overflow-y:auto;border:1px solid var(--border);box-shadow:var(--shadow-lg)';
   box.innerHTML = '<div style="margin-bottom:16px"><h2 style="font-size:15px;font-weight:600;color:var(--fg);margin-bottom:8px">发现新版本</h2>'
     + '<p style="font-size:13px;color:var(--fg-secondary);line-height:1.6">当前版本: ' + esc(current) + '<br>最新版本: ' + esc(latest) + '</p></div>'
+    + (notes ? '<div style="margin-bottom:16px"><div style="font-size:13px;font-weight:600;color:var(--fg);margin-bottom:6px">更新内容</div><div class="upd-notes" style="font-size:12px;color:var(--fg-secondary);line-height:1.7;background:var(--bg-secondary);border:1px solid var(--border);border-radius:var(--radius-sm);padding:10px 12px;max-height:220px;overflow-y:auto;overflow-x:hidden">' + renderMarkdown(notes) + '</div></div>' : '')
     + '<div style="display:flex;flex-direction:column;gap:8px">'
     + '<button id="upd-update" class="btn btn-primary" style="width:100%">更新</button>'
     + '<div style="display:flex;gap:8px">'
@@ -951,7 +978,7 @@ async function checkUpdateBackground() {
   if (!r || !r.has_update) return;
   const ignored = localStorage.getItem('update_ignored_' + r.latest);
   if (ignored) return;
-  showUpdateDialog(r.current, r.latest, r.download_url);
+  showUpdateDialog(r.current, r.latest, r.download_url, r.notes);
 }
 
 /* Danger zone */

@@ -358,6 +358,14 @@ class MemeDB:
             conn.execute("DELETE FROM collections WHERE id=?", (collection_id,))
             conn.commit()
 
+    def rename_collection(self, collection_id: int, new_name: str):
+        with self._lock:
+            conn = self._get_conn()
+            conn.execute(
+                "UPDATE collections SET name=? WHERE id=?", (new_name, collection_id)
+            )
+            conn.commit()
+
     # --- 搜索 ---
 
     def search(
