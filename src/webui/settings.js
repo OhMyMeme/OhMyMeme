@@ -200,13 +200,16 @@ async function loadStorageInfo() {
 }
 
 async function pickStorageDir() {
+  const status = document.getElementById('s-storage-status');
   let r = null;
   try { r = await api('pick_storage_dir'); } catch (e) { r = null; }
-  if (!r || !r.ok) return;
+  if (!r || !r.ok) {
+    if (status && !(r && r.cancelled)) status.textContent = '无法打开目录选择对话框';
+    return;
+  }
   pendingStorageDir = r.path;
   const newDir = document.getElementById('s-cache-dir-new');
   const pending = document.getElementById('s-storage-pending');
-  const status = document.getElementById('s-storage-status');
   if (newDir) newDir.value = r.path;
   if (pending) pending.style.display = 'block';
   if (status) status.textContent = '';
@@ -215,9 +218,8 @@ async function pickStorageDir() {
 function cancelStoragePick() {
   pendingStorageDir = null;
   const pending = document.getElementById('s-storage-pending');
-  const status = document.getElementById('s-storage-status');
   if (pending) pending.style.display = 'none';
-  if (status) status.textContent = '';
+  loadStorageInfo();
 }
 
 async function applyStorageDir() {
@@ -240,7 +242,7 @@ async function applyStorageDir() {
     if (el && r.cache_dir) el.value = r.cache_dir;
     let msg = '已应用新存储目录';
     if (r.moved > 0) msg += '，已移动 ' + r.moved + ' 个文件';
-    if (r.failed && r.failed.length) msg += '，失败 ' + r.failed.length + ' 个：' + r.failed.map(f => f.name).join('、');
+    if (r.failed && r.failed.length) msg += '，失败 ' + r.failed.length + ' 个：' + r.failed.map(f => f.path || f.name).join('、');
     if (status) status.textContent = msg;
     showToast('存储位置已更新');
   } catch (e) {

@@ -151,12 +151,22 @@ def test_webui_host_allowed():
     assert not _host_allowed("", 12345)
 
 
-def test_storage_dir_validation():
+def test_storage_dir_validation(tmp_path):
     from src.webui import _storage_dir_validation
 
-    assert _storage_dir_validation("", "/tmp/old")[0] is False
-    assert _storage_dir_validation("rel/path", "/tmp/old")[0] is False
-    assert _storage_dir_validation("/tmp/old", "/tmp/old")[0] is False
-    assert _storage_dir_validation("/tmp/old/sub", "/tmp/old")[0] is False
-    assert _storage_dir_validation("/tmp", "/tmp/old")[0] is False
-    assert _storage_dir_validation("/tmp/new", "/tmp/old")[0] is True
+    old = tmp_path / "old"
+    old.mkdir()
+    (old / "sub").mkdir()
+    assert _storage_dir_validation(None, str(old))[0] is False
+    assert _storage_dir_validation("", str(old))[0] is False
+    assert _storage_dir_validation("rel/path", str(old))[0] is False
+    assert _storage_dir_validation(str(old), str(old))[0] is False
+    assert _storage_dir_validation(str(old / "sub"), str(old))[0] is False
+    assert _storage_dir_validation(str(tmp_path), str(old))[0] is False
+    assert _storage_dir_validation(str(tmp_path / "new"), str(old))[0] is True
+
+    data = tmp_path / "data"
+    assert _storage_dir_validation(str(data), str(old), (data,))[0] is False
+    assert _storage_dir_validation(str(data / "x"), str(old), (data,))[0] is False
+    assert _storage_dir_validation(str(tmp_path), str(old), (data,))[0] is False
+    assert _storage_dir_validation(str(tmp_path / "ok"), str(old), (data,))[0] is True

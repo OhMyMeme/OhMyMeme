@@ -170,8 +170,8 @@ def _check_connectivity() -> dict:
     return {"ok": False, "latency": ""}
 
 
-def _storage_dir_validation(new_dir: str, old_dir: str):
-    """校验自定义存储目录，返回 (ok, error)"""
+def _storage_dir_validation(new_dir, old_dir, protected=()):
+    # 校验自定义存储目录，返回 (ok, error)
     if not new_dir or not isinstance(new_dir, str):
         return False, "目录不能为空"
     if not os.path.isabs(new_dir):
@@ -187,6 +187,13 @@ def _storage_dir_validation(new_dir: str, old_dir: str):
         return False, "不能选择当前目录的子目录"
     if new in old.parents:
         return False, "不能选择当前目录的上级目录"
+    for p in protected:
+        try:
+            p = Path(p).resolve()
+        except OSError:
+            continue
+        if new == p or new in p.parents or p in new.parents:
+            return False, "不能选择应用数据/缩略图目录或其上下级目录"
     return True, ""
 
 
@@ -1382,7 +1389,7 @@ class SettingsApi:
         path = result[0] if isinstance(result, (tuple, list)) else result
         return {"ok": True, "base": path}
 
-    def get_storage_info(self) -> dict:
+    def get_storage_info(self):
         """返回存储目录信息（供设置页展示）"""
         cfg = self._cfg
         cache = cfg.cache_dir
@@ -1410,7 +1417,7 @@ class SettingsApi:
             "total_size": total,
         }
 
-    def pick_storage_dir(self) -> dict:
+    def pick_storage_dir(self):
         """选择新的表情包存储目录（只返回路径，不立即生效）"""
         try:
             result = webview.windows[0].create_file_dialog(
@@ -1423,12 +1430,13 @@ class SettingsApi:
         path = result[0] if isinstance(result, (tuple, list)) else result
         return {"ok": True, "path": path}
 
-    def apply_storage_dir(self, path: str, move_files: bool = False) -> dict:
+    def apply_storage_dir(self, path, move_files=False):
         """应用新的表情包存储目录；move_files=True 时把现有文件迁移过去"""
         import shutil
 
         old = self._cfg.cache_dir
-        ok, err = _storage_dir_validation(path, str(old))
+        protected = (self._cfg.data_dir, self._cfg.thumbnail_dir)
+        ok, err = _storage_dir_validation(path, str(old), protected)
         if not ok:
             return {"ok": False, "error": err}
         new = Path(path).resolve()
@@ -1452,15 +1460,24 @@ class SettingsApi:
                     plan.append((src, dst))
             if plan:
                 collisions = [
-                    os.path.basename(src) for src, dst in plan if dst.exists()
+                    {
+                        "name": os.path.basename(src),
+                        "path": os.path.relpath(src, str(old)),
+                    }
+                    for src, dst in plan
+                    if dst.exists()
                 ]
                 if collisions:
                     return {
                         "ok": False,
                         "error": f"目标目录已存在 {len(collisions)} 个同名文件，未迁移",
                         "failed": [
-                            {"name": n, "error": "目标目录已存在同名文件"}
-                            for n in collisions
+                            {
+                                "name": c["name"],
+                                "path": c["path"],
+                                "error": "目标目录已存在同名文件",
+                            }
+                            for c in collisions
                         ],
                     }
                 moved_pairs = []
@@ -1480,7 +1497,11 @@ class SettingsApi:
                             "ok": False,
                             "error": f"迁移失败（{e}），已回滚已移动文件",
                             "failed": [
-                                {"name": os.path.basename(s), "error": str(e)}
+                                {
+                                    "name": os.path.basename(s),
+                                    "path": os.path.relpath(s, str(old)),
+                                    "error": str(e),
+                                }
                                 for s, _d in moved_pairs
                             ],
                         }
