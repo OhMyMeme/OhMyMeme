@@ -1,10 +1,14 @@
-# Unreleased — 局域网互联
+# v0.5.1 — 局域网互联
 
 ## 新增
 
 - **局域网互联（电脑端服务）** — 与同一局域网内的手机版 OhMyMeme 配对，互相同步表情包与配置（`lan.py`）。UDP 广播发现（响应不含密钥）→ TCP 握手（HMAC-SHA256 证明，3 次错误断开）→ AES-GCM 加密会话；命令包括 `pull_manifest`/`push_manifest`/`pull_file`/`push_file`/`get_config`/`send_config`；设置页可配置端口与连接密钥，开关仅临时生效不落盘，`lan_secret` 加密存储
 - **配置同步密钥开关（仅内存）** — 设置页「配置同步时包含密钥字段」勾选仅本次会话生效（不落盘），开启前提示泄露风险；默认 `get_config`/`send_config` 剔除 FTP/S3/R2/WebDAV 密码字段
 - **局域网互联测试** — `tests/test_lan.py` 回环覆盖 UDP 发现、握手成功/失败/重试上限、加密帧、manifest 交换、文件 push/pull 去重、配置白名单过滤
+
+## 修复
+
+- **窗口未能正常置顶**
 
 # v0.5.0 — WebDAV 同步 / 拖拽到聊天窗口 / 添加分组弹窗 / GIF 隐写
 
