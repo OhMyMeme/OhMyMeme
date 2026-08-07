@@ -848,6 +848,28 @@ class TestSyncPush(unittest.TestCase):
         self.assertEqual(memes, {})
         self.assertEqual(collections, [])
 
+    def test_fetch_remote_memes_filters_unsafe_filenames(self):
+        """远端 manifest 中的不安全文件名（路径穿越/绝对路径/隐藏/非 dict）被过滤"""
+        self.fake_backend.manifest_content = json.dumps(
+            {
+                "version": 3,
+                "memes": [
+                    {"filename": "safe.png", "sha256": "x"},
+                    {"filename": "../evil.png", "sha256": "x"},
+                    {"filename": "/abs.png", "sha256": "x"},
+                    {"filename": ".hidden.png", "sha256": "x"},
+                    {"filename": "a/b.png", "sha256": "x"},
+                    {"filename": "..\\win.png", "sha256": "x"},
+                    {"filename": "~user.png", "sha256": "x"},
+                    {"filename": ".", "sha256": "x"},
+                    {"filename": "..", "sha256": "x"},
+                    "not-a-dict",
+                ],
+            }
+        )
+        memes, _ = _fetch_remote_memes(self.fake_backend, "/")
+        self.assertEqual(set(memes.keys()), {"safe.png"})
+
 
 class TestSafeRemoteFname(unittest.TestCase):
     """远端 manifest 文件名安全校验（防路径穿越）"""
