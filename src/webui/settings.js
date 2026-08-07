@@ -187,7 +187,8 @@ function formatSize(bytes) {
 }
 
 async function loadStorageInfo() {
-  const st = await api('get_storage_info');
+  let st = null;
+  try { st = await api('get_storage_info'); } catch (e) { st = null; }
   if (!st) return;
   const el = document.getElementById('s-cache-dir');
   if (el && st.cache_dir) el.value = st.cache_dir;
@@ -199,41 +200,54 @@ async function loadStorageInfo() {
 }
 
 async function pickStorageDir() {
-  const r = await api('pick_storage_dir');
+  let r = null;
+  try { r = await api('pick_storage_dir'); } catch (e) { r = null; }
   if (!r || !r.ok) return;
   pendingStorageDir = r.path;
-  document.getElementById('s-cache-dir-new').value = r.path;
-  document.getElementById('s-storage-pending').style.display = 'block';
-  document.getElementById('s-storage-status').textContent = '';
+  const newDir = document.getElementById('s-cache-dir-new');
+  const pending = document.getElementById('s-storage-pending');
+  const status = document.getElementById('s-storage-status');
+  if (newDir) newDir.value = r.path;
+  if (pending) pending.style.display = 'block';
+  if (status) status.textContent = '';
 }
 
 function cancelStoragePick() {
   pendingStorageDir = null;
-  document.getElementById('s-storage-pending').style.display = 'none';
-  document.getElementById('s-storage-status').textContent = '';
+  const pending = document.getElementById('s-storage-pending');
+  const status = document.getElementById('s-storage-status');
+  if (pending) pending.style.display = 'none';
+  if (status) status.textContent = '';
 }
 
 async function applyStorageDir() {
   if (!pendingStorageDir) return;
-  const move = document.getElementById('s-move-files').checked === true;
+  const moveEl = document.getElementById('s-move-files');
+  const move = moveEl ? moveEl.checked === true : true;
   const btn = document.getElementById('btn-storage-apply');
-  if (btn) btn.disabled = true;
-  const r = await api('apply_storage_dir', pendingStorageDir, move);
-  if (btn) btn.disabled = false;
   const status = document.getElementById('s-storage-status');
-  if (!r || !r.ok) {
-    if (status) status.textContent = '应用失败：' + (r && r.error ? esc(r.error) : '未知错误');
-    return;
+  const pending = document.getElementById('s-storage-pending');
+  if (btn) btn.disabled = true;
+  try {
+    const r = await api('apply_storage_dir', pendingStorageDir, move);
+    if (!r || !r.ok) {
+      if (status) status.textContent = '应用失败：' + (r && r.error ? r.error : '未知错误');
+      return;
+    }
+    pendingStorageDir = null;
+    if (pending) pending.style.display = 'none';
+    const el = document.getElementById('s-cache-dir');
+    if (el && r.cache_dir) el.value = r.cache_dir;
+    let msg = '已应用新存储目录';
+    if (r.moved > 0) msg += '，已移动 ' + r.moved + ' 个文件';
+    if (r.failed && r.failed.length) msg += '，失败 ' + r.failed.length + ' 个：' + r.failed.map(f => f.name).join('、');
+    if (status) status.textContent = msg;
+    showToast('存储位置已更新');
+  } catch (e) {
+    if (status) status.textContent = '应用失败：' + (e && e.message ? e.message : '未知错误');
+  } finally {
+    if (btn) btn.disabled = false;
   }
-  pendingStorageDir = null;
-  document.getElementById('s-storage-pending').style.display = 'none';
-  const el = document.getElementById('s-cache-dir');
-  if (el && r.cache_dir) el.value = r.cache_dir;
-  let msg = '已应用新存储目录';
-  if (r.moved > 0) msg += '，已移动 ' + r.moved + ' 个文件';
-  if (r.failed && r.failed.length) msg += '，失败 ' + r.failed.length + ' 个：' + r.failed.map(f => f.name).join('、');
-  if (status) status.textContent = msg;
-  showToast('存储位置已更新');
 }
 
 function toggleSyncType() {

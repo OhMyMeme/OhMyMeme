@@ -158,4 +158,5 @@ def test_storage_dir_validation():
     assert _storage_dir_validation("rel/path", "/tmp/old")[0] is False
     assert _storage_dir_validation("/tmp/old", "/tmp/old")[0] is False
     assert _storage_dir_validation("/tmp/old/sub", "/tmp/old")[0] is False
+    assert _storage_dir_validation("/tmp", "/tmp/old")[0] is False
     assert _storage_dir_validation("/tmp/new", "/tmp/old")[0] is True

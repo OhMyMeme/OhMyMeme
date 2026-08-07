@@ -185,6 +185,8 @@ def _storage_dir_validation(new_dir: str, old_dir: str):
         return False, "与当前目录相同"
     if old in new.parents:
         return False, "不能选择当前目录的子目录"
+    if new in old.parents:
+        return False, "不能选择当前目录的上级目录"
     return True, ""
 
 
@@ -1386,14 +1388,20 @@ class SettingsApi:
         cache = cfg.cache_dir
         count = 0
         total = 0
-        if cache.exists():
-            for f in cache.iterdir():
-                if f.is_file():
-                    count += 1
-                    try:
-                        total += f.stat().st_size
-                    except OSError:
-                        pass
+        try:
+            if cache.exists():
+                for root, dirs, files in os.walk(str(cache)):
+                    for d in list(dirs):
+                        if d == "thumbnails":
+                            dirs.remove(d)
+                    for name in files:
+                        count += 1
+                        try:
+                            total += (Path(root) / name).stat().st_size
+                        except OSError:
+                            pass
+        except OSError:
+            pass
         return {
             "cache_dir": str(cache),
             "data_dir": str(cfg.data_dir),
@@ -1432,6 +1440,7 @@ class SettingsApi:
             return {"ok": False, "error": "目标目录不可写"}
         moved, failed = 0, []
         if move_files:
+            plan = []
             for root, dirs, files in os.walk(str(old)):
                 rel = os.path.relpath(root, str(old))
                 for d in list(dirs):
@@ -1439,13 +1448,42 @@ class SettingsApi:
                         dirs.remove(d)
                 for name in files:
                     src = os.path.join(root, name)
-                    dst_dir = new if rel == "." else new / rel
+                    dst = (new if rel == "." else new / rel) / name
+                    plan.append((src, dst))
+            if plan:
+                collisions = [
+                    os.path.basename(src) for src, dst in plan if dst.exists()
+                ]
+                if collisions:
+                    return {
+                        "ok": False,
+                        "error": f"目标目录已存在 {len(collisions)} 个同名文件，未迁移",
+                        "failed": [
+                            {"name": n, "error": "目标目录已存在同名文件"}
+                            for n in collisions
+                        ],
+                    }
+                moved_pairs = []
+                for src, dst in plan:
                     try:
-                        dst_dir.mkdir(parents=True, exist_ok=True)
-                        shutil.move(src, str(dst_dir / name))
+                        dst.parent.mkdir(parents=True, exist_ok=True)
+                        shutil.move(src, str(dst))
+                        moved_pairs.append((src, dst))
                         moved += 1
                     except OSError as e:
-                        failed.append({"name": name, "error": str(e)})
+                        for s, d in reversed(moved_pairs):
+                            try:
+                                shutil.move(str(d), s)
+                            except OSError:
+                                pass
+                        return {
+                            "ok": False,
+                            "error": f"迁移失败（{e}），已回滚已移动文件",
+                            "failed": [
+                                {"name": os.path.basename(s), "error": str(e)}
+                                for s, _d in moved_pairs
+                            ],
+                        }
         self._cfg.set("cache_dir", str(new))
         self._cfg.save()
         fc = getattr(self._webui, "_file_cache", None)

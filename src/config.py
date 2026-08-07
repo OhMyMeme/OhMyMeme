@@ -222,7 +222,7 @@ class Config:
     def cache_dir(self) -> Path:
         custom = self.get("cache_dir")
         if custom:
-            d = Path(custom)
+            d = Path(custom).expanduser().resolve()
         else:
             d = self.data_dir / "cache"
         d.mkdir(parents=True, exist_ok=True)
