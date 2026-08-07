@@ -170,6 +170,24 @@ def _check_connectivity() -> dict:
     return {"ok": False, "latency": ""}
 
 
+def _storage_dir_validation(new_dir: str, old_dir: str):
+    """校验自定义存储目录，返回 (ok, error)"""
+    if not new_dir or not isinstance(new_dir, str):
+        return False, "目录不能为空"
+    if not os.path.isabs(new_dir):
+        return False, "请选择绝对路径"
+    try:
+        new = Path(new_dir).resolve()
+        old = Path(old_dir).resolve()
+    except OSError:
+        return False, "路径无效"
+    if new == old:
+        return False, "与当前目录相同"
+    if old in new.parents:
+        return False, "不能选择当前目录的子目录"
+    return True, ""
+
+
 class JsApi:
     """暴露给前端的 JS API"""
 
@@ -883,7 +901,10 @@ class JsApi:
                 self._webui._on_hotkey_change(settings["hotkey"])
 
     def reset_settings(self) -> dict:
+        prev_cache_dir = self._cfg.get("cache_dir", "")
         self._cfg.reset()
+        if prev_cache_dir:
+            self._cfg.set("cache_dir", prev_cache_dir)
         self._cfg.save()
         hotkey = self._cfg.get("hotkey", "Ctrl+Alt+N")
         self._webui._on_hotkey_change(hotkey)
@@ -1084,6 +1105,7 @@ class SettingsApi:
             "auto_play_gif": d.get("auto_play_gif", True),
             "try_original_image": d.get("try_original_image", False),
             "copy_resize_mode": int(d.get("copy_resize_mode", 1) or 0),
+            "cache_dir": str(self._cfg.cache_dir),
             "auto_start": is_auto_start_enabled(),
             "silent_start": d.get("silent_start", False),
             "sync_auto_fetch_index": d.get("sync_auto_fetch_index", False),
@@ -1135,7 +1157,10 @@ class SettingsApi:
                 pass
 
     def reset_settings(self) -> dict:
+        prev_cache_dir = self._cfg.get("cache_dir", "")
         self._cfg.reset()
+        if prev_cache_dir:
+            self._cfg.set("cache_dir", prev_cache_dir)
         self._cfg.save()
         hotkey = self._cfg.get("hotkey", "Ctrl+Alt+N")
         self._webui._on_hotkey_change(hotkey)
@@ -1354,6 +1379,84 @@ class SettingsApi:
             return {"ok": False, "cancelled": True}
         path = result[0] if isinstance(result, (tuple, list)) else result
         return {"ok": True, "base": path}
+
+    def get_storage_info(self) -> dict:
+        """返回存储目录信息（供设置页展示）"""
+        cfg = self._cfg
+        cache = cfg.cache_dir
+        count = 0
+        total = 0
+        if cache.exists():
+            for f in cache.iterdir():
+                if f.is_file():
+                    count += 1
+                    try:
+                        total += f.stat().st_size
+                    except OSError:
+                        pass
+        return {
+            "cache_dir": str(cache),
+            "data_dir": str(cfg.data_dir),
+            "custom": bool(cfg.get("cache_dir", "")),
+            "file_count": count,
+            "total_size": total,
+        }
+
+    def pick_storage_dir(self) -> dict:
+        """选择新的表情包存储目录（只返回路径，不立即生效）"""
+        try:
+            result = webview.windows[0].create_file_dialog(
+                webview.FileDialog.FOLDER, allow_multiple=False
+            )
+        except Exception:
+            return {"ok": False, "error": "dialog failed"}
+        if not result:
+            return {"ok": False, "cancelled": True}
+        path = result[0] if isinstance(result, (tuple, list)) else result
+        return {"ok": True, "path": path}
+
+    def apply_storage_dir(self, path: str, move_files: bool = False) -> dict:
+        """应用新的表情包存储目录；move_files=True 时把现有文件迁移过去"""
+        import shutil
+
+        old = self._cfg.cache_dir
+        ok, err = _storage_dir_validation(path, str(old))
+        if not ok:
+            return {"ok": False, "error": err}
+        new = Path(path).resolve()
+        try:
+            new.mkdir(parents=True, exist_ok=True)
+        except OSError as e:
+            return {"ok": False, "error": f"创建目录失败: {e}"}
+        if not os.access(new, os.W_OK):
+            return {"ok": False, "error": "目标目录不可写"}
+        moved, failed = 0, []
+        if move_files:
+            for root, dirs, files in os.walk(str(old)):
+                rel = os.path.relpath(root, str(old))
+                for d in list(dirs):
+                    if d == "thumbnails":
+                        dirs.remove(d)
+                for name in files:
+                    src = os.path.join(root, name)
+                    dst_dir = new if rel == "." else new / rel
+                    try:
+                        dst_dir.mkdir(parents=True, exist_ok=True)
+                        shutil.move(src, str(dst_dir / name))
+                        moved += 1
+                    except OSError as e:
+                        failed.append({"name": name, "error": str(e)})
+        self._cfg.set("cache_dir", str(new))
+        self._cfg.save()
+        fc = getattr(self._webui, "_file_cache", None)
+        if fc is not None:
+            fc.clear()
+        try:
+            if len(webview.windows) > 0:
+                webview.windows[0].evaluate_js("refreshMemes();")
+        except Exception:
+            pass
+        return {"ok": True, "cache_dir": str(new), "moved": moved, "failed": failed}
 
     def qqnt_default_dir(self, base: str, qq_number: str) -> dict:
         """按账号生成默认输出目录（昵称+QQ号）"""

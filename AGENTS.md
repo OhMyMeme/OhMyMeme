@@ -113,6 +113,7 @@ tests/
 - `%APPDATA%/OhMyMeme/config.json` (Win), JSON 格式
 - 密钥字段 (ftp_password, s3_secret_key 等) 用 Fernet 加密存储
 - 全局单例: `get_config()`, `get_db()`
+- `cache_dir`（表情包图片目录）可自定义：配置键 `cache_dir` 非空时 `Config.cache_dir` 返回该路径，否则默认 `data_dir/cache`；设置页「存储位置」通过 `SettingsApi.pick_storage_dir`/`apply_storage_dir` 切换，`apply_storage_dir` 可选把旧目录文件递归迁移（`os.walk`+`shutil.move`，保留相对结构）；DB/缩略图/manifest 仍留在 `data_dir`，数据库只存文件名，换目录后按 basename 自动解析；`reset_settings` 恢复默认时保留 `cache_dir`
 
 ### 同步
 - manifest 文件: `meme-index.json`

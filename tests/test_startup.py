@@ -149,3 +149,13 @@ def test_webui_host_allowed():
     assert not _host_allowed("evil.example.com:12345", 12345)
     assert not _host_allowed("127.0.0.1:9999", 12345)
     assert not _host_allowed("", 12345)
+
+
+def test_storage_dir_validation():
+    from src.webui import _storage_dir_validation
+
+    assert _storage_dir_validation("", "/tmp/old")[0] is False
+    assert _storage_dir_validation("rel/path", "/tmp/old")[0] is False
+    assert _storage_dir_validation("/tmp/old", "/tmp/old")[0] is False
+    assert _storage_dir_validation("/tmp/old/sub", "/tmp/old")[0] is False
+    assert _storage_dir_validation("/tmp/new", "/tmp/old")[0] is True
