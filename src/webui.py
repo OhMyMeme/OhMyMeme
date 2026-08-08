@@ -806,35 +806,39 @@ class JsApi:
         if not result:
             return {"ok": False, "cancelled": True}
         folder = result[0] if isinstance(result, (tuple, list)) else result
-        allowed = {".png", ".jpg", ".jpeg", ".gif", ".webp", ".bmp"}
-        files = []
-        names = []
-        for root, _, fnames in os.walk(folder):
-            for fn in sorted(fnames):
-                ext = os.path.splitext(fn)[1].lower()
-                if ext not in allowed:
-                    continue
-                files.append(os.path.join(root, fn))
-                names.append(os.path.splitext(fn)[0])
-        if not files:
-            return {"ok": False, "error": "文件夹中没有支持的图片"}
-        ids = self._webui._do_import(files, names)
-        collection_id = None
-        folder_name = os.path.basename(os.path.normpath(folder))
-        if make_collection and ids:
-            collection_id = self._db.create_collection(folder_name)
-            if collection_id > 0:
-                for mid in ids:
-                    self._db.add_to_collection(mid, collection_id)
-                from .manifest import build as build_manifest
+        try:
+            allowed = {".png", ".jpg", ".jpeg", ".gif", ".webp", ".bmp"}
+            files = []
+            names = []
+            for root, _, fnames in os.walk(folder):
+                for fn in sorted(fnames):
+                    ext = os.path.splitext(fn)[1].lower()
+                    if ext not in allowed:
+                        continue
+                    files.append(os.path.join(root, fn))
+                    names.append(os.path.splitext(fn)[0])
+            if not files:
+                return {"ok": False, "error": "文件夹中没有支持的图片"}
+            ids = self._webui._do_import(files, names)
+            collection_id = None
+            folder_name = os.path.basename(os.path.normpath(folder))
+            if make_collection and ids:
+                collection_id = self._db.create_collection(folder_name)
+                if collection_id > 0:
+                    for mid in ids:
+                        self._db.add_to_collection(mid, collection_id)
+                    from .manifest import build as build_manifest
 
-                build_manifest()
-        return {
-            "ok": True,
-            "imported": len(ids),
-            "collection_id": collection_id,
-            "collection_name": folder_name if make_collection and ids else None,
-        }
+                    build_manifest()
+            return {
+                "ok": True,
+                "imported": len(ids),
+                "collection_id": collection_id,
+                "collection_name": folder_name if make_collection and ids else None,
+            }
+        except Exception as e:
+            logger.error(f"import_folder failed: {e}")
+            return {"ok": False, "error": str(e)}
 
     def import_from_clipboard(self) -> dict:
         import hashlib

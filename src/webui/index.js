@@ -509,7 +509,7 @@ async function importFolder() {
   const r = await api('import_folder', makeGroup);
   pending = false;
   if (!r) return;
-  if (!r.ok) { showToast(r.error || '导入失败'); return; }
+  if (!r.ok) { if (r.cancelled) return; showToast(r.error || '导入失败'); return; }
   let msg = '导入完成，共 ' + r.imported + ' 个表情';
   if (r.collection_name) msg += '，已创建分组「' + r.collection_name + '」';
   showToast(msg);
