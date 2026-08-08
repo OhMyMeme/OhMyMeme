@@ -361,32 +361,32 @@ def open_adb_help():
 
 
 _QQ_FAVORITE_SUFFIX = "Android/data/com.tencent.mobileqq/Tencent/QQ_Favorite"
+_NON_VOLUME_ENTRIES = {"emulated", "emulated/0", "self"}
 
 
 def _find_qq_favorite_dir(adb_path):
-    """在常见存储根目录中查找 QQ_Favorite（主存储 + 外置 TF 卡）
-
-    后缀路径固定，只遍历候选根目录：主存储 /storage/emulated/0、/sdcard，
-    以及 /storage/ 下枚举到的其他卷（TF 卡通常挂载为 /storage/XXXX-XXXX）。
-    """
+    # 在常见存储根目录中查找 QQ_Favorite（主存储 + 外置 TF 卡）
     candidates = ["/storage/emulated/0", "/sdcard"]
     try:
         r = _run_adb(adb_path, ["shell", "ls", "/storage/"], timeout=10)
         if r.returncode == 0:
             for line in (r.stdout or "").splitlines():
                 entry = line.strip()
-                if entry and entry != "emulated":
+                if (
+                    entry
+                    and entry not in _NON_VOLUME_ENTRIES
+                    and not entry.startswith(".")
+                ):
                     candidates.append(f"/storage/{entry}")
-    except Exception:
-        pass
+    except Exception as e:
+        logger.debug("list /storage failed: %s", e)
     for base in candidates:
+        if _check_cancel():
+            return None
         remote = base + "/" + _QQ_FAVORITE_SUFFIX
-        try:
-            r = _run_adb(adb_path, ["shell", "ls", remote], timeout=10)
-            if r.returncode == 0:
-                return remote
-        except Exception:
-            continue
+        r = _run_adb(adb_path, ["shell", "test", "-d", remote], timeout=10)
+        if r.returncode == 0:
+            return remote
     return None
 
 
@@ -443,7 +443,19 @@ def _qq_worker():
         return
     _update_qq(status="pulling", progress=30, message="正在拉取 QQ 缓存文件...")
     tmp_dir = Path(tempfile.mkdtemp(prefix="ohmymeme-qq-"))
-    remote = _find_qq_favorite_dir(adb_path)
+    try:
+        remote = _find_qq_favorite_dir(adb_path)
+    except subprocess.TimeoutExpired:
+        _update_qq(status="error", error="检测存储目录超时，请检查 ADB 连接")
+        shutil.rmtree(tmp_dir, ignore_errors=True)
+        return
+    except Exception as e:
+        _update_qq(status="error", error="检测存储目录失败: %s" % e)
+        shutil.rmtree(tmp_dir, ignore_errors=True)
+        return
+    if _check_cancel():
+        shutil.rmtree(tmp_dir, ignore_errors=True)
+        return
     if not remote:
         _update_qq(
             status="error",
