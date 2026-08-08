@@ -166,6 +166,7 @@ class MemeDB:
         with self._lock:
             conn = self._get_conn()
             conn.execute("DELETE FROM memes WHERE id=?", (meme_id,))
+            self._prune_orphan_tags(conn)
             conn.commit()
 
     def update_meme(self, meme_id: int, **kwargs):
@@ -198,6 +199,12 @@ class MemeDB:
 
     # --- 标签 ---
 
+    def _prune_orphan_tags(self, conn):
+        """清理无任何表情使用的孤儿标签"""
+        conn.execute(
+            "DELETE FROM tags WHERE id NOT IN (SELECT DISTINCT tag_id FROM meme_tags)"
+        )
+
     def _set_tags(self, conn, meme_id: int, tags: List[str]):
         conn.execute("DELETE FROM meme_tags WHERE meme_id=?", (meme_id,))
         for tag in tags:
@@ -214,6 +221,7 @@ class MemeDB:
                 "INSERT OR IGNORE INTO meme_tags (meme_id, tag_id) VALUES (?, ?)",
                 (meme_id, tag_id),
             )
+        self._prune_orphan_tags(conn)
 
     def set_meme_tags(self, meme_id: int, tags: List[str]):
         with self._lock:

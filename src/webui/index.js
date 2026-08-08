@@ -814,6 +814,16 @@ document.getElementById('ctx-menu').addEventListener('click', async (e) => {
       }
       break;
     }
+    case 'tag': {
+      const cur = await api('get_meme_tags', m.id) || [];
+      const input = await showPrompt('打标签（多个用逗号分隔）', cur.join(', '));
+      if (input === null) break;
+      const tags = input.split(/[,，\s]+/).map(t => t.trim()).filter(Boolean);
+      const ok = await api('set_meme_tags', m.id, tags);
+      if (ok) { showToast(tags.length ? '标签已更新' : '已清除标签'); refreshTags(); }
+      else { showToast('标签保存失败'); }
+      break;
+    }
     case 'collection': {
       const topCols = (collections || []).filter(c => c.id > 0);
       const els = [['新建分组', '__new__']];
@@ -1309,9 +1319,26 @@ async function checkUpdateAndPrompt() {
   } catch(e) {}
 }
 
+/* 横向栏滚轮转横向滚动 */
+function initHScroll(barId) {
+  const bar = document.getElementById(barId);
+  if (!bar) return;
+  bar.addEventListener('wheel', (e) => {
+    if (bar.scrollWidth <= bar.clientWidth) return;
+    e.preventDefault();
+    const delta =
+      e.deltaMode === 1 ? e.deltaY * 16
+      : e.deltaMode === 2 ? e.deltaY * bar.clientWidth
+      : e.deltaY;
+    bar.scrollLeft += delta;
+  }, { passive: false });
+}
+
 /* Init */
 document.addEventListener('DOMContentLoaded', async () => {
   initDragReorder();
+  initHScroll('tagbar');
+  initHScroll('colbar');
   document.getElementById('loading').classList.remove('hidden');
   const data = await api('get_init_data');
   if (data) {

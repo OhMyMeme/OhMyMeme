@@ -267,6 +267,20 @@ class JsApi:
     def get_tags(self) -> list:
         return self._db.get_all_tags()
 
+    def get_meme_tags(self, meme_id: int) -> list:
+        try:
+            return self._db.get_meme_tags(meme_id) or []
+        except Exception:
+            return []
+
+    def set_meme_tags(self, meme_id: int, tags: list) -> bool:
+        try:
+            self._db.set_meme_tags(meme_id, tags or [])
+            return True
+        except Exception as e:
+            logger.error(f"set_meme_tags error: {e}")
+            return False
+
     def get_init_data(self) -> dict:
         """批返回初始化所需数据，减少 JS bridge 往返"""
         q = ""

@@ -102,7 +102,7 @@ tests/
 
 ### 数据库
 - 7 表: `memes`, `tags`, `meme_tags`, `collections`, `meme_collections`, `favorites`, `recent_uses`
-  - `tags`/`meme_tags` 已建表并有 DB 层方法（`get_all_tags`/`set_meme_tags`/`search` 标签筛选），但**当前无 UI 入口创建标签，表实际为空**，标签功能未启用（骨架保留，后续可能复用）
+  - `tags`/`meme_tags`：DB 层方法（`get_all_tags`/`set_meme_tags`/`get_meme_tags`/`search` 标签筛选），已启用；右键表情「打标签」（`JsApi.get_meme_tags`/`set_meme_tags`）逗号分隔多标签，`_set_tags` 覆盖式写入；`_prune_orphan_tags` 在 `_set_tags` 与 `delete_meme` 中清理无任何表情使用的孤儿标签（tagbar 不残留幽灵标签）
 - `PRAGMA journal_mode=WAL`, `PRAGMA foreign_keys=ON`
 - `MemeDB.search()`: 动态 WHERE, 多标签交集用 `HAVING COUNT = len(tags)`
 - `memes.sort_order`: 自定义排序（拖拽更新），默认 0，查询 `ORDER BY sort_order ASC, updated_at DESC`
@@ -228,6 +228,7 @@ tests/
 - `collections.parent_id` 自引用实现嵌套
 - `create_subcollection(name, parent_id)` 自动检查深度（`get_collection_depth`），超出 2 层拒绝
 - 顶层分组在 `#colbar` 渲染为 tab，选中后展开子分组
+- `#tagbar`/`#colbar` 横向溢出：细滚动条可见（`scrollbar-width: thin` + 5px webkit 样式），`initHScroll(barId)` 把滚轮竖向增量转成 `scrollLeft`（按 `deltaMode` 归一化），`DOMContentLoaded` 时对两个栏各绑定一次
 - 分组内右键空白区域 → 新建子分组
 - 右键表情包 → 加入分组 → 弹窗列出当前大分组下的子分组
 
