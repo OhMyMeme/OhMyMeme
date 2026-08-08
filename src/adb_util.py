@@ -360,6 +360,36 @@ def open_adb_help():
         os.startfile(str(p))
 
 
+_QQ_FAVORITE_SUFFIX = "Android/data/com.tencent.mobileqq/Tencent/QQ_Favorite"
+_NON_VOLUME_ENTRIES = {"emulated", "emulated/0", "self"}
+
+
+def _find_qq_favorite_dir(adb_path):
+    # 在常见存储根目录中查找 QQ_Favorite（主存储 + 外置 TF 卡）
+    candidates = ["/storage/emulated/0", "/sdcard"]
+    try:
+        r = _run_adb(adb_path, ["shell", "ls", "/storage/"], timeout=10)
+        if r.returncode == 0:
+            for line in (r.stdout or "").splitlines():
+                entry = line.strip()
+                if (
+                    entry
+                    and entry not in _NON_VOLUME_ENTRIES
+                    and not entry.startswith(".")
+                ):
+                    candidates.append(f"/storage/{entry}")
+    except Exception as e:
+        logger.debug("list /storage failed: %s", e)
+    for base in candidates:
+        if _check_cancel():
+            return None
+        remote = base + "/" + _QQ_FAVORITE_SUFFIX
+        r = _run_adb(adb_path, ["shell", "test", "-d", remote], timeout=10)
+        if r.returncode == 0:
+            return remote
+    return None
+
+
 def _qq_worker():
     _update_qq(status="downloading_adb", progress=0, message="检查 ADB...", error="")
     adb_path = detect_adb()
@@ -413,16 +443,29 @@ def _qq_worker():
         return
     _update_qq(status="pulling", progress=30, message="正在拉取 QQ 缓存文件...")
     tmp_dir = Path(tempfile.mkdtemp(prefix="ohmymeme-qq-"))
-    remote = "/storage/emulated/0/Android/data/com.tencent.mobileqq/Tencent/QQ_Favorite"
+    try:
+        remote = _find_qq_favorite_dir(adb_path)
+    except subprocess.TimeoutExpired:
+        _update_qq(status="error", error="检测存储目录超时，请检查 ADB 连接")
+        shutil.rmtree(tmp_dir, ignore_errors=True)
+        return
+    except Exception as e:
+        _update_qq(status="error", error="检测存储目录失败: %s" % e)
+        shutil.rmtree(tmp_dir, ignore_errors=True)
+        return
+    if _check_cancel():
+        shutil.rmtree(tmp_dir, ignore_errors=True)
+        return
+    if not remote:
+        _update_qq(
+            status="error",
+            error="未找到 QQ_Favorite 目录，请确认手机已安装 QQ"
+            "（含外置存储卡时检查 TF 卡）",
+        )
+        shutil.rmtree(tmp_dir, ignore_errors=True)
+        return
     pull_ok = False
     try:
-        r = _run_adb(adb_path, ["shell", "ls", remote], timeout=10)
-        if r.returncode != 0:
-            _update_qq(
-                status="error", error="未找到 QQ_Favorite 目录，请确认手机已安装 QQ"
-            )
-            shutil.rmtree(tmp_dir, ignore_errors=True)
-            return
         r = _run_adb(adb_path, ["pull", remote, str(tmp_dir)], timeout=120)
         if r.returncode == 0:
             pull_ok = True
