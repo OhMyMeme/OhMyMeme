@@ -267,14 +267,16 @@ class JsApi:
     def get_tags(self) -> list:
         return self._db.get_all_tags()
 
-    def get_meme_tags(self, meme_id: int) -> list:
+    def get_meme_tags(self, meme_id):
+        """返回某表情的标签列表"""
         try:
             return self._db.get_meme_tags(meme_id) or []
         except Exception as e:
             logger.error(f"get_meme_tags error: {e}")
             return []
 
-    def set_meme_tags(self, meme_id: int, tags: list) -> bool:
+    def set_meme_tags(self, meme_id, tags):
+        """覆盖式设置某表情的标签"""
         try:
             self._db.set_meme_tags(meme_id, tags or [])
             return True

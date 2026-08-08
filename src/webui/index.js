@@ -818,9 +818,14 @@ document.getElementById('ctx-menu').addEventListener('click', async (e) => {
       const cur = await api('get_meme_tags', m.id) || [];
       const input = await showPrompt('打标签（多个用逗号分隔）', cur.join(', '));
       if (input === null) break;
-      const tags = input.split(/[,，\s]+/).map(t => t.trim()).filter(Boolean);
+      const tags = input.split(/[,，]/).map(t => t.trim()).filter(Boolean);
       const ok = await api('set_meme_tags', m.id, tags);
-      if (ok) { showToast(tags.length ? '标签已更新' : '已清除标签'); refreshTags(); }
+      if (ok) {
+        showToast(tags.length ? '标签已更新' : '已清除标签');
+        const fresh = await api('get_tags') || [];
+        [...activeTags].forEach(t => { if (!fresh.includes(t)) activeTags.delete(t); });
+        refreshTags(); refreshMemes();
+      }
       else { showToast('标签保存失败'); }
       break;
     }
@@ -1326,10 +1331,12 @@ function initHScroll(barId) {
   bar.addEventListener('wheel', (e) => {
     if (bar.scrollWidth <= bar.clientWidth) return;
     e.preventDefault();
-    let delta = e.deltaY;
-    if (e.deltaMode === 1) delta = e.deltaY * 16;
-    else if (e.deltaMode === 2) delta = e.deltaY * bar.clientWidth;
-    bar.scrollLeft += delta;
+    let factor = 1;
+    if (e.deltaMode === 1) factor = 16;
+    else if (e.deltaMode === 2) factor = bar.clientWidth;
+    const dx = e.deltaX * factor;
+    const dy = e.deltaY * factor;
+    bar.scrollLeft += (dx !== 0 ? dx : dy);
   }, { passive: false });
 }
 
