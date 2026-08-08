@@ -2355,6 +2355,13 @@ class WebUI:
             except Exception as e:
                 logger.warning(f"destroy settings error: {e}")
             self._settings_window = None
+        # 关闭设置页时自动停止局域网服务
+        try:
+            from . import lan
+
+            lan.stop()
+        except Exception:
+            pass
 
     def _save_window_position(self):
         if not self._window:
