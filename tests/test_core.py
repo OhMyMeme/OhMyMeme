@@ -153,6 +153,16 @@ class TestDatabase(unittest.TestCase):
         tags = self.db.get_meme_tags(mid)
         self.assertEqual(set(tags), {"x", "y"})
 
+    def test_tags_prune_orphans(self):
+        mid1 = self.db.add_meme("a.png", tags=["shared", "only1"])
+        mid2 = self.db.add_meme("b.png", tags=["shared"])
+        # mid1 换成新标签：only1 成为孤儿被清理，shared 仍被 mid2 使用
+        self.db.set_meme_tags(mid1, ["other"])
+        self.assertEqual(set(self.db.get_all_tags()), {"shared", "other"})
+        # 删除 mid2：shared 成为孤儿被清理
+        self.db.delete_meme(mid2)
+        self.assertEqual(self.db.get_all_tags(), ["other"])
+
     def test_favorites(self):
         mid = self.db.add_meme("test.png")
         self.assertFalse(self.db.is_favorite(mid))
