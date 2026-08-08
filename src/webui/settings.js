@@ -899,7 +899,7 @@ function qqntRenderEnv(st) {
   const actions = document.getElementById('qqnt-env-actions');
   const actionsMsg = document.getElementById('qqnt-env-actions-msg');
   accBox.innerHTML = '';
-  actions.style.display = '';
+  actions.style.display = 'block';
   document.getElementById('qqnt-next').disabled = true;
 
   if (!st || !st.ok) {
@@ -912,12 +912,12 @@ function qqntRenderEnv(st) {
   }
   if (qqnt.accounts.length === 0) {
     msg.textContent = '未找到已加载表情的账号';
-    actionsMsg.textContent = '若你知道表情数据目录位置，可手动选择用户数据目录：';
+    actionsMsg.textContent = '若你知道用户数据目录（含 QQ 号子目录的 UserDataSavePath 根目录），可手动选择：';
     accBox.innerHTML = '<div style="font-size:12px;color:var(--muted);line-height:1.6">请先在电脑版 QQ 中打开「收藏表情」，将表情全部加载（滑到底），再返回此处重试。</div>';
     return;
   }
   msg.textContent = '请选择要提取的账号：';
-  actionsMsg.textContent = '若当前 Windows 用户不在列表中，请手动选择用户数据目录：';
+  actionsMsg.textContent = '若当前 Windows 用户不在列表中，请手动选择其用户数据目录（含 QQ 号子目录的根目录）：';
   document.getElementById('qqnt-next').disabled = false;
   qqnt.accounts.forEach((a, idx) => {
     const label = document.createElement('label');
