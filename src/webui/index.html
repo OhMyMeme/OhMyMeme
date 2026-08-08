@@ -93,8 +93,12 @@
   <div style="background:var(--surface);border-radius:var(--radius-lg);padding:20px 24px;width:280px;border:1px solid var(--border);box-shadow:var(--shadow-lg)">
     <div style="font-size:14px;font-weight:600;color:var(--fg);margin-bottom:14px">选择导入方式</div>
     <button class="btn btn-primary" style="width:100%;margin-bottom:8px" onclick="importLocal()">本地导入</button>
+    <button class="btn btn-primary" style="width:100%;margin-bottom:8px" onclick="importFolder()">导入文件夹</button>
     <button class="btn btn-primary" style="width:100%;margin-bottom:8px" onclick="importClipboard()">从剪贴板导入</button>
     <button class="btn btn-secondary" style="width:100%" onclick="importQQ()">从手机版 QQ 缓存获取</button>
+    <label style="display:flex;align-items:center;gap:8px;justify-content:center;margin-top:12px;font-size:12px;color:var(--fg-secondary);cursor:pointer;user-select:none">
+      <input id="import-folder-group" type="checkbox" checked style="width:14px;height:14px;accent-color:var(--accent);cursor:pointer">导入文件夹时自动创建分组
+    </label>
     <div style="margin-top:12px;text-align:center">
       <button class="btn btn-ghost btn-sm" onclick="closeImportMenu()">取消</button>
     </div>

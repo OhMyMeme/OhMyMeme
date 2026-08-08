@@ -175,6 +175,7 @@ tests/
   3. 按哈希查 DB (`get_by_hash`) 跳过重复内容
 - **双重去重** — 文件名去重防止每次启动重复注册，哈希去重防止同图不同名重复
 - `_do_import`（拖入/导入对话框）同样有哈希去重，且文件重命名为 `{hash[:16]}{ext}`
+- **文件夹导入** (`JsApi.import_folder`)：FOLDER 对话框 → `os.walk` 递归收集图片（扩展名过滤）→ 复用 `_do_import`；`make_collection`（前端导入菜单「自动创建分组」勾选，默认开）时以文件夹名 `create_collection` + 批量 `add_to_collection`（同名分组复用，重复导入并入），导入菜单入口 `importFolder()` 复用 `pending` 并发锁
 
 ### 剪贴板 (GIF/WebP 直接传送)
 - `_copy_gif_windows` 同时写入三个剪贴板格式:
