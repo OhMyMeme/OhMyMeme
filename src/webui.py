@@ -901,6 +901,12 @@ class JsApi:
     def open_settings(self):
         self._webui.open_settings()
 
+    def lan_confirm_device(self, approved: bool) -> dict:
+        from . import lan
+
+        lan.confirm_device(bool(approved))
+        return {"ok": True}
+
     def get_settings(self) -> dict:
         d = self._cfg.to_dict()
         from .platform_util import is_auto_start_enabled
@@ -1884,8 +1890,32 @@ class WebUI:
         self._update_debug = update_debug
         self._silent_start = silent_start
 
+    def _init_lan(self):
+        from . import lan
+
+        lan.set_confirm_callback(self._lan_confirm_cb)
+
     def set_on_hotkey_change(self, cb):
         self._on_hotkey_change_cb = cb
+
+    def _lan_confirm_cb(self, device: dict):
+        """LAN 设备连接确认：显示主窗口并弹窗展示设备信息，等待 JS 回传结果"""
+        import json
+
+        from . import lan
+
+        if not self._window:
+            lan.confirm_device(False)
+            return
+        try:
+            self.show()
+            js = "window.showLanDeviceConfirm(%s)" % json.dumps(
+                device, ensure_ascii=False
+            )
+            self._window.evaluate_js(js)
+        except Exception as e:
+            logger.warning(f"lan confirm dialog error: {e}")
+            lan.confirm_device(False)
 
     # --- 窗口控制（从任何线程调用安全）---
 
@@ -2285,6 +2315,8 @@ class WebUI:
         )
 
         self._started = True
+        # 注册 LAN 设备确认回调（窗口创建完成后）
+        self._init_lan()
         # start() blocks - 在调用线程运行 GUI 循环
         gui = "gtk" if platform.system() == "Linux" else None
         webview.start(debug=False, http_server=False, gui=gui)

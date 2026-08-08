@@ -3,6 +3,7 @@
 import base64
 import hashlib
 import hmac
+import io
 import json
 import logging
 import os
@@ -29,8 +30,10 @@ logger = logging.getLogger(__name__)
 
 PROTOCOL_VERSION = 1
 MAX_FRAME = 64 * 1024 * 1024  # 帧上限 64MB
+MAX_FILE_SIZE = 64 * 1024 * 1024  # 单文件大小上限 64MB
 _HANDSHAKE_TIMEOUT = 10  # 握手超时（秒）
 _IDLE_TIMEOUT = 60  # 会话空闲超时（秒）
+_DEVICE_CONFIRM_TIMEOUT = 60  # 设备确认超时（秒）
 _IV_LEN = 12
 _TAG_LEN = 16
 
@@ -41,10 +44,11 @@ _lan_state = {
     "start_time": 0,
     "clients": [],  # 已连接设备列表
     "last_error": "",
-    "allow_secret_config": False,  # 配置同步是否含密钥字段（仅内存生效）
+    "allow_secret_config": False,  # 允许密钥传输（仅内存生效）
 }
 _lan_lock = threading.Lock()
 _server = None
+_confirm_cb = None  # 设备连接确认回调，由 WebUI 注入（阻塞等待用户决定）
 
 
 class LanServer:
@@ -185,8 +189,12 @@ class LanServer:
             conn.settimeout(_IDLE_TIMEOUT)
             self._clients[addr] = time.time()
             self._sync_clients()
+            confirmed = threading.Event()
+            if _confirm_cb is None:
+                # 无确认回调（测试/无 UI 环境）直接放行
+                confirmed.set()
             try:
-                self._session_loop(conn, key)
+                self._session_loop(conn, key, confirmed)
             finally:
                 self._clients.pop(addr, None)
                 self._sync_clients()
@@ -233,16 +241,61 @@ class LanServer:
 
     # --- 会话命令循环 ---
 
-    def _session_loop(self, conn, key):
+    def _session_loop(self, conn, key, confirmed: threading.Event):
         while self._running:
             msg = self._recv_frame(conn, key)
             if msg is None:
                 break
             if not isinstance(msg, dict) or "cmd" not in msg:
                 continue
-            result = self._dispatch(msg)
+            cmd = msg.get("cmd")
+            if cmd == "device_info":
+                result = self._cmd_device_info(msg, confirmed)
+            elif not confirmed.is_set():
+                # 未确认设备前挂起其他命令
+                if not confirmed.wait(timeout=_DEVICE_CONFIRM_TIMEOUT):
+                    result = {"ok": False, "error": "设备未确认"}
+                else:
+                    result = self._dispatch(msg)
+            else:
+                result = self._dispatch(msg)
             if isinstance(result, dict):
                 self._send_frame(conn, key, result)
+
+    def _cmd_device_info(self, msg: dict, confirmed: threading.Event) -> dict:
+        """处理手机端设备描述，弹窗确认后返回批准结果"""
+        device = {
+            "name": msg.get("name", "未知设备"),
+            "model": msg.get("model", ""),
+            "os": msg.get("os", ""),
+            "ver": msg.get("ver", ""),
+        }
+        entry = {"device": device, "approved": False, "done": threading.Event()}
+        with _lan_lock:
+            _lan_state["pending_confirm"] = entry
+        try:
+            cb = _confirm_cb
+            if cb:
+                try:
+                    cb(device)
+                except Exception:
+                    logger.warning("device confirm callback error")
+                entry["done"].wait(timeout=_DEVICE_CONFIRM_TIMEOUT)
+            else:
+                # 无确认回调（如测试/无 UI）默认放行
+                entry["approved"] = True
+            approved = bool(entry["approved"])
+        finally:
+            with _lan_lock:
+                _lan_state.pop("pending_confirm", None)
+        confirmed.set()
+        with _lan_lock:
+            allow_secret = bool(_lan_state["allow_secret_config"])
+        return {
+            "ok": True,
+            "approved": approved,
+            "allow_secret_config": allow_secret,
+        }
 
     def _dispatch(self, msg: dict) -> dict:
         cmd = msg.get("cmd")
@@ -308,21 +361,34 @@ class LanServer:
             data = base64.b64decode(data_b64)
         except Exception:
             return {"ok": False, "error": "文件数据解码失败"}
+        if len(data) > MAX_FILE_SIZE:
+            return {"ok": False, "error": "文件超过大小限制"}
+        expected = msg.get("sha256")
+        if expected and hmac.compare_digest(hashlib.sha256(data).hexdigest(), expected):
+            pass  # sha256 校验通过
+        elif expected:
+            return {"ok": False, "error": "文件哈希不一致"}
         return _import_bytes(data, filename)
 
     def _cmd_get_config(self) -> dict:
+        # 配置拉取：allow_secret_config 关闭时剔除密钥字段
         cfg = get_config()
         d = cfg.to_dict()
-        if not _lan_state["allow_secret_config"]:
+        with _lan_lock:
+            allow_secret = bool(_lan_state["allow_secret_config"])
+        if not allow_secret:
             for k in _SECRET_KEYS:
                 d.pop(k, None)
         return {"ok": True, "config": d}
 
     def _cmd_send_config(self, config) -> dict:
+        # 配置推送：allow_secret_config 关闭时忽略密钥字段
         if not isinstance(config, dict):
             return {"ok": False, "error": "配置格式错误"}
         cfg = get_config()
-        if not _lan_state["allow_secret_config"]:
+        with _lan_lock:
+            allow_secret = bool(_lan_state["allow_secret_config"])
+        if not allow_secret:
             config = {k: v for k, v in config.items() if k not in _SECRET_KEYS}
         cfg.update_from_dict(config)
         cfg.save()
@@ -404,54 +470,41 @@ def _find_meme_file(filename: str):
 
 
 def _import_bytes(data: bytes, filename: str) -> dict:
-    """把收到的文件字节按哈希去重后入库"""
-    import shutil
-    import tempfile
-
+    """把收到的文件字节校验合法性后按哈希去重入库（不合法不落盘，杜绝孤儿文件）"""
     db = get_db()
     cache_dir = get_config().cache_dir
-    tmp = Path(tempfile.mkstemp(prefix=".lan-", suffix=".tmp")[1])
+    ext = _detect_ext(data[:16]) or os.path.splitext(filename)[1] or ".png"
+    if not ext:
+        return {"ok": False, "error": "无法识别的图片格式"}
+    # 先解码校验图片，确认宽高有效后才写缓存，避免孤儿文件
     try:
-        tmp.write_bytes(data)
-        ext = _detect_image_ext(str(tmp)) or os.path.splitext(filename)[1] or ".png"
-        fhash = hashlib.sha256(data).hexdigest()
-        if db.get_by_hash(fhash):
-            return {"ok": True, "dedup": True}
-        dst = cache_dir / f"{fhash[:16]}{ext}"
-        shutil.copy2(tmp, dst)
-        w = h = 0
-        try:
-            from PIL import Image as PILImage
+        from PIL import Image as PILImage
 
-            img = PILImage.open(dst)
-            w, h = img.size
-        except Exception:
-            pass
-        db.add_meme(
-            filename=dst.name,
-            file_hash=fhash,
-            width=w,
-            height=h,
-            file_size=len(data),
-            mime_type=f"image/{ext[1:]}" if ext else "image/png",
-            original_name=os.path.splitext(filename)[0],
-        )
-        build_manifest()
-        return {"ok": True, "filename": dst.name}
-    finally:
-        try:
-            tmp.unlink()
-        except OSError:
-            pass
-
-
-def _detect_image_ext(path):
-    """读取文件头魔数识别真实扩展名"""
+        img = PILImage.open(io.BytesIO(data))
+        w, h = img.size
+    except Exception:
+        return {"ok": False, "error": "图片解析失败"}
+    if w <= 0 or h <= 0:
+        return {"ok": False, "error": "图片尺寸无效"}
+    fhash = hashlib.sha256(data).hexdigest()
+    if db.get_by_hash(fhash):
+        return {"ok": True, "dedup": True}
+    dst = cache_dir / f"{fhash[:16]}{ext}"
     try:
-        with open(path, "rb") as f:
-            return _detect_ext(f.read(16))
+        dst.write_bytes(data)
     except OSError:
-        return ""
+        return {"ok": False, "error": "写入缓存失败"}
+    db.add_meme(
+        filename=dst.name,
+        file_hash=fhash,
+        width=w,
+        height=h,
+        file_size=len(data),
+        mime_type=f"image/{ext[1:]}",
+        original_name=os.path.splitext(filename)[0],
+    )
+    build_manifest()
+    return {"ok": True, "filename": dst.name}
 
 
 def _detect_ext(data: bytes):
@@ -467,9 +520,6 @@ def _detect_ext(data: bytes):
     if data.startswith(b"BM"):
         return ".bmp"
     return ""
-
-
-# 密钥字段（配置同步默认剔除）
 
 
 # --- 对外接口 ---
@@ -503,8 +553,31 @@ def get_status() -> dict:
             "start_time": _lan_state["start_time"],
             "clients": list(_lan_state["clients"]),
             "last_error": _lan_state["last_error"],
-            "allow_secret_config": _lan_state["allow_secret_config"],
+            "allow_secret_config": bool(_lan_state["allow_secret_config"]),
         }
+
+
+def set_allow_secret_config(enabled: bool):
+    """设置是否允许密钥传输（仅内存生效，不落盘）"""
+    with _lan_lock:
+        _lan_state["allow_secret_config"] = bool(enabled)
+
+
+def set_confirm_callback(cb):
+    """注入设备连接确认回调（由 WebUI 调用，接收设备信息 dict，返回是否批准）"""
+    global _confirm_cb
+    old = _confirm_cb
+    _confirm_cb = cb
+    return old
+
+
+def confirm_device(approved: bool):
+    """由 JS 弹窗回传设备批准结果（见 _LanConfirm 记录）"""
+    entry = _lan_state.get("pending_confirm")
+    if entry:
+        with _lan_lock:
+            entry["approved"] = bool(approved)
+            entry["done"].set()
 
 
 def get_lan_ip() -> str:
@@ -517,9 +590,3 @@ def get_lan_ip() -> str:
         return ip
     except Exception:
         return "127.0.0.1"
-
-
-def set_allow_secret_config(enabled: bool):
-    """设置配置同步是否含密钥字段（仅内存生效，不落盘）"""
-    with _lan_lock:
-        _lan_state["allow_secret_config"] = bool(enabled)

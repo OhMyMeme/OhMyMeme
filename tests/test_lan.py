@@ -23,6 +23,24 @@ from src.database import MemeDB
 TEST_PORT = 17990
 _IV_LEN = 12
 
+# 1x1 透明 PNG（合法图片，PIL 可解码，宽高 1x1）
+TINY_PNG = bytes.fromhex(
+    "89504e470d0a1a0a0000000d49484452000000010000000108060000001f15c489"
+    "0000000d49444154789c626001000000ffff03000006000557bfabd40000000049"
+    "454e44ae426082"
+)
+
+
+def _valid_png(w=1, h=1):
+    """构造合法小 PNG 字节"""
+    import io
+
+    from PIL import Image
+
+    buf = io.BytesIO()
+    Image.new("RGB", (w, h), (255, 0, 0)).save(buf, "PNG")
+    return buf.getvalue()
+
 
 # --- 协议客户端辅助 ---
 
@@ -99,14 +117,18 @@ def lan_env(tmp_path):
 
     old_cfg = config_module._config
     old_db = database._db
+    old_cb = lan.set_confirm_callback(None)
     config_module._config = cfg
     database._db = db
 
     lan.stop()
+    lan.set_allow_secret_config(False)
     assert lan.start(TEST_PORT, "test-secret")
     yield cfg, db, tmp_path
 
     lan.stop()
+    lan.set_confirm_callback(old_cb)
+    lan.set_allow_secret_config(False)
     config_module._config = old_cfg
     database._db = old_db
 
@@ -184,12 +206,13 @@ def test_push_pull_file(lan_env):
 
     sock = _connect()
     key = _handshake(sock, "test-secret")
-    png = b"\x89PNG\r\n\x1a\n" + b"\x00" * 100
+    png = _valid_png()
     png_b64 = base64.b64encode(png).decode()
+    sha256 = hashlib.sha256(png).hexdigest()
     _send_frame(
         sock,
         key,
-        {"cmd": "push_file", "filename": "test.png", "data": png_b64},
+        {"cmd": "push_file", "filename": "test.png", "data": png_b64, "sha256": sha256},
     )
     resp = _recv_frame(sock, key)
     assert resp["ok"] is True
@@ -205,6 +228,90 @@ def test_push_pull_file(lan_env):
     sock2.close()
 
 
+def test_push_file_bad_hash(lan_env):
+    cfg, db, tmp = lan_env
+    import base64
+
+    sock = _connect()
+    key = _handshake(sock, "test-secret")
+    png = _valid_png()
+    _send_frame(
+        sock,
+        key,
+        {
+            "cmd": "push_file",
+            "filename": "test.png",
+            "data": base64.b64encode(png).decode(),
+            "sha256": "0" * 64,
+        },
+    )
+    resp = _recv_frame(sock, key)
+    assert resp["ok"] is False
+    assert "哈希" in resp["error"]
+    assert not list((cfg.cache_dir).iterdir())
+    sock.close()
+
+
+def test_push_file_non_image(lan_env):
+    """非图片字节不得落盘（杜绝孤儿文件）"""
+    cfg, db, tmp = lan_env
+    import base64
+
+    sock = _connect()
+    key = _handshake(sock, "test-secret")
+    junk = b"\x89PNG\r\n\x1a\n" + b"\x00" * 100  # 只有 PNG 魔数，无有效图像数据
+    _send_frame(
+        sock,
+        key,
+        {
+            "cmd": "push_file",
+            "filename": "fake.png",
+            "data": base64.b64encode(junk).decode(),
+        },
+    )
+    resp = _recv_frame(sock, key)
+    assert resp["ok"] is False
+    assert not list((cfg.cache_dir).iterdir())
+    assert not db.search("", 0)
+    sock.close()
+
+
+def test_push_file_oversize(lan_env):
+    """超过大小上限的文件被拒绝且不落盘（帧上限会先于该检查生效，故直接测处理器）"""
+    cfg, db, tmp = lan_env
+    import base64
+
+    server = lan.LanServer()
+    big = b"\x00" * (lan.MAX_FILE_SIZE + 1)
+    resp = server._cmd_push_file(
+        {"filename": "big.png", "data": base64.b64encode(big).decode()}
+    )
+    assert resp["ok"] is False
+    assert not list((cfg.cache_dir).iterdir())
+
+
+def test_push_file_bad_filename(lan_env):
+    cfg, db, tmp = lan_env
+    import base64
+
+    sock = _connect()
+    key = _handshake(sock, "test-secret")
+    png = _valid_png()
+    _send_frame(
+        sock,
+        key,
+        {
+            "cmd": "push_file",
+            "filename": "../evil.png",
+            "data": base64.b64encode(png).decode(),
+        },
+    )
+    resp = _recv_frame(sock, key)
+    assert resp["ok"] is False
+    assert not list((cfg.cache_dir).iterdir())
+    sock.close()
+
+
 def test_get_config_no_secrets(lan_env):
     cfg, db, tmp = lan_env
     cfg.set("ftp_password", "hunter2")
@@ -218,7 +325,49 @@ def test_get_config_no_secrets(lan_env):
     sock.close()
 
 
+def test_send_config_filters_secrets(lan_env):
+    """allow_secret_config 关闭时 send_config 忽略密钥字段"""
+    cfg, db, tmp = lan_env
+    sock = _connect()
+    key = _handshake(sock, "test-secret")
+    _send_frame(
+        sock,
+        key,
+        {"cmd": "send_config", "config": {"ftp_password": "evil", "theme": "light"}},
+    )
+    resp = _recv_frame(sock, key)
+    assert resp["ok"] is True
+    assert cfg.get("theme") == "light"
+    assert cfg.get("ftp_password") != "evil"
+    sock.close()
+
+
+def test_send_config_with_secrets(lan_env):
+    """allow_secret_config 开启时 send_config 应用密钥字段"""
+    cfg, db, tmp = lan_env
+    lan.set_allow_secret_config(True)
+    try:
+        sock = _connect()
+        key = _handshake(sock, "test-secret")
+        _send_frame(
+            sock,
+            key,
+            {
+                "cmd": "send_config",
+                "config": {"ftp_password": "evil", "theme": "light"},
+            },
+        )
+        resp = _recv_frame(sock, key)
+        assert resp["ok"] is True
+        assert cfg.get("theme") == "light"
+        assert cfg.get("ftp_password") == "evil"
+        sock.close()
+    finally:
+        lan.set_allow_secret_config(False)
+
+
 def test_get_config_with_secrets(lan_env):
+    """allow_secret_config 开启时 get_config 包含密钥字段"""
     cfg, db, tmp = lan_env
     cfg.set("ftp_password", "hunter2")
     lan.set_allow_secret_config(True)
@@ -233,19 +382,80 @@ def test_get_config_with_secrets(lan_env):
         lan.set_allow_secret_config(False)
 
 
-def test_send_config_filters_secrets(lan_env):
+def test_device_info_approved(lan_env):
+    """设备描述经确认后放行，响应携带 allow_secret_config"""
+    cfg, db, tmp = lan_env
+    called = []
+
+    def cb(device):
+        called.append(device)
+        lan.confirm_device(True)
+
+    old = lan.set_confirm_callback(cb)
+    try:
+        sock = _connect()
+        key = _handshake(sock, "test-secret")
+        _send_frame(
+            sock,
+            key,
+            {
+                "cmd": "device_info",
+                "name": "Pixel",
+                "model": "Pixel 8",
+                "os": "Android 15",
+                "ver": "0.4.1",
+            },
+        )
+        resp = _recv_frame(sock, key)
+        assert resp["ok"] is True
+        assert resp["approved"] is True
+        assert resp["allow_secret_config"] is False
+        assert called and called[0]["name"] == "Pixel"
+        # 确认后其他命令正常放行
+        _send_frame(sock, key, {"cmd": "ping"})
+        assert _recv_frame(sock, key)["ok"] is True
+        sock.close()
+    finally:
+        lan.set_confirm_callback(old)
+
+
+def test_device_info_rejected(lan_env):
+    """设备描述被拒绝则 approved=False"""
+    cfg, db, tmp = lan_env
+
+    def cb(device):
+        lan.confirm_device(False)
+
+    old = lan.set_confirm_callback(cb)
+    try:
+        sock = _connect()
+        key = _handshake(sock, "test-secret")
+        _send_frame(
+            sock,
+            key,
+            {"cmd": "device_info", "name": "Evil", "os": "Android 14"},
+        )
+        resp = _recv_frame(sock, key)
+        assert resp["ok"] is True
+        assert resp["approved"] is False
+        sock.close()
+    finally:
+        lan.set_confirm_callback(old)
+
+
+def test_device_info_no_callback_auto_approve(lan_env):
+    """无确认回调（测试/无 UI）时自动放行"""
     cfg, db, tmp = lan_env
     sock = _connect()
     key = _handshake(sock, "test-secret")
     _send_frame(
         sock,
         key,
-        {"cmd": "send_config", "config": {"ftp_password": "evil", "theme": "light"}},
+        {"cmd": "device_info", "name": "Device", "os": "Android"},
     )
     resp = _recv_frame(sock, key)
     assert resp["ok"] is True
-    assert cfg.get("theme") == "light"
-    assert cfg.get("ftp_password") != "evil"
+    assert resp["approved"] is True
     sock.close()
 
 

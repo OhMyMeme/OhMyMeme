@@ -130,7 +130,7 @@
         <input id="s-lan-enable" type="checkbox" onchange="toggleLan()">开启互联访问
       </label>
       <label class="check-row" style="margin-bottom:12px">
-        <input id="s-lan-secret-config" type="checkbox" onchange="toggleLanSecretConfig()">配置同步时包含密钥字段（请确认网络可信，密钥泄露风险自负）
+        <input id="s-lan-secret-config" type="checkbox" onchange="toggleLanSecretConfig()">允许密钥传输（配置同步时包含 FTP/S3/R2/WebDAV 密码等密钥字段）
       </label>
       <div style="display:flex;gap:8px">
         <button id="btn-lan-refresh" class="btn btn-secondary btn-sm btn-flex" onclick="refreshLanStatus()">刷新状态</button>

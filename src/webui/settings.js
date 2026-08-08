@@ -120,7 +120,7 @@ let lanPollTimer = null;
 async function toggleLanSecretConfig() {
   const cb = document.getElementById('s-lan-secret-config');
   if (cb.checked) {
-    const ok = confirm('开启后配置同步将包含 FTP/S3/R2/WebDAV 等密钥字段，密钥将明文传输给局域网内配对设备。\n仅本次会话有效，不写入配置。是否继续？');
+    const ok = confirm('请勿在公共网络或不信任的网络进行此操作！\n\n开启后配置同步将包含 FTP/S3/R2/WebDAV 等密钥字段，密钥将明文传输给局域网内配对设备。\n仅本次会话有效，不写入配置。是否继续？');
     if (!ok) {
       cb.checked = false;
       return;
