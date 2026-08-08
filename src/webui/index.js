@@ -1326,10 +1326,9 @@ function initHScroll(barId) {
   bar.addEventListener('wheel', (e) => {
     if (bar.scrollWidth <= bar.clientWidth) return;
     e.preventDefault();
-    const delta =
-      e.deltaMode === 1 ? e.deltaY * 16
-      : e.deltaMode === 2 ? e.deltaY * bar.clientWidth
-      : e.deltaY;
+    let delta = e.deltaY;
+    if (e.deltaMode === 1) delta = e.deltaY * 16;
+    else if (e.deltaMode === 2) delta = e.deltaY * bar.clientWidth;
     bar.scrollLeft += delta;
   }, { passive: false });
 }

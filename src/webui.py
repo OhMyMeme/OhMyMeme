@@ -270,7 +270,8 @@ class JsApi:
     def get_meme_tags(self, meme_id: int) -> list:
         try:
             return self._db.get_meme_tags(meme_id) or []
-        except Exception:
+        except Exception as e:
+            logger.error(f"get_meme_tags error: {e}")
             return []
 
     def set_meme_tags(self, meme_id: int, tags: list) -> bool:
