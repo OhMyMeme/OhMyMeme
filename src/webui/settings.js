@@ -192,6 +192,8 @@ async function getSettings() {
   const ss = document.getElementById('s-silent-start');
   if (hk && s.hotkey) hk.value = s.hotkey;
   if (gif) gif.checked = s.auto_play_gif !== false;
+  const hp = document.getElementById('s-hover-play');
+  if (hp) hp.checked = s.hover_to_play === true;
   const to = document.getElementById('s-try-original');
   if (to) to.checked = s.try_original_image === true;  // DeepSeek V4 Flash
   const cm = document.getElementById('s-copy-mode');
@@ -245,6 +247,8 @@ async function getSettings() {
   if (lport) lport.value = s.lan_port || 17852;
   const lsec = document.getElementById('s-lan-secret');
   if (lsec) lsec.value = s.lan_secret || '';
+  const tgtd = document.getElementById('s-tg-tdata');
+  if (tgtd && s.tg_tdata_path) tgtd.value = s.tg_tdata_path;
   checkConnectivity();  // DeepSeek V4 Flash
   loadStorageInfo();
   refreshLanStatus();
@@ -427,8 +431,9 @@ async function saveSettings() {
   if (!validateSync(sync)) return;
   const lan_port = parseInt(document.getElementById('s-lan-port')?.value) || 17852;
   const lan_secret = document.getElementById('s-lan-secret')?.value || '';
+  const hover_play = document.getElementById('s-hover-play')?.checked === true;
   await api('save_settings', {
-    hotkey, auto_play_gif: gif,
+    hotkey, auto_play_gif: gif, hover_to_play: hover_play,
     try_original_image: try_original,  // DeepSeek V4 Flash
     copy_resize_mode: copy_mode,
     auto_start, silent_start, show_uncategorized,
@@ -447,6 +452,10 @@ async function resetSettings() {
     const ss = document.getElementById('s-silent-start');
     if (hk) hk.value = s.hotkey;
     if (gif) gif.checked = s.auto_play_gif !== false;
+    const hp = document.getElementById('s-hover-play');
+    if (hp) hp.checked = s.hover_to_play === true;
+    const tgtd = document.getElementById('s-tg-tdata');
+    if (tgtd) tgtd.value = s.tg_tdata_path || '';
     const to = document.getElementById('s-try-original');  // DeepSeek V4 Flash
     if (to) to.checked = false;
     const cm = document.getElementById('s-copy-mode');
@@ -837,6 +846,134 @@ async function startImportFromZip() {
     closeQQOverlay();
     showToast(r.rejected ? '导入完成，跳过 ' + r.rejected + ' 个超限文件' : '导入完成');
   }
+}
+
+/* Telegram 缓存导入 */
+let tgPollTimer = null;
+
+function showTGOverlay() {
+  document.getElementById('tg-import-overlay').style.display = 'flex';
+  document.getElementById('tg-import-error').style.display = 'none';
+  document.getElementById('btn-tg-retry').style.display = 'none';
+  document.getElementById('tg-import-title').textContent = '正在导入...';
+  document.getElementById('tg-import-msg').textContent = '准备中';
+  document.getElementById('tg-import-bar').style.width = '0%';
+  document.getElementById('tg-import-pct').textContent = '0%';
+}
+
+function closeTGOverlay() {
+  document.getElementById('tg-import-overlay').style.display = 'none';
+  if (tgPollTimer) { clearInterval(tgPollTimer); tgPollTimer = null; }
+  api('cancel_tg_import');
+}
+
+async function pickTGTdata() {
+  const r = await api('pick_tg_tdata');
+  if (!r || r.cancelled) return;
+  const inp = document.getElementById('s-tg-tdata');
+  if (r.ok && inp) {
+    inp.value = r.path;
+    showToast('tdata 目录已设置');
+  } else {
+    showToast((r && r.error) || '选择失败');
+  }
+}
+
+function tgRetryPick() {
+  closeTGOverlay();
+  pickTGTdata();
+}
+
+async function startTGImport() {
+  const btn = document.getElementById('btn-tg-start');
+  const status = document.getElementById('tg-status');
+  if (!btn || !status) return;
+  btn.disabled = true; status.textContent = ''; status.className = '';
+
+  const tdataEl = document.getElementById('s-tg-tdata');
+  const passcodeEl = document.getElementById('s-tg-passcode');
+  const convertEl = document.getElementById('s-tg-convert');
+  const tdata = tdataEl ? tdataEl.value : '';
+  const passcode = passcodeEl ? passcodeEl.value : '';
+  const convert = convertEl ? convertEl.checked !== false : true;
+
+  let r;
+  try {
+    r = await api('start_tg_import', tdata || null, passcode, convert);
+  } catch (e) {
+    btn.disabled = false;
+    status.textContent = '启动失败: ' + (e.message || e);
+    status.className = 'error';
+    return;
+  }
+  if (!r || !r.ok) {
+    btn.disabled = false;
+    status.textContent = '启动失败';
+    status.className = 'error';
+    return;
+  }
+
+  showTGOverlay();
+
+  let nullCount = 0;
+  let pollInFlight = false;
+  tgPollTimer = setInterval(async () => {
+    if (pollInFlight) return;
+    pollInFlight = true;
+    try {
+      const s = await api('get_tg_import_progress');
+      if (!s) {
+        nullCount++;
+        if (nullCount > 20) {
+          if (tgPollTimer) { clearInterval(tgPollTimer); tgPollTimer = null; }
+          document.getElementById('tg-import-title').textContent = '导入失败';
+          document.getElementById('tg-import-error').style.display = '';
+          document.getElementById('tg-import-error').textContent = '连接中断';
+          btn.disabled = false;
+        }
+        return;
+      }
+      nullCount = 0;
+
+      document.getElementById('tg-import-bar').style.width = (s.progress || 0) + '%';
+      document.getElementById('tg-import-pct').textContent = (s.progress || 0) + '%';
+      document.getElementById('tg-import-msg').textContent = s.message || '';
+
+      if (s.status === 'done') {
+        document.getElementById('tg-import-title').textContent = '导入完成';
+        if (tgPollTimer) { clearInterval(tgPollTimer); tgPollTimer = null; }
+        const el = document.getElementById('tg-status');
+        el.textContent = s.message || '导入完成';
+        el.className = '';
+        if (passcodeEl) passcodeEl.value = '';
+        btn.disabled = false;
+      } else if (s.status === 'error') {
+        document.getElementById('tg-import-title').textContent = '导入失败';
+        if (tgPollTimer) { clearInterval(tgPollTimer); tgPollTimer = null; }
+        const el = document.getElementById('tg-status');
+        el.textContent = '导入失败: ' + (s.error || '');
+        el.className = 'error';
+        document.getElementById('tg-import-error').style.display = '';
+        document.getElementById('tg-import-error').textContent = s.error || '未知错误';
+        if (['no_tdata', 'invalid_tdata', 'no_cache'].includes(s.error_code)) {
+          document.getElementById('btn-tg-retry').style.display = '';
+        }
+        btn.disabled = false;
+      } else if (s.status === 'cancelled') {
+        document.getElementById('tg-import-title').textContent = '已取消';
+        if (tgPollTimer) { clearInterval(tgPollTimer); tgPollTimer = null; }
+        btn.disabled = false;
+      }
+    } catch (e) {
+      if (tgPollTimer) { clearInterval(tgPollTimer); tgPollTimer = null; }
+      document.getElementById('tg-import-title').textContent = '导入失败';
+      document.getElementById('tg-import-error').style.display = '';
+      document.getElementById('tg-import-error').textContent = e.message || '连接异常';
+      btn.disabled = false;
+    } finally {
+      pollInFlight = false;
+    }
+  }, 300);
 }
 
 /* QQNT 提取向导 */
