@@ -188,7 +188,7 @@ function setupHoverPlay(card, img, memeId, filename) {
   const animUrl = '/api/original/' + memeId + '/' + encodeURIComponent(filename);
   const thumbUrl = img.src;
   let hoverTimer = null;
-  card.addEventListener('mouseenter', () => { hoverTimer = setTimeout(() => { img.src = animUrl; }, 150); });
+  card.addEventListener('mouseenter', () => { clearTimeout(hoverTimer); hoverTimer = setTimeout(() => { img.src = animUrl; }, 150); });
   card.addEventListener('mouseleave', () => { clearTimeout(hoverTimer); img.src = thumbUrl; });
 }
 

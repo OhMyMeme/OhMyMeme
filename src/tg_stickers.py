@@ -36,7 +36,7 @@ def _update_tg(**kw):
         _TG_STATE.update(**kw)
 
 
-def get_tg_progress() -> dict:
+def get_tg_progress():
     with _TG_LOCK:
         return dict(_TG_STATE)
 
@@ -89,7 +89,7 @@ def _reset_state():
     )
 
 
-def is_valid_tdata(path: str) -> bool:
+def is_valid_tdata(path):
     """校验目录是否为 Telegram Desktop tdata（含 key_datas/key_data）"""
     if not path or not os.path.isdir(path):
         return False
@@ -98,7 +98,7 @@ def is_valid_tdata(path: str) -> bool:
     )
 
 
-def find_tdata_path() -> str:
+def find_tdata_path():
     """跨平台自动检测 Telegram Desktop tdata 路径"""
     sys_name = platform.system()
     if sys_name == "Windows":
@@ -139,15 +139,15 @@ def find_tdata_path() -> str:
     return ""
 
 
-def _sha1(data: bytes) -> bytes:
+def _sha1(data):
     return hashlib.sha1(data).digest()
 
 
-def _sha256(data: bytes) -> bytes:
+def _sha256(data):
     return hashlib.sha256(data).digest()
 
 
-def _prepare_aes_oldmtp(key: bytes, msg_key: bytes):
+def _prepare_aes_oldmtp(key, msg_key):
     sha1_a = _sha1(msg_key[:16] + key[8:40])
     sha1_b = _sha1(key[40:56] + msg_key[:16] + key[56:72])
     sha1_c = _sha1(key[72:104] + msg_key[:16])
@@ -157,7 +157,7 @@ def _prepare_aes_oldmtp(key: bytes, msg_key: bytes):
     return aes_key, aes_iv
 
 
-def _aes_decrypt_local(src: bytes, key: bytes, key128: bytes) -> bytearray:
+def _aes_decrypt_local(src, key, key128):
     tgcrypto = _import_tgcrypto()
     if tgcrypto is None:
         raise RuntimeError("缺少依赖 tgcrypto，请安装后重试")
@@ -165,7 +165,7 @@ def _aes_decrypt_local(src: bytes, key: bytes, key128: bytes) -> bytearray:
     return bytearray(tgcrypto.ige256_decrypt(src, aes_key, aes_iv))
 
 
-def _decrypt_local(encrypted: bytes, key: bytes) -> bytes:
+def _decrypt_local(encrypted, key):
     encrypted_key = encrypted[:16]
     decrypted = _aes_decrypt_local(encrypted[16:], key, encrypted_key)
     if _sha1(decrypted)[:16] != encrypted_key:
@@ -174,13 +174,13 @@ def _decrypt_local(encrypted: bytes, key: bytes) -> bytes:
     return decrypted[4:data_len]
 
 
-def _create_local_key(passcode: bytes, salt: bytes) -> bytearray:
+def _create_local_key(passcode, salt):
     h = hashlib.sha512(salt + passcode + salt).digest()
     iter_count = 100000 if passcode else 1
     return bytearray(hashlib.pbkdf2_hmac("sha512", h, salt, iter_count, 256))
 
 
-def _read_tdf_file(path: str) -> bytes:
+def _read_tdf_file(path):
     with open(path, "rb") as f:
         magic = f.read(4)
         if magic != b"TDF$":
@@ -199,7 +199,7 @@ def _read_tdf_file(path: str) -> bytes:
     return payload
 
 
-def read_local_key(key_path: str, passcode: str = "") -> bytearray:
+def read_local_key(key_path, passcode=""):
     """从 key_datas 读取本地加密密钥"""
     raw = _read_tdf_file(key_path)
     stream = memoryview(raw)
@@ -222,12 +222,12 @@ def read_local_key(key_path: str, passcode: str = "") -> bytearray:
 
 
 class _CTRDecryptor:
-    def __init__(self, key: bytes, iv: bytes):
+    def __init__(self, key, iv):
         self.key = key
         self.iv = bytearray(iv)
         self.block_index = 0
 
-    def decrypt(self, src: bytes) -> bytes:
+    def decrypt(self, src):
         crypto = _import_crypto()
         if crypto is None:
             raise RuntimeError("缺少依赖 cryptography，请安装后重试")
@@ -244,7 +244,7 @@ class _CTRDecryptor:
         return result
 
 
-def decrypt_tdf_file(path: str, key: bytes) -> bytes:
+def decrypt_tdf_file(path, key):
     """解密 TDF$ 格式文件"""
     payload = _read_tdf_file(path)
     size = struct.unpack_from(">I", payload, 0)[0]
@@ -252,7 +252,7 @@ def decrypt_tdf_file(path: str, key: bytes) -> bytes:
     return bytes(_decrypt_local(encrypted, key))
 
 
-def decrypt_tdef_file(path: str, key: bytes) -> bytes:
+def decrypt_tdef_file(path, key):
     """解密 TDEF 格式文件"""
     with open(path, "rb") as f:
         magic = f.read(4)
@@ -270,7 +270,7 @@ def decrypt_tdef_file(path: str, key: bytes) -> bytes:
     return d.decrypt(rest)
 
 
-def detect_extension(data: bytes) -> str:
+def detect_extension(data):
     """通过魔数识别文件扩展名"""
     if data[:3] == b"\xff\xd8\xff":
         return ".jpg"
@@ -287,12 +287,12 @@ def detect_extension(data: bytes) -> str:
     return ""
 
 
-def _check_ffmpeg() -> bool:
+def _check_ffmpeg():
     """检查系统是否存在 ffmpeg"""
     return shutil.which("ffmpeg") is not None
 
 
-def convert_webm_to_webp(webm_path: str, out_path: str) -> bool:
+def convert_webm_to_webp(webm_path, out_path):
     """webm 转 animated webp: 无损(lossless 1), 保持宽高比, 最长边 512"""
     try:
         cmd = [
@@ -323,16 +323,17 @@ def convert_webm_to_webp(webm_path: str, out_path: str) -> bool:
         return False
 
 
-def _gray_thumb(path: str, size: int = 32):
+def _gray_thumb(path, size=32):
     """白底合成 RGBA -> 32x32 灰度缩略图, 供内容比对"""
     from PIL import Image as PILImage
 
-    im = PILImage.open(path).convert("RGBA").resize((size, size))
-    bg = PILImage.new("RGBA", im.size, (255, 255, 255, 255))
-    return PILImage.alpha_composite(bg, im).convert("L")
+    with PILImage.open(path) as im:
+        im = im.convert("RGBA").resize((size, size))
+        bg = PILImage.new("RGBA", im.size, (255, 255, 255, 255))
+        return PILImage.alpha_composite(bg, im).convert("L")
 
 
-def _thumb_diff(a, b, size: int = 32) -> float:
+def _thumb_diff(a, b, size=32):
     """归一化灰度差分, 0=完全一致, 1=完全相反"""
     from PIL import ImageChops
 
@@ -341,7 +342,7 @@ def _thumb_diff(a, b, size: int = 32) -> float:
     return sum(h * i for h, i in enumerate(hist)) / (size * size * 255.0)
 
 
-def _is_animated_webp(path: str) -> bool:
+def _is_animated_webp(path):
     """webp 是否多帧动画"""
     from PIL import Image as PILImage
 
@@ -352,7 +353,7 @@ def _is_animated_webp(path: str) -> bool:
         return False
 
 
-def dedup_static_against_animated(webp_paths, threshold: float = 0.02):
+def dedup_static_against_animated(webp_paths, threshold=0.02):
     """去掉与动画 webp 首帧内容一致的静态 webp（动态表情的静态版）"""
     try:
         from PIL import Image as PILImage  # noqa: F401
@@ -392,7 +393,7 @@ def dedup_static_against_animated(webp_paths, threshold: float = 0.02):
 
 
 def start_tg_import(webui, tdata_path=None, passcode="", convert_webm=True):
-    """后台启动 Telegram 表情包导入流程"""
+    """后台启动 Telegram 表情包导入流程，已有任务时返回 False"""
     global _TG_CANCEL
     with _TG_LOCK:
         if _TG_STATE["status"] in (
@@ -402,13 +403,14 @@ def start_tg_import(webui, tdata_path=None, passcode="", convert_webm=True):
             "converting",
             "importing",
         ):
-            return
-    _reset_state()
+            return False
+        _reset_state()
     threading.Thread(
         target=_tg_worker,
         args=(webui, tdata_path, passcode, convert_webm),
         daemon=True,
     ).start()
+    return True
 
 
 def _tg_worker(webui, tdata_path, passcode, convert_webm):
@@ -516,20 +518,19 @@ def _tg_worker(webui, tdata_path, passcode, convert_webm):
                 with open(out_path, "wb") as f:
                     f.write(data)
                 decrypted_paths.append(out_path)
+            except RuntimeError as e:
+                if "缺少依赖" in str(e):
+                    raise
+                logger.debug(f"skip {fpath}: {e}")
+            except Exception as e:
+                logger.debug(f"skip {fpath}: {e}")
+            finally:
                 pct = int((i + 1) / total_files * 100) if total_files > 0 else 100
                 _update_tg(
                     progress=pct,
                     done=i + 1,
                     message=f"正在解密: {i + 1}/{total_files}",
                 )
-            except RuntimeError as e:
-                if "缺少依赖" in str(e):
-                    raise
-                logger.debug(f"skip {fpath}: {e}")
-                continue
-            except Exception as e:
-                logger.debug(f"skip {fpath}: {e}")
-                continue
         if not decrypted_paths:
             _update_tg(status="done", message="未找到表情包文件", total=0, done=0)
             return
@@ -558,6 +559,9 @@ def _tg_worker(webui, tdata_path, passcode, convert_webm):
                 return
             converted = []
             for idx, fpath in enumerate(decrypted_paths):
+                if _check_cancel():
+                    _update_tg(status="cancelled", message="已取消")
+                    return
                 if fpath.endswith(".webm"):
                     webp_path = fpath.replace(".webm", ".webp")
                     if convert_webm_to_webp(fpath, webp_path):

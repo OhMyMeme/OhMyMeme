@@ -454,6 +454,8 @@ async function resetSettings() {
     if (gif) gif.checked = s.auto_play_gif !== false;
     const hp = document.getElementById('s-hover-play');
     if (hp) hp.checked = s.hover_to_play === true;
+    const tgtd = document.getElementById('s-tg-tdata');
+    if (tgtd) tgtd.value = s.tg_tdata_path || '';
     const to = document.getElementById('s-try-original');  // DeepSeek V4 Flash
     if (to) to.checked = false;
     const cm = document.getElementById('s-copy-mode');
@@ -914,7 +916,10 @@ async function startTGImport() {
   showTGOverlay();
 
   let nullCount = 0;
+  let pollInFlight = false;
   tgPollTimer = setInterval(async () => {
+    if (pollInFlight) return;
+    pollInFlight = true;
     try {
       const s = await api('get_tg_import_progress');
       if (!s) {
@@ -924,6 +929,7 @@ async function startTGImport() {
           document.getElementById('tg-import-title').textContent = '导入失败';
           document.getElementById('tg-import-error').style.display = '';
           document.getElementById('tg-import-error').textContent = '连接中断';
+          btn.disabled = false;
         }
         return;
       }
@@ -940,6 +946,7 @@ async function startTGImport() {
         el.textContent = s.message || '导入完成';
         el.className = '';
         if (passcodeEl) passcodeEl.value = '';
+        btn.disabled = false;
       } else if (s.status === 'error') {
         document.getElementById('tg-import-title').textContent = '导入失败';
         if (tgPollTimer) { clearInterval(tgPollTimer); tgPollTimer = null; }
@@ -951,19 +958,22 @@ async function startTGImport() {
         if (['no_tdata', 'invalid_tdata', 'no_cache'].includes(s.error_code)) {
           document.getElementById('btn-tg-retry').style.display = '';
         }
+        btn.disabled = false;
       } else if (s.status === 'cancelled') {
         document.getElementById('tg-import-title').textContent = '已取消';
         if (tgPollTimer) { clearInterval(tgPollTimer); tgPollTimer = null; }
+        btn.disabled = false;
       }
     } catch (e) {
       if (tgPollTimer) { clearInterval(tgPollTimer); tgPollTimer = null; }
       document.getElementById('tg-import-title').textContent = '导入失败';
       document.getElementById('tg-import-error').style.display = '';
       document.getElementById('tg-import-error').textContent = e.message || '连接异常';
+      btn.disabled = false;
+    } finally {
+      pollInFlight = false;
     }
   }, 300);
-
-  btn.disabled = false;
 }
 
 /* QQNT 提取向导 */

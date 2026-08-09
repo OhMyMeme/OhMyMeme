@@ -1373,6 +1373,8 @@ class SettingsApi:
             "show_upload_done": True,
             "show_download_progress": True,
             "show_download_done": True,
+            "tg_tdata_path": self._cfg.get("tg_tdata_path", ""),
+            "hover_to_play": self._cfg.get("hover_to_play", False),
         }
 
     def move_window(self, dx: int, dy: int):
@@ -1512,9 +1514,14 @@ class SettingsApi:
         return {"ok": True, "path": path}
 
     def start_tg_import(self, tdata_path=None, passcode="", convert_webm=True) -> dict:
+        """启动 Telegram 缓存导入，已有任务时返回 {"ok": False, "error"}"""
         if not tdata_path:
             tdata_path = self._cfg.get("tg_tdata_path", "") or None
-        tg_stickers.start_tg_import(self._webui, tdata_path, passcode, convert_webm)
+        started = tg_stickers.start_tg_import(
+            self._webui, tdata_path, passcode, convert_webm
+        )
+        if not started:
+            return {"ok": False, "error": "已有导入任务正在进行"}
         return {"ok": True}
 
     def get_tg_import_progress(self) -> dict:
