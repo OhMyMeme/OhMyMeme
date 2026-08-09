@@ -212,7 +212,8 @@ class JsApi:
             tags = None
         fav_only = collection_id == -2
         recent_only = collection_id == -3
-        cid = None if fav_only or recent_only else collection_id
+        uncategorized = collection_id == -4
+        cid = None if (fav_only or recent_only or uncategorized) else collection_id
         if recent_only:
             rows = self._db.get_recent(200)
         else:
@@ -221,6 +222,7 @@ class JsApi:
                 tags=tags,
                 collection_id=cid,
                 favorite_only=fav_only,
+                uncategorized_only=uncategorized,
                 limit=200,
             )
         favorited_ids = set()
@@ -339,6 +341,14 @@ class JsApi:
             {"id": -2, "name": "收藏夹", "count": self._db.count(favorite_only=True)},
             {"id": -3, "name": "最近使用", "count": len(self._db.get_recent(9999))},
         ]
+        if self._cfg.get("show_uncategorized", True):
+            sys_cols.append(
+                {
+                    "id": -4,
+                    "name": "未分类",
+                    "count": self._db.count(uncategorized_only=True),
+                }
+            )
         collections = sys_cols + self._build_collection_tree()
         return {
             "memes": memes,
@@ -463,10 +473,19 @@ class JsApi:
     def get_collections(self) -> list:
         top = self._build_collection_tree()
         recent = self._db.get_recent(9999)
-        return [
+        sys_cols = [
             {"id": -2, "name": "收藏夹", "count": self._db.count(favorite_only=True)},
             {"id": -3, "name": "最近使用", "count": len(recent)},
-        ] + top
+        ]
+        if self._cfg.get("show_uncategorized", True):
+            sys_cols.append(
+                {
+                    "id": -4,
+                    "name": "未分类",
+                    "count": self._db.count(uncategorized_only=True),
+                }
+            )
+        return sys_cols + top
 
     def get_child_collections(self, parent_id: int) -> list:
         return self._db.get_child_collections(parent_id)
@@ -990,6 +1009,7 @@ class JsApi:
             "show_upload_done": d.get("show_upload_done", True),
             "show_download_progress": d.get("show_download_progress", True),
             "show_download_done": d.get("show_download_done", True),
+            "show_uncategorized": d.get("show_uncategorized", True),
         }
 
     def save_settings(self, settings: dict):
@@ -1276,6 +1296,7 @@ class SettingsApi:
             "show_upload_done": d.get("show_upload_done", True),
             "show_download_progress": d.get("show_download_progress", True),
             "show_download_done": d.get("show_download_done", True),
+            "show_uncategorized": d.get("show_uncategorized", True),
         }
 
     def save_settings(self, settings: dict):

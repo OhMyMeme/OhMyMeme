@@ -412,6 +412,7 @@ class MemeDB:
         tags: List[str] = None,
         collection_id: int = None,
         favorite_only: bool = False,
+        uncategorized_only: bool = False,
         offset: int = 0,
         limit: int = 100,
     ) -> List[dict]:
@@ -444,6 +445,11 @@ class MemeDB:
         if favorite_only:
             where.append("m.id IN (SELECT meme_id FROM favorites)")
 
+        if uncategorized_only:
+            where.append("""NOT EXISTS (
+                SELECT 1 FROM meme_collections mc WHERE mc.meme_id = m.id
+            )""")
+
         sql = "SELECT m.* FROM memes m"
         if where:
             sql += " WHERE " + " AND ".join(where)
@@ -462,7 +468,11 @@ class MemeDB:
         return [dict(r) for r in rows]
 
     def count(
-        self, keyword: str = "", collection_id: int = None, favorite_only: bool = False
+        self,
+        keyword: str = "",
+        collection_id: int = None,
+        favorite_only: bool = False,
+        uncategorized_only: bool = False,
     ) -> int:
         conn = self._get_conn()
         where = ["(stego_of_hash IS NULL OR stego_of_hash = '')"]
@@ -478,6 +488,10 @@ class MemeDB:
             params.append(collection_id)
         if favorite_only:
             where.append("id IN (SELECT meme_id FROM favorites)")
+        if uncategorized_only:
+            where.append("""NOT EXISTS (
+                SELECT 1 FROM meme_collections WHERE meme_id = memes.id
+            )""")
         sql = "SELECT COUNT(*) FROM memes"
         if where:
             sql += " WHERE " + " AND ".join(where)

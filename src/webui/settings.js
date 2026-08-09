@@ -198,6 +198,8 @@ async function getSettings() {
   if (cm) cm.value = String(s.copy_resize_mode ?? 1);
   if (as) as.checked = s.auto_start === true;
   if (ss) ss.checked = s.silent_start === true;
+  const unc = document.getElementById('s-show-uncategorized');
+  if (unc) unc.checked = s.show_uncategorized !== false;
   toggleSilentStart();
   const ff = document.getElementById('s-sync-fetch');
   const sa = document.getElementById('s-sync-auto');
@@ -420,6 +422,7 @@ async function saveSettings() {
   const copy_mode = parseInt(document.getElementById('s-copy-mode')?.value || '1', 10);
   const auto_start = document.getElementById('s-auto-start')?.checked === true;
   const silent_start = document.getElementById('s-silent-start')?.checked === true;
+  const show_uncategorized = document.getElementById('s-show-uncategorized')?.checked !== false;
   const sync = collectSyncSettings();
   if (!validateSync(sync)) return;
   const lan_port = parseInt(document.getElementById('s-lan-port')?.value) || 17852;
@@ -428,7 +431,7 @@ async function saveSettings() {
     hotkey, auto_play_gif: gif,
     try_original_image: try_original,  // DeepSeek V4 Flash
     copy_resize_mode: copy_mode,
-    auto_start, silent_start,
+    auto_start, silent_start, show_uncategorized,
     lan_port, lan_secret,
     ...sync
   });

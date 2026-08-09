@@ -233,6 +233,13 @@ tests/
 - 分组内右键空白区域 → 新建子分组
 - 右键表情包 → 加入分组 → 弹窗列出当前大分组下的子分组
 
+### 未分类（虚拟分组）
+- **`collection_id = -4`** 标识「未分类」虚拟分组：展示未加入任何分组的表情包（`meme_collections` 无记录），**不写入 DB/manifest，动态生成**
+- `MemeDB.search()/count()` 新增 `uncategorized_only` 参数（`NOT EXISTS` 于 `meme_collections`），`search_memes` 中 `collection_id == -4` 路由到该参数，同时过滤隐写载体
+- `get_init_data`/`get_collections` 按配置 `show_uncategorized`（默认开）决定是否追加 `-4` 条目（`get_collections` 中放于 `-2`/`-3` 之后）；设置页「分组显示 → 显示未分类分组」开关（`s-show-uncategorized`），保存到 `save_settings` 的 `show_uncategorized`
+- 前端走通用集合渲染路径：计数为 0 时自动隐藏（`renderCollections` 的 `count === 0` 过滤）；不可排序（`canReorderMemes` 对负 id 返回 false）；无特殊右键菜单
+- 未分类集合内的删除/加入分组等操作经 `refreshCollections` 后计数自动刷新，全部归类后 `-4` 从标签栏消失
+
 ### 最近使用
 - `recent_uses` 表：`meme_id` + `used_at`
 - `copy_meme` 时自动 `record_use`（`INSERT OR REPLACE`）

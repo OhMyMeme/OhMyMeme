@@ -116,6 +116,7 @@ class Config:
         "window_y": -1,
         "auto_play_gif": True,
         "try_original_image": False,
+        "show_uncategorized": True,  # 显示「未分类」分组
     }
 
     def __init__(self, path: Path = None):
