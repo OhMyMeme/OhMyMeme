@@ -25,6 +25,10 @@ _SECRET_KEYS = {
     "lan_secret",
 }
 
+# ~~~ 导入限制 ~~~（超过限制的图片拒绝入库）
+_IMPORT_MAX_PX = 2560  # 最长边像素上限（超过 2K）
+_IMPORT_MAX_BYTES = 20 * 1024 * 1024  # 文件大小上限（20 MiB）
+
 
 def _get_config_dir() -> Path:
     """跨平台配置目录"""
