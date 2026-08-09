@@ -492,6 +492,10 @@ function closeImportMenu() {
   document.getElementById('import-overlay').style.display = 'none';
 }
 
+function appendRejectedMsg(msg, count) {
+  return count ? msg + '，跳过 ' + count + ' 个超限文件' : msg;
+}
+
 async function importLocal() {
   closeImportMenu();
   if (pending) return;
@@ -499,9 +503,7 @@ async function importLocal() {
   const result = await api('import_memes');
   pending = false;
   if (result && result.ok) {
-    let msg = '导入完成';
-    if (result.rejected) msg += '，跳过 ' + result.rejected + ' 个超限文件';
-    showToast(msg);
+    showToast(appendRejectedMsg('导入完成', result.rejected));
     refreshMemes(); refreshTags(); refreshCollections();
   }
 }
@@ -515,8 +517,7 @@ async function importFolder() {
   pending = false;
   if (!r) return;
   if (!r.ok) { if (r.cancelled) return; showToast(r.error || '导入失败'); return; }
-  let msg = '导入完成，共 ' + r.imported + ' 个表情';
-  if (r.rejected) msg += '，跳过 ' + r.rejected + ' 个超限文件';
+  let msg = appendRejectedMsg('导入完成，共 ' + r.imported + ' 个表情', r.rejected);
   if (r.collection_name) msg += '，已加入分组「' + r.collection_name + '」';
   showToast(msg);
   refreshMemes(); refreshTags(); refreshCollections();
@@ -534,9 +535,7 @@ async function importClipboard() {
   if (newName && newName !== result.name) {
     await api('rename_meme', result.id, newName);
   }
-  let msg = '导入完成';
-  if (result.rejected) msg += '，跳过 ' + result.rejected + ' 个超限文件';
-  showToast(msg);
+  showToast(appendRejectedMsg('导入完成', result.rejected));
   refreshMemes(); refreshTags(); refreshCollections();
 }
 

@@ -678,6 +678,12 @@ class JsApi:
             ids = r.get("ids") or []
             if ids:
                 return {"ok": True, "id": ids[0]}
+            if r.get("rejected"):
+                return {
+                    "ok": False,
+                    "rejected": r["rejected"],
+                    "error": "文件超过大小/分辨率限制，已跳过",
+                }
             return {"ok": False, "error": "导入失败"}
 
         clean_url = _strip_url_modifiers(s)
@@ -728,6 +734,12 @@ class JsApi:
             ids = r.get("ids") or []
             if ids:
                 return {"ok": True, "id": ids[0]}
+            if r.get("rejected"):
+                return {
+                    "ok": False,
+                    "rejected": r["rejected"],
+                    "error": "文件超过大小/分辨率限制，已跳过",
+                }
             return {"ok": False, "error": "导入失败"}
         except URLError as e:
             return {"ok": False, "error": f"下载失败: {e.reason}"}
@@ -2307,7 +2319,7 @@ class WebUI:
                         except Exception:
                             pass
                     if fsize > _IMPORT_MAX_BYTES or max(w, h) > _IMPORT_MAX_PX:
-                        logger.info(f"scan_cache skip (over limit): {fname}")
+                        logger.info("scan_cache skip (over limit): %s", fname)
                         continue
                     sha256 = hashlib.sha256()
                     with open(fpath, "rb") as f:

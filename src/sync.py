@@ -891,8 +891,8 @@ def _pull_worker(entries, remote_root, cache_dir, db):
                         try:
                             from PIL import Image as PILImage
 
-                            img = PILImage.open(local_path)
-                            w, h = img.size
+                            with PILImage.open(local_path) as img:
+                                w, h = img.size
                         except Exception:
                             pass
                         fsize = local_path.stat().st_size
