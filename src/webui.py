@@ -1302,6 +1302,7 @@ class SettingsApi:
             "show_download_done": d.get("show_download_done", True),
             "show_uncategorized": d.get("show_uncategorized", True),
             "tg_tdata_path": d.get("tg_tdata_path", ""),
+            "hover_to_play": d.get("hover_to_play", False),
         }
 
     def save_settings(self, settings: dict):

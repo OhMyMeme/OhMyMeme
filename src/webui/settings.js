@@ -885,13 +885,25 @@ function tgRetryPick() {
 async function startTGImport() {
   const btn = document.getElementById('btn-tg-start');
   const status = document.getElementById('tg-status');
+  if (!btn || !status) return;
   btn.disabled = true; status.textContent = ''; status.className = '';
 
-  const tdata = document.getElementById('s-tg-tdata').value;
-  const passcode = document.getElementById('s-tg-passcode').value;
-  const convert = document.getElementById('s-tg-convert').checked !== false;
+  const tdataEl = document.getElementById('s-tg-tdata');
+  const passcodeEl = document.getElementById('s-tg-passcode');
+  const convertEl = document.getElementById('s-tg-convert');
+  const tdata = tdataEl ? tdataEl.value : '';
+  const passcode = passcodeEl ? passcodeEl.value : '';
+  const convert = convertEl ? convertEl.checked !== false : true;
 
-  const r = await api('start_tg_import', tdata || null, passcode, convert);
+  let r;
+  try {
+    r = await api('start_tg_import', tdata || null, passcode, convert);
+  } catch (e) {
+    btn.disabled = false;
+    status.textContent = '启动失败: ' + (e.message || e);
+    status.className = 'error';
+    return;
+  }
   if (!r || !r.ok) {
     btn.disabled = false;
     status.textContent = '启动失败';
@@ -901,34 +913,53 @@ async function startTGImport() {
 
   showTGOverlay();
 
+  let nullCount = 0;
   tgPollTimer = setInterval(async () => {
-    const s = await api('get_tg_import_progress');
-    if (!s) return;
-
-    document.getElementById('tg-import-bar').style.width = (s.progress || 0) + '%';
-    document.getElementById('tg-import-pct').textContent = (s.progress || 0) + '%';
-    document.getElementById('tg-import-msg').textContent = s.message || '';
-
-    if (s.status === 'done') {
-      document.getElementById('tg-import-title').textContent = '导入完成';
-      if (tgPollTimer) { clearInterval(tgPollTimer); tgPollTimer = null; }
-      const el = document.getElementById('tg-status');
-      el.textContent = s.message || '导入完成';
-      el.className = '';
-    } else if (s.status === 'error') {
-      document.getElementById('tg-import-title').textContent = '导入失败';
-      if (tgPollTimer) { clearInterval(tgPollTimer); tgPollTimer = null; }
-      const el = document.getElementById('tg-status');
-      el.textContent = '导入失败: ' + (s.error || '');
-      el.className = 'error';
-      document.getElementById('tg-import-error').style.display = '';
-      document.getElementById('tg-import-error').textContent = s.error || '未知错误';
-      if (['no_tdata', 'invalid_tdata', 'no_cache'].includes(s.error_code)) {
-        document.getElementById('btn-tg-retry').style.display = '';
+    try {
+      const s = await api('get_tg_import_progress');
+      if (!s) {
+        nullCount++;
+        if (nullCount > 20) {
+          if (tgPollTimer) { clearInterval(tgPollTimer); tgPollTimer = null; }
+          document.getElementById('tg-import-title').textContent = '导入失败';
+          document.getElementById('tg-import-error').style.display = '';
+          document.getElementById('tg-import-error').textContent = '连接中断';
+        }
+        return;
       }
-    } else if (s.status === 'cancelled') {
-      document.getElementById('tg-import-title').textContent = '已取消';
+      nullCount = 0;
+
+      document.getElementById('tg-import-bar').style.width = (s.progress || 0) + '%';
+      document.getElementById('tg-import-pct').textContent = (s.progress || 0) + '%';
+      document.getElementById('tg-import-msg').textContent = s.message || '';
+
+      if (s.status === 'done') {
+        document.getElementById('tg-import-title').textContent = '导入完成';
+        if (tgPollTimer) { clearInterval(tgPollTimer); tgPollTimer = null; }
+        const el = document.getElementById('tg-status');
+        el.textContent = s.message || '导入完成';
+        el.className = '';
+        if (passcodeEl) passcodeEl.value = '';
+      } else if (s.status === 'error') {
+        document.getElementById('tg-import-title').textContent = '导入失败';
+        if (tgPollTimer) { clearInterval(tgPollTimer); tgPollTimer = null; }
+        const el = document.getElementById('tg-status');
+        el.textContent = '导入失败: ' + (s.error || '');
+        el.className = 'error';
+        document.getElementById('tg-import-error').style.display = '';
+        document.getElementById('tg-import-error').textContent = s.error || '未知错误';
+        if (['no_tdata', 'invalid_tdata', 'no_cache'].includes(s.error_code)) {
+          document.getElementById('btn-tg-retry').style.display = '';
+        }
+      } else if (s.status === 'cancelled') {
+        document.getElementById('tg-import-title').textContent = '已取消';
+        if (tgPollTimer) { clearInterval(tgPollTimer); tgPollTimer = null; }
+      }
+    } catch (e) {
       if (tgPollTimer) { clearInterval(tgPollTimer); tgPollTimer = null; }
+      document.getElementById('tg-import-title').textContent = '导入失败';
+      document.getElementById('tg-import-error').style.display = '';
+      document.getElementById('tg-import-error').textContent = e.message || '连接异常';
     }
   }, 300);
 

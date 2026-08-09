@@ -394,6 +394,15 @@ def dedup_static_against_animated(webp_paths, threshold: float = 0.02):
 def start_tg_import(webui, tdata_path=None, passcode="", convert_webm=True):
     """后台启动 Telegram 表情包导入流程"""
     global _TG_CANCEL
+    with _TG_LOCK:
+        if _TG_STATE["status"] in (
+            "scanning",
+            "loading_key",
+            "decrypting",
+            "converting",
+            "importing",
+        ):
+            return
     _reset_state()
     threading.Thread(
         target=_tg_worker,
@@ -513,6 +522,11 @@ def _tg_worker(webui, tdata_path, passcode, convert_webm):
                     done=i + 1,
                     message=f"正在解密: {i + 1}/{total_files}",
                 )
+            except RuntimeError as e:
+                if "缺少依赖" in str(e):
+                    raise
+                logger.debug(f"skip {fpath}: {e}")
+                continue
             except Exception as e:
                 logger.debug(f"skip {fpath}: {e}")
                 continue
