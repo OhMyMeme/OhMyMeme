@@ -503,7 +503,8 @@ async function importLocal() {
   const result = await api('import_memes');
   pending = false;
   if (result && result.ok) {
-    showToast(appendRejectedMsg('导入完成', result.rejected));
+    const msg = result.imported > 0 ? '导入完成' : '未导入文件';
+    showToast(appendRejectedMsg(msg, result.rejected));
     refreshMemes(); refreshTags(); refreshCollections();
   }
 }
@@ -517,7 +518,9 @@ async function importFolder() {
   pending = false;
   if (!r) return;
   if (!r.ok) { if (r.cancelled) return; showToast(r.error || '导入失败'); return; }
-  let msg = appendRejectedMsg('导入完成，共 ' + r.imported + ' 个表情', r.rejected);
+  let msg = r.imported > 0
+    ? appendRejectedMsg('导入完成，共 ' + r.imported + ' 个表情', r.rejected)
+    : appendRejectedMsg('未导入文件', r.rejected);
   if (r.collection_name) msg += '，已加入分组「' + r.collection_name + '」';
   showToast(msg);
   refreshMemes(); refreshTags(); refreshCollections();
@@ -531,12 +534,16 @@ async function importClipboard() {
   pending = false;
   if (!result) { showToast('导入失败'); return; }
   if (!result.ok) { showToast(result.error || '导入失败'); return; }
-  const newName = await showPrompt('重命名', result.name || '');
-  if (newName && newName !== result.name) {
-    await api('rename_meme', result.id, newName);
+  if (result.id > 0) {
+    const newName = await showPrompt('重命名', result.name || '');
+    if (newName && newName !== result.name) {
+      await api('rename_meme', result.id, newName);
+    }
+    showToast(appendRejectedMsg('导入完成', result.rejected));
+    refreshMemes(); refreshTags(); refreshCollections();
+  } else {
+    showToast(appendRejectedMsg('未导入文件', result.rejected));
   }
-  showToast(appendRejectedMsg('导入完成', result.rejected));
-  refreshMemes(); refreshTags(); refreshCollections();
 }
 
 function importQQ() {

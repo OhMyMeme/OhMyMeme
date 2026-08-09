@@ -880,7 +880,6 @@ class JsApi:
 
     def import_from_clipboard(self) -> dict:
         import hashlib
-        import shutil
         import tempfile
 
         from PIL import ImageGrab
@@ -913,33 +912,32 @@ class JsApi:
             tmp = tempfile.NamedTemporaryFile(suffix=".png", delete=False)
             tmp_path = tmp.name
             tmp.close()
-            img.save(tmp_path, "PNG")
-            sha256 = hashlib.sha256()
-            with open(tmp_path, "rb") as f:
-                for chunk in iter(lambda: f.read(65536), b""):
-                    sha256.update(chunk)
-            fhash = sha256.hexdigest()
-            db = self._db
-            if db.get_by_hash(fhash):
-                os.unlink(tmp_path)
-                return {"ok": False, "error": "该图片已存在"}
-            cache_dir = self._cfg.cache_dir
-            dst = cache_dir / f"{fhash[:16]}.png"
-            shutil.move(tmp_path, dst)
-            w, h = img.size
-            db.add_meme(
-                filename=dst.name,
-                file_hash=fhash,
-                width=w,
-                height=h,
-                file_size=os.path.getsize(dst),
-                mime_type="image/png",
-                original_name="",
-            )
-            build_manifest()
-            row = db.get_by_hash(fhash)
-            mid = row["id"] if row else 0
-            return {"ok": True, "id": mid, "name": "未命名"}
+            try:
+                img.save(tmp_path, "PNG")
+                sha256 = hashlib.sha256()
+                with open(tmp_path, "rb") as f:
+                    for chunk in iter(lambda: f.read(65536), b""):
+                        sha256.update(chunk)
+                if self._db.get_by_hash(sha256.hexdigest()):
+                    return {"ok": False, "error": "该图片已存在"}
+                r = self._webui._do_import([tmp_path], [""])
+                ids = r.get("ids") or []
+                rejected = r.get("rejected", 0)
+                if ids:
+                    row = self._db.get_by_id(ids[0])
+                    orig = row["original_name"] if row else ""
+                    return {
+                        "ok": True,
+                        "id": ids[0],
+                        "name": orig or "未命名",
+                        "rejected": rejected,
+                    }
+                return {"ok": True, "id": 0, "name": "未命名", "rejected": rejected}
+            finally:
+                try:
+                    os.unlink(tmp_path)
+                except OSError:
+                    pass
         except Exception as e:
             return {"ok": False, "error": str(e)}
 
@@ -2117,8 +2115,8 @@ class WebUI:
                         fsize = 0
                     if HAS_PIL:
                         try:
-                            img = PILImage.open(path)
-                            w, h = img.size
+                            with PILImage.open(path) as img:
+                                w, h = img.size
                         except Exception:
                             pass
                     if fsize > _IMPORT_MAX_BYTES or max(w, h) > _IMPORT_MAX_PX:
@@ -2314,8 +2312,8 @@ class WebUI:
                     w = h = 0
                     if HAS_PIL:
                         try:
-                            img = PILImage.open(fpath)
-                            w, h = img.size
+                            with PILImage.open(fpath) as img:
+                                w, h = img.size
                         except Exception:
                             pass
                     if fsize > _IMPORT_MAX_BYTES or max(w, h) > _IMPORT_MAX_PX:

@@ -492,9 +492,12 @@ def _import_bytes(data: bytes, filename: str) -> dict:
     if w <= 0 or h <= 0:
         return {"ok": False, "error": "图片尺寸无效"}
     if len(data) > _IMPORT_MAX_BYTES:
-        return {"ok": False, "error": "文件超过 20MB 限制"}
+        return {
+            "ok": False,
+            "error": "文件超过 %dMB 限制" % (_IMPORT_MAX_BYTES // (1024 * 1024)),
+        }
     if max(w, h) > _IMPORT_MAX_PX:
-        return {"ok": False, "error": "分辨率超过 2K 限制"}
+        return {"ok": False, "error": "分辨率超过 %dK 限制" % (_IMPORT_MAX_PX // 1000)}
     fhash = hashlib.sha256(data).hexdigest()
     if db.get_by_hash(fhash):
         return {"ok": True, "dedup": True}

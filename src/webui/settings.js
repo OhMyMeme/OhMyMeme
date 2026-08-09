@@ -830,9 +830,9 @@ async function startImportFromZip() {
   const r = await api('import_memes');
   btn.disabled = false;
   btn.textContent = '选择文件导入';
-  if (r) {
+  if (r && r.ok) {
     closeQQOverlay();
-    showToast('导入完成');
+    showToast(r.rejected ? '导入完成，跳过 ' + r.rejected + ' 个超限文件' : '导入完成');
   }
 }
 
