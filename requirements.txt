@@ -12,6 +12,9 @@ keyboard>=0.13.5
 # 加密（可选，不装则使用降级加密）
 cryptography>=41.0.0
 
+# Telegram 缓存解密
+tgcrypto>=1.2.0
+
 # S3 兼容存储
 boto3>=1.28.0
 

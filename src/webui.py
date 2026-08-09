@@ -55,7 +55,7 @@ try:
 except ImportError:
     HAS_BOTTLE = False
 
-from . import adb_util, qqnt_extract, updater
+from . import adb_util, qqnt_extract, tg_stickers, updater
 from . import sync as sync_module
 from .clipboard_util import (
     _is_animated,
@@ -233,6 +233,7 @@ class JsApi:
         except Exception:
             pass
         auto_gif = self._cfg.get("auto_play_gif", True)
+        hover_play = self._cfg.get("hover_to_play", False)
         result = []
         for r in rows:
             fname = r["filename"].lower()
@@ -262,6 +263,7 @@ class JsApi:
                     "is_animated": is_animated,
                     "favorited": r["id"] in favorited_ids,
                     "auto_play_gif": auto_gif,
+                    "hover_to_play": hover_play,
                 }
             )
         return result
@@ -307,6 +309,7 @@ class JsApi:
         except Exception:
             pass
         auto_gif = self._cfg.get("auto_play_gif", True)
+        hover_play = self._cfg.get("hover_to_play", False)
         memes = []
         for r in rows:
             fname = r["filename"].lower()
@@ -335,6 +338,7 @@ class JsApi:
                     "is_animated": is_animated,
                     "favorited": r["id"] in favorited_ids,
                     "auto_play_gif": auto_gif,
+                    "hover_to_play": hover_play,
                 }
             )
         sys_cols = [
@@ -1297,6 +1301,7 @@ class SettingsApi:
             "show_download_progress": d.get("show_download_progress", True),
             "show_download_done": d.get("show_download_done", True),
             "show_uncategorized": d.get("show_uncategorized", True),
+            "tg_tdata_path": d.get("tg_tdata_path", ""),
         }
 
     def save_settings(self, settings: dict):
@@ -1484,6 +1489,38 @@ class SettingsApi:
 
     def cancel_qq_import(self):
         adb_util.cancel_qq_import()
+
+    def pick_tg_tdata(self) -> dict:
+        """手动选择 Telegram Desktop tdata 目录（校验并持久化）"""
+        try:
+            result = webview.windows[0].create_file_dialog(
+                webview.FileDialog.FOLDER, allow_multiple=False
+            )
+        except Exception:
+            return {"ok": False, "error": "无法打开目录选择对话框"}
+        if not result:
+            return {"ok": False, "cancelled": True}
+        path = result[0] if isinstance(result, (tuple, list)) else result
+        if not tg_stickers.is_valid_tdata(path):
+            return {
+                "ok": False,
+                "error": "所选目录不是有效的 tdata 目录（未找到 key_datas）",
+            }
+        self._cfg.set("tg_tdata_path", path)
+        self._cfg.save()
+        return {"ok": True, "path": path}
+
+    def start_tg_import(self, tdata_path=None, passcode="", convert_webm=True) -> dict:
+        if not tdata_path:
+            tdata_path = self._cfg.get("tg_tdata_path", "") or None
+        tg_stickers.start_tg_import(self._webui, tdata_path, passcode, convert_webm)
+        return {"ok": True}
+
+    def get_tg_import_progress(self) -> dict:
+        return tg_stickers.get_tg_progress()
+
+    def cancel_tg_import(self):
+        tg_stickers.cancel_tg_import()
 
     def qqnt_check_env(self) -> dict:
         """检查 QQNT 提取环境，返回 get_extract_status 结果"""

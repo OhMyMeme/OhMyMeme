@@ -110,11 +110,14 @@ class Config:
         # 局域网互联
         "lan_port": 17852,  # 局域网服务端口
         "lan_secret": "",  # 互联访问密钥（加密存储）
+        # Telegram 导入
+        "tg_tdata_path": "",  # 手动指定的 Telegram tdata 目录
         # UI
         "theme": "dark",
         "window_x": -1,
         "window_y": -1,
         "auto_play_gif": True,
+        "hover_to_play": False,
         "try_original_image": False,
         "show_uncategorized": True,  # 显示「未分类」分组
     }

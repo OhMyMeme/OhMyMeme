@@ -228,10 +228,18 @@ function renderGrid() {
     img.alt = m.name;
     img.loading = 'lazy';
     img.draggable = false;
-    if (m.is_animated && m.auto_play_gif) {
+    const animateInGrid = m.is_animated && m.auto_play_gif && !m.hover_to_play;
+    if (animateInGrid) {
       img.src = '/api/original/' + m.id + '/' + encodeURIComponent(m.filename);
     } else {
       img.src = '/api/thumb/' + m.id + '/' + encodeURIComponent(m.filename);
+    }
+    if (m.is_animated && m.auto_play_gif && m.hover_to_play) {
+      const animUrl = '/api/original/' + m.id + '/' + encodeURIComponent(m.filename);
+      const thumbUrl = img.src;
+      let hoverTimer = null;
+      card.addEventListener('mouseenter', () => { hoverTimer = setTimeout(() => { img.src = animUrl; }, 150); });
+      card.addEventListener('mouseleave', () => { clearTimeout(hoverTimer); img.src = thumbUrl; });
     }
     card.appendChild(img);
 
@@ -1400,10 +1408,18 @@ function cbMemeCard(m, side) {
   const img = document.createElement('img');
   img.loading = 'lazy';
   img.draggable = false;
-  if (m.is_animated && m.auto_play_gif) {
+  const animateInGrid = m.is_animated && m.auto_play_gif && !m.hover_to_play;
+  if (animateInGrid) {
     img.src = '/api/original/' + m.id + '/' + encodeURIComponent(m.filename);
   } else {
     img.src = '/api/thumb/' + m.id + '/' + encodeURIComponent(m.filename);
+  }
+  if (m.is_animated && m.auto_play_gif && m.hover_to_play) {
+    const animUrl = '/api/original/' + m.id + '/' + encodeURIComponent(m.filename);
+    const thumbUrl = img.src;
+    let hoverTimer = null;
+    card.addEventListener('mouseenter', () => { hoverTimer = setTimeout(() => { img.src = animUrl; }, 150); });
+    card.addEventListener('mouseleave', () => { clearTimeout(hoverTimer); img.src = thumbUrl; });
   }
   card.appendChild(img);
   if (m.is_animated) {
