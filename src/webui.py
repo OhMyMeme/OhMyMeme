@@ -64,7 +64,7 @@ from .clipboard_util import (
     convert_image_mode_3,
     copy_image_to_clipboard,
 )
-from .config import get_config
+from .config import _IMPORT_MAX_BYTES, _IMPORT_MAX_PX, get_config
 from .database import get_db
 from .manifest import build as build_manifest
 
@@ -674,7 +674,8 @@ class JsApi:
             # Windows 裸路径: C:\Users\...
             local_path = s
         if local_path:
-            ids = self._webui._do_import([local_path])
+            r = self._webui._do_import([local_path])
+            ids = r.get("ids") or []
             if ids:
                 return {"ok": True, "id": ids[0]}
             return {"ok": False, "error": "导入失败"}
@@ -723,7 +724,8 @@ class JsApi:
             # 重命名为正确扩展名
             final_path = tmp_path + ext
             os.rename(tmp_path, final_path)
-            ids = self._webui._do_import([final_path])
+            r = self._webui._do_import([final_path])
+            ids = r.get("ids") or []
             if ids:
                 return {"ok": True, "id": ids[0]}
             return {"ok": False, "error": "导入失败"}
@@ -806,11 +808,15 @@ class JsApi:
                 file_types=("图片文件 (*.png;*.jpg;*.jpeg;*.gif;*.webp;*.bmp)",),
             )
         except Exception:
-            return False
+            return {"ok": False}
         if not result:
-            return False
-        self._webui._do_import(result)
-        return True
+            return {"ok": False, "cancelled": True}
+        r = self._webui._do_import(result)
+        return {
+            "ok": True,
+            "imported": len(r.get("ids") or []),
+            "rejected": r.get("rejected", 0),
+        }
 
     def import_folder(self, make_collection=True) -> dict:
         """选择文件夹并导入其中全部图片；make_collection 时以文件夹名创建分组"""
@@ -836,7 +842,9 @@ class JsApi:
                     names.append(os.path.splitext(fn)[0])
             if not files:
                 return {"ok": False, "error": "文件夹中没有支持的图片"}
-            ids = self._webui._do_import(files, names)
+            r = self._webui._do_import(files, names)
+            ids = r.get("ids") or []
+            rejected = r.get("rejected", 0)
             collection_id = None
             folder_name = os.path.basename(os.path.normpath(folder))
             if make_collection and ids:
@@ -850,6 +858,7 @@ class JsApi:
             return {
                 "ok": True,
                 "imported": len(ids),
+                "rejected": rejected,
                 "collection_id": collection_id,
                 "collection_name": folder_name if make_collection and ids else None,
             }
@@ -875,12 +884,19 @@ class JsApi:
                 paths = [p for p in clip if os.path.isfile(p)]
                 if not paths:
                     return {"ok": False, "error": "剪贴板中没有图片文件"}
-                ids = self._webui._do_import(paths)
+                r = self._webui._do_import(paths)
+                ids = r.get("ids") or []
+                rejected = r.get("rejected", 0)
                 if ids:
                     row = self._db.get_by_id(ids[0])
                     orig = row["original_name"] if row else ""
-                    return {"ok": True, "id": ids[0], "name": orig or "未命名"}
-                return {"ok": True, "id": 0, "name": "未命名"}
+                    return {
+                        "ok": True,
+                        "id": ids[0],
+                        "name": orig or "未命名",
+                        "rejected": rejected,
+                    }
+                return {"ok": True, "id": 0, "name": "未命名", "rejected": rejected}
             img = clip
             tmp = tempfile.NamedTemporaryFile(suffix=".png", delete=False)
             tmp_path = tmp.name
@@ -1669,7 +1685,7 @@ class SettingsApi:
         except Exception:
             return False
 
-    def import_memes(self) -> bool:
+    def import_memes(self) -> dict:
         try:
             result = webview.windows[0].create_file_dialog(
                 webview.FileDialog.OPEN,
@@ -1677,11 +1693,15 @@ class SettingsApi:
                 file_types=("图片文件 (*.png;*.jpg;*.jpeg;*.gif;*.webp;*.bmp)",),
             )
         except Exception:
-            return False
+            return {"ok": False}
         if not result:
-            return False
-        self._webui._do_import(result)
-        return True
+            return {"ok": False, "cancelled": True}
+        r = self._webui._do_import(result)
+        return {
+            "ok": True,
+            "imported": len(r.get("ids") or []),
+            "rejected": r.get("rejected", 0),
+        }
 
     def close_settings(self):
         self._webui.close_settings()
@@ -2060,6 +2080,7 @@ class WebUI:
         db = get_db()
         cache_dir = cfg.cache_dir
         imported = 0
+        rejected = 0
         imported_ids = []
         for i, src in enumerate(file_paths):
             try:
@@ -2077,25 +2098,35 @@ class WebUI:
                 else:
                     items = [(src, base_name, None, 0)]
                 for path, oname, stego_of_hash, from_stego in items:
-                    fhash = _file_sha256(path)
-                    if db.get_by_hash(fhash):
-                        continue
-                    ext = _detect_image_ext(path) or os.path.splitext(path)[1] or ".png"
-                    dst = cache_dir / f"{fhash[:16]}{ext}"
-                    shutil.copy2(path, dst)
                     w = h = 0
+                    try:
+                        fsize = os.path.getsize(path)
+                    except OSError:
+                        fsize = 0
                     if HAS_PIL:
                         try:
                             img = PILImage.open(path)
                             w, h = img.size
                         except Exception:
                             pass
+                    if fsize > _IMPORT_MAX_BYTES or max(w, h) > _IMPORT_MAX_PX:
+                        rejected += 1
+                        logger.info(
+                            "import rejected (over limit): %s", os.path.basename(path)
+                        )
+                        continue
+                    fhash = _file_sha256(path)
+                    if db.get_by_hash(fhash):
+                        continue
+                    ext = _detect_image_ext(path) or os.path.splitext(path)[1] or ".png"
+                    dst = cache_dir / f"{fhash[:16]}{ext}"
+                    shutil.copy2(path, dst)
                     db.add_meme(
                         filename=dst.name,
                         file_hash=fhash,
                         width=w,
                         height=h,
-                        file_size=os.path.getsize(path),
+                        file_size=fsize,
                         mime_type=f"image/{ext[1:]}" if ext else "image/png",
                         original_name=oname,
                         stego_of_hash=stego_of_hash,
@@ -2115,7 +2146,7 @@ class WebUI:
         if imported:
             build_manifest()
         logger.info(f"导入完成: {imported} 个")
-        return imported_ids
+        return {"ids": imported_ids, "rejected": rejected}
 
     def _on_hotkey_change(self, new_hotkey: str):
         if self._on_hotkey_change_cb:
@@ -2267,13 +2298,7 @@ class WebUI:
                 if db.get_by_filename(fname):
                     continue
                 try:
-                    sha256 = hashlib.sha256()
-                    with open(fpath, "rb") as f:
-                        for chunk in iter(lambda: f.read(65536), b""):
-                            sha256.update(chunk)
-                    fhash = sha256.hexdigest()
-                    if db.get_by_hash(fhash):
-                        continue
+                    fsize = os.path.getsize(fpath)
                     w = h = 0
                     if HAS_PIL:
                         try:
@@ -2281,6 +2306,16 @@ class WebUI:
                             w, h = img.size
                         except Exception:
                             pass
+                    if fsize > _IMPORT_MAX_BYTES or max(w, h) > _IMPORT_MAX_PX:
+                        logger.info(f"scan_cache skip (over limit): {fname}")
+                        continue
+                    sha256 = hashlib.sha256()
+                    with open(fpath, "rb") as f:
+                        for chunk in iter(lambda: f.read(65536), b""):
+                            sha256.update(chunk)
+                    fhash = sha256.hexdigest()
+                    if db.get_by_hash(fhash):
+                        continue
                     mime = f"image/{ext[1:]}" if ext else "image/png"
                     oname = os.path.splitext(fname)[0]
                     db.add_meme(
@@ -2288,7 +2323,7 @@ class WebUI:
                         file_hash=fhash,
                         width=w,
                         height=h,
-                        file_size=os.path.getsize(fpath),
+                        file_size=fsize,
                         mime_type=mime,
                         original_name=oname,
                     )

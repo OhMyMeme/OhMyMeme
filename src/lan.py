@@ -22,7 +22,12 @@ except ImportError:
     HAS_AESGCM = False
 
 from . import __version__
-from .config import _SECRET_KEYS, get_config
+from .config import (
+    _IMPORT_MAX_BYTES,
+    _IMPORT_MAX_PX,
+    _SECRET_KEYS,
+    get_config,
+)
 from .database import get_db
 from .manifest import build as build_manifest
 
@@ -486,6 +491,10 @@ def _import_bytes(data: bytes, filename: str) -> dict:
         return {"ok": False, "error": "图片解析失败"}
     if w <= 0 or h <= 0:
         return {"ok": False, "error": "图片尺寸无效"}
+    if len(data) > _IMPORT_MAX_BYTES:
+        return {"ok": False, "error": "文件超过 20MB 限制"}
+    if max(w, h) > _IMPORT_MAX_PX:
+        return {"ok": False, "error": "分辨率超过 2K 限制"}
     fhash = hashlib.sha256(data).hexdigest()
     if db.get_by_hash(fhash):
         return {"ok": True, "dedup": True}

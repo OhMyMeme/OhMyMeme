@@ -15,7 +15,7 @@ from pathlib import Path
 from typing import Optional
 from urllib.parse import quote, unquote, urlparse
 
-from .config import get_config
+from .config import _IMPORT_MAX_BYTES, _IMPORT_MAX_PX, get_config
 from .database import get_db
 from .manifest import INDEX_FILENAME
 from .manifest import build as build_manifest
@@ -895,13 +895,24 @@ def _pull_worker(entries, remote_root, cache_dir, db):
                             w, h = img.size
                         except Exception:
                             pass
+                        fsize = local_path.stat().st_size
+                        if fsize > _IMPORT_MAX_BYTES or max(w, h) > _IMPORT_MAX_PX:
+                            # 超限文件不接收：删除本地文件并跳过（不写入 manifest）
+                            logger.info(f"pull skip (over limit): {fname}")
+                            local_results["skipped"] += 1
+                            _increment_sync_progress(files_add=1)
+                            try:
+                                local_path.unlink()
+                            except Exception:
+                                pass
+                            continue
                         oname = rentry.get("name", "") or os.path.splitext(fname)[0]
                         db.add_meme(
                             filename=fname,
                             file_hash=rentry.get("sha256", ""),
                             width=w,
                             height=h,
-                            file_size=local_path.stat().st_size,
+                            file_size=fsize,
                             mime_type="image/%s" % ext[1:] if ext else "image/png",
                             original_name=oname,
                         )

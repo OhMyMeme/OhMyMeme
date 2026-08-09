@@ -498,7 +498,12 @@ async function importLocal() {
   pending = true;
   const result = await api('import_memes');
   pending = false;
-  if (result) { showToast('导入完成'); refreshMemes(); refreshTags(); refreshCollections(); }
+  if (result && result.ok) {
+    let msg = '导入完成';
+    if (result.rejected) msg += '，跳过 ' + result.rejected + ' 个超限文件';
+    showToast(msg);
+    refreshMemes(); refreshTags(); refreshCollections();
+  }
 }
 
 async function importFolder() {
@@ -511,6 +516,7 @@ async function importFolder() {
   if (!r) return;
   if (!r.ok) { if (r.cancelled) return; showToast(r.error || '导入失败'); return; }
   let msg = '导入完成，共 ' + r.imported + ' 个表情';
+  if (r.rejected) msg += '，跳过 ' + r.rejected + ' 个超限文件';
   if (r.collection_name) msg += '，已加入分组「' + r.collection_name + '」';
   showToast(msg);
   refreshMemes(); refreshTags(); refreshCollections();
@@ -528,7 +534,9 @@ async function importClipboard() {
   if (newName && newName !== result.name) {
     await api('rename_meme', result.id, newName);
   }
-  showToast('导入完成');
+  let msg = '导入完成';
+  if (result.rejected) msg += '，跳过 ' + result.rejected + ' 个超限文件';
+  showToast(msg);
   refreshMemes(); refreshTags(); refreshCollections();
 }
 
