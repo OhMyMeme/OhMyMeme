@@ -1109,10 +1109,11 @@ async function startWechatImport() {
         document.getElementById('wechat-import-title').textContent = '导入失败';
         if (wechatPollTimer) { clearInterval(wechatPollTimer); wechatPollTimer = null; }
         const el = document.getElementById('wechat-status');
-        el.textContent = '导入失败: ' + (s.error || '');
+        const errCode = s.error_code ? ' [' + s.error_code + ']' : '';
+        el.textContent = '导入失败: ' + (s.error || '未知错误') + errCode;
         el.className = 'error';
         document.getElementById('wechat-import-error').style.display = '';
-        document.getElementById('wechat-import-error').textContent = s.error || '未知错误';
+        document.getElementById('wechat-import-error').textContent = (s.error || '未知错误') + errCode;
         btn.disabled = false;
       } else if (s.status === 'cancelled') {
         document.getElementById('wechat-import-title').textContent = '已取消';

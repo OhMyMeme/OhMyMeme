@@ -276,21 +276,39 @@ def _run_keyfinder(binary_path, db_path, pid=None):
     kw = {"capture_output": True, "timeout": 30}
     if os.name == "nt" and getattr(sys, "frozen", False):
         kw["creationflags"] = subprocess.CREATE_NO_WINDOW
-    result = subprocess.run(cmd, **kw)
+    try:
+        result = subprocess.run(cmd, **kw)
+    except FileNotFoundError:
+        return {"ok": False, "reason": "binary_not_found",
+                "detail": f"找不到辅助二进制: {binary_path}"}
+    except subprocess.TimeoutExpired:
+        return {"ok": False, "reason": "binary_timeout", "detail": "辅助二进制执行超时（30s）"}
+    except OSError as e:
+        return {"ok": False, "reason": "binary_launch_failed",
+                "detail": f"启动辅助二进制失败: {e}"}
+    stdout = result.stdout.decode("utf-8", errors="replace")
+    stderr = result.stderr.decode("utf-8", errors="replace")
     if result.returncode != 0:
         try:
-            err = json.loads(result.stdout.decode("utf-8"))
-            return err
+            err = json.loads(stdout)
+            if isinstance(err, dict) and err.get("ok") is False:
+                return err
         except Exception:
-            return {
-                "ok": False,
-                "reason": "binary_error",
-                "detail": result.stderr.decode("utf-8", errors="replace"),
-            }
+            pass
+        tail = (stdout or stderr).strip()[-400:]
+        return {
+            "ok": False,
+            "reason": "binary_error",
+            "returncode": result.returncode,
+            "detail": tail or f"辅助二进制异常退出（code {result.returncode}）",
+        }
     try:
-        return json.loads(result.stdout.decode("utf-8"))
+        err = json.loads(stdout)
+        if isinstance(err, dict):
+            return err
+        return {"ok": False, "reason": "parse_error", "detail": "二进制输出不是 JSON 对象"}
     except Exception as e:
-        return {"ok": False, "reason": "parse_error", "detail": str(e)}
+        return {"ok": False, "reason": "parse_error", "detail": str(e) or "二进制输出解析失败"}
 
 
 def _decrypt_database(db_path, key_hex):
@@ -546,10 +564,14 @@ def _wechat_worker(webui, user_root, download, account_path):
             return
         result = _run_keyfinder(binary_path, db_path)
         if not result.get("ok"):
+            detail = result.get("detail", "")
+            rc = result.get("returncode")
+            if rc is not None:
+                detail = f"{detail} (exit code {rc})" if detail else f"辅助二进制退出码 {rc}"
             _update_wechat(
                 status="error",
                 error_code=result.get("reason", "keyfinder_failed"),
-                error=result.get("detail", "密钥提取失败"),
+                error=detail or "密钥提取失败",
             )
             return
         key = result.get("key", "")
