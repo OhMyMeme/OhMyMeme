@@ -10,8 +10,18 @@ Python calls it via subprocess with JSON input/output for memory safety and audi
 ## Invocation
 
 ```
-wechat_keyfinder --config offsets.json [--pid <pid>] [--output-json]
+wechat_keyfinder --config offsets.json [--db-path <path>] [--pid <pid>] [--no-snapshot] [--key <hex64>]
 ```
+
+### Key Extraction Strategy (priority order)
+
+1. `--key <hex64>` — inject a verified key directly, skip memory forensics
+2. **Mask recovery** (default) — scans process memory for the 99-byte masked
+   `x'<96hex>'` buffer; the 32-byte XOR mask is recovered from the known DB
+   salt (first 16 bytes of emoticon.db). **No RVA offset needed**, robust across
+   WeChat versions.
+3. Legacy RVA pattern scan (fallback) — uses `cipher_literal_rva`/`mask_offset`
+   from offsets.json.
 
 ### Arguments
 
