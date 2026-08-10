@@ -10,15 +10,15 @@ endif()
 
 add_executable(wechat_keyfinder wechat_keyfinder.cpp)
 
-# 静态链接 OpenSSL，避免运行时缺失 DLL（libcrypto-3-x64.dll 等）
-# 推荐通过 vcpkg 使用 x64-windows-static triplet：
-#   cmake -DCMAKE_TOOLCHAIN_FILE=<vcpkg>/scripts/buildsystems/vcpkg.cmake \
-#         -DVCPKG_TARGET_TRIPLET=x64-windows-static
+# 静态链接 libcrypto（OpenSSL 官方安装包的 libcrypto_static.lib），
+# 避免运行时缺失 libcrypto-3-x64.dll。
+# 注意：OpenSSL-Win64 的静态库位于 lib/VC/x64/MD/，是用动态 CRT(/MD)
+# 编译的，故 exe 必须也用 /MD，否则链接报 __imp_* 无法解析。
 set(OPENSSL_USE_STATIC_LIBS TRUE)
 find_package(OpenSSL REQUIRED)
 target_link_libraries(wechat_keyfinder OpenSSL::SSL OpenSSL::Crypto)
 
-# 静态链接 CRT，保证单文件可移植
 if(MSVC)
-    set_property(TARGET wechat_keyfinder PROPERTY MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>")
+    # 与 OpenSSL 静态库保持一致使用动态 CRT(/MD)；仍为单文件 exe（无 OpenSSL DLL）
+    set_property(TARGET wechat_keyfinder PROPERTY MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:DebugDLL>")
 endif()
