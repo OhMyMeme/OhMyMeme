@@ -11,6 +11,7 @@
  * It does not modify any WeChat data or files.
  */
 
+#include <array>
 #include <cctype>
 #include <cstdint>
 #include <cstdio>
@@ -384,9 +385,9 @@ std::optional<WechatRawKey> find_wechat_key(HANDLE process, std::uintptr_t modul
 
   auto literal = module_base + cfg.cipher_literal_rva;
   std::array<unsigned char, 16> pattern{};
-  std::memcpy(pattern.data(), &literal, sizeof(literal));
+  ::memcpy(pattern.data(), &literal, sizeof(literal));
   std::uint64_t node_length = 30;
-  std::memcpy(pattern.data() + 8, &node_length, sizeof(node_length));
+  ::memcpy(pattern.data() + 8, &node_length, sizeof(node_length));
 
   SYSTEM_INFO si{};
   GetNativeSystemInfo(&si);
@@ -415,19 +416,19 @@ std::optional<WechatRawKey> find_wechat_key(HANDLE process, std::uintptr_t modul
         scanned += read;
         buffer.resize(read);
         for (size_t hit = 0; hit + pattern.size() <= buffer.size(); ++hit) {
-          if (!std::equal(pattern.begin(), pattern.end(), buffer.begin() + hit)) continue;
+          if (!std::equal(pattern.begin(), pattern.end(), buffer.begin() + hit, buffer.begin() + hit + pattern.size())) continue;
           auto hit_addr = reinterpret_cast<std::uintptr_t>(mem.BaseAddress) + offset + hit;
           auto ptr = read_process_bytes(process, hit_addr + 24, 8);
           if (!ptr) continue;
           std::uintptr_t object = 0;
-          std::memcpy(&object, ptr->data(), sizeof(object));
+          ::memcpy(&object, ptr->data(), sizeof(object));
           if (object == 0 || !objects.insert(object).second) continue;
           auto raw_meta = read_process_bytes(process, object + 0x88, 24);
           if (!raw_meta) continue;
           std::uintptr_t raw_buffer = 0;
           std::uint64_t raw_length = 0;
-          std::memcpy(&raw_buffer, raw_meta->data() + 8, 8);
-          std::memcpy(&raw_length, raw_meta->data() + 16, 8);
+          ::memcpy(&raw_buffer, raw_meta->data() + 8, 8);
+          ::memcpy(&raw_length, raw_meta->data() + 16, 8);
           if (raw_buffer == 0 || raw_length != (std::uint64_t)cfg.key_length) continue;
           auto encoded = read_process_bytes(process, raw_buffer, cfg.key_length);
           if (!encoded) continue;
@@ -450,14 +451,14 @@ std::optional<WechatRawKey> find_wechat_key(HANDLE process, std::uintptr_t modul
               mac_salt.data(), (int)mac_salt.size(), cfg.pbkdf2_iterations, EVP_sha512(),
               (int)mac_key.size(), mac_key.data()) != 1) continue;
           std::array<unsigned char, 4020> input{};
-          std::memcpy(input.data(), first_page.data() + 16, 4016);
+          ::memcpy(input.data(), first_page.data() + 16, 4016);
           input[4016] = 1;
           std::array<unsigned char, EVP_MAX_MD_SIZE> digest{};
           unsigned int digest_length = 0;
           if (HMAC(EVP_sha512(), mac_key.data(), (int)mac_key.size(),
                    input.data(), (int)input.size(), digest.data(), &digest_length) != nullptr &&
               digest_length == (unsigned int)cfg.mac_digest_length &&
-              std::equal(digest.begin(), digest.begin() + cfg.mac_digest_length, first_page.end() - cfg.mac_digest_length)) {
+              std::equal(digest.begin(), digest.begin() + cfg.mac_digest_length, first_page.end() - cfg.mac_digest_length, first_page.end())) {
             return WechatRawKey{*key, *salt};
           }
         }
@@ -518,6 +519,8 @@ std::string scan_memory_for_urls(HANDLE process, std::size_t& regions, std::size
   }
   return aggregate;
 }
+
+#endif  // _WIN32 platform-specific implementation
 
 // --- Error reporting ---
 
@@ -626,6 +629,9 @@ int main(int argc, char** argv) {
   std::size_t regions = 0;
   std::size_t reads = 0;
   auto snapshot = scan_memory_for_urls(process, regions, reads, cfg);
+
+  std::ostringstream base_hex;
+  base_hex << "0x" << std::hex << module_base.value();
 
   json::Value result = json::Value::object();
   result.add("ok", json::Value::boolean(true));
