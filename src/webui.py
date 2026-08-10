@@ -514,7 +514,7 @@ class JsApi:
     def get_collection_members(self, collection_id: int) -> list:
         """返回分组内表情成员，供添加分组弹窗右侧栏展示"""
         try:
-            return self._db.search(collection_id=collection_id, limit=200) or []
+            return self._db.search(collection_id=collection_id, limit=5000) or []
         except Exception:
             return []
 
