@@ -206,8 +206,9 @@ class JsApi:
         self._db = get_db()
 
     def search_memes(
-        self, keyword: str = "", tags: list = None, collection_id: int = None
-    ) -> list:
+        self, keyword="", tags=None, collection_id=None, offset=0, limit=200
+    ):
+        """搜索表情，支持 offset/limit 分页"""
         if tags is not None and len(tags) == 0:
             tags = None
         fav_only = collection_id == -2
@@ -215,7 +216,7 @@ class JsApi:
         uncategorized = collection_id == -4
         cid = None if (fav_only or recent_only or uncategorized) else collection_id
         if recent_only:
-            rows = self._db.get_recent(200)
+            rows = self._db.get_recent(limit, offset)
         else:
             rows = self._db.search(
                 keyword=keyword,
@@ -223,7 +224,8 @@ class JsApi:
                 collection_id=cid,
                 favorite_only=fav_only,
                 uncategorized_only=uncategorized,
-                limit=200,
+                offset=offset,
+                limit=limit,
             )
         favorited_ids = set()
         try:
@@ -508,7 +510,7 @@ class JsApi:
     def get_collection_members(self, collection_id: int) -> list:
         """返回分组内表情成员，供添加分组弹窗右侧栏展示"""
         try:
-            return self._db.search(collection_id=collection_id, limit=200) or []
+            return self._db.search(collection_id=collection_id, limit=5000) or []
         except Exception:
             return []
 
@@ -1529,6 +1531,56 @@ class SettingsApi:
 
     def cancel_tg_import(self):
         tg_stickers.cancel_tg_import()
+
+    def pick_wechat_root(self):
+        """手动选择微信文件根目录"""
+        try:
+            result = webview.windows[0].create_file_dialog(
+                webview.FileDialog.FOLDER, allow_multiple=False
+            )
+        except Exception:
+            return {"ok": False, "error": "无法打开目录选择对话框"}
+        if not result:
+            return {"ok": False, "cancelled": True}
+        path = result[0] if isinstance(result, (tuple, list)) else result
+        if not os.path.isdir(path):
+            return {"ok": False, "error": "所选目录不存在"}
+        return {"ok": True, "path": path}
+
+    def inspect_wechat_environment(self, user_root=None):
+        """检测微信环境"""
+        from . import wechat_probe
+
+        return wechat_probe.inspect_wechat_environment(user_root)
+
+    def list_wechat_stickers(self, user_root, account_path=None):
+        """列出可导入的微信表情"""
+        from . import wechat_probe
+
+        return wechat_probe.list_wechat_stickers(user_root, account_path)
+
+    def start_wechat_import(self, user_root=None, download=True, account_path=None):
+        """启动微信表情包导入，已有任务时返回 {"ok": False}"""
+        from . import wechat_probe
+
+        started = wechat_probe.start_wechat_import(
+            self._webui, user_root, download, account_path
+        )
+        if not started:
+            return {"ok": False, "error": "已有导入任务正在进行"}
+        return {"ok": True}
+
+    def get_wechat_import_progress(self):
+        """获取微信导入进度"""
+        from . import wechat_probe
+
+        return wechat_probe.get_wechat_progress()
+
+    def cancel_wechat_import(self):
+        """取消微信导入"""
+        from . import wechat_probe
+
+        wechat_probe.cancel_wechat_import()
 
     def qqnt_check_env(self) -> dict:
         """检查 QQNT 提取环境，返回 get_extract_status 结果"""

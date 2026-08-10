@@ -61,6 +61,8 @@ src/              # 主代码
   adb_util.py      # ADB 自动检测/下载 + QQ 表情包缓存导入（ADB 拉取 + 魔数识别扩展名 + ZIP 打包）
   qqnt_extract.py  # QQNT 本地收藏表情提取（GPL-3.0 衍生模块，纯函数 + 回调接口，无 UI 依赖）
   tg_stickers.py   # Telegram Desktop 缓存表情包提取（tdata 解密 + webm 转 webp + 入库）
+  wechat_probe.py  # 微信收藏表情导入（helper 二进制提取密钥 + AES-CBC 解密 DB + CDN 下载，仅 Windows）
+  wechat_keyfinder/ # 微信密钥提取 C++ 辅助二进制源码（CMake 构建）
   webui/          # 前端静态文件（HTML 与 CSS/JS 分离，经典脚本供内联 onclick 调用全局函数）
     index.html    # 主窗口 HTML 骨架，引用 index.css + index.js
     index.css     # 主窗口样式
@@ -68,6 +70,8 @@ src/              # 主代码
     settings.html # 设置窗口 HTML 骨架，引用 settings.css + settings.js
     settings.css  # 设置窗口样式
     settings.js   # 设置窗口逻辑（设置项/同步/QQ 导入向导）
+config/
+  offsets.json    # wechat_keyfinder 易变参数（版本号等，微信升级时只改此文件）
 scripts/
   build.py        # PyInstaller + InnoSetup 构建脚本 (i18n zh/en)
   launcher.py     # PyInstaller 入口
@@ -215,6 +219,7 @@ tests/
 
 ### 自定义排序
 - `memes.sort_order` 字段存储全局拖拽排序结果（全部视图）；分组/子分组内排序存 `meme_collections.sort_order`
+- **无限滚动分页**：`search_memes` 支持 `offset`/`limit`（`MEME_PAGE=200`），前端滚动 `#grid-wrap` 接近底部时 `loadMoreMemes()` 增量拉取追加（`renderMemeCard` 复用）；`memeOffset`/`memeHasMore` 维护分页状态，返回不足一页即到底；`memes` 数组是已加载子集
 - **模型驱动**：`memes` 数组为唯一真源，拖拽跨槽时先 `moveInArray` 同步模型、再挪 DOM 节点（不再以 DOM 顺序回读重建数组）；`initDragReorder()` 在 `#meme-grid` 上绑定一次
 - **Pointer Events + 指针捕获**：`pointerdown/pointermove/pointerup`，拖拽激活（位移 >8px）时才 `setPointerCapture`（避免普通点击被捕获重定向）；无 `PointerEvent` 的旧 WebView 自动回退 mouse 事件（`mousemove/mouseup` 挂 document）；`pointercancel`/`blur` 取消并回滚模型 + 重渲染
 - **网格感知插入点**：`gridMetrics()` 按首卡片实测宽/高 + `columnGap` 推算 `cols`，`gridSlotIndex(x,y)` 先定位绝对格子（含 folder-card 占位）再映射到非 folder 的 meme 卡数组索引并 clamp（分组内 folder 卡混排时插槽不串位）
@@ -284,6 +289,18 @@ tests/
 - **前端 UI**: 设置页「从 Telegram 导入」section（tdata 目录手动指定按钮 + 本地密码输入 + WebM 转换开关）+ 进度覆盖层（错误时 `no_tdata`/`invalid_tdata`/`no_cache` 显示「手动选择 tdata 目录」重试按钮）
 - **多账号**: Telegram Desktop 多账号共享 `user_data/cache`，无法区分来源账号，统一提取
 - **透明动画（已解决）**: Telegram 视频贴纸 webm 内含有效 VP9+alpha（`yuva420p`）数据，但 ffmpeg **原生 VP9 解码器会静默丢弃 alpha 平面**（解码结果全不透明），导致转换出的动画 webp 背景不透明。修复：`convert_webm_to_webp` 在 `-i` 前加 `-c:v libvpx-vp9` 强制使用 libvpx 解码器保留 alpha。实测 48 个 webm 中 47 个恢复透明，透明像素分布与同表情静态 webp 完全一致
+
+### 微信导入 (wechat_probe.py + wechat_keyfinder)
+- **架构**: 独立 C++ 二进制 `wechat_keyfinder` 处理 Windows 进程内存取证（读取微信进程内存提取密钥），Python 侧通过 subprocess + JSON 协议协调完成 DB 解密/SQLite 查询/CDN 下载/入库；仅 Windows
+- **目录层级**: 微信文件目录（root，默认 `%USERPROFILE%\Documents\xwechat_files` 或 `\WeChat Files`）→ 账号目录（root 下 `wxid_*` 文件夹，每个微信账号一个）→ `db_storage/emoticon/emoticon.db`（表情库，加密）+ `db_storage/favorite/favorite.db`（收藏库）
+- **环境检测** (`inspect_wechat_environment`): 传入路径 basename 以 `wxid_` 开头则视为单账号，否则扫描子目录收集所有 `wxid_*`；每账号 `_inspect_account` 检查 DB 是否存在且为 SQLite header（否则 `encrypted_index`）；返回 `{status, reason, root, root_exists, account_directory_count, accounts: [{id, path, status, reason, db_path}]}`
+- **账号选择**: `_pick_account` 未指定且多账号时返回 None，调用方报 `multiple_accounts` 引导前端选择；`list_wechat_stickers`/`start_wechat_import`/`_wechat_worker` 支持 `account_path` 参数指定账号
+- **密钥提取**: 二进制扫描微信进程内存，通过特征码定位密钥对象（RVA 偏移在 `config/offsets.json` 配置），XOR 解码 + salt 比对 + HMAC-SHA512 校验。**掩码恢复为主路径**（`find_wechat_key_masked`）：利用 DB 前 16 字节 salt 反推 32 字节 XOR 掩码，按 `x'<96hex>'` 格式识别被掩码的 99 字节密钥缓冲，**无需 RVA**，微信升级不易失效；旧 RVA 特征码扫描仅作回退；`--key <hex64>` 可注入已验证密钥绕开取证。**多进程**：未指定 `--pid` 时枚举所有 `Weixin.exe` 逐个尝试，掩码恢复天然命中运行目标账号的进程（`key_not_found` 表示均未命中）
+- **DB 解密** (`_decrypt_database`): AES-256-CBC 逐页解密（每页 4096 字节，页 1 带 16 字节偏移，IV 取页尾 80 字节偏移处），首页替换为 "SQLite format 3" header；**合并 WAL**（`_apply_wal`）：微信运行中表结构与记录在 `emoticon.db-wal` 里，按 WAL 帧（24B 头 + 4096B 加密页）解密并回写到对应页，主文件旧快照 + WAL 帧 = 完整数据
+- **元数据查询** (`_query_sticker_metadata`): SQLite 查询 `kNonStoreEmoticonTable`（type/md5/aes_key/cdn_url/encrypt_url/extern_url），返回 md5+url+aes_key 列表
+- **下载校验** (`_download_sticker`): urllib 下载 → 魔数识别扩展名（PNG/JPG/GIF/WebP/BMP）→ 带 `aes_key` 时 AES-128-CBC 解密（IV=key）；`_detect_image_ext` 校验合法才返回。**防 SSRF**：仅允许白名单 CDN 主机（`vweixinf.tc.qq.com`/`wxapp.tc.qq.com`），解析后拒绝回环/私网/链路本地地址，重定向逐目标复检
+- **完整性校验**: `verify_binary_integrity` 执行前校验二进制 SHA-256，未配置真实哈希（占位符 `PLACEHOLDER_UPDATE_ON_RELEASE`）时**默认拒绝执行**；开发/本地测试可用环境变量 `OHMYMEME_INSECURE_SKIP_HELPER_HASH=1` 跳过。**发布前必须**用 `certutil -hashfile wechat_keyfinder.exe SHA256` 计算真实哈希填入 `_WECHAT_KEYFINDER_SHA256` 并移除占位符
+- **前端 UI**: 设置页「从微信导入」section（目录选择 + 环境检测 + 多账号下拉 + 进度覆盖层）
 
 ## 构建 & 测试
 ```bash

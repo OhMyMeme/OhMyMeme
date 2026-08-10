@@ -1,6 +1,9 @@
 let allTags = [], activeTags = new Set(), memes = [], pending = false;
 let collections = [], activeCollection = null;
 let dragSrcId = null;
+const MEME_PAGE = 200;
+let memeOffset = 0, memeHasMore = true, memeLoadingMore = false;
+let memeGen = 0, cbGen = 0;
 
 async function api(method, ...args) {
   try { return await pywebview.api[method](...args); }
@@ -60,9 +63,38 @@ function onSearch() {
 
 async function refreshMemes() {
   const q = document.getElementById('search').value.trim();
-  try { memes = await api('search_memes', q, [...activeTags], activeCollection) || []; }
+  const gen = ++memeGen;
+  memeOffset = 0; memeHasMore = true;
+  try { memes = await api('search_memes', q, [...activeTags], activeCollection, 0, MEME_PAGE) || []; }
   catch(e) { memes = []; }
+  if (gen !== memeGen) return;   // 期间查询条件已变，丢弃过期结果
+  memeOffset = memes.length;
+  memeHasMore = memes.length === MEME_PAGE;
   renderGrid();
+}
+
+async function loadMoreMemes() {
+  if (memeLoadingMore || !memeHasMore) return;
+  memeLoadingMore = true;
+  const gen = memeGen;
+  const q = document.getElementById('search').value.trim();
+  try {
+    const more = await api('search_memes', q, [...activeTags], activeCollection, memeOffset, MEME_PAGE) || [];
+    if (gen !== memeGen) return;   // 过期响应丢弃
+    if (more.length === 0) {
+      memeHasMore = false;
+    } else {
+      memes = memes.concat(more);
+      memeOffset += more.length;
+      memeHasMore = more.length === MEME_PAGE;
+      const grid = document.getElementById('meme-grid');
+      more.forEach(m => grid.appendChild(renderMemeCard(m)));
+    }
+  } catch(e) {
+    memeHasMore = false;
+  } finally {
+    memeLoadingMore = false;
+  }
 }
 
 async function refreshTags() {
@@ -226,51 +258,53 @@ function renderGrid() {
   }
   grid.style.display = 'grid'; empty.style.display = 'none';
 
-  memes.forEach(m => {
-    const card = document.createElement('div');
-    card.className = 'meme-card';
-    card.title = m.name;
-    card.style.background = 'var(--surface)';
-    card.dataset.memeId = m.id;
-    const img = document.createElement('img');
-    img.alt = m.name;
-    img.loading = 'lazy';
-    img.draggable = false;
-    const animateInGrid = m.is_animated && m.auto_play_gif && !m.hover_to_play;
-    if (animateInGrid) {
-      img.src = '/api/original/' + m.id + '/' + encodeURIComponent(m.filename);
-    } else {
-      img.src = '/api/thumb/' + m.id + '/' + encodeURIComponent(m.filename);
-    }
-    if (m.is_animated && m.hover_to_play) {
-      setupHoverPlay(card, img, m.id, m.filename);
-    }
-    card.appendChild(img);
+  memes.forEach(m => grid.appendChild(renderMemeCard(m)));
 
-    const dn = m.name.length > 16 ? m.name.slice(0, 13) + '..' : m.name;
-    const name = document.createElement('div');
-    name.className = 'name';
-    name.textContent = dn;
-    card.appendChild(name);
+}
 
-    if (m.from_stego) {
-      const badge = document.createElement('span');
-      badge.className = 'gif-badge stego-badge';
-      badge.textContent = '隐写导入';
-      card.appendChild(badge);
-    } else if (m.is_animated) {
-      const badge = document.createElement('span');
-      badge.className = 'gif-badge';
-      badge.textContent = m.is_gif ? 'GIF' : 'WebP';
-      card.appendChild(badge);
-    }
+function renderMemeCard(m) {
+  const card = document.createElement('div');
+  card.className = 'meme-card';
+  card.title = m.name;
+  card.style.background = 'var(--surface)';
+  card.dataset.memeId = m.id;
+  const img = document.createElement('img');
+  img.alt = m.name;
+  img.loading = 'lazy';
+  img.draggable = false;
+  const animateInGrid = m.is_animated && m.auto_play_gif && !m.hover_to_play;
+  if (animateInGrid) {
+    img.src = '/api/original/' + m.id + '/' + encodeURIComponent(m.filename);
+  } else {
+    img.src = '/api/thumb/' + m.id + '/' + encodeURIComponent(m.filename);
+  }
+  if (m.is_animated && m.hover_to_play) {
+    setupHoverPlay(card, img, m.id, m.filename);
+  }
+  card.appendChild(img);
 
-    card.onclick = () => copyMeme(m.id, m.name);
-    card.oncontextmenu = (e) => { e.preventDefault(); showCtxMenu(e, m); };
-    card.draggable = false;
-    grid.appendChild(card);
-  });
+  const dn = m.name.length > 16 ? m.name.slice(0, 13) + '..' : m.name;
+  const name = document.createElement('div');
+  name.className = 'name';
+  name.textContent = dn;
+  card.appendChild(name);
 
+  if (m.from_stego) {
+    const badge = document.createElement('span');
+    badge.className = 'gif-badge stego-badge';
+    badge.textContent = '隐写导入';
+    card.appendChild(badge);
+  } else if (m.is_animated) {
+    const badge = document.createElement('span');
+    badge.className = 'gif-badge';
+    badge.textContent = m.is_gif ? 'GIF' : 'WebP';
+    card.appendChild(badge);
+  }
+
+  card.onclick = () => copyMeme(m.id, m.name);
+  card.oncontextmenu = (e) => { e.preventDefault(); showCtxMenu(e, m); };
+  card.draggable = false;
+  return card;
 }
 
 /* Drag-to-reorder (only enabled in the unfiltered "all memes" view)
@@ -1371,10 +1405,18 @@ document.addEventListener('DOMContentLoaded', async () => {
   initDragReorder();
   initHScroll('tagbar');
   initHScroll('colbar');
+  const gridWrap = document.getElementById('grid-wrap');
+  gridWrap.addEventListener('scroll', () => {
+    if (gridWrap.scrollTop + gridWrap.clientHeight >= gridWrap.scrollHeight - 300) {
+      loadMoreMemes();
+    }
+  });
   document.getElementById('loading').classList.remove('hidden');
   const data = await api('get_init_data');
   if (data) {
     memes = data.memes || [];
+    memeOffset = memes.length;
+    memeHasMore = memes.length === MEME_PAGE;
     renderGrid();
     allTags = data.tags || [];
     renderTags();
@@ -1386,7 +1428,9 @@ document.addEventListener('DOMContentLoaded', async () => {
   setTimeout(async () => {
     await api('rescan_cache');
     await api('run_auto_sync');
-    memes = await api('search_memes', '', [], null) || [];
+    memes = await api('search_memes', '', [], null, 0, MEME_PAGE) || [];
+    memeOffset = memes.length;
+    memeHasMore = memes.length === MEME_PAGE;
     renderGrid();
     allTags = await api('get_tags') || [];
     renderTags();
@@ -1456,6 +1500,43 @@ function cbRenderList() {
     right.appendChild(card);
   });
   document.getElementById('cb-right-count').textContent = s.right.length;
+}
+
+function cbAppendLeftCards(items) {
+  const s = cbState;
+  if (!s) return;
+  const rightIds = new Set(s.right.map(x => x.id));
+  const left = document.getElementById('cb-left-list');
+  const empty = document.getElementById('cb-empty-left');
+  if (empty) empty.remove();
+  items.forEach(m => {
+    if (rightIds.has(m.id)) return;
+    const card = cbMemeCard(m, 'left');
+    card.onclick = () => cbMoveMeme(m, 'left');
+    left.appendChild(card);
+  });
+}
+
+async function cbLoadMoreLeft(query) {
+  if (!cbState || cbState.leftLoading || !cbState.leftHasMore) return;
+  cbState.leftLoading = true;
+  const gen = cbGen;
+  try {
+    const list = await api('search_memes', query || '', [], null, cbState.leftOffset, MEME_PAGE) || [];
+    if (!cbState || gen !== cbGen) return;   // 弹窗已关/搜索已变，丢弃过期响应
+    if (list.length === 0) {
+      cbState.leftHasMore = false;
+    } else {
+      cbState.left = cbState.left.concat(list);
+      cbState.leftOffset += list.length;
+      cbState.leftHasMore = list.length === MEME_PAGE;
+      cbAppendLeftCards(list);
+    }
+  } catch(e) {
+    if (cbState) cbState.leftHasMore = false;
+  } finally {
+    if (cbState) cbState.leftLoading = false;
+  }
 }
 
 function cbFly(el, fromRect, toRect) {
@@ -1587,18 +1668,26 @@ async function cbConfirm() {
 }
 
 function showCollectionBuilder() {
-  cbState = { left: [], right: [], selId: null, selIsNew: true };
+  cbGen++;
+  cbState = { left: [], right: [], selId: null, selIsNew: true,
+              leftOffset: 0, leftHasMore: true, leftLoading: false };
   document.getElementById('cb-overlay').style.display = 'flex';
   document.getElementById('cb-name').value = '';
   document.getElementById('cb-search').value = '';
   cbCloseDropdown();
   cbRenderList();
-  api('search_memes', '', [], null).then(list => {
-    if (cbState) { cbState.left = list || []; cbRenderList(); }
-  });
+  cbLoadMoreLeft('');
   document.getElementById('cb-name').focus();
   cbUpdateDropdown();
 }
+
+document.getElementById('cb-left-list').addEventListener('scroll', () => {
+  if (!cbState) return;
+  const el = document.getElementById('cb-left-list');
+  if (el.scrollTop + el.clientHeight >= el.scrollHeight - 200) {
+    cbLoadMoreLeft(document.getElementById('cb-search').value.trim());
+  }
+});
 
 document.getElementById('cb-overlay').addEventListener('click', (e) => {
   if (e.target === document.getElementById('cb-overlay')) cbClose();
@@ -1639,11 +1728,21 @@ let cbSearchTimer;
 document.getElementById('cb-search').addEventListener('input', () => {
   if (!cbState) return;
   clearTimeout(cbSearchTimer);
-  cbSearchTimer = setTimeout(() => {
+  cbSearchTimer = setTimeout(async () => {
     const q = document.getElementById('cb-search').value.trim();
-    api('search_memes', q, [], null).then(list => {
-      if (cbState) { cbState.left = list || []; cbRenderList(); }
-    });
+    const gen = ++cbGen;
+    cbState.leftOffset = 0; cbState.leftHasMore = true;
+    try {
+      const list = await api('search_memes', q, [], null, 0, MEME_PAGE) || [];
+      if (cbState && gen === cbGen) {
+        cbState.left = list;
+        cbState.leftOffset = list.length;
+        cbState.leftHasMore = list.length === MEME_PAGE;
+        cbRenderList();
+      }
+    } catch(e) {
+      if (cbState) cbState.leftHasMore = false;
+    }
   }, 250);
 });
 
