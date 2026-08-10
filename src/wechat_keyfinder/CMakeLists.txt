@@ -19,6 +19,8 @@ find_package(OpenSSL REQUIRED)
 target_link_libraries(wechat_keyfinder OpenSSL::SSL OpenSSL::Crypto)
 
 if(MSVC)
+    # 源码为 UTF-8：强制 /utf-8，避免代码页(如 936)误读中文注释为 \ 续行吞掉代码
+    target_compile_options(wechat_keyfinder PRIVATE /utf-8)
     # 与 OpenSSL 静态库保持一致使用动态 CRT(/MD)；仍为单文件 exe（无 OpenSSL DLL）
     set_property(TARGET wechat_keyfinder PROPERTY MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>DLL")
 endif()
