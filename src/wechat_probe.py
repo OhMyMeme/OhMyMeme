@@ -388,11 +388,12 @@ def _decrypt_database(db_path, key_hex):
 
 def _query_sticker_metadata(db_bytes):
     """从解密后的数据库查询表情元数据"""
-    tmp = tempfile.NamedTemporaryFile(suffix=".db", delete=False)
+    fd, tmp = tempfile.mkstemp(suffix=".db")
+    os.close(fd)
     try:
-        tmp.write(db_bytes)
-        tmp.close()
-        conn = sqlite3.connect(tmp.name)
+        with open(tmp, "wb") as f:
+            f.write(db_bytes)
+        conn = sqlite3.connect(tmp)
         conn.row_factory = sqlite3.Row
         cur = conn.execute(
             "SELECT type, md5, aes_key, cdn_url, encrypt_url, extern_url, extern_md5 "
@@ -414,7 +415,10 @@ def _query_sticker_metadata(db_bytes):
         conn.close()
         return rows
     finally:
-        os.unlink(tmp.name)
+        try:
+            os.unlink(tmp)
+        except OSError:
+            pass
 
 
 def _detect_image_ext(data):
