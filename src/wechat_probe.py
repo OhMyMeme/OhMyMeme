@@ -508,6 +508,7 @@ def start_wechat_import(webui, user_root=None, download=True, account_path=None)
 
 def _wechat_worker(webui, user_root, download, account_path):
     """后台：环境检测 -> 密钥提取 -> DB 解密 -> 下载 -> 入库"""
+    temp_dir = None
     try:
         _update_wechat(status="scanning", message="正在检测微信环境...")
         if _check_cancel():
