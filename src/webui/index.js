@@ -1,6 +1,8 @@
 let allTags = [], activeTags = new Set(), memes = [], pending = false;
 let collections = [], activeCollection = null;
 let dragSrcId = null;
+const MEME_PAGE = 200;
+let memeOffset = 0, memeHasMore = true, memeLoadingMore = false;
 
 async function api(method, ...args) {
   try { return await pywebview.api[method](...args); }
@@ -60,9 +62,34 @@ function onSearch() {
 
 async function refreshMemes() {
   const q = document.getElementById('search').value.trim();
-  try { memes = await api('search_memes', q, [...activeTags], activeCollection) || []; }
+  memeOffset = 0; memeHasMore = true;
+  try { memes = await api('search_memes', q, [...activeTags], activeCollection, 0, MEME_PAGE) || []; }
   catch(e) { memes = []; }
+  memeOffset = memes.length;
+  memeHasMore = memes.length === MEME_PAGE;
   renderGrid();
+}
+
+async function loadMoreMemes() {
+  if (memeLoadingMore || !memeHasMore) return;
+  memeLoadingMore = true;
+  const q = document.getElementById('search').value.trim();
+  try {
+    const more = await api('search_memes', q, [...activeTags], activeCollection, memeOffset, MEME_PAGE) || [];
+    if (more.length === 0) {
+      memeHasMore = false;
+    } else {
+      memes = memes.concat(more);
+      memeOffset += more.length;
+      memeHasMore = more.length === MEME_PAGE;
+      const grid = document.getElementById('meme-grid');
+      more.forEach(m => grid.appendChild(renderMemeCard(m)));
+    }
+  } catch(e) {
+    memeHasMore = false;
+  } finally {
+    memeLoadingMore = false;
+  }
 }
 
 async function refreshTags() {
@@ -226,51 +253,53 @@ function renderGrid() {
   }
   grid.style.display = 'grid'; empty.style.display = 'none';
 
-  memes.forEach(m => {
-    const card = document.createElement('div');
-    card.className = 'meme-card';
-    card.title = m.name;
-    card.style.background = 'var(--surface)';
-    card.dataset.memeId = m.id;
-    const img = document.createElement('img');
-    img.alt = m.name;
-    img.loading = 'lazy';
-    img.draggable = false;
-    const animateInGrid = m.is_animated && m.auto_play_gif && !m.hover_to_play;
-    if (animateInGrid) {
-      img.src = '/api/original/' + m.id + '/' + encodeURIComponent(m.filename);
-    } else {
-      img.src = '/api/thumb/' + m.id + '/' + encodeURIComponent(m.filename);
-    }
-    if (m.is_animated && m.hover_to_play) {
-      setupHoverPlay(card, img, m.id, m.filename);
-    }
-    card.appendChild(img);
+  memes.forEach(m => grid.appendChild(renderMemeCard(m)));
 
-    const dn = m.name.length > 16 ? m.name.slice(0, 13) + '..' : m.name;
-    const name = document.createElement('div');
-    name.className = 'name';
-    name.textContent = dn;
-    card.appendChild(name);
+}
 
-    if (m.from_stego) {
-      const badge = document.createElement('span');
-      badge.className = 'gif-badge stego-badge';
-      badge.textContent = '隐写导入';
-      card.appendChild(badge);
-    } else if (m.is_animated) {
-      const badge = document.createElement('span');
-      badge.className = 'gif-badge';
-      badge.textContent = m.is_gif ? 'GIF' : 'WebP';
-      card.appendChild(badge);
-    }
+function renderMemeCard(m) {
+  const card = document.createElement('div');
+  card.className = 'meme-card';
+  card.title = m.name;
+  card.style.background = 'var(--surface)';
+  card.dataset.memeId = m.id;
+  const img = document.createElement('img');
+  img.alt = m.name;
+  img.loading = 'lazy';
+  img.draggable = false;
+  const animateInGrid = m.is_animated && m.auto_play_gif && !m.hover_to_play;
+  if (animateInGrid) {
+    img.src = '/api/original/' + m.id + '/' + encodeURIComponent(m.filename);
+  } else {
+    img.src = '/api/thumb/' + m.id + '/' + encodeURIComponent(m.filename);
+  }
+  if (m.is_animated && m.hover_to_play) {
+    setupHoverPlay(card, img, m.id, m.filename);
+  }
+  card.appendChild(img);
 
-    card.onclick = () => copyMeme(m.id, m.name);
-    card.oncontextmenu = (e) => { e.preventDefault(); showCtxMenu(e, m); };
-    card.draggable = false;
-    grid.appendChild(card);
-  });
+  const dn = m.name.length > 16 ? m.name.slice(0, 13) + '..' : m.name;
+  const name = document.createElement('div');
+  name.className = 'name';
+  name.textContent = dn;
+  card.appendChild(name);
 
+  if (m.from_stego) {
+    const badge = document.createElement('span');
+    badge.className = 'gif-badge stego-badge';
+    badge.textContent = '隐写导入';
+    card.appendChild(badge);
+  } else if (m.is_animated) {
+    const badge = document.createElement('span');
+    badge.className = 'gif-badge';
+    badge.textContent = m.is_gif ? 'GIF' : 'WebP';
+    card.appendChild(badge);
+  }
+
+  card.onclick = () => copyMeme(m.id, m.name);
+  card.oncontextmenu = (e) => { e.preventDefault(); showCtxMenu(e, m); };
+  card.draggable = false;
+  return card;
 }
 
 /* Drag-to-reorder (only enabled in the unfiltered "all memes" view)
@@ -1371,10 +1400,18 @@ document.addEventListener('DOMContentLoaded', async () => {
   initDragReorder();
   initHScroll('tagbar');
   initHScroll('colbar');
+  document.getElementById('grid-wrap').addEventListener('scroll', () => {
+    const el = document.getElementById('grid-wrap');
+    if (el.scrollTop + el.clientHeight >= el.scrollHeight - 300) {
+      loadMoreMemes();
+    }
+  });
   document.getElementById('loading').classList.remove('hidden');
   const data = await api('get_init_data');
   if (data) {
     memes = data.memes || [];
+    memeOffset = memes.length;
+    memeHasMore = memes.length === MEME_PAGE;
     renderGrid();
     allTags = data.tags || [];
     renderTags();
@@ -1386,7 +1423,9 @@ document.addEventListener('DOMContentLoaded', async () => {
   setTimeout(async () => {
     await api('rescan_cache');
     await api('run_auto_sync');
-    memes = await api('search_memes', '', [], null) || [];
+    memes = await api('search_memes', '', [], null, 0, MEME_PAGE) || [];
+    memeOffset = memes.length;
+    memeHasMore = memes.length === MEME_PAGE;
     renderGrid();
     allTags = await api('get_tags') || [];
     renderTags();

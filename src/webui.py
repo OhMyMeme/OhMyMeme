@@ -206,7 +206,12 @@ class JsApi:
         self._db = get_db()
 
     def search_memes(
-        self, keyword: str = "", tags: list = None, collection_id: int = None
+        self,
+        keyword: str = "",
+        tags: list = None,
+        collection_id: int = None,
+        offset: int = 0,
+        limit: int = 200,
     ) -> list:
         if tags is not None and len(tags) == 0:
             tags = None
@@ -215,7 +220,7 @@ class JsApi:
         uncategorized = collection_id == -4
         cid = None if (fav_only or recent_only or uncategorized) else collection_id
         if recent_only:
-            rows = self._db.get_recent(200)
+            rows = self._db.get_recent(9999)[offset : offset + limit]
         else:
             rows = self._db.search(
                 keyword=keyword,
@@ -223,7 +228,8 @@ class JsApi:
                 collection_id=cid,
                 favorite_only=fav_only,
                 uncategorized_only=uncategorized,
-                limit=200,
+                offset=offset,
+                limit=limit,
             )
         favorited_ids = set()
         try:
