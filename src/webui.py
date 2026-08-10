@@ -1550,15 +1550,15 @@ class SettingsApi:
         from . import wechat_probe
         return wechat_probe.inspect_wechat_environment(user_root)
 
-    def list_wechat_stickers(self, user_root) -> dict:
+    def list_wechat_stickers(self, user_root, account_path=None) -> dict:
         """列出可导入的微信表情"""
         from . import wechat_probe
-        return wechat_probe.list_wechat_stickers(user_root)
+        return wechat_probe.list_wechat_stickers(user_root, account_path)
 
-    def start_wechat_import(self, user_root=None, download=True) -> dict:
+    def start_wechat_import(self, user_root=None, download=True, account_path=None) -> dict:
         """启动微信表情包导入"""
         from . import wechat_probe
-        wechat_probe.start_wechat_import(self._webui, user_root, download)
+        wechat_probe.start_wechat_import(self._webui, user_root, download, account_path)
         return {"ok": True}
 
     def get_wechat_import_progress(self) -> dict:

@@ -1008,6 +1008,33 @@ async function pickWechatRoot() {
   }
 }
 
+function wechatRenderAccounts(r) {
+  const group = document.getElementById('s-wechat-account-group');
+  const sel = document.getElementById('s-wechat-account');
+  const accounts = (r && r.accounts || []).filter(a => a.status === 'supported');
+  if (!group || !sel) return;
+  if (accounts.length > 1) {
+    group.hidden = false;
+    sel.innerHTML = '<option value="">请选择账号</option>';
+    accounts.forEach(a => {
+      const opt = document.createElement('option');
+      opt.value = a.path;
+      opt.textContent = a.id;
+      sel.appendChild(opt);
+    });
+  } else {
+    group.hidden = true;
+    sel.innerHTML = '<option value="">自动选择（仅一个账号时）</option>';
+  }
+}
+
+function wechatSelectedAccount() {
+  const group = document.getElementById('s-wechat-account-group');
+  const sel = document.getElementById('s-wechat-account');
+  if (group && group.hidden) return null;
+  return sel && sel.value ? sel.value : null;
+}
+
 async function inspectWechat() {
   const btn = document.getElementById('btn-wechat-inspect');
   const status = document.getElementById('wechat-status');
@@ -1017,12 +1044,14 @@ async function inspectWechat() {
   btn.disabled = false;
   if (!r) { status.textContent = '检测失败'; status.className = 'error'; return; }
   if (r.status === 'supported') {
-    status.textContent = '已检测到微信: ' + (r.account || 'unknown');
+    const accounts = (r.accounts || []).filter(a => a.status === 'supported');
+    status.textContent = '已检测到 ' + r.account_directory_count + ' 个账号，其中 ' + accounts.length + ' 个可用';
     status.className = '';
   } else {
     status.textContent = r.reason || r.status || '未检测到';
     status.className = 'error';
   }
+  wechatRenderAccounts(r);
 }
 
 async function startWechatImport() {
@@ -1031,7 +1060,15 @@ async function startWechatImport() {
   if (!btn || !status) return;
   btn.disabled = true; status.textContent = ''; status.className = '';
   const root = wechatRoot || document.getElementById('s-wechat-root').value || null;
-  const r = await api('start_wechat_import', root, true);
+  const account = wechatSelectedAccount();
+  const accountGroup = document.getElementById('s-wechat-account-group');
+  if (accountGroup && !accountGroup.hidden && !account) {
+    btn.disabled = false;
+    status.textContent = '检测到多个账号，请选择账号';
+    status.className = 'error';
+    return;
+  }
+  const r = await api('start_wechat_import', root, true, account);
   if (!r || !r.ok) {
     btn.disabled = false;
     status.textContent = '启动失败: ' + (r && r.error ? r.error : '未知错误');

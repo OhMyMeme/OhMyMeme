@@ -150,13 +150,19 @@
 
     <div class="section">
       <div class="section-title">从微信导入</div>
-      <p style="font-size:11.5px;color:var(--muted);margin-bottom:10px;line-height:1.6">从微信电脑版本地缓存提取收藏表情（需微信正在运行，仅 Windows 支持）</p>
+      <p style="font-size:11.5px;color:var(--muted);margin-bottom:10px;line-height:1.6">从微信电脑版本地缓存提取收藏表情（需微信正在运行，仅 Windows 支持）。微信文件目录是存放所有账号数据的根目录（xwechat_files），其下的 wxid_* 文件夹为各账号目录</p>
       <div class="form-group">
-        <label>微信文件目录</label>
+        <label>微信文件目录（根目录）</label>
         <input id="s-wechat-root" readonly placeholder="未设置，将自动检测">
       </div>
       <div style="display:flex;gap:8px;margin-bottom:10px">
         <button id="btn-wechat-pick" class="btn btn-secondary btn-sm btn-flex" onclick="pickWechatRoot()">手动指定微信目录</button>
+      </div>
+      <div class="form-group" style="margin-bottom:10px" id="s-wechat-account-group" hidden>
+        <label>账号（wxid_* 目录）</label>
+        <select id="s-wechat-account">
+          <option value="">自动选择（仅一个账号时）</option>
+        </select>
       </div>
       <div style="display:flex;gap:8px">
         <button id="btn-wechat-inspect" class="btn btn-secondary btn-sm btn-flex" onclick="inspectWechat()">检测环境</button>

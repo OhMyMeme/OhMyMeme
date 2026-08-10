@@ -101,7 +101,9 @@ def _get_wechat_dir():
 
 
 def _binary_name():
-    return "wechat_keyfinder.exe" if platform.system() == "Windows" else "wechat_keyfinder"
+    if platform.system() == "Windows":
+        return "wechat_keyfinder.exe"
+    return "wechat_keyfinder"
 
 
 def _download_url():
@@ -222,6 +224,49 @@ def _find_emoticon_db(account_root):
     return ""
 
 
+def _is_sqlite_header(path):
+    """文件头是否为 SQLite 格式"""
+    try:
+        with open(path, "rb") as f:
+            return f.read(16) == b"SQLite format 3\x00"
+    except OSError:
+        return False
+
+
+def _inspect_account(account_root):
+    """检查单个账号目录，返回 {id, path, status, reason, db_path}"""
+    account_id = os.path.basename(account_root)
+    db_path = _find_emoticon_db(account_root)
+    fav_path = os.path.join(account_root, "db_storage", "favorite", "favorite.db")
+    has_emoticon = bool(db_path)
+    has_favorite = os.path.isfile(fav_path)
+    if not has_emoticon and not has_favorite:
+        return {
+            "id": account_id,
+            "path": account_root,
+            "status": "resource_unmapped",
+            "reason": "sticker_index_missing",
+            "db_path": "",
+        }
+    if (has_emoticon and not _is_sqlite_header(db_path)) or (
+        has_favorite and not _is_sqlite_header(fav_path)
+    ):
+        return {
+            "id": account_id,
+            "path": account_root,
+            "status": "encrypted_index",
+            "reason": "wechat_index_encrypted",
+            "db_path": db_path,
+        }
+    return {
+        "id": account_id,
+        "path": account_root,
+        "status": "supported",
+        "reason": "sticker_index_found",
+        "db_path": db_path,
+    }
+
+
 def _run_keyfinder(binary_path, db_path, pid=None):
     """执行 helper 二进制，返回 JSON 结果"""
     config_path = str(_offsets_path())
@@ -237,7 +282,11 @@ def _run_keyfinder(binary_path, db_path, pid=None):
             err = json.loads(result.stdout.decode("utf-8"))
             return err
         except Exception:
-            return {"ok": False, "reason": "binary_error", "detail": result.stderr.decode("utf-8", errors="replace")}
+            return {
+                "ok": False,
+                "reason": "binary_error",
+                "detail": result.stderr.decode("utf-8", errors="replace"),
+            }
     try:
         return json.loads(result.stdout.decode("utf-8"))
     except Exception as e:
@@ -267,7 +316,10 @@ def _decrypt_database(db_path, key_hex):
         enc_size = page_size - 80 - enc_offset
         cipher = Cipher(algorithms.AES(key), modes.CBC(iv), backend=default_backend())
         decryptor = cipher.decryptor()
-        plain = decryptor.update(page_data[enc_offset:enc_offset + enc_size]) + decryptor.finalize()
+        plain = (
+            decryptor.update(page_data[enc_offset:enc_offset + enc_size])
+            + decryptor.finalize()
+        )
         if page == 1:
             header = b"SQLite format 3\x00"
             output.extend(header)
@@ -336,7 +388,9 @@ def _download_sticker(url, aes_key=None):
             from cryptography.hazmat.backends import default_backend
             key = bytes.fromhex(aes_key)
             if len(key) == 16 and len(data) % 16 == 0:
-                cipher = Cipher(algorithms.AES(key), modes.CBC(key), backend=default_backend())
+                cipher = Cipher(
+                    algorithms.AES(key), modes.CBC(key), backend=default_backend()
+                )
                 data = cipher.decryptor().update(data)
         if _detect_image_ext(data):
             return data
@@ -347,34 +401,60 @@ def _download_sticker(url, aes_key=None):
 
 
 def inspect_wechat_environment(user_root=None):
-    """检测微信环境，返回状态字典"""
+    """检测微信环境，返回状态字典（含账号列表）"""
     if platform.system() != "Windows":
         return {"status": "unsupported_platform", "reason": "仅支持 Windows"}
+    explicit = bool(user_root)
     root = user_root or _find_wechat_root()
     if not root or not os.path.isdir(root):
-        return {"status": "not_found", "reason": "未找到微信文件目录"}
-    accounts = _find_account_dirs(root)
-    if not accounts:
-        return {"status": "no_accounts", "reason": "未找到微信账号目录"}
-    for acc in accounts:
-        db = _find_emoticon_db(acc)
-        if db:
-            return {
-                "status": "supported",
-                "account": os.path.basename(acc),
-                "account_path": acc,
-                "db_path": db,
-                "root": root,
-            }
-    return {"status": "no_database", "reason": "未找到表情数据库"}
+        return {"status": "not_found",
+                "reason": explicit and "account_root_missing" or "default_root_missing",
+                "root": root or "", "root_source": explicit and "explicit" or "default",
+                "root_exists": False, "account_directory_count": 0, "accounts": []}
+    root_name = os.path.basename(root)
+    if root_name.startswith("wxid_"):
+        accounts = [_inspect_account(root)]
+    else:
+        accounts = []
+        for acc in _find_account_dirs(root):
+            accounts.append(_inspect_account(acc))
+    supported = [a for a in accounts if a["status"] == "supported"]
+    encrypted = any(a["status"] == "encrypted_index" for a in accounts)
+    if supported:
+        status = "supported"
+        reason = "sticker_index_found"
+    elif encrypted:
+        status = "encrypted_index"
+        reason = "wechat_index_encrypted"
+    elif accounts:
+        status = "no_database"
+        reason = "sticker_index_missing"
+    else:
+        status = "no_accounts"
+        reason = "account_root_missing"
+    return {"status": status, "reason": reason,
+            "root": root,
+            "root_source": explicit and "explicit" or "default",
+            "root_exists": True,
+            "account_directory_count": len(accounts),
+            "accounts": accounts}
 
 
-def list_wechat_stickers(user_root):
-    """列出可导入的表情（不实际下载）"""
-    env = inspect_wechat_environment(user_root)
-    if env.get("status") != "supported":
-        return env
-    db_path = env["db_path"]
+def _pick_account(env, account_path=None):
+    """从环境账号列表中选择目标账号，返回账号 dict 或 None（多账号未指定）"""
+    accounts = [a for a in env.get("accounts", []) if a["status"] == "supported"]
+    if account_path:
+        for a in accounts:
+            if a["path"] == account_path or a["id"] == account_path:
+                return a
+        return None
+    if len(accounts) == 1:
+        return accounts[0]
+    return None
+
+
+def _list_stickers_for_account(db_path, account):
+    """对单个账号执行密钥提取 + DB 解密 + 元数据查询"""
     binary_path = ensure_wechat_keyfinder()
     if not binary_path:
         return {"status": "error", "reason": "helper 二进制不可用"}
@@ -392,22 +472,36 @@ def list_wechat_stickers(user_root):
         "status": "supported",
         "total": len(metadata),
         "files": metadata[:50],
-        "account": env.get("account", ""),
+        "account": account.get("id", ""),
     }
 
 
-def start_wechat_import(webui, user_root=None, download=True):
+def list_wechat_stickers(user_root, account_path=None):
+    """列出可导入的表情（不实际下载）"""
+    env = inspect_wechat_environment(user_root)
+    if env.get("status") != "supported":
+        return env
+    account = _pick_account(env, account_path)
+    if not account:
+        if env.get("account_directory_count", 0) > 1:
+            return {"status": "multiple_accounts", "reason": "检测到多个微信账号，请选择账号",
+                    "accounts": [a["id"] for a in env.get("accounts", [])]}
+        return {"status": "no_account", "reason": "未找到可用账号"}
+    return _list_stickers_for_account(account["db_path"], account)
+
+
+def start_wechat_import(webui, user_root=None, download=True, account_path=None):
     """后台启动微信表情包导入"""
     global _WECHAT_CANCEL
     _reset_state()
     threading.Thread(
         target=_wechat_worker,
-        args=(webui, user_root, download),
+        args=(webui, user_root, download, account_path),
         daemon=True,
     ).start()
 
 
-def _wechat_worker(webui, user_root, download):
+def _wechat_worker(webui, user_root, download, account_path):
     """后台：环境检测 -> 密钥提取 -> DB 解密 -> 下载 -> 入库"""
     try:
         _update_wechat(status="scanning", message="正在检测微信环境...")
@@ -422,8 +516,16 @@ def _wechat_worker(webui, user_root, download):
                 error=env.get("reason", "微信环境检测失败"),
             )
             return
-        db_path = env["db_path"]
-        account = env.get("account", "")
+        account = _pick_account(env, account_path)
+        if not account:
+            multi = env.get("account_directory_count", 0) > 1
+            _update_wechat(
+                status="error",
+                error_code="multiple_accounts",
+                error=multi and "检测到多个微信账号，请选择账号" or "未找到可用账号",
+            )
+            return
+        db_path = account["db_path"]
         _update_wechat(status="extracting_key", message="正在提取加密密钥...")
         if _check_cancel():
             _update_wechat(status="cancelled", message="已取消")
