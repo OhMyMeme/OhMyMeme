@@ -353,11 +353,15 @@ def _apply_wal(output, key, wal_path, page_size=4096):
             break
         if page_number > 0:
             offset = (page_number - 1) * page_size
-            if offset + page_size <= len(output):
-                output[offset : offset + page_size] = _decrypt_page(
-                    key, page_data, page_number, page_size
-                )
-                applied += 1
+            need = offset + page_size
+            # WAL 帧可能引用超出主文件大小的页（库增长、主文件是 checkpoint 旧快照），
+            # 扩展缓冲容纳，避免缺页导致 "database disk image is malformed"
+            if need > len(output):
+                output.extend(b"\x00" * (need - len(output)))
+            output[offset : offset + page_size] = _decrypt_page(
+                key, page_data, page_number, page_size
+            )
+            applied += 1
         pos += 24 + page_size
     return applied
 
