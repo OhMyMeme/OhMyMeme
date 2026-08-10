@@ -22,6 +22,11 @@ wechat_keyfinder --config offsets.json [--db-path <path>] [--pid <pid>] [--no-sn
 2. Legacy RVA pattern scan (fallback) — uses `cipher_literal_rva`/`mask_offset`
    from offsets.json.
 
+> **Process selection**: when `--pid` is omitted, all matching `Weixin.exe`
+> processes are enumerated and tried in turn. Only the process running the target
+> account holds the key buffer in memory, so mask recovery naturally selects the
+> correct one; `key_not_found` is reported if none yields a key.
+
 > **Test-only `--key`**: for manual verification a verified 64-hex key may be
 > injected via `--key <hex64>` to skip memory forensics. This passes the key on
 > the command line (visible in the process list), so it is **NOT part of the
@@ -76,14 +81,23 @@ Default invocation (with `--no-snapshot`) omits `memory_snapshot`:
   "ok": true,
   "pid": 1234,
   "module_base": "0x1A2B3C00",
-  "key": "a1b2c3d4e5f6...",
-  "salt": "f6e5d4c3b2a1...",
+  "key": "e4d2710a01d2c580d6277eb984af60547e9d9c30370e63d1534fe7c2f1ce6847",
+  "salt": "02c6f1b8028410300d12d2a2f595586c",
   "regions_scanned": 0,
   "bytes_scanned": 1048576
 }
 ```
 
-Without `--no-snapshot`, `memory_snapshot` is included (capped at 8 MiB):
+Field types: `key`/`salt` are lowercase hex strings (64 hex chars = 32-byte key,
+32 hex chars = 16-byte salt); `pid`/`regions_scanned`/`bytes_scanned` are
+integers; `module_base` is a hex string.
+
+Without `--no-snapshot`, `memory_snapshot` is included (capped at 8 MiB). It is a
+single JSON string containing raw UTF-8-decoded process bytes (marker lines
+matched during scanning). When the snapshot reaches the 8 MiB cap the string is
+truncated at a marker boundary; callers should treat the snapshot as
+best-effort, parse it for URL/md5 markers, and tolerate truncation (the 
+`key`/`salt` fields are always complete and authoritative):
 
 ### Error
 
@@ -120,10 +134,27 @@ Without `--no-snapshot`, `memory_snapshot` is included (capped at 8 MiB):
 
 1. **Binary integrity**: SHA-256 checksum verified before execution; **fails
    closed** when no real hash is configured (see below)
-2. **No network access**: Binary performs only local memory reads
+2. **No network access**: Binary makes no network requests; it reads only the
+   target WeChat process memory and the explicitly specified local input files
+   (e.g. the `emoticon.db` salt used by `--db-path` and mask recovery)
 3. **Read-only**: Never writes to WeChat process or files
 4. **Timeout**: Python enforces 90s execution timeout
 5. **Output limits**: Memory snapshot capped at 8 MiB
+
+## Scan Budgets & Timeouts
+
+| Scope | Limit |
+|-------|-------|
+| Mask-recovery scan | 30s wall-clock |
+| RVA fallback scan | 30s wall-clock |
+| Snapshot scan | 10s wall-clock + `min(max_cipher_scan_bytes, 8 MiB)` output cap |
+| Python wrapper | 90s subprocess timeout |
+
+`max_cipher_scan_bytes` caps the total bytes read during key scans; the 8 MiB
+snapshot cap limits the *output* string only and does not cap reads. Reads are
+bounded to the remaining budget on every chunk (including the final partial
+read); negative or overflowing config values are rejected at load time. The
+default is 512 MiB; lower it if scan latency is a concern.
 
 ## Integrity Verification
 

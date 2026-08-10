@@ -7,7 +7,7 @@
   "key_length": 99,
   "salt_length": 16,
   "key_xor_mask_length": 32,
-  "max_cipher_scan_bytes": 1099511627776,
+  "max_cipher_scan_bytes": 536870912,
   "max_scan_region": 536870912,
   "scan_chunk_size": 4194304,
   "scan_overlap": 2048,

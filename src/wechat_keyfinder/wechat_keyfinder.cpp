@@ -222,7 +222,7 @@ struct Config {
   int key_length = 99;
   int salt_length = 16;
   int key_xor_mask_length = 32;
-  std::size_t max_cipher_scan_bytes = 1099511627776ULL;
+  std::size_t max_cipher_scan_bytes = 536870912ULL;  // 512 MiB
   std::size_t max_scan_region = 536870912ULL;
   std::size_t scan_chunk_size = 4194304ULL;
   std::size_t scan_overlap = 2048;
@@ -291,7 +291,11 @@ bool load_config(const std::string& path, Config& cfg) {
     else if (k == "key_length") cfg.key_length = (int)json_as_int(v, cfg.key_length);
     else if (k == "salt_length") cfg.salt_length = (int)json_as_int(v, cfg.salt_length);
     else if (k == "key_xor_mask_length") cfg.key_xor_mask_length = (int)json_as_int(v, cfg.key_xor_mask_length);
-    else if (k == "max_cipher_scan_bytes") cfg.max_cipher_scan_bytes = (std::size_t)json_as_int(v, (std::int64_t)cfg.max_cipher_scan_bytes);
+    else if (k == "max_cipher_scan_bytes") {
+      std::int64_t scan_bytes = json_as_int(v, (std::int64_t)cfg.max_cipher_scan_bytes);
+      if (scan_bytes <= 0) return false;
+      cfg.max_cipher_scan_bytes = (std::size_t)scan_bytes;
+    }
     else if (k == "max_scan_region") cfg.max_scan_region = (std::size_t)json_as_int(v, (std::int64_t)cfg.max_scan_region);
     else if (k == "scan_chunk_size") cfg.scan_chunk_size = (std::size_t)json_as_int(v, (std::int64_t)cfg.scan_chunk_size);
     else if (k == "scan_overlap") cfg.scan_overlap = (std::size_t)json_as_int(v, (std::int64_t)cfg.scan_overlap);
@@ -431,7 +435,8 @@ std::optional<WechatRawKey> find_wechat_key(HANDLE process, std::uintptr_t modul
         !(mem.Protect & PAGE_GUARD)) {
       for (std::size_t offset = 0; offset < mem.RegionSize && scanned < cfg.max_cipher_scan_bytes;
            offset += cfg.scan_chunk_size - 15) {
-        auto count = (std::min)(cfg.scan_chunk_size, mem.RegionSize - offset);
+        const auto remaining = cfg.max_cipher_scan_bytes - scanned;
+        auto count = (std::min)((std::min)(cfg.scan_chunk_size, mem.RegionSize - offset), remaining);
         std::vector<unsigned char> buffer(count);
         SIZE_T read = 0;
         if (!ReadProcessMemory(process, reinterpret_cast<const void*>(
@@ -536,7 +541,8 @@ std::optional<WechatRawKey> find_wechat_key_masked(HANDLE process,
         readable_protection(mem.Protect) && !(mem.Protect & PAGE_GUARD)) {
       for (std::size_t offset = 0; offset < mem.RegionSize && scanned < cfg.max_cipher_scan_bytes;
            offset += cfg.scan_chunk_size - 128) {
-        auto count = (std::min)(cfg.scan_chunk_size, mem.RegionSize - offset);
+        const auto remaining = cfg.max_cipher_scan_bytes - scanned;
+        auto count = (std::min)((std::min)(cfg.scan_chunk_size, mem.RegionSize - offset), remaining);
         std::vector<unsigned char> buffer(count);
         SIZE_T read = 0;
         if (!ReadProcessMemory(process, reinterpret_cast<const void*>(
@@ -683,23 +689,22 @@ void emit_error(const std::string& reason, const std::string& detail = "") {
 
 #ifdef _WIN32
 
-DWORD find_wechat_pid(const std::string& process_name) {
+std::vector<DWORD> find_wechat_pids(const std::string& process_name) {
   HANDLE snap = CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0);
-  if (snap == INVALID_HANDLE_VALUE) return 0;
-  DWORD pid = 0;
+  std::vector<DWORD> pids;
+  if (snap == INVALID_HANDLE_VALUE) return pids;
   PROCESSENTRY32W entry{};
   entry.dwSize = sizeof(entry);
   std::wstring wname(process_name.begin(), process_name.end());
   if (Process32FirstW(snap, &entry)) {
     do {
       if (_wcsicmp(entry.szExeFile, wname.c_str()) == 0) {
-        pid = entry.th32ProcessID;
-        break;
+        pids.push_back(entry.th32ProcessID);
       }
     } while (Process32NextW(snap, &entry));
   }
   CloseHandle(snap);
-  return pid;
+  return pids;
 }
 
 #endif  // _WIN32
@@ -746,20 +751,24 @@ int main(int argc, char** argv) {
   }
 
 #ifdef _WIN32
-  DWORD pid = (DWORD)explicit_pid.value_or(0);
-  if (pid == 0) {
-    pid = find_wechat_pid(cfg.process_name);
-    if (pid == 0) emit_error("wechat_not_running", "No " + cfg.process_name + " process found");
+  std::vector<DWORD> pids;
+  if (explicit_pid.has_value()) {
+    pids.push_back((DWORD)explicit_pid.value());
+  } else {
+    pids = find_wechat_pids(cfg.process_name);
+    if (pids.empty()) {
+      emit_error("wechat_not_running", "No " + cfg.process_name + " process found");
+    }
   }
 
-  HANDLE process = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION | PROCESS_VM_READ, FALSE, pid);
-  if (!process) emit_error("process_open_failed", "Cannot open process " + std::to_string(pid) + " (permission denied)");
-
   // Extract encryption key: --key 覆盖 > 掩码恢复 > 旧 RVA 模式
+  // 多实例时逐个进程尝试掩码恢复，只有运行该账号的进程内存里才有对应密钥缓冲
   std::string key_hex;
   std::string salt_hex;
   std::size_t scanned = 0;
   std::uintptr_t module_base = 0;
+  DWORD pid = pids.front();
+  bool opened_any = false;
   if (!override_key.empty()) {
     key_hex = override_key;
     std::ifstream db(db_path, std::ios::binary);
@@ -769,24 +778,35 @@ int main(int argc, char** argv) {
       salt_hex = to_hex(std::vector<unsigned char>(db_salt.begin(), db_salt.end()));
     }
   } else if (!db_path.empty()) {
-    auto key = find_wechat_key_masked(process, db_path, cfg, scanned);
-    if (!key) {
-      // 掩码恢复失败才需要 module_base（旧 RVA 模式）
-      auto mb = find_module_base(pid, cfg.module_name);
-      if (!mb) {
-        emit_error("module_not_found",
-                   cfg.module_name + " not found in process " + std::to_string(pid));
+    for (DWORD candidate : pids) {
+      HANDLE process = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION | PROCESS_VM_READ, FALSE, candidate);
+      if (!process) continue;
+      opened_any = true;
+      pid = candidate;
+      auto key = find_wechat_key_masked(process, db_path, cfg, scanned);
+      if (!key) {
+        // 掩码恢复失败才需要 module_base（旧 RVA 模式）
+        auto mb = find_module_base(candidate, cfg.module_name);
+        if (mb) {
+          module_base = *mb;
+          key = find_wechat_key(process, module_base, db_path, cfg, scanned);
+        }
       }
-      module_base = *mb;
-      key = find_wechat_key(process, module_base, db_path, cfg, scanned);
+      CloseHandle(process);
+      if (key) {
+        key_hex = to_hex(key->key);
+        salt_hex = to_hex(key->salt);
+        break;
+      }
+      if (module_base == 0) {
+        auto mb = find_module_base(candidate, cfg.module_name);
+        if (mb) module_base = *mb;
+      }
     }
-    if (key) {
-      key_hex = to_hex(key->key);
-      salt_hex = to_hex(key->salt);
+    if (!opened_any) {
+      emit_error("process_open_failed", "Cannot open " + cfg.process_name + " (permission denied)");
     }
-  }
-  // module_base 仅作输出；未走 RVA 回退时不强求
-  if (module_base == 0) {
+  } else {
     auto mb = find_module_base(pid, cfg.module_name);
     if (mb) module_base = *mb;
   }
@@ -795,7 +815,11 @@ int main(int argc, char** argv) {
   std::size_t reads = 0;
   std::string snapshot;
   if (!no_snapshot) {
-    snapshot = scan_memory_for_urls(process, regions, reads, cfg);
+    HANDLE snap_process = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION | PROCESS_VM_READ, FALSE, pid);
+    if (snap_process) {
+      snapshot = scan_memory_for_urls(snap_process, regions, reads, cfg);
+      CloseHandle(snap_process);
+    }
   }
 
   std::ostringstream base_hex;
@@ -817,7 +841,6 @@ int main(int argc, char** argv) {
   result.add("bytes_scanned", json::Value::number((std::int64_t)scanned));
   std::cout << result.dump() << std::endl;
 
-  CloseHandle(process);
   return 0;
 #else
   emit_error("platform_unsupported", "wechat_keyfinder requires Windows");

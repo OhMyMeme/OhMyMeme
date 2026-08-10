@@ -11,11 +11,13 @@
 """
 
 import hashlib
+import ipaddress
 import json
 import logging
 import os
 import platform
 import shutil
+import socket
 import sqlite3
 import struct
 import subprocess
@@ -25,6 +27,7 @@ import threading
 import time
 import urllib.request
 from pathlib import Path
+from urllib.parse import urlparse
 
 logger = logging.getLogger(__name__)
 
@@ -401,31 +404,44 @@ def _apply_wal(output, key, wal_path, expected_page_size=4096):
     page_size = header_page_size
     hdr_salt1 = wal[16:20]
     hdr_salt2 = wal[20:24]
+
+    # 先解析所有完整帧，定位最后一个同代提交帧（db_size>0）作为提交边界
+    frames = []
     pos = 32  # 跳过 WAL header
-    applied = 0
-    final_pages = None
-    while pos + 24 <= len(wal):
+    while pos + 24 + page_size <= len(wal):
         frame = wal[pos : pos + 24]
         page_number = struct.unpack(">I", frame[0:4])[0]
         db_size = struct.unpack(">I", frame[4:8])[0]
-        page_data = wal[pos + 24 : pos + 24 + page_size]
-        if len(page_data) < page_size:
-            break
-        # 只应用与 header salt 匹配的帧（同代），旧代帧在 checkpoint 后失效
-        if frame[8:12] == hdr_salt1 and frame[12:16] == hdr_salt2:
-            if page_number > 0:
-                offset = (page_number - 1) * page_size
-                need = offset + page_size
-                # WAL 帧可能引用超出主文件大小的页（库增长、主文件是 checkpoint 旧快照）
-                if need > len(output):
-                    output.extend(b"\x00" * (need - len(output)))
-                output[offset : offset + page_size] = _decrypt_page(
-                    key, page_data, page_number, page_size
-                )
-                applied += 1
-            final_pages = db_size
+        same_gen = frame[8:12] == hdr_salt1 and frame[12:16] == hdr_salt2
+        frames.append(
+            (page_number, db_size, wal[pos + 24 : pos + 24 + page_size], same_gen)
+        )
         pos += 24 + page_size
-    # 按最后一个有效帧的 db_size 截断（SQLite WAL 恢复会截断到该大小）
+
+    boundary = None
+    for i, (pn, ds, _, same) in enumerate(frames):
+        if same and ds > 0:
+            boundary = i
+    if boundary is None:
+        return 0
+    final_pages = frames[boundary][1]
+
+    # 仅应用提交边界及之前的同代帧；边界后的未提交帧不应用
+    applied = 0
+    for i in range(boundary + 1):
+        page_number, _db_size, page_data, same_gen = frames[i]
+        if not same_gen or page_number == 0:
+            continue
+        offset = (page_number - 1) * page_size
+        need = offset + page_size
+        # WAL 帧可能引用超出主文件大小的页（库增长、主文件是 checkpoint 旧快照）
+        if need > len(output):
+            output.extend(b"\x00" * (need - len(output)))
+        output[offset : offset + page_size] = _decrypt_page(
+            key, page_data, page_number, page_size
+        )
+        applied += 1
+    # 按提交帧的 db_size 截断（SQLite WAL 恢复会截断到该大小）
     if final_pages and final_pages * page_size < len(output):
         del output[final_pages * page_size :]
     return applied
@@ -513,11 +529,67 @@ def _detect_image_ext(data):
     return ""
 
 
-def _download_sticker(url, aes_key=None):
-    """下载单个表情，返回图片字节或 None"""
+_WECHAT_CDN_HOSTS = {"vweixinf.tc.qq.com", "wxapp.tc.qq.com"}
+
+
+def _url_allowed(url):
+    """校验 URL：仅允许显式批准的微信 CDN 主机（http/https）"""
     try:
+        parts = urlparse(url)
+    except ValueError:
+        return False
+    if parts.scheme not in ("http", "https"):
+        return False
+    host = (parts.hostname or "").lower()
+    if host not in _WECHAT_CDN_HOSTS:
+        return False
+    return True
+
+
+def _resolve_safe(host):
+    """解析主机，拒绝回环/私网/链路本地/保留/未指定地址（防 DNS 投毒 SSRF）"""
+    try:
+        infos = socket.getaddrinfo(host, None, proto=socket.IPPROTO_TCP)
+    except socket.gaierror:
+        return False
+    for info in infos:
+        try:
+            ip = ipaddress.ip_address(info[4][0])
+        except ValueError:
+            return False
+        if (
+            ip.is_loopback
+            or ip.is_private
+            or ip.is_link_local
+            or ip.is_reserved
+            or ip.is_unspecified
+        ):
+            return False
+    return True
+
+
+class _WechatRedirect(urllib.request.HTTPRedirectHandler):
+    """重定向时逐目标重新校验主机"""
+
+    def redirect_request(self, req, fp, code, msg, headers, newurl):
+        if not _url_allowed(newurl):
+            return None
+        return super().redirect_request(req, fp, code, msg, headers, newurl)
+
+
+def _download_sticker(url, aes_key=None):
+    """下载单个表情，返回图片字节或 None（校验 CDN 主机防 SSRF）"""
+    if not _url_allowed(url):
+        logger.debug("download rejected: url not allowed")
+        return None
+    host = urlparse(url).hostname or ""
+    if not _resolve_safe(host):
+        logger.debug("download rejected: unsafe host %s", host)
+        return None
+    try:
+        opener = urllib.request.build_opener(_WechatRedirect)
         req = urllib.request.Request(url, headers={"User-Agent": "OhMyMeme"})
-        with urllib.request.urlopen(req, timeout=15) as resp:
+        with opener.open(req, timeout=15) as resp:
             data = resp.read(_MAX_DOWNLOAD + 1)
         if len(data) > _MAX_DOWNLOAD:
             return None
