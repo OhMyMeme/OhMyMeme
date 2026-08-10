@@ -1530,6 +1530,45 @@ class SettingsApi:
     def cancel_tg_import(self):
         tg_stickers.cancel_tg_import()
 
+    def pick_wechat_root(self) -> dict:
+        """手动选择微信文件根目录"""
+        try:
+            result = webview.windows[0].create_file_dialog(
+                webview.FileDialog.FOLDER, allow_multiple=False
+            )
+        except Exception:
+            return {"ok": False, "error": "无法打开目录选择对话框"}
+        if not result:
+            return {"ok": False, "cancelled": True}
+        path = result[0] if isinstance(result, (tuple, list)) else result
+        if not os.path.isdir(path):
+            return {"ok": False, "error": "所选目录不存在"}
+        return {"ok": True, "path": path}
+
+    def inspect_wechat_environment(self, user_root=None) -> dict:
+        """检测微信环境"""
+        from . import wechat_probe
+        return wechat_probe.inspect_wechat_environment(user_root)
+
+    def list_wechat_stickers(self, user_root) -> dict:
+        """列出可导入的微信表情"""
+        from . import wechat_probe
+        return wechat_probe.list_wechat_stickers(user_root)
+
+    def start_wechat_import(self, user_root=None, download=True) -> dict:
+        """启动微信表情包导入"""
+        from . import wechat_probe
+        wechat_probe.start_wechat_import(self._webui, user_root, download)
+        return {"ok": True}
+
+    def get_wechat_import_progress(self) -> dict:
+        from . import wechat_probe
+        return wechat_probe.get_wechat_progress()
+
+    def cancel_wechat_import(self):
+        from . import wechat_probe
+        wechat_probe.cancel_wechat_import()
+
     def qqnt_check_env(self) -> dict:
         """检查 QQNT 提取环境，返回 get_extract_status 结果"""
         return qqnt_extract.get_extract_status(

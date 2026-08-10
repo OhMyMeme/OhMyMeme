@@ -976,6 +976,124 @@ async function startTGImport() {
   }, 300);
 }
 
+/* 微信缓存导入 */
+let wechatPollTimer = null;
+let wechatRoot = null;
+
+function showWechatOverlay() {
+  document.getElementById('wechat-import-overlay').style.display = 'flex';
+  document.getElementById('wechat-import-error').style.display = 'none';
+  document.getElementById('wechat-import-title').textContent = '正在导入...';
+  document.getElementById('wechat-import-msg').textContent = '准备中';
+  document.getElementById('wechat-import-bar').style.width = '0%';
+  document.getElementById('wechat-import-pct').textContent = '0%';
+}
+
+function closeWechatOverlay() {
+  document.getElementById('wechat-import-overlay').style.display = 'none';
+  if (wechatPollTimer) { clearInterval(wechatPollTimer); wechatPollTimer = null; }
+  api('cancel_wechat_import');
+}
+
+async function pickWechatRoot() {
+  const r = await api('pick_wechat_root');
+  if (!r || r.cancelled) return;
+  const inp = document.getElementById('s-wechat-root');
+  if (r.ok && inp) {
+    inp.value = r.path;
+    wechatRoot = r.path;
+    showToast('微信目录已设置');
+  } else {
+    showToast((r && r.error) || '选择失败');
+  }
+}
+
+async function inspectWechat() {
+  const btn = document.getElementById('btn-wechat-inspect');
+  const status = document.getElementById('wechat-status');
+  btn.disabled = true; status.textContent = ''; status.className = '';
+  const root = wechatRoot || document.getElementById('s-wechat-root').value || null;
+  const r = await api('inspect_wechat_environment', root);
+  btn.disabled = false;
+  if (!r) { status.textContent = '检测失败'; status.className = 'error'; return; }
+  if (r.status === 'supported') {
+    status.textContent = '已检测到微信: ' + (r.account || 'unknown');
+    status.className = '';
+  } else {
+    status.textContent = r.reason || r.status || '未检测到';
+    status.className = 'error';
+  }
+}
+
+async function startWechatImport() {
+  const btn = document.getElementById('btn-wechat-start');
+  const status = document.getElementById('wechat-status');
+  if (!btn || !status) return;
+  btn.disabled = true; status.textContent = ''; status.className = '';
+  const root = wechatRoot || document.getElementById('s-wechat-root').value || null;
+  const r = await api('start_wechat_import', root, true);
+  if (!r || !r.ok) {
+    btn.disabled = false;
+    status.textContent = '启动失败: ' + (r && r.error ? r.error : '未知错误');
+    status.className = 'error';
+    return;
+  }
+  showWechatOverlay();
+  let nullCount = 0;
+  let pollInFlight = false;
+  wechatPollTimer = setInterval(async () => {
+    if (pollInFlight) return;
+    pollInFlight = true;
+    try {
+      const s = await api('get_wechat_import_progress');
+      if (!s) {
+        nullCount++;
+        if (nullCount > 20) {
+          if (wechatPollTimer) { clearInterval(wechatPollTimer); wechatPollTimer = null; }
+          document.getElementById('wechat-import-title').textContent = '导入失败';
+          document.getElementById('wechat-import-error').style.display = '';
+          document.getElementById('wechat-import-error').textContent = '连接中断';
+          btn.disabled = false;
+        }
+        return;
+      }
+      nullCount = 0;
+      document.getElementById('wechat-import-bar').style.width = (s.progress || 0) + '%';
+      document.getElementById('wechat-import-pct').textContent = (s.progress || 0) + '%';
+      document.getElementById('wechat-import-msg').textContent = s.message || '';
+      if (s.status === 'done') {
+        document.getElementById('wechat-import-title').textContent = '导入完成';
+        if (wechatPollTimer) { clearInterval(wechatPollTimer); wechatPollTimer = null; }
+        const el = document.getElementById('wechat-status');
+        el.textContent = s.message || '导入完成';
+        el.className = '';
+        btn.disabled = false;
+      } else if (s.status === 'error') {
+        document.getElementById('wechat-import-title').textContent = '导入失败';
+        if (wechatPollTimer) { clearInterval(wechatPollTimer); wechatPollTimer = null; }
+        const el = document.getElementById('wechat-status');
+        el.textContent = '导入失败: ' + (s.error || '');
+        el.className = 'error';
+        document.getElementById('wechat-import-error').style.display = '';
+        document.getElementById('wechat-import-error').textContent = s.error || '未知错误';
+        btn.disabled = false;
+      } else if (s.status === 'cancelled') {
+        document.getElementById('wechat-import-title').textContent = '已取消';
+        if (wechatPollTimer) { clearInterval(wechatPollTimer); wechatPollTimer = null; }
+        btn.disabled = false;
+      }
+    } catch (e) {
+      if (wechatPollTimer) { clearInterval(wechatPollTimer); wechatPollTimer = null; }
+      document.getElementById('wechat-import-title').textContent = '导入失败';
+      document.getElementById('wechat-import-error').style.display = '';
+      document.getElementById('wechat-import-error').textContent = e.message || '连接异常';
+      btn.disabled = false;
+    } finally {
+      pollInFlight = false;
+    }
+  }, 300);
+}
+
 /* QQNT 提取向导 */
 let qqntPollTimer = null;
 let qqnt = { step: 1, env: null, accounts: [], qq: '', base: '', output_dir: '' };
