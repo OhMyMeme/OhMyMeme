@@ -440,9 +440,14 @@ def inspect_wechat_environment(user_root=None):
             "accounts": accounts}
 
 
+_PROCEEDABLE = ("supported", "encrypted_index")
+
+
 def _pick_account(env, account_path=None):
     """从环境账号列表中选择目标账号，返回账号 dict 或 None（多账号未指定）"""
-    accounts = [a for a in env.get("accounts", []) if a["status"] == "supported"]
+    accounts = [
+        a for a in env.get("accounts", []) if a["status"] in _PROCEEDABLE
+    ]
     if account_path:
         for a in accounts:
             if a["path"] == account_path or a["id"] == account_path:
@@ -479,7 +484,7 @@ def _list_stickers_for_account(db_path, account):
 def list_wechat_stickers(user_root, account_path=None):
     """列出可导入的表情（不实际下载）"""
     env = inspect_wechat_environment(user_root)
-    if env.get("status") != "supported":
+    if env.get("status") not in _PROCEEDABLE:
         return env
     account = _pick_account(env, account_path)
     if not account:
@@ -509,7 +514,7 @@ def _wechat_worker(webui, user_root, download, account_path):
             _update_wechat(status="cancelled", message="已取消")
             return
         env = inspect_wechat_environment(user_root)
-        if env.get("status") != "supported":
+        if env.get("status") not in _PROCEEDABLE:
             _update_wechat(
                 status="error",
                 error_code=env.get("status", "unknown"),

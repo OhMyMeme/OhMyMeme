@@ -1011,7 +1011,7 @@ async function pickWechatRoot() {
 function wechatRenderAccounts(r) {
   const group = document.getElementById('s-wechat-account-group');
   const sel = document.getElementById('s-wechat-account');
-  const accounts = (r && r.accounts || []).filter(a => a.status === 'supported');
+  const accounts = (r && r.accounts || []).filter(a => a.status === 'supported' || a.status === 'encrypted_index');
   if (!group || !sel) return;
   if (accounts.length > 1) {
     group.hidden = false;
@@ -1043,8 +1043,8 @@ async function inspectWechat() {
   const r = await api('inspect_wechat_environment', root);
   btn.disabled = false;
   if (!r) { status.textContent = '检测失败'; status.className = 'error'; return; }
-  if (r.status === 'supported') {
-    const accounts = (r.accounts || []).filter(a => a.status === 'supported');
+  if (r.status === 'supported' || r.status === 'encrypted_index') {
+    const accounts = (r.accounts || []).filter(a => a.status === 'supported' || a.status === 'encrypted_index');
     status.textContent = '已检测到 ' + r.account_directory_count + ' 个账号，其中 ' + accounts.length + ' 个可用';
     status.className = '';
   } else {
