@@ -336,7 +336,7 @@ def _decrypt_page(key, page_data, page_number, page_size=4096):
 
 
 def _apply_wal(output, key, wal_path, page_size=4096):
-    """将 WAL 帧合并进已解密数据库字节流，返回应用帧数"""
+    """将 WAL 帧合并进已解密数据库字节流（按 salt 代际 + 最终大小截断）"""
     try:
         with open(wal_path, "rb") as f:
             wal = f.read()
@@ -344,25 +344,35 @@ def _apply_wal(output, key, wal_path, page_size=4096):
         return 0
     if len(wal) < 32:
         return 0
+    hdr_salt1 = wal[16:20]
+    hdr_salt2 = wal[20:24]
     pos = 32  # 跳过 WAL header
     applied = 0
+    final_pages = None
     while pos + 24 <= len(wal):
-        page_number = struct.unpack(">I", wal[pos : pos + 4])[0]
+        frame = wal[pos : pos + 24]
+        page_number = struct.unpack(">I", frame[0:4])[0]
+        db_size = struct.unpack(">I", frame[4:8])[0]
         page_data = wal[pos + 24 : pos + 24 + page_size]
         if len(page_data) < page_size:
             break
-        if page_number > 0:
-            offset = (page_number - 1) * page_size
-            need = offset + page_size
-            # WAL 帧可能引用超出主文件大小的页（库增长、主文件是 checkpoint 旧快照），
-            # 扩展缓冲容纳，避免缺页导致 "database disk image is malformed"
-            if need > len(output):
-                output.extend(b"\x00" * (need - len(output)))
-            output[offset : offset + page_size] = _decrypt_page(
-                key, page_data, page_number, page_size
-            )
-            applied += 1
+        # 只应用与 header salt 匹配的帧（同代），旧代帧在 checkpoint 后失效
+        if frame[8:12] == hdr_salt1 and frame[12:16] == hdr_salt2:
+            if page_number > 0:
+                offset = (page_number - 1) * page_size
+                need = offset + page_size
+                # WAL 帧可能引用超出主文件大小的页（库增长、主文件是 checkpoint 旧快照）
+                if need > len(output):
+                    output.extend(b"\x00" * (need - len(output)))
+                output[offset : offset + page_size] = _decrypt_page(
+                    key, page_data, page_number, page_size
+                )
+                applied += 1
+            final_pages = db_size
         pos += 24 + page_size
+    # 按最后一个有效帧的 db_size 截断（SQLite WAL 恢复会截断到该大小）
+    if final_pages and final_pages * page_size < len(output):
+        del output[final_pages * page_size :]
     return applied
 
 
@@ -524,6 +534,25 @@ def _pick_account(env, account_path=None):
     return None
 
 
+def _load_sticker_metadata(db_path, key):
+    """解密 DB 并查询表情元数据，优先主文件（通常已完整），失败/为空时回退 WAL 合并"""
+    db_bytes = _decrypt_database(db_path, key, merge_wal=False)
+    if db_bytes:
+        try:
+            meta = _query_sticker_metadata(db_bytes)
+        except Exception:
+            meta = None
+        if meta:
+            return meta
+    db_bytes = _decrypt_database(db_path, key, merge_wal=True)
+    if not db_bytes:
+        return []
+    try:
+        return _query_sticker_metadata(db_bytes)
+    except Exception:
+        return []
+
+
 def _list_stickers_for_account(db_path, account):
     """对单个账号执行密钥提取 + DB 解密 + 元数据查询"""
     binary_path = ensure_wechat_keyfinder()
@@ -535,10 +564,7 @@ def _list_stickers_for_account(db_path, account):
     key = result.get("key", "")
     if not key:
         return {"status": "error", "reason": "无法提取加密密钥"}
-    db_bytes = _decrypt_database(db_path, key)
-    if not db_bytes:
-        return {"status": "error", "reason": "数据库解密失败"}
-    metadata = _query_sticker_metadata(db_bytes)
+    metadata = _load_sticker_metadata(db_path, key)
     return {
         "status": "supported",
         "total": len(metadata),
@@ -634,19 +660,11 @@ def _wechat_worker(webui, user_root, download, account_path):
         if _check_cancel():
             _update_wechat(status="cancelled", message="已取消")
             return
-        db_bytes = _decrypt_database(db_path, key)
-        if not db_bytes:
-            _update_wechat(
-                status="error",
-                error_code="decrypt_failed",
-                error="数据库解密失败",
-            )
-            return
         _update_wechat(status="querying", message="正在查询表情元数据...")
         if _check_cancel():
             _update_wechat(status="cancelled", message="已取消")
             return
-        metadata = _query_sticker_metadata(db_bytes)
+        metadata = _load_sticker_metadata(db_path, key)
         if not metadata:
             _update_wechat(
                 status="done",
