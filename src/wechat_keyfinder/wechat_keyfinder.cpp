@@ -596,9 +596,8 @@ constexpr std::size_t kMaxSnapshotBytes = 8U * 1024U * 1024U;  // 内存快照�
 std::string scan_memory_for_urls(HANDLE process, std::size_t& regions, std::size_t& reads,
                                   const Config& cfg) {
   std::string aggregate;
-  // 快照扫描上限 = min(配置扫描上限, 全局快照上限)
-  const std::size_t max_snapshot_bytes =
-      (std::min<std::size_t>)(cfg.max_cipher_scan_bytes, kMaxSnapshotBytes);
+  // 快照输出上限固定为 8 MiB，与密钥扫描的 max_cipher_scan_bytes 无关
+  const std::size_t max_snapshot_bytes = kMaxSnapshotBytes;
   SYSTEM_INFO si{};
   GetNativeSystemInfo(&si);
   auto address = reinterpret_cast<std::uintptr_t>(si.lpMinimumApplicationAddress);
@@ -741,8 +740,19 @@ int main(int argc, char** argv) {
   if (config_path.empty()) {
     emit_error("missing_config", "--config is required");
   }
-  if (!override_key.empty() && override_key.size() != 64) {
-    emit_error("invalid_key", "--key must be 64 hex chars (32 bytes)");
+  if (!override_key.empty()) {
+    if (override_key.size() != 64) {
+      emit_error("invalid_key", "--key must be 64 hex chars (32 bytes)");
+    }
+    for (char c : override_key) {
+      if (!std::isxdigit(static_cast<unsigned char>(c))) {
+        emit_error("invalid_key", "--key contains a non-hex character");
+      }
+    }
+    // 归一化为小写后输出
+    for (auto& c : override_key) {
+      c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
+    }
   }
 
   Config cfg;
@@ -826,7 +836,9 @@ int main(int argc, char** argv) {
   base_hex << "0x" << std::hex << module_base;
 
   json::Value result = json::Value::object();
+  bool ok = true;
   if (!db_path.empty() && key_hex.empty()) {
+    ok = false;
     result.add("ok", json::Value::boolean(false));
     result.add("reason", json::Value::string("key_not_found"));
   } else {
@@ -841,7 +853,7 @@ int main(int argc, char** argv) {
   result.add("bytes_scanned", json::Value::number((std::int64_t)scanned));
   std::cout << result.dump() << std::endl;
 
-  return 0;
+  return ok ? 0 : 1;
 #else
   emit_error("platform_unsupported", "wechat_keyfinder requires Windows");
   return 1;  // unreachable
