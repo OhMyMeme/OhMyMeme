@@ -20,5 +20,5 @@ target_link_libraries(wechat_keyfinder OpenSSL::SSL OpenSSL::Crypto)
 
 if(MSVC)
     # 与 OpenSSL 静态库保持一致使用动态 CRT(/MD)；仍为单文件 exe（无 OpenSSL DLL）
-    set_property(TARGET wechat_keyfinder PROPERTY MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:DebugDLL>")
+    set_property(TARGET wechat_keyfinder PROPERTY MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>DLL")
 endif()
