@@ -469,6 +469,93 @@ std::optional<WechatRawKey> find_wechat_key(HANDLE process, std::uintptr_t modul
   return std::nullopt;
 }
 
+// --- 掩码恢复式密钥提取（按格式扫描，无需 RVA 偏移） ---
+
+bool is_hex_char(unsigned char c) {
+  return (c >= '0' && c <= '9') || (c >= 'a' && c <= 'f');
+}
+
+std::optional<WechatRawKey> find_wechat_key_masked(HANDLE process,
+                                                   const std::string& db_path,
+                                                   const Config& cfg,
+                                                   std::size_t& scanned) {
+  std::ifstream db(db_path, std::ios::binary);
+  if (!db) return std::nullopt;
+  std::array<unsigned char, 4096> first_page{};
+  db.read(reinterpret_cast<char*>(first_page.data()), first_page.size());
+  if (db.gcount() != static_cast<std::streamsize>(first_page.size())) return std::nullopt;
+
+  // db_salt 前 16 字节 -> 32 字符 ASCII hex（掩码恢复的已知明文）
+  std::string salt_ascii;
+  salt_ascii.reserve(32);
+  char hex_buf[3];
+  for (int i = 0; i < 16; ++i) {
+    std::snprintf(hex_buf, sizeof(hex_buf), "%02x", first_page[i]);
+    salt_ascii += hex_buf;
+  }
+
+  SYSTEM_INFO si{};
+  GetNativeSystemInfo(&si);
+  auto address = reinterpret_cast<std::uintptr_t>(si.lpMinimumApplicationAddress);
+  auto maximum = reinterpret_cast<std::uintptr_t>(si.lpMaximumApplicationAddress);
+  auto started = std::chrono::steady_clock::now();
+  const std::size_t window = static_cast<std::size_t>(cfg.key_length);
+
+  while (address < maximum && scanned < cfg.max_cipher_scan_bytes &&
+         std::chrono::duration_cast<std::chrono::seconds>(std::chrono::steady_clock::now() - started).count() < 30) {
+    MEMORY_BASIC_INFORMATION mem{};
+    if (VirtualQueryEx(process, reinterpret_cast<void*>(address), &mem, sizeof(mem)) != sizeof(mem)) break;
+    auto next = reinterpret_cast<std::uintptr_t>(mem.BaseAddress) + mem.RegionSize;
+    if (next <= address) break;
+    if (mem.State == MEM_COMMIT && mem.RegionSize <= cfg.max_scan_region &&
+        readable_protection(mem.Protect) && !(mem.Protect & PAGE_GUARD)) {
+      for (std::size_t offset = 0; offset < mem.RegionSize && scanned < cfg.max_cipher_scan_bytes;
+           offset += cfg.scan_chunk_size - 128) {
+        auto count = (std::min)(cfg.scan_chunk_size, mem.RegionSize - offset);
+        std::vector<unsigned char> buffer(count);
+        SIZE_T read = 0;
+        if (!ReadProcessMemory(process, reinterpret_cast<const void*>(
+            reinterpret_cast<std::uintptr_t>(mem.BaseAddress) + offset), buffer.data(), count, &read) || read == 0)
+          continue;
+        scanned += read;
+        buffer.resize(read);
+        if (buffer.size() < window) continue;
+        for (std::size_t i = 0; i + window <= buffer.size(); ++i) {
+          // 快速预检：mask[0]/mask[1] 由位置 96/97 与 salt_ascii 尾部推出
+          unsigned char m0 = buffer[i + 96] ^ static_cast<unsigned char>(salt_ascii[30]);
+          if ((buffer[i] ^ m0) != static_cast<unsigned char>('x')) continue;
+          unsigned char m1 = buffer[i + 97] ^ static_cast<unsigned char>(salt_ascii[31]);
+          if ((buffer[i + 1] ^ m1) != static_cast<unsigned char>('\'')) continue;
+          // 完整掩码恢复：(66+k)%32 覆盖全部 32 字节掩码
+          std::array<unsigned char, 32> mask{};
+          for (int k = 0; k < 32; ++k)
+            mask[(66 + k) % 32] = buffer[i + 66 + k] ^ static_cast<unsigned char>(salt_ascii[k]);
+          if ((buffer[i + 98] ^ mask[2]) != static_cast<unsigned char>('\'')) continue;
+          bool ok = true;
+          for (int k = 2; k < 66; ++k) {
+            if (!is_hex_char(buffer[i + k] ^ mask[k % 32])) {
+              ok = false;
+              break;
+            }
+          }
+          if (!ok) continue;
+          std::string key_hex;
+          key_hex.reserve(64);
+          for (int k = 0; k < 64; ++k)
+            key_hex += static_cast<char>(buffer[i + 2 + k] ^ mask[(2 + k) % 32]);
+          auto key = decode_hex(key_hex);
+          if (key && key->size() == 32) {
+            std::vector<unsigned char> salt(first_page.begin(), first_page.begin() + 16);
+            return WechatRawKey{*key, salt};
+          }
+        }
+      }
+    }
+    address = next;
+  }
+  return std::nullopt;
+}
+
 // --- Memory snapshot for URL extraction ---
 
 std::string scan_memory_for_urls(HANDLE process, std::size_t& regions, std::size_t& reads,
@@ -581,6 +668,7 @@ DWORD find_wechat_pid(const std::string& process_name) {
 int main(int argc, char** argv) {
   std::string config_path;
   std::string db_path;
+  std::string override_key;
   std::optional<DWORD> explicit_pid;
   bool no_snapshot = false;
 
@@ -590,12 +678,14 @@ int main(int argc, char** argv) {
       config_path = argv[++i];
     } else if (arg == "--db-path" && i + 1 < argc) {
       db_path = argv[++i];
+    } else if (arg == "--key" && i + 1 < argc) {
+      override_key = argv[++i];
     } else if (arg == "--pid" && i + 1 < argc) {
       explicit_pid = (DWORD)std::stoul(argv[++i]);
     } else if (arg == "--no-snapshot") {
       no_snapshot = true;
     } else if (arg == "--help" || arg == "-h") {
-      std::cerr << "Usage: wechat_keyfinder --config offsets.json [--db-path <path>] [--pid <pid>] [--no-snapshot]" << std::endl;
+      std::cerr << "Usage: wechat_keyfinder --config offsets.json [--db-path <path>] [--pid <pid>] [--no-snapshot] [--key <hex64>]" << std::endl;
       return 0;
     }
   }
@@ -622,12 +712,25 @@ int main(int argc, char** argv) {
   HANDLE process = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION | PROCESS_VM_READ, FALSE, pid);
   if (!process) emit_error("process_open_failed", "Cannot open process " + std::to_string(pid) + " (permission denied)");
 
-  // Extract encryption key if database path provided
+  // Extract encryption key: --key 覆盖 > 掩码恢复 > 旧 RVA 模式
   std::string key_hex;
   std::string salt_hex;
   std::size_t scanned = 0;
-  if (!db_path.empty()) {
-    auto key = find_wechat_key(process, module_base.value(), db_path, cfg, scanned);
+  if (!override_key.empty()) {
+    if (override_key.size() == 64) {
+      key_hex = override_key;
+      std::ifstream db(db_path, std::ios::binary);
+      if (db) {
+        std::array<unsigned char, 16> db_salt{};
+        db.read(reinterpret_cast<char*>(db_salt.data()), db_salt.size());
+        salt_hex = to_hex(std::vector<unsigned char>(db_salt.begin(), db_salt.end()));
+      }
+    }
+  } else if (!db_path.empty()) {
+    auto key = find_wechat_key_masked(process, db_path, cfg, scanned);
+    if (!key) {
+      key = find_wechat_key(process, module_base.value(), db_path, cfg, scanned);
+    }
     if (key) {
       key_hex = to_hex(key->key);
       salt_hex = to_hex(key->salt);
