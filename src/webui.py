@@ -1558,10 +1558,14 @@ class SettingsApi:
     def start_wechat_import(
         self, user_root=None, download=True, account_path=None
     ) -> dict:
-        """启动微信表情包导入"""
+        """启动微信表情包导入，已有任务时返回 {"ok": False}"""
         from . import wechat_probe
 
-        wechat_probe.start_wechat_import(self._webui, user_root, download, account_path)
+        started = wechat_probe.start_wechat_import(
+            self._webui, user_root, download, account_path
+        )
+        if not started:
+            return {"ok": False, "error": "已有导入任务正在进行"}
         return {"ok": True}
 
     def get_wechat_import_progress(self) -> dict:

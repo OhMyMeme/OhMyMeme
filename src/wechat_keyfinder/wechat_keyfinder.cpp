@@ -11,6 +11,7 @@
  * It does not modify any WeChat data or files.
  */
 
+#include <algorithm>
 #include <array>
 #include <cctype>
 #include <cstdint>
@@ -26,6 +27,7 @@
 #include <string>
 #include <string_view>
 #include <unordered_set>
+#include <utility>
 #include <vector>
 
 #ifdef _WIN32
@@ -73,8 +75,11 @@ std::string Value::escape(const std::string& s) {
       case '\r': o << "\\r"; break;
       case '\t': o << "\\t"; break;
       default:
-        if (static_cast<unsigned char>(c) < 0x20) {
-          o << "\\u" << std::hex << std::setw(4) << std::setfill('0') << (int)(unsigned char)c;
+        // 控制字符与 >=0x80 的二进制字节统一 \u00XX 转义，保证输出合法 UTF-8/JSON
+        if (static_cast<unsigned char>(c) < 0x20 ||
+            static_cast<unsigned char>(c) >= 0x80) {
+          o << "\\u" << std::hex << std::setw(4) << std::setfill('0')
+            << (int)(unsigned char)c;
         } else {
           o << c;
         }
@@ -302,6 +307,20 @@ bool load_config(const std::string& path, Config& cfg) {
     else if (k == "database_encrypted_offset_page1") cfg.database_encrypted_offset_page1 = (int)json_as_int(v, cfg.database_encrypted_offset_page1);
     else if (k == "database_iv_offset_from_end") cfg.database_iv_offset_from_end = (int)json_as_int(v, cfg.database_iv_offset_from_end);
   }
+  // 校验易错值：掩码长度需为 2 的幂、分块大小需足够大、密钥长度需能容纳 99 字节格式
+  if (cfg.key_xor_mask_length <= 0 ||
+      (cfg.key_xor_mask_length & (cfg.key_xor_mask_length - 1)) != 0) {
+    return false;
+  }
+  if (cfg.scan_chunk_size < 1024 || cfg.scan_overlap < 128) {
+    return false;
+  }
+  if (cfg.key_length < 99 || cfg.salt_length <= 0 || cfg.salt_length > 16) {
+    return false;
+  }
+  if (cfg.database_page_size < 1024 || cfg.database_page_size > 65536) {
+    return false;
+  }
   return true;
 }
 
@@ -316,15 +335,20 @@ std::string to_hex(const std::vector<unsigned char>& bytes) {
   return o.str();
 }
 
+int hex_nibble(char c) {
+  if (c >= '0' && c <= '9') return c - '0';
+  if (c >= 'a' && c <= 'f') return c - 'a' + 10;
+  if (c >= 'A' && c <= 'F') return c - 'A' + 10;
+  return -1;
+}
+
 std::optional<std::vector<unsigned char>> decode_hex(std::string_view value) {
   if (value.size() % 2 != 0) return std::nullopt;
   std::vector<unsigned char> result(value.size() / 2);
   for (size_t i = 0; i < result.size(); ++i) {
-    auto hi = (value[i*2] >= 'a') ? (value[i*2] - 'a' + 10) :
-              (value[i*2] >= 'A') ? (value[i*2] - 'A' + 10) : (value[i*2] - '0');
-    auto lo = (value[i*2+1] >= 'a') ? (value[i*2+1] - 'a' + 10) :
-              (value[i*2+1] >= 'A') ? (value[i*2+1] - 'A' + 10) : (value[i*2+1] - '0');
-    if (hi > 15 || lo > 15) return std::nullopt;
+    int hi = hex_nibble(value[i * 2]);
+    int lo = hex_nibble(value[i * 2 + 1]);
+    if (hi < 0 || lo < 0) return std::nullopt;
     result[i] = static_cast<unsigned char>((hi << 4) | lo);
   }
   return result;
@@ -434,7 +458,8 @@ std::optional<WechatRawKey> find_wechat_key(HANDLE process, std::uintptr_t modul
           if (!encoded) continue;
           std::vector<unsigned char> decoded(cfg.key_length);
           for (size_t i = 0; i < decoded.size(); ++i)
-            decoded[i] = (*encoded)[i] ^ (*mask)[i & (cfg.key_xor_mask_length - 1)];
+            decoded[i] =
+                (*encoded)[i] ^ (*mask)[i % cfg.key_xor_mask_length];
 
           if (decoded[0] != 'x' || decoded[1] != '\'' || decoded[cfg.key_length - 1] != '\'') continue;
           auto key_hex = std::string_view(reinterpret_cast<const char*>(decoded.data()) + 2, 64);
@@ -558,6 +583,10 @@ std::optional<WechatRawKey> find_wechat_key_masked(HANDLE process,
 
 // --- Memory snapshot for URL extraction ---
 
+namespace {
+constexpr std::size_t kMaxSnapshotBytes = 8U * 1024U * 1024U;  // 内存快照上限 8 MiB
+}
+
 std::string scan_memory_for_urls(HANDLE process, std::size_t& regions, std::size_t& reads,
                                   const Config& cfg) {
   std::string aggregate;
@@ -597,8 +626,10 @@ std::string scan_memory_for_urls(HANDLE process, std::size_t& regions, std::size
         if (chunk.find("kNonStoreEmoticonTable") != std::string::npos ||
             chunk.find("md5 IN(") != std::string::npos ||
             chunk.find("vweixinf.tc.qq.com") != std::string::npos) {
-          aggregate.append(chunk);
-          aggregate.push_back('\n');
+          if (aggregate.size() < kMaxSnapshotBytes) {
+            aggregate.append(chunk);
+            aggregate.push_back('\n');
+          }
         }
         if (searchable.size() > cfg.scan_overlap) {
           tail.assign(searchable.end() - cfg.scan_overlap, searchable.end());
@@ -669,7 +700,7 @@ int main(int argc, char** argv) {
   std::string config_path;
   std::string db_path;
   std::string override_key;
-  std::optional<DWORD> explicit_pid;
+  std::optional<unsigned long> explicit_pid;
   bool no_snapshot = false;
 
   for (int i = 1; i < argc; ++i) {
@@ -681,7 +712,11 @@ int main(int argc, char** argv) {
     } else if (arg == "--key" && i + 1 < argc) {
       override_key = argv[++i];
     } else if (arg == "--pid" && i + 1 < argc) {
-      explicit_pid = (DWORD)std::stoul(argv[++i]);
+      try {
+        explicit_pid = std::stoul(argv[++i]);
+      } catch (...) {
+        emit_error("invalid_pid", "PID must be a number: " + std::string(argv[i]));
+      }
     } else if (arg == "--no-snapshot") {
       no_snapshot = true;
     } else if (arg == "--help" || arg == "-h") {
@@ -693,6 +728,9 @@ int main(int argc, char** argv) {
   if (config_path.empty()) {
     emit_error("missing_config", "--config is required");
   }
+  if (!override_key.empty() && override_key.size() != 64) {
+    emit_error("invalid_key", "--key must be 64 hex chars (32 bytes)");
+  }
 
   Config cfg;
   if (!load_config(config_path, cfg)) {
@@ -700,14 +738,11 @@ int main(int argc, char** argv) {
   }
 
 #ifdef _WIN32
-  DWORD pid = explicit_pid.value_or(0);
+  DWORD pid = (DWORD)explicit_pid.value_or(0);
   if (pid == 0) {
     pid = find_wechat_pid(cfg.process_name);
     if (pid == 0) emit_error("wechat_not_running", "No " + cfg.process_name + " process found");
   }
-
-  auto module_base = find_module_base(pid, cfg.module_name);
-  if (!module_base) emit_error("module_not_found", cfg.module_name + " not found in process " + std::to_string(pid));
 
   HANDLE process = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION | PROCESS_VM_READ, FALSE, pid);
   if (!process) emit_error("process_open_failed", "Cannot open process " + std::to_string(pid) + " (permission denied)");
@@ -716,25 +751,36 @@ int main(int argc, char** argv) {
   std::string key_hex;
   std::string salt_hex;
   std::size_t scanned = 0;
+  std::uintptr_t module_base = 0;
   if (!override_key.empty()) {
-    if (override_key.size() == 64) {
-      key_hex = override_key;
-      std::ifstream db(db_path, std::ios::binary);
-      if (db) {
-        std::array<unsigned char, 16> db_salt{};
-        db.read(reinterpret_cast<char*>(db_salt.data()), db_salt.size());
-        salt_hex = to_hex(std::vector<unsigned char>(db_salt.begin(), db_salt.end()));
-      }
+    key_hex = override_key;
+    std::ifstream db(db_path, std::ios::binary);
+    if (db) {
+      std::array<unsigned char, 16> db_salt{};
+      db.read(reinterpret_cast<char*>(db_salt.data()), db_salt.size());
+      salt_hex = to_hex(std::vector<unsigned char>(db_salt.begin(), db_salt.end()));
     }
   } else if (!db_path.empty()) {
     auto key = find_wechat_key_masked(process, db_path, cfg, scanned);
     if (!key) {
-      key = find_wechat_key(process, module_base.value(), db_path, cfg, scanned);
+      // 掩码恢复失败才需要 module_base（旧 RVA 模式）
+      auto mb = find_module_base(pid, cfg.module_name);
+      if (!mb) {
+        emit_error("module_not_found",
+                   cfg.module_name + " not found in process " + std::to_string(pid));
+      }
+      module_base = *mb;
+      key = find_wechat_key(process, module_base, db_path, cfg, scanned);
     }
     if (key) {
       key_hex = to_hex(key->key);
       salt_hex = to_hex(key->salt);
     }
+  }
+  // module_base 仅作输出；未走 RVA 回退时不强求
+  if (module_base == 0) {
+    auto mb = find_module_base(pid, cfg.module_name);
+    if (mb) module_base = *mb;
   }
 
   std::size_t regions = 0;
@@ -745,10 +791,15 @@ int main(int argc, char** argv) {
   }
 
   std::ostringstream base_hex;
-  base_hex << "0x" << std::hex << module_base.value();
+  base_hex << "0x" << std::hex << module_base;
 
   json::Value result = json::Value::object();
-  result.add("ok", json::Value::boolean(true));
+  if (!db_path.empty() && key_hex.empty()) {
+    result.add("ok", json::Value::boolean(false));
+    result.add("reason", json::Value::string("key_not_found"));
+  } else {
+    result.add("ok", json::Value::boolean(true));
+  }
   result.add("pid", json::Value::number((std::int64_t)pid));
   result.add("module_base", json::Value::string(base_hex.str()));
   if (!key_hex.empty()) result.add("key", json::Value::string(key_hex));

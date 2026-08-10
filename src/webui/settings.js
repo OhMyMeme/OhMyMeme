@@ -978,7 +978,15 @@ async function startTGImport() {
 
 /* 微信缓存导入 */
 let wechatPollTimer = null;
-let wechatRoot = null;
+
+function isWechatAccountUsable(a) {
+  return a.status === 'supported' || a.status === 'encrypted_index';
+}
+
+function wechatRootInput() {
+  const el = document.getElementById('s-wechat-root');
+  return (el && el.value) || null;
+}
 
 function showWechatOverlay() {
   document.getElementById('wechat-import-overlay').style.display = 'flex';
@@ -991,8 +999,12 @@ function showWechatOverlay() {
 
 function closeWechatOverlay() {
   document.getElementById('wechat-import-overlay').style.display = 'none';
-  if (wechatPollTimer) { clearInterval(wechatPollTimer); wechatPollTimer = null; }
-  api('cancel_wechat_import');
+  const btn = document.getElementById('btn-wechat-start');
+  if (btn) btn.disabled = false;
+  if (wechatPollTimer) {
+    clearInterval(wechatPollTimer); wechatPollTimer = null;
+    api('cancel_wechat_import');
+  }
 }
 
 async function pickWechatRoot() {
@@ -1001,7 +1013,6 @@ async function pickWechatRoot() {
   const inp = document.getElementById('s-wechat-root');
   if (r.ok && inp) {
     inp.value = r.path;
-    wechatRoot = r.path;
     showToast('微信目录已设置');
   } else {
     showToast((r && r.error) || '选择失败');
@@ -1011,7 +1022,7 @@ async function pickWechatRoot() {
 function wechatRenderAccounts(r) {
   const group = document.getElementById('s-wechat-account-group');
   const sel = document.getElementById('s-wechat-account');
-  const accounts = (r && r.accounts || []).filter(a => a.status === 'supported' || a.status === 'encrypted_index');
+  const accounts = (r && r.accounts || []).filter(isWechatAccountUsable);
   if (!group || !sel) return;
   if (accounts.length > 1) {
     group.hidden = false;
@@ -1038,20 +1049,27 @@ function wechatSelectedAccount() {
 async function inspectWechat() {
   const btn = document.getElementById('btn-wechat-inspect');
   const status = document.getElementById('wechat-status');
+  if (!btn || !status) return;
   btn.disabled = true; status.textContent = ''; status.className = '';
-  const root = wechatRoot || document.getElementById('s-wechat-root').value || null;
-  const r = await api('inspect_wechat_environment', root);
-  btn.disabled = false;
-  if (!r) { status.textContent = '检测失败'; status.className = 'error'; return; }
-  if (r.status === 'supported' || r.status === 'encrypted_index') {
-    const accounts = (r.accounts || []).filter(a => a.status === 'supported' || a.status === 'encrypted_index');
-    status.textContent = '已检测到 ' + r.account_directory_count + ' 个账号，其中 ' + accounts.length + ' 个可用';
-    status.className = '';
-  } else {
-    status.textContent = r.reason || r.status || '未检测到';
+  try {
+    const root = wechatRootInput();
+    const r = await api('inspect_wechat_environment', root);
+    if (!r) { status.textContent = '检测失败'; status.className = 'error'; return; }
+    if (r.status === 'supported' || r.status === 'encrypted_index') {
+      const accounts = (r.accounts || []).filter(isWechatAccountUsable);
+      status.textContent = '已检测到 ' + r.account_directory_count + ' 个账号，其中 ' + accounts.length + ' 个可用';
+      status.className = '';
+    } else {
+      status.textContent = r.reason || r.status || '未检测到';
+      status.className = 'error';
+    }
+    wechatRenderAccounts(r);
+  } catch (e) {
+    status.textContent = '检测失败: ' + (e.message || e);
     status.className = 'error';
+  } finally {
+    btn.disabled = false;
   }
-  wechatRenderAccounts(r);
 }
 
 async function startWechatImport() {
@@ -1059,7 +1077,7 @@ async function startWechatImport() {
   const status = document.getElementById('wechat-status');
   if (!btn || !status) return;
   btn.disabled = true; status.textContent = ''; status.className = '';
-  const root = wechatRoot || document.getElementById('s-wechat-root').value || null;
+  const root = wechatRootInput();
   const account = wechatSelectedAccount();
   const accountGroup = document.getElementById('s-wechat-account-group');
   if (accountGroup && !accountGroup.hidden && !account) {
@@ -1068,7 +1086,15 @@ async function startWechatImport() {
     status.className = 'error';
     return;
   }
-  const r = await api('start_wechat_import', root, true, account);
+  let r;
+  try {
+    r = await api('start_wechat_import', root, true, account);
+  } catch (e) {
+    btn.disabled = false;
+    status.textContent = '启动失败: ' + (e.message || e);
+    status.className = 'error';
+    return;
+  }
   if (!r || !r.ok) {
     btn.disabled = false;
     status.textContent = '启动失败: ' + (r && r.error ? r.error : '未知错误');
@@ -1090,6 +1116,8 @@ async function startWechatImport() {
           document.getElementById('wechat-import-title').textContent = '导入失败';
           document.getElementById('wechat-import-error').style.display = '';
           document.getElementById('wechat-import-error').textContent = '连接中断';
+          status.textContent = '导入失败: 连接中断';
+          status.className = 'error';
           btn.disabled = false;
         }
         return;

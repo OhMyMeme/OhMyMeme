@@ -48,20 +48,12 @@ _WECHAT_STATE = {
     "done": 0,
     "imported": 0,
     "failed": 0,
+    "rejected": 0,
 }
 
 _WECHAT_LOCK = threading.Lock()
 _WECHAT_CANCEL = False
 
-_WECHAT_CDN_HOSTS = [
-    "vweixinf.tc.qq.com",
-    "wxapp.tc.qq.com",
-]
-_WECHAT_CDN_PATHS = [
-    "/110/20401/stodownload",
-    "/110/20402/stodownload",
-    "/262/20304/stodownload",
-]
 _MAX_DOWNLOAD = 20 * 1024 * 1024
 
 
@@ -89,7 +81,7 @@ def _reset_state():
     _WECHAT_CANCEL = False
     _update_wechat(
         status="idle", progress=0, message="", error="", error_code="",
-        total=0, done=0, imported=0, failed=0,
+        total=0, done=0, imported=0, failed=0, rejected=0,
     )
 
 
@@ -238,10 +230,8 @@ def _inspect_account(account_root):
     """检查单个账号目录，返回 {id, path, status, reason, db_path}"""
     account_id = os.path.basename(account_root)
     db_path = _find_emoticon_db(account_root)
-    fav_path = os.path.join(account_root, "db_storage", "favorite", "favorite.db")
-    has_emoticon = bool(db_path)
-    has_favorite = os.path.isfile(fav_path)
-    if not has_emoticon and not has_favorite:
+    if not db_path:
+        # 无表情库文件（favorite.db 等非表情索引存在与否都不影响）
         return {
             "id": account_id,
             "path": account_root,
@@ -249,9 +239,7 @@ def _inspect_account(account_root):
             "reason": "sticker_index_missing",
             "db_path": "",
         }
-    if (has_emoticon and not _is_sqlite_header(db_path)) or (
-        has_favorite and not _is_sqlite_header(fav_path)
-    ):
+    if not _is_sqlite_header(db_path):
         return {
             "id": account_id,
             "path": account_root,
@@ -405,6 +393,7 @@ def _query_sticker_metadata(db_bytes):
     """从解密后的数据库查询表情元数据"""
     fd, tmp = tempfile.mkstemp(suffix=".db")
     os.close(fd)
+    conn = None
     try:
         with open(tmp, "wb") as f:
             f.write(db_bytes)
@@ -427,9 +416,13 @@ def _query_sticker_metadata(db_bytes):
                 "url": url,
                 "aes_key": r["aes_key"] or "",
             })
-        conn.close()
         return rows
     finally:
+        if conn is not None:
+            try:
+                conn.close()
+            except Exception:
+                pass
         try:
             os.unlink(tmp)
         except OSError:
@@ -553,18 +546,38 @@ def _load_sticker_metadata(db_path, key):
         return []
 
 
-def _list_stickers_for_account(db_path, account):
-    """对单个账号执行密钥提取 + DB 解密 + 元数据查询"""
+def _read_plaintext_metadata(db_path):
+    """直接读取明文 SQLite 库并查询表情元数据"""
+    try:
+        with open(db_path, "rb") as f:
+            return _query_sticker_metadata(f.read())
+    except Exception as e:
+        logger.debug("read plaintext metadata failed: %s", e)
+        return []
+
+
+def _load_metadata_for_account(account):
+    """按账号状态加载表情元数据：supported 直读明文，encrypted_index 走密钥+解密"""
+    db_path = account.get("db_path", "")
+    if not db_path:
+        return []
+    if account.get("status") == "supported":
+        return _read_plaintext_metadata(db_path)
     binary_path = ensure_wechat_keyfinder()
     if not binary_path:
-        return {"status": "error", "reason": "helper 二进制不可用"}
+        return []
     result = _run_keyfinder(binary_path, db_path)
     if not result.get("ok"):
-        return {"status": "error", "reason": result.get("reason", "unknown")}
+        return []
     key = result.get("key", "")
     if not key:
-        return {"status": "error", "reason": "无法提取加密密钥"}
-    metadata = _load_sticker_metadata(db_path, key)
+        return []
+    return _load_sticker_metadata(db_path, key)
+
+
+def _list_stickers_for_account(account):
+    """对单个账号列出可导入的表情"""
+    metadata = _load_metadata_for_account(account)
     return {
         "status": "supported",
         "total": len(metadata),
@@ -584,18 +597,32 @@ def list_wechat_stickers(user_root, account_path=None):
             return {"status": "multiple_accounts", "reason": "检测到多个微信账号，请选择账号",
                     "accounts": [a["id"] for a in env.get("accounts", [])]}
         return {"status": "no_account", "reason": "未找到可用账号"}
-    return _list_stickers_for_account(account["db_path"], account)
+    return _list_stickers_for_account(account)
+
+
+_WECHAT_ACTIVE = (
+    "scanning",
+    "extracting_key",
+    "decrypting_db",
+    "querying",
+    "downloading",
+    "importing",
+)
 
 
 def start_wechat_import(webui, user_root=None, download=True, account_path=None):
-    """后台启动微信表情包导入"""
+    """后台启动微信表情包导入，已有任务时返回 False"""
     global _WECHAT_CANCEL
-    _reset_state()
+    with _WECHAT_LOCK:
+        if _WECHAT_STATE["status"] in _WECHAT_ACTIVE:
+            return False
+        _reset_state()
     threading.Thread(
         target=_wechat_worker,
         args=(webui, user_root, download, account_path),
         daemon=True,
     ).start()
+    return True
 
 
 def _wechat_worker(webui, user_root, download, account_path):
@@ -624,47 +651,66 @@ def _wechat_worker(webui, user_root, download, account_path):
             )
             return
         db_path = account["db_path"]
-        _update_wechat(status="extracting_key", message="正在提取加密密钥...")
+        if not db_path:
+            _update_wechat(
+                status="error",
+                error_code="no_database",
+                error="未找到表情数据库",
+            )
+            return
+        if account.get("status") == "supported":
+            _update_wechat(status="querying", message="正在查询表情元数据...")
+            if _check_cancel():
+                _update_wechat(status="cancelled", message="已取消")
+                return
+            metadata = _read_plaintext_metadata(db_path)
+        else:
+            _update_wechat(status="extracting_key", message="正在提取加密密钥...")
+            if _check_cancel():
+                _update_wechat(status="cancelled", message="已取消")
+                return
+            binary_path = ensure_wechat_keyfinder()
+            if not binary_path:
+                _update_wechat(
+                    status="error",
+                    error_code="no_binary",
+                    error="helper 二进制不可用（下载失败或平台不支持）",
+                )
+                return
+            result = _run_keyfinder(binary_path, db_path)
+            if not result.get("ok"):
+                detail = result.get("detail", "")
+                rc = result.get("returncode")
+                if rc is not None:
+                    detail = (
+                        f"{detail} (exit code {rc})" if detail else f"辅助二进制退出码 {rc}"
+                    )
+                _update_wechat(
+                    status="error",
+                    error_code=result.get("reason", "keyfinder_failed"),
+                    error=detail or "密钥提取失败",
+                )
+                return
+            key = result.get("key", "")
+            if not key:
+                _update_wechat(
+                    status="error",
+                    error_code="no_key",
+                    error="无法提取加密密钥（微信版本不兼容或未登录）",
+                )
+                return
+            _update_wechat(status="decrypting_db", message="正在解密数据库...")
+            if _check_cancel():
+                _update_wechat(status="cancelled", message="已取消")
+                return
+            _update_wechat(status="querying", message="正在查询表情元数据...")
+            if _check_cancel():
+                _update_wechat(status="cancelled", message="已取消")
+                return
+            metadata = _load_sticker_metadata(db_path, key)
         if _check_cancel():
             _update_wechat(status="cancelled", message="已取消")
             return
-        binary_path = ensure_wechat_keyfinder()
-        if not binary_path:
-            _update_wechat(
-                status="error",
-                error_code="no_binary",
-                error="helper 二进制不可用（下载失败或平台不支持）",
-            )
-            return
-        result = _run_keyfinder(binary_path, db_path)
-        if not result.get("ok"):
-            detail = result.get("detail", "")
-            rc = result.get("returncode")
-            if rc is not None:
-                detail = f"{detail} (exit code {rc})" if detail else f"辅助二进制退出码 {rc}"
-            _update_wechat(
-                status="error",
-                error_code=result.get("reason", "keyfinder_failed"),
-                error=detail or "密钥提取失败",
-            )
-            return
-        key = result.get("key", "")
-        if not key:
-            _update_wechat(
-                status="error",
-                error_code="no_key",
-                error="无法提取加密密钥（微信版本不兼容或未登录）",
-            )
-            return
-        _update_wechat(status="decrypting_db", message="正在解密数据库...")
-        if _check_cancel():
-            _update_wechat(status="cancelled", message="已取消")
-            return
-        _update_wechat(status="querying", message="正在查询表情元数据...")
-        if _check_cancel():
-            _update_wechat(status="cancelled", message="已取消")
-            return
-        metadata = _load_sticker_metadata(db_path, key)
         if not metadata:
             _update_wechat(
                 status="done",
@@ -722,6 +768,8 @@ def _wechat_worker(webui, user_root, download, account_path):
         msg = f"导入完成，共 {imported} 个表情"
         if failed:
             msg += f"（{failed} 个下载失败）"
+        if rejected:
+            msg += f"（{rejected} 个被拒绝）"
         _update_wechat(
             status="done",
             message=msg,
@@ -729,6 +777,7 @@ def _wechat_worker(webui, user_root, download, account_path):
             done=len(metadata),
             imported=imported,
             failed=failed,
+            rejected=rejected,
         )
     except Exception as e:
         logger.error("wechat import error: %s", e)
