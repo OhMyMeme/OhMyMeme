@@ -590,6 +590,9 @@ constexpr std::size_t kMaxSnapshotBytes = 8U * 1024U * 1024U;  // 内存快照�
 std::string scan_memory_for_urls(HANDLE process, std::size_t& regions, std::size_t& reads,
                                   const Config& cfg) {
   std::string aggregate;
+  // 快照扫描上限 = min(配置扫描上限, 全局快照上限)
+  const std::size_t max_snapshot_bytes =
+      (std::min<std::size_t>)(cfg.max_cipher_scan_bytes, kMaxSnapshotBytes);
   SYSTEM_INFO si{};
   GetNativeSystemInfo(&si);
   auto address = reinterpret_cast<std::uintptr_t>(si.lpMinimumApplicationAddress);
@@ -598,6 +601,9 @@ std::string scan_memory_for_urls(HANDLE process, std::size_t& regions, std::size
   auto started = std::chrono::steady_clock::now();
 
   while (address < maximum) {
+    if (aggregate.size() >= max_snapshot_bytes) {
+      break;
+    }
     if (std::chrono::duration_cast<std::chrono::seconds>(
             std::chrono::steady_clock::now() - started).count() >= 10) {
       break;
@@ -610,6 +616,9 @@ std::string scan_memory_for_urls(HANDLE process, std::size_t& regions, std::size
         readable_protection(mem.Protect) && !(mem.Protect & PAGE_GUARD)) {
       ++regions;
       for (std::size_t offset = 0; offset < mem.RegionSize; offset += cfg.scan_chunk_size) {
+        if (aggregate.size() >= max_snapshot_bytes) {
+          break;
+        }
         auto count = (std::min)(cfg.scan_chunk_size, mem.RegionSize - offset);
         std::vector<unsigned char> buffer(count);
         SIZE_T read = 0;
@@ -626,10 +635,9 @@ std::string scan_memory_for_urls(HANDLE process, std::size_t& regions, std::size
         if (chunk.find("kNonStoreEmoticonTable") != std::string::npos ||
             chunk.find("md5 IN(") != std::string::npos ||
             chunk.find("vweixinf.tc.qq.com") != std::string::npos) {
-          if (aggregate.size() < kMaxSnapshotBytes) {
-            aggregate.append(chunk);
-            aggregate.push_back('\n');
-          }
+          const auto remaining = max_snapshot_bytes - aggregate.size();
+          aggregate.append(chunk.substr(0, remaining));
+          aggregate.push_back('\n');
         }
         if (searchable.size() > cfg.scan_overlap) {
           tail.assign(searchable.end() - cfg.scan_overlap, searchable.end());
@@ -804,7 +812,7 @@ int main(int argc, char** argv) {
   result.add("module_base", json::Value::string(base_hex.str()));
   if (!key_hex.empty()) result.add("key", json::Value::string(key_hex));
   if (!salt_hex.empty()) result.add("salt", json::Value::string(salt_hex));
-  result.add("memory_snapshot", json::Value::string(snapshot));
+  if (!snapshot.empty()) result.add("memory_snapshot", json::Value::string(snapshot));
   result.add("regions_scanned", json::Value::number((std::int64_t)regions));
   result.add("bytes_scanned", json::Value::number((std::int64_t)scanned));
   std::cout << result.dump() << std::endl;

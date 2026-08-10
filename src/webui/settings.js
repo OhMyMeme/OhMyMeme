@@ -988,6 +988,11 @@ function wechatRootInput() {
   return (el && el.value) || null;
 }
 
+function wechatSetCloseLabel(label) {
+  const el = document.getElementById('btn-wechat-close');
+  if (el) el.textContent = label;
+}
+
 function showWechatOverlay() {
   document.getElementById('wechat-import-overlay').style.display = 'flex';
   document.getElementById('wechat-import-error').style.display = 'none';
@@ -995,6 +1000,7 @@ function showWechatOverlay() {
   document.getElementById('wechat-import-msg').textContent = '准备中';
   document.getElementById('wechat-import-bar').style.width = '0%';
   document.getElementById('wechat-import-pct').textContent = '0%';
+  wechatSetCloseLabel('取消导入');
 }
 
 function closeWechatOverlay() {
@@ -1118,6 +1124,7 @@ async function startWechatImport() {
           document.getElementById('wechat-import-error').textContent = '连接中断';
           status.textContent = '导入失败: 连接中断';
           status.className = 'error';
+          wechatSetCloseLabel('关闭');
           btn.disabled = false;
         }
         return;
@@ -1132,6 +1139,7 @@ async function startWechatImport() {
         const el = document.getElementById('wechat-status');
         el.textContent = s.message || '导入完成';
         el.className = '';
+        wechatSetCloseLabel('关闭');
         btn.disabled = false;
       } else if (s.status === 'error') {
         document.getElementById('wechat-import-title').textContent = '导入失败';
@@ -1142,10 +1150,12 @@ async function startWechatImport() {
         el.className = 'error';
         document.getElementById('wechat-import-error').style.display = '';
         document.getElementById('wechat-import-error').textContent = (s.error || '未知错误') + errCode;
+        wechatSetCloseLabel('关闭');
         btn.disabled = false;
       } else if (s.status === 'cancelled') {
         document.getElementById('wechat-import-title').textContent = '已取消';
         if (wechatPollTimer) { clearInterval(wechatPollTimer); wechatPollTimer = null; }
+        wechatSetCloseLabel('关闭');
         btn.disabled = false;
       }
     } catch (e) {
@@ -1153,6 +1163,7 @@ async function startWechatImport() {
       document.getElementById('wechat-import-title').textContent = '导入失败';
       document.getElementById('wechat-import-error').style.display = '';
       document.getElementById('wechat-import-error').textContent = e.message || '连接异常';
+      wechatSetCloseLabel('关闭');
       btn.disabled = false;
     } finally {
       pollInFlight = false;

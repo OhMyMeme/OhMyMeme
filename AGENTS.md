@@ -63,8 +63,6 @@ src/              # 主代码
   tg_stickers.py   # Telegram Desktop 缓存表情包提取（tdata 解密 + webm 转 webp + 入库）
   wechat_probe.py  # 微信收藏表情导入（helper 二进制提取密钥 + AES-CBC 解密 DB + CDN 下载，仅 Windows）
   wechat_keyfinder/ # 微信密钥提取 C++ 辅助二进制源码（CMake 构建）
-  config/
-    offsets.json  # wechat_keyfinder 易变参数（RVA 偏移/版本号等，微信更新时只改此文件）
   webui/          # 前端静态文件（HTML 与 CSS/JS 分离，经典脚本供内联 onclick 调用全局函数）
     index.html    # 主窗口 HTML 骨架，引用 index.css + index.js
     index.css     # 主窗口样式
@@ -72,6 +70,8 @@ src/              # 主代码
     settings.html # 设置窗口 HTML 骨架，引用 settings.css + settings.js
     settings.css  # 设置窗口样式
     settings.js   # 设置窗口逻辑（设置项/同步/QQ 导入向导）
+config/
+  offsets.json    # wechat_keyfinder 易变参数（版本号等，微信升级时只改此文件）
 scripts/
   build.py        # PyInstaller + InnoSetup 构建脚本 (i18n zh/en)
   launcher.py     # PyInstaller 入口
@@ -299,7 +299,7 @@ tests/
 - **DB 解密** (`_decrypt_database`): AES-256-CBC 逐页解密（每页 4096 字节，页 1 带 16 字节偏移，IV 取页尾 80 字节偏移处），首页替换为 "SQLite format 3" header；**合并 WAL**（`_apply_wal`）：微信运行中表结构与记录在 `emoticon.db-wal` 里，按 WAL 帧（24B 头 + 4096B 加密页）解密并回写到对应页，主文件旧快照 + WAL 帧 = 完整数据
 - **元数据查询** (`_query_sticker_metadata`): SQLite 查询 `kNonStoreEmoticonTable`（type/md5/aes_key/cdn_url/encrypt_url/extern_url），返回 md5+url+aes_key 列表
 - **下载校验** (`_download_sticker`): urllib 下载 → 魔数识别扩展名（PNG/JPG/GIF/WebP/BMP）→ 带 `aes_key` 时 AES-128-CBC 解密（IV=key）；`_detect_image_ext` 校验合法才返回
-- **完整性校验**: 二进制发布时嵌入 SHA-256（`_WECHAT_KEYFINDER_SHA256`），执行前 `verify_binary_integrity` 校验，防恶意替换
+- **完整性校验**: `verify_binary_integrity` 执行前校验二进制 SHA-256，未配置真实哈希（占位符 `PLACEHOLDER_UPDATE_ON_RELEASE`）时**默认拒绝执行**；开发/本地测试可用环境变量 `OHMYMEME_INSECURE_SKIP_HELPER_HASH=1` 跳过。**发布前必须**用 `certutil -hashfile wechat_keyfinder.exe SHA256` 计算真实哈希填入 `_WECHAT_KEYFINDER_SHA256` 并移除占位符
 - **前端 UI**: 设置页「从微信导入」section（目录选择 + 环境检测 + 多账号下拉 + 进度覆盖层）
 
 ## 构建 & 测试

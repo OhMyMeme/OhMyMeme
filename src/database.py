@@ -581,14 +581,14 @@ class MemeDB:
             conn.execute("DELETE FROM recent_uses")
             conn.commit()
 
-    def get_recent(self, limit: int = 50) -> List[dict]:
+    def get_recent(self, limit: int = 50, offset: int = 0) -> List[dict]:
         conn = self._get_conn()
         rows = conn.execute(
             "SELECT m.* FROM memes m "
             "JOIN recent_uses r ON r.meme_id = m.id "
             "WHERE (m.stego_of_hash IS NULL OR m.stego_of_hash = '') "
-            "ORDER BY r.used_at DESC LIMIT ?",
-            (limit,),
+            "ORDER BY r.used_at DESC LIMIT ? OFFSET ?",
+            (limit, offset),
         ).fetchall()
         return [dict(r) for r in rows]
 

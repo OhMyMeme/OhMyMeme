@@ -3,6 +3,7 @@ let collections = [], activeCollection = null;
 let dragSrcId = null;
 const MEME_PAGE = 200;
 let memeOffset = 0, memeHasMore = true, memeLoadingMore = false;
+let memeGen = 0, cbGen = 0;
 
 async function api(method, ...args) {
   try { return await pywebview.api[method](...args); }
@@ -62,9 +63,11 @@ function onSearch() {
 
 async function refreshMemes() {
   const q = document.getElementById('search').value.trim();
+  const gen = ++memeGen;
   memeOffset = 0; memeHasMore = true;
   try { memes = await api('search_memes', q, [...activeTags], activeCollection, 0, MEME_PAGE) || []; }
   catch(e) { memes = []; }
+  if (gen !== memeGen) return;   // 期间查询条件已变，丢弃过期结果
   memeOffset = memes.length;
   memeHasMore = memes.length === MEME_PAGE;
   renderGrid();
@@ -73,9 +76,11 @@ async function refreshMemes() {
 async function loadMoreMemes() {
   if (memeLoadingMore || !memeHasMore) return;
   memeLoadingMore = true;
+  const gen = memeGen;
   const q = document.getElementById('search').value.trim();
   try {
     const more = await api('search_memes', q, [...activeTags], activeCollection, memeOffset, MEME_PAGE) || [];
+    if (gen !== memeGen) return;   // 过期响应丢弃
     if (more.length === 0) {
       memeHasMore = false;
     } else {
@@ -1400,9 +1405,9 @@ document.addEventListener('DOMContentLoaded', async () => {
   initDragReorder();
   initHScroll('tagbar');
   initHScroll('colbar');
-  document.getElementById('grid-wrap').addEventListener('scroll', () => {
-    const el = document.getElementById('grid-wrap');
-    if (el.scrollTop + el.clientHeight >= el.scrollHeight - 300) {
+  const gridWrap = document.getElementById('grid-wrap');
+  gridWrap.addEventListener('scroll', () => {
+    if (gridWrap.scrollTop + gridWrap.clientHeight >= gridWrap.scrollHeight - 300) {
       loadMoreMemes();
     }
   });
@@ -1502,6 +1507,8 @@ function cbAppendLeftCards(items) {
   if (!s) return;
   const rightIds = new Set(s.right.map(x => x.id));
   const left = document.getElementById('cb-left-list');
+  const empty = document.getElementById('cb-empty-left');
+  if (empty) empty.remove();
   items.forEach(m => {
     if (rightIds.has(m.id)) return;
     const card = cbMemeCard(m, 'left');
@@ -1513,8 +1520,10 @@ function cbAppendLeftCards(items) {
 async function cbLoadMoreLeft(query) {
   if (!cbState || cbState.leftLoading || !cbState.leftHasMore) return;
   cbState.leftLoading = true;
+  const gen = cbGen;
   try {
     const list = await api('search_memes', query || '', [], null, cbState.leftOffset, MEME_PAGE) || [];
+    if (!cbState || gen !== cbGen) return;   // 弹窗已关/搜索已变，丢弃过期响应
     if (list.length === 0) {
       cbState.leftHasMore = false;
     } else {
@@ -1524,9 +1533,9 @@ async function cbLoadMoreLeft(query) {
       cbAppendLeftCards(list);
     }
   } catch(e) {
-    cbState.leftHasMore = false;
+    if (cbState) cbState.leftHasMore = false;
   } finally {
-    cbState.leftLoading = false;
+    if (cbState) cbState.leftLoading = false;
   }
 }
 
@@ -1659,6 +1668,7 @@ async function cbConfirm() {
 }
 
 function showCollectionBuilder() {
+  cbGen++;
   cbState = { left: [], right: [], selId: null, selIsNew: true,
               leftOffset: 0, leftHasMore: true, leftLoading: false };
   document.getElementById('cb-overlay').style.display = 'flex';
@@ -1720,10 +1730,11 @@ document.getElementById('cb-search').addEventListener('input', () => {
   clearTimeout(cbSearchTimer);
   cbSearchTimer = setTimeout(async () => {
     const q = document.getElementById('cb-search').value.trim();
+    const gen = ++cbGen;
     cbState.leftOffset = 0; cbState.leftHasMore = true;
     try {
       const list = await api('search_memes', q, [], null, 0, MEME_PAGE) || [];
-      if (cbState) {
+      if (cbState && gen === cbGen) {
         cbState.left = list;
         cbState.leftOffset = list.length;
         cbState.leftHasMore = list.length === MEME_PAGE;

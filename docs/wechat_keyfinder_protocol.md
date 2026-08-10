@@ -9,33 +9,40 @@ Python calls it via subprocess with JSON input/output for memory safety and audi
 
 ## Invocation
 
-```
-wechat_keyfinder --config offsets.json [--db-path <path>] [--pid <pid>] [--no-snapshot] [--key <hex64>]
+```console
+wechat_keyfinder --config offsets.json [--db-path <path>] [--pid <pid>] [--no-snapshot]
 ```
 
 ### Key Extraction Strategy (priority order)
 
-1. `--key <hex64>` — inject a verified key directly, skip memory forensics
-2. **Mask recovery** (default) — scans process memory for the 99-byte masked
+1. **Mask recovery** (default) — scans process memory for the 99-byte masked
    `x'<96hex>'` buffer; the 32-byte XOR mask is recovered from the known DB
    salt (first 16 bytes of emoticon.db). **No RVA offset needed**, robust across
    WeChat versions.
-3. Legacy RVA pattern scan (fallback) — uses `cipher_literal_rva`/`mask_offset`
+2. Legacy RVA pattern scan (fallback) — uses `cipher_literal_rva`/`mask_offset`
    from offsets.json.
+
+> **Test-only `--key`**: for manual verification a verified 64-hex key may be
+> injected via `--key <hex64>` to skip memory forensics. This passes the key on
+> the command line (visible in the process list), so it is **NOT part of the
+> production protocol** and must never be used in automated/release flows.
+> Production callers obtain the key via the default mask-recovery path only.
 
 ### Arguments
 
 | Argument | Required | Description |
 |----------|----------|-------------|
 | `--config` | Yes | Path to offsets.json config file |
+| `--db-path` | No | Path to the encrypted `emoticon.db`; when absent no key extraction is attempted |
 | `--pid` | No | WeChat process ID (auto-detected if omitted) |
-| `--output-json` | No | Output JSON to stdout (default behavior) |
+| `--no-snapshot` | No | Skip the in-memory URL snapshot scan (Python uses this; default output then omits `memory_snapshot`) |
+| `--key` | No | **Test-only**: inject a verified 64-hex key directly, skip forensics (see note above) |
 
 ### Config File (offsets.json)
 
 ```json
 {
-  "version": "4.1.11.55",
+  "version": "4.1.12.26",
   "module_name": "Weixin.dll",
   "process_name": "Weixin.exe",
   "cipher_literal_rva": "0x8779C8",
@@ -62,20 +69,21 @@ wechat_keyfinder --config offsets.json [--db-path <path>] [--pid <pid>] [--no-sn
 
 ### Success
 
+Default invocation (with `--no-snapshot`) omits `memory_snapshot`:
+
 ```json
 {
   "ok": true,
   "pid": 1234,
-  "version": "4.1.11.55",
+  "module_base": "0x1A2B3C00",
   "key": "a1b2c3d4e5f6...",
   "salt": "f6e5d4c3b2a1...",
-  "module_base": "0x1A2B3C00",
-  "memory_snapshot": "raw SQL query and URL data...",
-  "regions_scanned": 42,
-  "bytes_scanned": 1048576,
-  "elapsed_ms": 1500
+  "regions_scanned": 0,
+  "bytes_scanned": 1048576
 }
 ```
+
+Without `--no-snapshot`, `memory_snapshot` is included (capped at 8 MiB):
 
 ### Error
 
@@ -110,20 +118,26 @@ wechat_keyfinder --config offsets.json [--db-path <path>] [--pid <pid>] [--no-sn
 
 ## Security Considerations
 
-1. **Binary integrity**: SHA-256 checksum verified before execution
+1. **Binary integrity**: SHA-256 checksum verified before execution; **fails
+   closed** when no real hash is configured (see below)
 2. **No network access**: Binary performs only local memory reads
 3. **Read-only**: Never writes to WeChat process or files
-4. **Timeout**: Python enforces 30s execution timeout
-5. **Output limits**: Memory snapshot capped at 10 MB
+4. **Timeout**: Python enforces 90s execution timeout
+5. **Output limits**: Memory snapshot capped at 8 MiB
 
 ## Integrity Verification
 
-Python side verifies binary before execution:
+Python side verifies binary before execution. The shipped code **must** carry a
+real SHA-256 for the release binary; the placeholder
+`PLACEHOLDER_UPDATE_ON_RELEASE` causes verification to **fail closed** (the
+helper is refused). Development/testing can opt out explicitly via the
+`OHMYMEME_INSECURE_SKIP_HELPER_HASH=1` environment variable — never rely on the
+placeholder in production:
 
 ```python
 import hashlib
 
-EXPECTED_SHA256 = "abc123..."  # embedded in Python code
+EXPECTED_SHA256 = "abc123..."  # real hash set at release time
 
 def verify_binary(path: str) -> bool:
     sha256 = hashlib.sha256()
@@ -133,4 +147,6 @@ def verify_binary(path: str) -> bool:
     return sha256.hexdigest() == EXPECTED_SHA256
 ```
 
-Checksum is updated alongside binary releases.
+Checksum is updated alongside binary releases. Compute it with
+`certutil -hashfile wechat_keyfinder.exe SHA256` and replace the placeholder in
+`src/wechat_probe.py` before release.

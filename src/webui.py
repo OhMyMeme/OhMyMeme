@@ -206,13 +206,9 @@ class JsApi:
         self._db = get_db()
 
     def search_memes(
-        self,
-        keyword: str = "",
-        tags: list = None,
-        collection_id: int = None,
-        offset: int = 0,
-        limit: int = 200,
-    ) -> list:
+        self, keyword="", tags=None, collection_id=None, offset=0, limit=200
+    ):
+        """搜索表情，支持 offset/limit 分页"""
         if tags is not None and len(tags) == 0:
             tags = None
         fav_only = collection_id == -2
@@ -220,7 +216,7 @@ class JsApi:
         uncategorized = collection_id == -4
         cid = None if (fav_only or recent_only or uncategorized) else collection_id
         if recent_only:
-            rows = self._db.get_recent(9999)[offset : offset + limit]
+            rows = self._db.get_recent(limit, offset)
         else:
             rows = self._db.search(
                 keyword=keyword,
@@ -1536,7 +1532,7 @@ class SettingsApi:
     def cancel_tg_import(self):
         tg_stickers.cancel_tg_import()
 
-    def pick_wechat_root(self) -> dict:
+    def pick_wechat_root(self):
         """手动选择微信文件根目录"""
         try:
             result = webview.windows[0].create_file_dialog(
@@ -1551,19 +1547,19 @@ class SettingsApi:
             return {"ok": False, "error": "所选目录不存在"}
         return {"ok": True, "path": path}
 
-    def inspect_wechat_environment(self, user_root=None) -> dict:
+    def inspect_wechat_environment(self, user_root=None):
         """检测微信环境"""
         from . import wechat_probe
+
         return wechat_probe.inspect_wechat_environment(user_root)
 
-    def list_wechat_stickers(self, user_root, account_path=None) -> dict:
+    def list_wechat_stickers(self, user_root, account_path=None):
         """列出可导入的微信表情"""
         from . import wechat_probe
+
         return wechat_probe.list_wechat_stickers(user_root, account_path)
 
-    def start_wechat_import(
-        self, user_root=None, download=True, account_path=None
-    ) -> dict:
+    def start_wechat_import(self, user_root=None, download=True, account_path=None):
         """启动微信表情包导入，已有任务时返回 {"ok": False}"""
         from . import wechat_probe
 
@@ -1574,12 +1570,16 @@ class SettingsApi:
             return {"ok": False, "error": "已有导入任务正在进行"}
         return {"ok": True}
 
-    def get_wechat_import_progress(self) -> dict:
+    def get_wechat_import_progress(self):
+        """获取微信导入进度"""
         from . import wechat_probe
+
         return wechat_probe.get_wechat_progress()
 
     def cancel_wechat_import(self):
+        """取消微信导入"""
         from . import wechat_probe
+
         wechat_probe.cancel_wechat_import()
 
     def qqnt_check_env(self) -> dict:

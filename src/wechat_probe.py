@@ -5,8 +5,8 @@
   Python -> AES-256-CBC 解密数据库 -> SQLite 查询 -> CDN 下载 -> _do_import 入库
 
 安全：
-  - 二进制执行前校验 SHA-256（防篡改）
-  - 30s 超时
+  - 二进制执行前校验 SHA-256（防篡改），未配置真实哈希默认拒绝执行
+  - 90s 超时
   - 仅 Windows 可用
 """
 
@@ -35,7 +35,10 @@ _WECHAT_KEYFINDER_SHA256 = {
 
 # 下载源（GitHub Releases）
 _WECHAT_KEYFINDER_URLS = {
-    "Windows": "https://github.com/ZE514/OhMyMeme/releases/download/v0.6.0/wechat_keyfinder-windows-x64.exe",
+    "Windows": (
+        "https://github.com/ZE514/OhMyMeme/releases/download/v0.6.0/"
+        "wechat_keyfinder-windows-x64.exe"
+    ),
 }
 
 _WECHAT_STATE = {
@@ -58,34 +61,48 @@ _MAX_DOWNLOAD = 20 * 1024 * 1024
 
 
 def _update_wechat(**kw):
+    """更新微信导入进度状态"""
     with _WECHAT_LOCK:
         _WECHAT_STATE.update(**kw)
 
 
 def get_wechat_progress():
+    """返回微信导入进度状态副本"""
     with _WECHAT_LOCK:
         return dict(_WECHAT_STATE)
 
 
 def cancel_wechat_import():
+    """请求取消微信导入"""
     global _WECHAT_CANCEL
     _WECHAT_CANCEL = True
 
 
 def _check_cancel():
+    """是否请求了取消"""
     return _WECHAT_CANCEL
 
 
 def _reset_state():
+    """重置导入状态（调用方需已持有锁或不在锁内）"""
     global _WECHAT_CANCEL
     _WECHAT_CANCEL = False
     _update_wechat(
-        status="idle", progress=0, message="", error="", error_code="",
-        total=0, done=0, imported=0, failed=0, rejected=0,
+        status="idle",
+        progress=0,
+        message="",
+        error="",
+        error_code="",
+        total=0,
+        done=0,
+        imported=0,
+        failed=0,
+        rejected=0,
     )
 
 
 def _get_wechat_dir():
+    """微信导入辅助文件目录"""
     if platform.system() == "Windows":
         base = os.environ.get("LOCALAPPDATA", Path.home() / "AppData" / "Local")
     else:
@@ -94,20 +111,24 @@ def _get_wechat_dir():
 
 
 def _binary_name():
+    """helper 二进制文件名"""
     if platform.system() == "Windows":
         return "wechat_keyfinder.exe"
     return "wechat_keyfinder"
 
 
 def _download_url():
+    """helper 二进制下载地址"""
     return _WECHAT_KEYFINDER_URLS.get(platform.system(), "")
 
 
 def _offsets_path():
+    """offsets.json 配置路径"""
     return Path(__file__).parent.parent / "config" / "offsets.json"
 
 
 def detect_wechat_keyfinder():
+    """检测本地 helper 二进制路径，不存在返回空串"""
     binary = _binary_name()
     wechat_dir = _get_wechat_dir()
     candidate = wechat_dir / binary
@@ -117,11 +138,14 @@ def detect_wechat_keyfinder():
 
 
 def verify_binary_integrity(path):
-    """校验二进制 SHA-256"""
+    """校验二进制 SHA-256；未配置真实哈希默认拒绝（开发用环境变量跳过）"""
     expected = _WECHAT_KEYFINDER_SHA256.get(platform.system(), "")
-    if expected == "PLACEHOLDER_UPDATE_ON_RELEASE":
-        logger.warning("wechat_keyfinder SHA256 not configured, skipping verification")
-        return True
+    if not expected or expected == "PLACEHOLDER_UPDATE_ON_RELEASE":
+        if os.environ.get("OHMYMEME_INSECURE_SKIP_HELPER_HASH") == "1":
+            logger.warning("跳过 wechat_keyfinder 完整性校验（开发开关）")
+            return True
+        logger.error("wechat_keyfinder SHA256 未配置，拒绝执行")
+        return False
     sha256 = hashlib.sha256()
     with open(path, "rb") as f:
         for chunk in iter(lambda: f.read(65536), b""):
@@ -132,34 +156,44 @@ def verify_binary_integrity(path):
         return False
     return True
 
+
+_DL_LOCK = threading.Lock()
+_DL_ACTIVE = False
+
+
 def ensure_wechat_keyfinder():
-    """确保 helper 二进制可用，返回路径或空串"""
+    """确保 helper 二进制可用，返回路径或空串（单实例下载）"""
+    global _DL_ACTIVE
     cached = detect_wechat_keyfinder()
     if cached and verify_binary_integrity(cached):
         return cached
     if not _download_url():
         return ""
-    threading.Thread(target=_download_task, daemon=True).start()
+    with _DL_LOCK:
+        if not _DL_ACTIVE:
+            _DL_ACTIVE = True
+            threading.Thread(target=_download_task, daemon=True).start()
     waited = 0
     while waited < 60:
+        time.sleep(0.5)
+        waited += 0.5
         cached = detect_wechat_keyfinder()
         if cached and verify_binary_integrity(cached):
             return cached
-        threading.Event().wait(0.5)
-        waited += 0.5
     return ""
 
 
 def _download_task():
-    url = _download_url()
-    if not url:
-        return
-    wechat_dir = _get_wechat_dir()
-    binary = _binary_name()
+    """后台下载 helper 二进制（唯一临时路径，校验通过后替换目标）"""
+    global _DL_ACTIVE
     try:
+        url = _download_url()
+        if not url:
+            return
+        wechat_dir = _get_wechat_dir()
         wechat_dir.mkdir(parents=True, exist_ok=True)
-        dest = wechat_dir / binary
-        tmp = dest.with_suffix(".tmp")
+        dest = wechat_dir / _binary_name()
+        tmp = wechat_dir / (dest.name + f".tmp{os.getpid()}")
         req = urllib.request.Request(url, headers={"User-Agent": "OhMyMeme"})
         with urllib.request.urlopen(req, timeout=60) as src:
             with open(tmp, "wb") as f:
@@ -172,6 +206,9 @@ def _download_task():
             logger.error("wechat_keyfinder download integrity check failed")
     except Exception as e:
         logger.error("wechat_keyfinder download failed: %s", e)
+    finally:
+        with _DL_LOCK:
+            _DL_ACTIVE = False
 
 
 def _find_wechat_root():
@@ -268,13 +305,23 @@ def _run_keyfinder(binary_path, db_path, pid=None):
     try:
         result = subprocess.run(cmd, **kw)
     except FileNotFoundError:
-        return {"ok": False, "reason": "binary_not_found",
-                "detail": f"找不到辅助二进制: {binary_path}"}
+        return {
+            "ok": False,
+            "reason": "binary_not_found",
+            "detail": f"找不到辅助二进制: {binary_path}",
+        }
     except subprocess.TimeoutExpired:
-        return {"ok": False, "reason": "binary_timeout", "detail": "辅助二进制执行超时（90s）"}
+        return {
+            "ok": False,
+            "reason": "binary_timeout",
+            "detail": "辅助二进制执行超时（90s）",
+        }
     except OSError as e:
-        return {"ok": False, "reason": "binary_launch_failed",
-                "detail": f"启动辅助二进制失败: {e}"}
+        return {
+            "ok": False,
+            "reason": "binary_launch_failed",
+            "detail": f"启动辅助二进制失败: {e}",
+        }
     stdout = result.stdout.decode("utf-8", errors="replace")
     stderr = result.stderr.decode("utf-8", errors="replace")
     if result.returncode != 0:
@@ -295,15 +342,23 @@ def _run_keyfinder(binary_path, db_path, pid=None):
         err = json.loads(stdout)
         if isinstance(err, dict):
             return err
-        return {"ok": False, "reason": "parse_error", "detail": "二进制输出不是 JSON 对象"}
+        return {
+            "ok": False,
+            "reason": "parse_error",
+            "detail": "二进制输出不是 JSON 对象",
+        }
     except Exception as e:
-        return {"ok": False, "reason": "parse_error", "detail": str(e) or "二进制输出解析失败"}
+        return {
+            "ok": False,
+            "reason": "parse_error",
+            "detail": str(e) or "二进制输出解析失败",
+        }
 
 
 def _decrypt_page(key, page_data, page_number, page_size=4096):
     """解密单个 4096 字节页，首页替换为 SQLite header"""
-    from cryptography.hazmat.primitives.ciphers import Cipher, algorithms, modes
     from cryptography.hazmat.backends import default_backend
+    from cryptography.hazmat.primitives.ciphers import Cipher, algorithms, modes
 
     iv = page_data[page_size - 80 : page_size - 64]
     enc_offset = 16 if page_number == 1 else 0
@@ -323,8 +378,12 @@ def _decrypt_page(key, page_data, page_number, page_size=4096):
     return out
 
 
-def _apply_wal(output, key, wal_path, page_size=4096):
-    """将 WAL 帧合并进已解密数据库字节流（按 salt 代际 + 最终大小截断）"""
+_WAL_MAGIC_BE = b"\x37\x7f\x06\x82"
+_WAL_MAGIC_LE = b"\x37\x7f\x06\x83"
+
+
+def _apply_wal(output, key, wal_path, expected_page_size=4096):
+    """将 WAL 帧合并进已解密数据库字节流（校验 magic/页大小 + salt 代际 + 截断）"""
     try:
         with open(wal_path, "rb") as f:
             wal = f.read()
@@ -332,6 +391,14 @@ def _apply_wal(output, key, wal_path, page_size=4096):
         return 0
     if len(wal) < 32:
         return 0
+    if wal[0:4] not in (_WAL_MAGIC_BE, _WAL_MAGIC_LE):
+        return 0
+    header_page_size = struct.unpack(">I", wal[8:12])[0]
+    if header_page_size < 512 or header_page_size > 65536:
+        return 0
+    if header_page_size != expected_page_size:
+        return 0
+    page_size = header_page_size
     hdr_salt1 = wal[16:20]
     hdr_salt2 = wal[20:24]
     pos = 32  # 跳过 WAL header
@@ -365,7 +432,7 @@ def _apply_wal(output, key, wal_path, page_size=4096):
 
 
 def _decrypt_database(db_path, key_hex, merge_wal=True):
-    """AES-256-CBC 逐页解密微信数据库（可选合并 WAL）"""
+    """AES-256-CBC 逐页解密微信数据库（可选合并 WAL），返回 bytearray"""
     key = bytes.fromhex(key_hex)
     if len(key) != 32:
         return None
@@ -386,7 +453,7 @@ def _decrypt_database(db_path, key_hex, merge_wal=True):
         output.extend(_decrypt_page(key, page_data, page, page_size))
     if merge_wal:
         _apply_wal(output, key, db_path + "-wal", page_size)
-    return bytes(output)
+    return output
 
 
 def _query_sticker_metadata(db_bytes):
@@ -411,11 +478,13 @@ def _query_sticker_metadata(db_bytes):
             url = r["cdn_url"] or r["encrypt_url"] or r["extern_url"] or ""
             if not url:
                 continue
-            rows.append({
-                "md5": md5,
-                "url": url,
-                "aes_key": r["aes_key"] or "",
-            })
+            rows.append(
+                {
+                    "md5": md5,
+                    "url": url,
+                    "aes_key": r["aes_key"] or "",
+                }
+            )
         return rows
     finally:
         if conn is not None:
@@ -453,8 +522,9 @@ def _download_sticker(url, aes_key=None):
         if len(data) > _MAX_DOWNLOAD:
             return None
         if aes_key:
-            from cryptography.hazmat.primitives.ciphers import Cipher, algorithms, modes
             from cryptography.hazmat.backends import default_backend
+            from cryptography.hazmat.primitives.ciphers import Cipher, algorithms, modes
+
             key = bytes.fromhex(aes_key)
             if len(key) == 16 and len(data) % 16 == 0:
                 cipher = Cipher(
@@ -476,10 +546,21 @@ def inspect_wechat_environment(user_root=None):
     explicit = bool(user_root)
     root = user_root or _find_wechat_root()
     if not root or not os.path.isdir(root):
-        return {"status": "not_found",
-                "reason": explicit and "account_root_missing" or "default_root_missing",
-                "root": root or "", "root_source": explicit and "explicit" or "default",
-                "root_exists": False, "account_directory_count": 0, "accounts": []}
+        if explicit:
+            reason = "account_root_missing"
+            root_source = "explicit"
+        else:
+            reason = "default_root_missing"
+            root_source = "default"
+        return {
+            "status": "not_found",
+            "reason": reason,
+            "root": root or "",
+            "root_source": root_source,
+            "root_exists": False,
+            "account_directory_count": 0,
+            "accounts": [],
+        }
     root_name = os.path.basename(root)
     if root_name.startswith("wxid_"):
         accounts = [_inspect_account(root)]
@@ -501,12 +582,16 @@ def inspect_wechat_environment(user_root=None):
     else:
         status = "no_accounts"
         reason = "account_root_missing"
-    return {"status": status, "reason": reason,
-            "root": root,
-            "root_source": explicit and "explicit" or "default",
-            "root_exists": True,
-            "account_directory_count": len(accounts),
-            "accounts": accounts}
+    root_source = "explicit" if explicit else "default"
+    return {
+        "status": status,
+        "reason": reason,
+        "root": root,
+        "root_source": root_source,
+        "root_exists": True,
+        "account_directory_count": len(accounts),
+        "accounts": accounts,
+    }
 
 
 _PROCEEDABLE = ("supported", "encrypted_index")
@@ -514,9 +599,7 @@ _PROCEEDABLE = ("supported", "encrypted_index")
 
 def _pick_account(env, account_path=None):
     """从环境账号列表中选择目标账号，返回账号 dict 或 None（多账号未指定）"""
-    accounts = [
-        a for a in env.get("accounts", []) if a["status"] in _PROCEEDABLE
-    ]
+    accounts = [a for a in env.get("accounts", []) if a["status"] in _PROCEEDABLE]
     if account_path:
         for a in accounts:
             if a["path"] == account_path or a["id"] == account_path:
@@ -529,19 +612,19 @@ def _pick_account(env, account_path=None):
 
 def _load_sticker_metadata(db_path, key):
     """解密 DB 并查询表情元数据，优先主文件（通常已完整），失败/为空时回退 WAL 合并"""
-    db_bytes = _decrypt_database(db_path, key, merge_wal=False)
-    if db_bytes:
-        try:
-            meta = _query_sticker_metadata(db_bytes)
-        except Exception:
-            meta = None
-        if meta:
-            return meta
-    db_bytes = _decrypt_database(db_path, key, merge_wal=True)
-    if not db_bytes:
+    output = _decrypt_database(db_path, key, merge_wal=False)
+    if output is None:
         return []
     try:
-        return _query_sticker_metadata(db_bytes)
+        meta = _query_sticker_metadata(output)
+    except Exception:
+        meta = None
+    if meta:
+        return meta
+    # 主文件查询为空 → 复用同一缓冲合并 WAL，避免二次解密
+    _apply_wal(output, key, db_path + "-wal")
+    try:
+        return _query_sticker_metadata(output)
     except Exception:
         return []
 
@@ -594,8 +677,11 @@ def list_wechat_stickers(user_root, account_path=None):
     account = _pick_account(env, account_path)
     if not account:
         if env.get("account_directory_count", 0) > 1:
-            return {"status": "multiple_accounts", "reason": "检测到多个微信账号，请选择账号",
-                    "accounts": [a["id"] for a in env.get("accounts", [])]}
+            return {
+                "status": "multiple_accounts",
+                "reason": "检测到多个微信账号，请选择账号",
+                "accounts": [a["id"] for a in env.get("accounts", [])],
+            }
         return {"status": "no_account", "reason": "未找到可用账号"}
     return _list_stickers_for_account(account)
 
@@ -616,7 +702,20 @@ def start_wechat_import(webui, user_root=None, download=True, account_path=None)
     with _WECHAT_LOCK:
         if _WECHAT_STATE["status"] in _WECHAT_ACTIVE:
             return False
-        _reset_state()
+        # 持锁内直接重置状态（_reset_state 内部会再取锁，非可重入会死锁）
+        _WECHAT_CANCEL = False
+        _WECHAT_STATE.update(
+            status="scanning",
+            progress=0,
+            message="",
+            error="",
+            error_code="",
+            total=0,
+            done=0,
+            imported=0,
+            failed=0,
+            rejected=0,
+        )
     threading.Thread(
         target=_wechat_worker,
         args=(webui, user_root, download, account_path),
@@ -644,10 +743,11 @@ def _wechat_worker(webui, user_root, download, account_path):
         account = _pick_account(env, account_path)
         if not account:
             multi = env.get("account_directory_count", 0) > 1
+            error_msg = "检测到多个微信账号，请选择账号" if multi else "未找到可用账号"
             _update_wechat(
                 status="error",
                 error_code="multiple_accounts",
-                error=multi and "检测到多个微信账号，请选择账号" or "未找到可用账号",
+                error=error_msg,
             )
             return
         db_path = account["db_path"]
@@ -683,7 +783,9 @@ def _wechat_worker(webui, user_root, download, account_path):
                 rc = result.get("returncode")
                 if rc is not None:
                     detail = (
-                        f"{detail} (exit code {rc})" if detail else f"辅助二进制退出码 {rc}"
+                        f"{detail} (exit code {rc})"
+                        if detail
+                        else f"辅助二进制退出码 {rc}"
                     )
                 _update_wechat(
                     status="error",
@@ -715,20 +817,23 @@ def _wechat_worker(webui, user_root, download, account_path):
             _update_wechat(
                 status="done",
                 message="未找到可导入的表情",
-                total=0, done=0,
+                total=0,
+                done=0,
             )
             return
         if not download:
             _update_wechat(
                 status="done",
                 message=f"发现 {len(metadata)} 个表情（仅扫描模式）",
-                total=len(metadata), done=len(metadata),
+                total=len(metadata),
+                done=len(metadata),
             )
             return
         _update_wechat(
             status="downloading",
             message="正在下载表情...",
-            total=len(metadata), done=0,
+            total=len(metadata),
+            done=0,
         )
         if _check_cancel():
             _update_wechat(status="cancelled", message="已取消")
@@ -751,7 +856,8 @@ def _wechat_worker(webui, user_root, download, account_path):
                 failed += 1
             pct = int((i + 1) / len(metadata) * 100)
             _update_wechat(
-                progress=pct, done=i + 1,
+                progress=pct,
+                done=i + 1,
                 message=f"正在下载: {i + 1}/{len(metadata)}",
             )
         _update_wechat(status="importing", message="正在导入...")
