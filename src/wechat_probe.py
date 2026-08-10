@@ -329,9 +329,9 @@ def _decrypt_page(key, page_data, page_number, page_size=4096):
     out = bytearray(page_size)
     if page_number == 1:
         out[:16] = b"SQLite format 3\x00"
-        out[16:] = plain[: page_size - 16]
+        out[16 : 16 + len(plain)] = plain
     else:
-        out[:] = plain
+        out[: len(plain)] = plain
     return out
 
 
@@ -366,8 +366,8 @@ def _apply_wal(output, key, wal_path, page_size=4096):
     return applied
 
 
-def _decrypt_database(db_path, key_hex):
-    """AES-256-CBC 逐页解密微信数据库（含 WAL 合并）"""
+def _decrypt_database(db_path, key_hex, merge_wal=True):
+    """AES-256-CBC 逐页解密微信数据库（可选合并 WAL）"""
     key = bytes.fromhex(key_hex)
     if len(key) != 32:
         return None
@@ -386,7 +386,8 @@ def _decrypt_database(db_path, key_hex):
             return None
         page_data = data[(page - 1) * page_size : page * page_size]
         output.extend(_decrypt_page(key, page_data, page, page_size))
-    _apply_wal(output, key, db_path + "-wal", page_size)
+    if merge_wal:
+        _apply_wal(output, key, db_path + "-wal", page_size)
     return bytes(output)
 
 
