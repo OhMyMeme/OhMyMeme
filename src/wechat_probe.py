@@ -17,6 +17,7 @@ import os
 import platform
 import shutil
 import sqlite3
+import struct
 import subprocess
 import sys
 import tempfile
@@ -311,39 +312,77 @@ def _run_keyfinder(binary_path, db_path, pid=None):
         return {"ok": False, "reason": "parse_error", "detail": str(e) or "二进制输出解析失败"}
 
 
+def _decrypt_page(key, page_data, page_number, page_size=4096):
+    """解密单个 4096 字节页，首页替换为 SQLite header"""
+    from cryptography.hazmat.primitives.ciphers import Cipher, algorithms, modes
+    from cryptography.hazmat.backends import default_backend
+
+    iv = page_data[page_size - 80 : page_size - 64]
+    enc_offset = 16 if page_number == 1 else 0
+    enc_size = page_size - 80 - enc_offset
+    cipher = Cipher(algorithms.AES(key), modes.CBC(iv), backend=default_backend())
+    decryptor = cipher.decryptor()
+    plain = (
+        decryptor.update(page_data[enc_offset : enc_offset + enc_size])
+        + decryptor.finalize()
+    )
+    out = bytearray(page_size)
+    if page_number == 1:
+        out[:16] = b"SQLite format 3\x00"
+        out[16:] = plain[: page_size - 16]
+    else:
+        out[:] = plain
+    return out
+
+
+def _apply_wal(output, key, wal_path, page_size=4096):
+    """将 WAL 帧合并进已解密数据库字节流，返回应用帧数"""
+    try:
+        with open(wal_path, "rb") as f:
+            wal = f.read()
+    except OSError:
+        return 0
+    if len(wal) < 32:
+        return 0
+    pos = 32  # 跳过 WAL header
+    applied = 0
+    while pos + 24 <= len(wal):
+        page_number = struct.unpack(">I", wal[pos : pos + 4])[0]
+        page_data = wal[pos + 24 : pos + 24 + page_size]
+        if len(page_data) < page_size:
+            break
+        if page_number > 0:
+            offset = (page_number - 1) * page_size
+            if offset + page_size <= len(output):
+                output[offset : offset + page_size] = _decrypt_page(
+                    key, page_data, page_number, page_size
+                )
+                applied += 1
+        pos += 24 + page_size
+    return applied
+
+
 def _decrypt_database(db_path, key_hex):
-    """AES-256-CBC 逐页解密微信数据库"""
+    """AES-256-CBC 逐页解密微信数据库（含 WAL 合并）"""
     key = bytes.fromhex(key_hex)
     if len(key) != 32:
         return None
     page_size = 4096
-    with open(db_path, "rb") as f:
-        data = f.read()
+    try:
+        with open(db_path, "rb") as f:
+            data = f.read()
+    except OSError:
+        return None
     if len(data) % page_size != 0:
         return None
-    from cryptography.hazmat.primitives.ciphers import Cipher, algorithms, modes
-    from cryptography.hazmat.backends import default_backend
     pages = len(data) // page_size
     output = bytearray()
     for page in range(1, pages + 1):
         if _check_cancel():
             return None
-        page_data = data[(page - 1) * page_size:page * page_size]
-        iv = page_data[page_size - 80:page_size - 64]
-        enc_offset = 16 if page == 1 else 0
-        enc_size = page_size - 80 - enc_offset
-        cipher = Cipher(algorithms.AES(key), modes.CBC(iv), backend=default_backend())
-        decryptor = cipher.decryptor()
-        plain = (
-            decryptor.update(page_data[enc_offset:enc_offset + enc_size])
-            + decryptor.finalize()
-        )
-        if page == 1:
-            header = b"SQLite format 3\x00"
-            output.extend(header)
-            output.extend(plain[:page_size - 16])
-        else:
-            output.extend(plain)
+        page_data = data[(page - 1) * page_size : page * page_size]
+        output.extend(_decrypt_page(key, page_data, page, page_size))
+    _apply_wal(output, key, db_path + "-wal", page_size)
     return bytes(output)
 
 
