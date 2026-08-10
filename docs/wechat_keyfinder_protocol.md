@@ -31,7 +31,8 @@ wechat_keyfinder --config offsets.json [--db-path <path>] [--pid <pid>] [--no-sn
 > injected via `--key <hex64>` to skip memory forensics. This passes the key on
 > the command line (visible in the process list), so it is **NOT part of the
 > production protocol** and must never be used in automated/release flows.
-> Production callers obtain the key via the default mask-recovery path only.
+> Production callers obtain the key via the full chain: mask recovery first,
+> then the legacy RVA fallback when mask recovery fails — and never pass `--key`.
 
 ### Arguments
 
@@ -146,17 +147,20 @@ truncation (the `key`/`salt` fields are always complete and authoritative):
 
 | Scope | Limit |
 |-------|-------|
-| Mask-recovery scan | 30s wall-clock + `max_cipher_scan_bytes` read budget |
-| RVA fallback scan | 30s wall-clock + `max_cipher_scan_bytes` read budget |
+| Mask-recovery scan (per process) | 30s wall-clock + `max_cipher_scan_bytes` read budget |
+| RVA fallback scan (per process) | 30s wall-clock + `max_cipher_scan_bytes` read budget |
 | Snapshot scan | 10s wall-clock + fixed 8 MiB output cap |
-| Python wrapper | 90s subprocess timeout |
+| Python wrapper | 90s subprocess timeout (bounds the total across all processes) |
 
 `max_cipher_scan_bytes` caps the total bytes read during **key scans only**; it
 does not affect the snapshot scan. The snapshot's 8 MiB cap is fixed and limits
 the *output* string only (not reads). Reads during key scans are bounded to the
 remaining budget on every chunk (including the final partial read); negative or
 overflowing config values are rejected at load time. The default is 512 MiB;
-lower it if scan latency is a concern.
+lower it if scan latency is a concern. When `--pid` is omitted and multiple
+`Weixin.exe` processes exist, each process receives its own 30s per-phase budget;
+the total time across all processes is bounded by the Python wrapper's 90s
+subprocess timeout.
 
 ## Integrity Verification
 
