@@ -270,10 +270,10 @@ def _inspect_account(account_root):
 def _run_keyfinder(binary_path, db_path, pid=None):
     """执行 helper 二进制，返回 JSON 结果"""
     config_path = str(_offsets_path())
-    cmd = [binary_path, "--config", config_path, "--db-path", db_path]
+    cmd = [binary_path, "--config", config_path, "--db-path", db_path, "--no-snapshot"]
     if pid:
         cmd += ["--pid", str(pid)]
-    kw = {"capture_output": True, "timeout": 30}
+    kw = {"capture_output": True, "timeout": 90}
     if os.name == "nt" and getattr(sys, "frozen", False):
         kw["creationflags"] = subprocess.CREATE_NO_WINDOW
     try:
@@ -282,7 +282,7 @@ def _run_keyfinder(binary_path, db_path, pid=None):
         return {"ok": False, "reason": "binary_not_found",
                 "detail": f"找不到辅助二进制: {binary_path}"}
     except subprocess.TimeoutExpired:
-        return {"ok": False, "reason": "binary_timeout", "detail": "辅助二进制执行超时（30s）"}
+        return {"ok": False, "reason": "binary_timeout", "detail": "辅助二进制执行超时（90s）"}
     except OSError as e:
         return {"ok": False, "reason": "binary_launch_failed",
                 "detail": f"启动辅助二进制失败: {e}"}

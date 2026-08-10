@@ -479,8 +479,13 @@ std::string scan_memory_for_urls(HANDLE process, std::size_t& regions, std::size
   auto address = reinterpret_cast<std::uintptr_t>(si.lpMinimumApplicationAddress);
   auto maximum = reinterpret_cast<std::uintptr_t>(si.lpMaximumApplicationAddress);
   std::vector<unsigned char> tail;
+  auto started = std::chrono::steady_clock::now();
 
   while (address < maximum) {
+    if (std::chrono::duration_cast<std::chrono::seconds>(
+            std::chrono::steady_clock::now() - started).count() >= 10) {
+      break;
+    }
     MEMORY_BASIC_INFORMATION mem{};
     if (VirtualQueryEx(process, reinterpret_cast<void*>(address), &mem, sizeof(mem)) != sizeof(mem)) break;
     auto next = reinterpret_cast<std::uintptr_t>(mem.BaseAddress) + mem.RegionSize;
@@ -577,6 +582,7 @@ int main(int argc, char** argv) {
   std::string config_path;
   std::string db_path;
   std::optional<DWORD> explicit_pid;
+  bool no_snapshot = false;
 
   for (int i = 1; i < argc; ++i) {
     std::string arg = argv[i];
@@ -586,8 +592,10 @@ int main(int argc, char** argv) {
       db_path = argv[++i];
     } else if (arg == "--pid" && i + 1 < argc) {
       explicit_pid = (DWORD)std::stoul(argv[++i]);
+    } else if (arg == "--no-snapshot") {
+      no_snapshot = true;
     } else if (arg == "--help" || arg == "-h") {
-      std::cerr << "Usage: wechat_keyfinder --config offsets.json [--db-path <path>] [--pid <pid>]" << std::endl;
+      std::cerr << "Usage: wechat_keyfinder --config offsets.json [--db-path <path>] [--pid <pid>] [--no-snapshot]" << std::endl;
       return 0;
     }
   }
@@ -628,7 +636,10 @@ int main(int argc, char** argv) {
 
   std::size_t regions = 0;
   std::size_t reads = 0;
-  auto snapshot = scan_memory_for_urls(process, regions, reads, cfg);
+  std::string snapshot;
+  if (!no_snapshot) {
+    snapshot = scan_memory_for_urls(process, regions, reads, cfg);
+  }
 
   std::ostringstream base_hex;
   base_hex << "0x" << std::hex << module_base.value();
