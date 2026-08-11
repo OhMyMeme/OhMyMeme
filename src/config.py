@@ -93,6 +93,7 @@ class Config:
         "s3_bucket": "",
         "s3_access_key": "",
         "s3_secret_key": "",
+        "s3_addressing_style": "virtual",
         # R2
         "r2_account_id": "",
         "r2_access_key_id": "",

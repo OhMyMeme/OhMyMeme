@@ -270,7 +270,11 @@ class _S3Backend(_SyncBackend):
             kwargs["region_name"] = region
 
         try:
-            config = BotoConfig(s3={"payload_signing_enabled": False})
+            addressing = self.cfg.get("s3_addressing_style", "virtual")
+            config = BotoConfig(
+                signature_version="s3",
+                s3={"payload_signing_enabled": False, "addressing_style": addressing},
+            )
             self.client = boto3.client("s3", config=config, **kwargs)
             self.bucket = bucket
             prefix = self.cfg.get("s3_path", "").strip("/")
