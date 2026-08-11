@@ -1001,8 +1001,16 @@ document.getElementById('ctx-menu').addEventListener('click', async (e) => {
 /* Tag Editor Modal */
 function showTagEditor(memeId) {
   return new Promise(async resolve => {
-    const all = await api('get_tags') || [];
-    const cur = await api('get_meme_tags', memeId) || [];
+    let all = [];
+    let cur = [];
+    try {
+      all = await api('get_tags') || [];
+      cur = await api('get_meme_tags', memeId) || [];
+    } catch(e) {
+      showToast('标签加载失败');
+      resolve(null);
+      return;
+    }
     const selected = cur.slice();
 
     const overlay = document.createElement('div');
@@ -1073,7 +1081,14 @@ function showTagEditor(memeId) {
     input.addEventListener('input', renderList);
     input.addEventListener('keydown', (e) => {
       if (e.key === 'Enter') { e.preventDefault(); addFromInput(); }
-      if (e.key === 'Escape') { overlay.remove(); resolve(null); }
+    });
+    box.addEventListener('keydown', (e) => {
+      if (e.key === 'Escape') {
+        e.preventDefault();
+        e.stopPropagation();
+        overlay.remove();
+        resolve(null);
+      }
     });
 
     document.getElementById('tag-editor-confirm').onclick = () => { overlay.remove(); resolve(selected); };
