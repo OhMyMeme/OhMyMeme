@@ -149,8 +149,10 @@ def test_udp_discovery(lan_env):
     assert reply["ver"]
 
 
-def test_pktinfo_extract_linux_layout():
+def test_pktinfo_extract_linux_layout(monkeypatch):
     """Linux in_pktinfo 布局 (ifindex, spec_dst, addr) 解析"""
+    monkeypatch.setattr(lan.socket, "IP_PKTINFO", 8, raising=False)
+    monkeypatch.setattr(lan.sys, "platform", "linux")
     srv = lan.LanServer()
     cdata = struct.pack(
         "i4s4s",
@@ -164,6 +166,7 @@ def test_pktinfo_extract_linux_layout():
 
 def test_pktinfo_extract_windows_layout(monkeypatch):
     """Windows in_pktinfo 仅 8 字节 (ipi_addr, ipi_ifindex)，返回接口索引"""
+    monkeypatch.setattr(lan.socket, "IP_PKTINFO", 8, raising=False)
     monkeypatch.setattr(lan.sys, "platform", "win32")
     srv = lan.LanServer()
     cdata = struct.pack("4sI", socket.inet_aton("255.255.255.255"), 7)
@@ -173,6 +176,7 @@ def test_pktinfo_extract_windows_layout(monkeypatch):
 
 def test_pktinfo_extract_windows_zero_ifindex(monkeypatch):
     """Windows 接口索引为 0（不可用）时返回 None"""
+    monkeypatch.setattr(lan.socket, "IP_PKTINFO", 8, raising=False)
     monkeypatch.setattr(lan.sys, "platform", "win32")
     srv = lan.LanServer()
     cdata = struct.pack("4sI", socket.inet_aton("255.255.255.255"), 0)
@@ -193,6 +197,128 @@ def test_udp_reply_pins_source_interface(lan_env):
     cli.close()
     assert json.loads(data.decode("utf-8"))["t"] == "hello"
     assert src[0] == "127.0.0.1"
+
+
+def test_pktinfo_extract_ignores_other_cmsg(monkeypatch):
+    """非 IP_PKTINFO 控制消息被忽略并返回 None"""
+    monkeypatch.setattr(lan.socket, "IP_PKTINFO", 8, raising=False)
+    srv = lan.LanServer()
+    anc = [
+        (socket.SOL_SOCKET, socket.SO_REUSEADDR, b"\x00\x00\x00\x00"),
+        (socket.IPPROTO_TCP, socket.IP_TTL, b"\x00" * 4),
+    ]
+    assert srv._extract_pktinfo_src(anc) is None
+
+
+def test_pktinfo_extract_short_cdata(monkeypatch):
+    """cdata 过短时解析失败返回 None 而非抛异常"""
+    monkeypatch.setattr(lan.socket, "IP_PKTINFO", 8, raising=False)
+    srv = lan.LanServer()
+    anc = [(socket.IPPROTO_IP, 8, b"\x00")]
+    assert srv._extract_pktinfo_src(anc) is None
+
+
+class _FakeUdpSock:
+    """记录 sendmsg/sendto 调用的假 UDP socket"""
+
+    def __init__(self):
+        self.sendmsg_calls = []
+        self.sendto_calls = []
+
+    def sendmsg(self, buffers, ancdata, flags=0, address=None):
+        self.sendmsg_calls.append(
+            {"buffers": buffers, "ancdata": ancdata, "address": address}
+        )
+
+    def sendto(self, data, address=None):
+        self.sendto_calls.append({"data": data, "address": address})
+
+
+def test_send_udp_reply_uses_sendmsg_with_pktinfo(monkeypatch):
+    """Linux 路径 sendmsg 的 ancdata 携带 IP_PKTINFO（源地址 = 接收接口）"""
+    monkeypatch.setattr(lan.socket, "IP_PKTINFO", 8, raising=False)
+    srv = lan.LanServer()
+    sock = _FakeUdpSock()
+    srv._udp_sock = sock
+    srv._udp_pktinfo = True
+    srv._send_udp_reply(b'{"t":"hello"}', ("192.168.0.1", 12345), ("ip", "192.168.1.5"))
+    assert not sock.sendto_calls
+    assert len(sock.sendmsg_calls) == 1
+    call = sock.sendmsg_calls[0]
+    assert call["address"] == ("192.168.0.1", 12345)
+    level, ctype, cdata = call["ancdata"][0]
+    assert level == socket.IPPROTO_IP and ctype == 8
+    _, spec_dst, _ = struct.unpack("i4s4s", cdata)
+    assert socket.inet_ntoa(spec_dst) == "192.168.1.5"
+
+
+def test_send_udp_reply_windows_sendmsg_pins_ifindex(monkeypatch):
+    """Windows 路径 sendmsg 的 ancdata 源地址填 ipi_addr、接口填 ipi_ifindex"""
+    monkeypatch.setattr(lan.socket, "IP_PKTINFO", 8, raising=False)
+    monkeypatch.setattr(lan.sys, "platform", "win32")
+    srv = lan.LanServer()
+    sock = _FakeUdpSock()
+    srv._udp_sock = sock
+    srv._udp_pktinfo = True
+    monkeypatch.setattr(srv, "_win_ifindex_source_ip", lambda ifindex, peer: "10.0.0.5")
+    srv._send_udp_reply(b'{"t":"hello"}', ("192.168.0.1", 12345), ("ifindex", 7))
+    assert not sock.sendto_calls
+    assert len(sock.sendmsg_calls) == 1
+    level, ctype, cdata = sock.sendmsg_calls[0]["ancdata"][0]
+    assert level == socket.IPPROTO_IP and ctype == 8
+    ipi_addr, ipi_ifindex = struct.unpack("4sI", cdata)
+    assert socket.inet_ntoa(ipi_addr) == "10.0.0.5"
+    assert ipi_ifindex == 7
+
+
+def test_win_ifindex_source_ip_sets_unicast_if(monkeypatch):
+    """Windows 反查接口 IP：用 IP_UNICAST_IF（网络字节序）钉接口并 connect"""
+    monkeypatch.setattr(lan.sys, "platform", "win32")
+    captured = {}
+
+    class _FakeProbeSock:
+        def setsockopt(self, level, optname, value):
+            captured["opt"] = (level, optname, value)
+
+        def connect(self, addr):
+            captured["addr"] = addr
+
+        def getsockname(self):
+            return ("10.0.0.5", 0)
+
+        def close(self):
+            pass
+
+    monkeypatch.setattr(lan.socket, "socket", lambda *a, **k: _FakeProbeSock())
+    srv = lan.LanServer()
+    assert srv._win_ifindex_source_ip(7, ("192.168.0.1", 12345)) == "10.0.0.5"
+    level, optname, value = captured["opt"]
+    assert level == socket.IPPROTO_IP
+    assert optname == getattr(socket, "IP_UNICAST_IF", 31)
+    assert value == struct.pack("!I", 7)
+    assert captured["addr"] == ("192.168.0.1", 12345)
+
+
+def test_win_ifindex_source_ip_oserror(monkeypatch):
+    """Windows 反查失败（OSError）时返回 None"""
+    monkeypatch.setattr(lan.sys, "platform", "win32")
+
+    class _FakeProbeSock:
+        def setsockopt(self, level, optname, value):
+            raise OSError("no such interface")
+
+        def connect(self, addr):
+            pass
+
+        def getsockname(self):
+            return ("10.0.0.5", 0)
+
+        def close(self):
+            pass
+
+    monkeypatch.setattr(lan.socket, "socket", lambda *a, **k: _FakeProbeSock())
+    srv = lan.LanServer()
+    assert srv._win_ifindex_source_ip(7, ("192.168.0.1", 12345)) is None
 
 
 def test_handshake_success(lan_env):

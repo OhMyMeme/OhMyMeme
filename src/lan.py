@@ -93,9 +93,7 @@ class LanServer:
             self._udp_sock.settimeout(0.5)
             self._udp_pktinfo = False
             try:
-                self._udp_sock.setsockopt(
-                    socket.IPPROTO_IP, socket.IP_PKTINFO, 1
-                )
+                self._udp_sock.setsockopt(socket.IPPROTO_IP, socket.IP_PKTINFO, 1)
                 self._udp_pktinfo = True
             except (AttributeError, OSError):
                 pass
@@ -241,7 +239,9 @@ class LanServer:
         try:
             s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
             try:
-                s.setsockopt(socket.IPPROTO_IP, 31, struct.pack("I", ifindex))
+                opt = getattr(socket, "IP_UNICAST_IF", 31)
+                # IP_UNICAST_IF 接口索引须为网络字节序（MSDN），勿用本机字节序
+                s.setsockopt(socket.IPPROTO_IP, opt, struct.pack("!I", ifindex))
                 s.connect((peer[0], peer[1]))
                 return s.getsockname()[0]
             finally:
