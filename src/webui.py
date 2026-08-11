@@ -209,6 +209,22 @@ def _storage_dir_validation(new_dir, old_dir, protected=()):
     return True, ""
 
 
+def _find_hotkey_window_position(cursor, work_area, width, height):
+    """按固定候选顺序选择完整落入工作区的窗口位置"""
+    cursor_x, cursor_y = cursor
+    left, top, right, bottom = work_area
+    candidates = (
+        (cursor_x, cursor_y),
+        (right - width, cursor_y),
+        (cursor_x, bottom - height),
+        (right - width, bottom - height),
+    )
+    for x, y in candidates:
+        if left <= x and top <= y and x + width <= right and y + height <= bottom:
+            return x, y
+    return None
+
+
 class JsApi:
     """暴露给前端的 JS API"""
 
@@ -993,6 +1009,7 @@ class JsApi:
 
         return {
             "hotkey": d.get("hotkey", "Ctrl+Alt+N"),
+            "hotkey_show_at_mouse": d.get("hotkey_show_at_mouse", False),
             "auto_play_gif": d.get("auto_play_gif", True),
             "try_original_image": d.get("try_original_image", False),
             "auto_start": is_auto_start_enabled(),
@@ -1054,6 +1071,7 @@ class JsApi:
         set_auto_start(False)
         return {
             "hotkey": hotkey,
+            "hotkey_show_at_mouse": self._cfg.get("hotkey_show_at_mouse", False),
             "auto_play_gif": self._cfg.get("auto_play_gif", True),
             "copy_resize_mode": self._cfg.get("copy_resize_mode", 1),
             "auto_start": False,
@@ -1276,6 +1294,7 @@ class SettingsApi:
 
         return {
             "hotkey": d.get("hotkey", "Ctrl+Alt+N"),
+            "hotkey_show_at_mouse": d.get("hotkey_show_at_mouse", False),
             "auto_play_gif": d.get("auto_play_gif", True),
             "try_original_image": d.get("try_original_image", False),
             "copy_resize_mode": int(d.get("copy_resize_mode", 1) or 0),
@@ -1353,6 +1372,7 @@ class SettingsApi:
             pass
         return {
             "hotkey": hotkey,
+            "hotkey_show_at_mouse": self._cfg.get("hotkey_show_at_mouse", False),
             "auto_play_gif": self._cfg.get("auto_play_gif", True),
             "copy_resize_mode": self._cfg.get("copy_resize_mode", 1),
             "auto_start": False,
@@ -2096,6 +2116,66 @@ class WebUI:
 
     # --- 窗口控制（从任何线程调用安全）---
 
+    def _get_hotkey_window_position(self):
+        """获取 Windows 光标所在显示器工作区内的热键窗口位置"""
+        if platform.system() != "Windows":
+            return None
+        try:
+            import ctypes
+            from ctypes import wintypes
+
+            class POINT(ctypes.Structure):
+                _fields_ = (("x", wintypes.LONG), ("y", wintypes.LONG))
+
+            class RECT(ctypes.Structure):
+                _fields_ = (
+                    ("left", wintypes.LONG),
+                    ("top", wintypes.LONG),
+                    ("right", wintypes.LONG),
+                    ("bottom", wintypes.LONG),
+                )
+
+            class MONITORINFO(ctypes.Structure):
+                _fields_ = (
+                    ("cbSize", wintypes.DWORD),
+                    ("rcMonitor", RECT),
+                    ("rcWork", RECT),
+                    ("dwFlags", wintypes.DWORD),
+                )
+
+            user32 = ctypes.WinDLL("user32", use_last_error=True)
+            user32.GetCursorPos.argtypes = (ctypes.POINTER(POINT),)
+            user32.GetCursorPos.restype = wintypes.BOOL
+            user32.MonitorFromPoint.argtypes = (POINT, wintypes.DWORD)
+            user32.MonitorFromPoint.restype = wintypes.HMONITOR
+            user32.GetMonitorInfoW.argtypes = (
+                wintypes.HMONITOR,
+                ctypes.POINTER(MONITORINFO),
+            )
+            user32.GetMonitorInfoW.restype = wintypes.BOOL
+
+            cursor = POINT()
+            if not user32.GetCursorPos(ctypes.byref(cursor)):
+                raise ctypes.WinError(ctypes.get_last_error())
+            monitor = user32.MonitorFromPoint(cursor, 2)
+            if not monitor:
+                raise ctypes.WinError(ctypes.get_last_error())
+            monitor_info = MONITORINFO()
+            monitor_info.cbSize = ctypes.sizeof(MONITORINFO)
+            if not user32.GetMonitorInfoW(monitor, ctypes.byref(monitor_info)):
+                raise ctypes.WinError(ctypes.get_last_error())
+
+            work = monitor_info.rcWork
+            return _find_hotkey_window_position(
+                (cursor.x, cursor.y),
+                (work.left, work.top, work.right, work.bottom),
+                self._window.width,
+                self._window.height,
+            )
+        except Exception as e:
+            logger.warning("hotkey window position error: %s", e)
+            return None
+
     def show(self):
         self._visible = True
         if self._window:
@@ -2129,6 +2209,22 @@ class WebUI:
         # show/hide 底层为 Invoke 调度，任意线程调用均安全
         if self._window:
             self.toggle()
+
+    def toggle_hotkey_safe(self):
+        """按热键专用定位规则安全切换窗口"""
+        if not self._window:
+            return
+        if self._visible:
+            self.hide()
+            return
+        if self._cfg.get("hotkey_show_at_mouse", False):
+            try:
+                position = self._get_hotkey_window_position()
+                if position is not None:
+                    self._window.move(*position)
+            except Exception as e:
+                logger.warning("hotkey window move error: %s", e)
+        self.show()
 
     def schedule_hide(self):
         self._pending_hide = True
@@ -2510,6 +2606,7 @@ class WebUI:
             easy_drag=False,
             hidden=self._silent_start,
         )
+        self._visible = not self._silent_start
 
         self._started = True
         # 注册 LAN 设备确认回调（窗口创建完成后）

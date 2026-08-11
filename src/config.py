@@ -60,6 +60,7 @@ class Config:
         "version": "",
         # 全局设置
         "hotkey": "Ctrl+Alt+N",
+        "hotkey_show_at_mouse": False,
         "auto_start": False,
         "silent_start": False,
         "language": "zh-CN",

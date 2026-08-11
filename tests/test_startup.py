@@ -15,6 +15,55 @@ from src.hotkey import GlobalHotkey
 from src.tray import _create_default_icon
 
 
+class _FakeConfig:
+    def __init__(self, hotkey_show_at_mouse):
+        self.hotkey_show_at_mouse = hotkey_show_at_mouse
+        self.saved = {}
+
+    def get(self, key, default=None):
+        if key == "hotkey_show_at_mouse":
+            return self.hotkey_show_at_mouse
+        return default
+
+    def set(self, key, value):
+        self.saved[key] = value
+
+    def save(self):
+        pass
+
+
+class _FakeWindow:
+    def __init__(self):
+        self.width = 700
+        self.height = 500
+        self.x = 10
+        self.y = 20
+        self.on_top = False
+        self.calls = []
+
+    def move(self, x, y):
+        self.calls.append(("move", x, y))
+
+    def show(self):
+        self.calls.append(("show",))
+
+    def focus(self):
+        self.calls.append(("focus",))
+
+    def hide(self):
+        self.calls.append(("hide",))
+
+
+def _fake_webui(hotkey_show_at_mouse, visible=False):
+    from src.webui import WebUI
+
+    ui = WebUI()
+    ui._cfg = _FakeConfig(hotkey_show_at_mouse)
+    ui._window = _FakeWindow()
+    ui._visible = visible
+    return ui
+
+
 def test_config_io(tmp_path):
     cfg = Config(tmp_path / "config.json")
     cfg.set("hotkey", "Ctrl+Shift+X")
@@ -99,6 +148,174 @@ def test_webui_import():
     assert hasattr(api, "import_memes")
 
 
+def test_find_hotkey_window_position_candidate_order():
+    from src.webui import _find_hotkey_window_position
+
+    work_area = (0, 0, 100, 100)
+    assert _find_hotkey_window_position((10, 10), work_area, 30, 20) == (10, 10)
+    assert _find_hotkey_window_position((80, 10), work_area, 30, 20) == (70, 10)
+    assert _find_hotkey_window_position((10, 90), work_area, 30, 20) == (10, 80)
+    assert _find_hotkey_window_position((80, 90), work_area, 30, 20) == (70, 80)
+
+
+def test_find_hotkey_window_position_edge_equality_allowed():
+    from src.webui import _find_hotkey_window_position
+
+    assert _find_hotkey_window_position((70, 80), (0, 0, 100, 100), 30, 20) == (
+        70,
+        80,
+    )
+
+
+def test_find_hotkey_window_position_none_when_window_cannot_fit():
+    from src.webui import _find_hotkey_window_position
+
+    work_area = (-100, -50, 100, 50)
+    assert _find_hotkey_window_position((0, 0), work_area, 201, 50) is None
+    assert _find_hotkey_window_position((0, 0), work_area, 100, 101) is None
+
+
+def test_toggle_hotkey_safe_moves_then_shows_hidden_window(monkeypatch):
+    ui = _fake_webui(True)
+    monkeypatch.setattr(ui, "_get_hotkey_window_position", lambda: (40, 50))
+
+    ui.toggle_hotkey_safe()
+
+    assert ui._window.calls == [("move", 40, 50), ("show",), ("focus",)]
+    assert ui._visible
+
+
+def test_toggle_hotkey_safe_hides_visible_window_without_placement(monkeypatch):
+    ui = _fake_webui(True, visible=True)
+
+    def fail_if_called():
+        raise AssertionError("visible hotkey toggle must not calculate placement")
+
+    monkeypatch.setattr(ui, "_get_hotkey_window_position", fail_if_called)
+
+    ui.toggle_hotkey_safe()
+
+    assert ui._window.calls == [("hide",)]
+    assert not ui._visible
+
+
+def test_toggle_hotkey_safe_disabled_shows_without_placement(monkeypatch):
+    ui = _fake_webui(False)
+
+    def fail_if_called():
+        raise AssertionError("disabled placement must not be calculated")
+
+    monkeypatch.setattr(ui, "_get_hotkey_window_position", fail_if_called)
+
+    ui.toggle_hotkey_safe()
+
+    assert ui._window.calls == [("show",), ("focus",)]
+    assert ui._visible
+
+
+def test_toggle_hotkey_safe_placement_exception_still_shows(monkeypatch):
+    ui = _fake_webui(True)
+
+    def fail_placement():
+        raise RuntimeError("placement unavailable")
+
+    monkeypatch.setattr(ui, "_get_hotkey_window_position", fail_placement)
+
+    ui.toggle_hotkey_safe()
+
+    assert ui._window.calls == [("show",), ("focus",)]
+    assert ui._visible
+
+
+def _start_fake_webui(monkeypatch, silent_start):
+    import types
+
+    import src.webui as webui_module
+
+    created = []
+
+    def create_window(*args, **kwargs):
+        window = _FakeWindow()
+        created.append((window, kwargs))
+        return window
+
+    monkeypatch.setattr(webui_module, "HAS_WEBVIEW", True)
+    monkeypatch.setattr(webui_module, "HAS_BOTTLE", True)
+    monkeypatch.setattr(
+        webui_module,
+        "webview",
+        types.SimpleNamespace(
+            create_window=create_window,
+            start=lambda **kwargs: None,
+        ),
+    )
+    monkeypatch.setattr(webui_module.time, "sleep", lambda _: None)
+
+    from src.webui import WebUI
+
+    ui = WebUI(silent_start=silent_start)
+    ui._cfg = _FakeConfig(True)
+    monkeypatch.setattr(ui, "_setup_bottle", lambda: None)
+    monkeypatch.setattr(ui, "_init_lan", lambda: None)
+    assert ui.start()
+    return ui, created
+
+
+def test_webui_start_normal_visibility_hides_without_placement(monkeypatch):
+    ui, created = _start_fake_webui(monkeypatch, silent_start=False)
+    assert created[0][1]["hidden"] is False
+    assert ui._visible is True
+
+    def fail_if_called():
+        raise AssertionError("visible hotkey toggle must not calculate placement")
+
+    monkeypatch.setattr(ui, "_get_hotkey_window_position", fail_if_called)
+    ui.toggle_hotkey_safe()
+
+    assert ui._window.calls == [("hide",)]
+    assert ui._visible is False
+
+
+def test_webui_start_silent_visibility_allows_hotkey_placement(monkeypatch):
+    ui, created = _start_fake_webui(monkeypatch, silent_start=True)
+    assert created[0][1]["hidden"] is True
+    assert ui._visible is False
+    monkeypatch.setattr(ui, "_get_hotkey_window_position", lambda: (40, 50))
+
+    ui.toggle_hotkey_safe()
+
+    assert ui._window.calls == [("move", 40, 50), ("show",), ("focus",)]
+    assert ui._visible is True
+
+
+def test_app_routes_hotkey_and_tray_to_separate_zero_argument_methods():
+    import inspect
+
+    from src.main import OhMyMemeApp
+
+    class FakeWebUI:
+        def __init__(self):
+            self.calls = []
+
+        def toggle_hotkey_safe(self):
+            self.calls.append("hotkey")
+
+        def toggle_safe(self):
+            self.calls.append("tray")
+
+    app = OhMyMemeApp.__new__(OhMyMemeApp)
+    app._webui = FakeWebUI()
+
+    app._on_hotkey()
+    assert app._webui.calls == ["hotkey"]
+
+    app._on_tray_show()
+
+    assert app._webui.calls == ["hotkey", "tray"]
+    assert len(inspect.signature(app._on_hotkey).parameters) == 0
+    assert len(inspect.signature(app._on_tray_show).parameters) == 0
+
+
 def test_webui_html_exists():
     from src.webui import HTML_DIR
 
@@ -118,6 +335,10 @@ def test_webui_html_exists():
     settings_html = (HTML_DIR / "settings.html").read_text(encoding="utf-8")
     assert 'src="/settings.js"' in settings_html
     assert 'href="/settings.css"' in settings_html
+    assert 'id="s-hotkey-show-at-mouse"' in settings_html
+    settings_js = (HTML_DIR / "settings.js").read_text(encoding="utf-8")
+    assert settings_js.count("s.hotkey_show_at_mouse === true") == 2
+    assert "hotkey_show_at_mouse," in settings_js
 
 
 def test_webui_safe_serve_filename():

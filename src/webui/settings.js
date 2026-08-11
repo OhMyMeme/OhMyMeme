@@ -191,6 +191,8 @@ async function getSettings() {
   const as = document.getElementById('s-auto-start');
   const ss = document.getElementById('s-silent-start');
   if (hk && s.hotkey) hk.value = s.hotkey;
+  const hsam = document.getElementById('s-hotkey-show-at-mouse');
+  if (hsam) hsam.checked = s.hotkey_show_at_mouse === true;
   if (gif) gif.checked = s.auto_play_gif !== false;
   const hp = document.getElementById('s-hover-play');
   if (hp) hp.checked = s.hover_to_play === true;
@@ -424,6 +426,7 @@ async function saveSettings() {
   const gif = document.getElementById('s-gif')?.checked !== false;
   const try_original = document.getElementById('s-try-original')?.checked === true;  // DeepSeek V4 Flash
   const copy_mode = parseInt(document.getElementById('s-copy-mode')?.value || '1', 10);
+  const hotkey_show_at_mouse = document.getElementById('s-hotkey-show-at-mouse')?.checked === true;
   const auto_start = document.getElementById('s-auto-start')?.checked === true;
   const silent_start = document.getElementById('s-silent-start')?.checked === true;
   const show_uncategorized = document.getElementById('s-show-uncategorized')?.checked !== false;
@@ -433,7 +436,7 @@ async function saveSettings() {
   const lan_secret = document.getElementById('s-lan-secret')?.value || '';
   const hover_play = document.getElementById('s-hover-play')?.checked === true;
   await api('save_settings', {
-    hotkey, auto_play_gif: gif, hover_to_play: hover_play,
+    hotkey, hotkey_show_at_mouse, auto_play_gif: gif, hover_to_play: hover_play,
     try_original_image: try_original,  // DeepSeek V4 Flash
     copy_resize_mode: copy_mode,
     auto_start, silent_start, show_uncategorized,
@@ -451,6 +454,8 @@ async function resetSettings() {
     const as = document.getElementById('s-auto-start');
     const ss = document.getElementById('s-silent-start');
     if (hk) hk.value = s.hotkey;
+    const hsam = document.getElementById('s-hotkey-show-at-mouse');
+    if (hsam) hsam.checked = s.hotkey_show_at_mouse === true;
     if (gif) gif.checked = s.auto_play_gif !== false;
     const hp = document.getElementById('s-hover-play');
     if (hp) hp.checked = s.hover_to_play === true;
