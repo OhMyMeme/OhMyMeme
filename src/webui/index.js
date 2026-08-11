@@ -875,10 +875,8 @@ document.getElementById('ctx-menu').addEventListener('click', async (e) => {
       break;
     }
     case 'tag': {
-      const cur = await api('get_meme_tags', m.id) || [];
-      const input = await showPrompt('打标签（多个用逗号分隔）', cur.join(', '));
-      if (input === null) break;
-      const tags = input.split(/[,，]/).map(t => t.trim()).filter(Boolean);
+      const tags = await showTagEditor(m.id);
+      if (tags === null) break;
       const ok = await api('set_meme_tags', m.id, tags);
       if (ok) {
         showToast(tags.length ? '标签已更新' : '已清除标签');
@@ -999,6 +997,93 @@ document.getElementById('ctx-menu').addEventListener('click', async (e) => {
     }
   }
 });
+
+/* Tag Editor Modal */
+function showTagEditor(memeId) {
+  return new Promise(async resolve => {
+    const all = await api('get_all_tags') || [];
+    const cur = await api('get_meme_tags', memeId) || [];
+    const selected = cur.slice();
+
+    const overlay = document.createElement('div');
+    overlay.style.cssText = 'position:fixed;inset:0;background:rgba(0,0,0,.55);display:flex;align-items:center;justify-content:center;z-index:200;animation:fadeIn .15s';
+    overlay.onclick = (e) => { if (e.target === overlay) { overlay.remove(); resolve(null); } };
+
+    const box = document.createElement('div');
+    box.style.cssText = 'background:var(--surface);border-radius:var(--radius-lg);padding:20px 24px;width:420px;border:1px solid var(--border);box-shadow:var(--shadow-lg)';
+    box.innerHTML = '<div style="margin-bottom:14px"><h2 style="font-size:15px;font-weight:600;color:var(--fg);margin-bottom:4px">编辑标签</h2></div>'
+      + '<input id="tag-editor-input" placeholder="搜索已有标签或输入新标签，回车添加" style="width:100%;padding:8px 12px;border:1px solid var(--border);border-radius:var(--radius-sm);background:var(--card);color:var(--fg);font-size:13px;outline:none;font-family:inherit;box-sizing:border-box;margin-bottom:10px">'
+      + '<div id="tag-editor-list" style="max-height:200px;overflow-y:auto;display:flex;flex-wrap:wrap;gap:6px;padding:4px 0;margin-bottom:10px"></div>'
+      + '<div id="tag-editor-selected" style="display:flex;flex-wrap:wrap;gap:6px;margin-bottom:14px;min-height:0"></div>'
+      + '<div style="display:flex;gap:8px;justify-content:flex-end">'
+      + '<button id="tag-editor-cancel" class="btn btn-secondary">取消</button>'
+      + '<button id="tag-editor-confirm" class="btn btn-primary">确定</button>'
+      + '</div>';
+    overlay.appendChild(box);
+    document.body.appendChild(overlay);
+
+    const input = document.getElementById('tag-editor-input');
+    const listEl = document.getElementById('tag-editor-list');
+    const selEl = document.getElementById('tag-editor-selected');
+
+    function renderSelected() {
+      selEl.innerHTML = '';
+      selected.forEach(tag => {
+        const chip = document.createElement('span');
+        chip.className = 'tag active';
+        chip.textContent = tag + ' ×';
+        chip.onclick = () => { selected.splice(selected.indexOf(tag), 1); renderList(); renderSelected(); };
+        selEl.appendChild(chip);
+      });
+      if (selected.length === 0) selEl.style.display = 'none';
+      else selEl.style.display = '';
+    }
+
+    function renderList() {
+      listEl.innerHTML = '';
+      const q = input.value.trim().toLowerCase();
+      const fresh = all.filter(t => q ? t.toLowerCase().includes(q) : true);
+      fresh.forEach(tag => {
+        const el = document.createElement('span');
+        el.className = 'tag' + (selected.includes(tag) ? ' active' : '');
+        el.textContent = tag;
+        el.onclick = () => {
+          const i = selected.indexOf(tag);
+          if (i >= 0) selected.splice(i, 1); else selected.push(tag);
+          renderList(); renderSelected();
+        };
+        listEl.appendChild(el);
+      });
+      if (fresh.length === 0) {
+        const empty = document.createElement('div');
+        empty.style.cssText = 'font-size:12px;color:var(--muted);width:100%;text-align:center;padding:8px 0';
+        empty.textContent = q ? '无匹配标签，回车创建"' + input.value.trim() + '"' : '暂无标签';
+        listEl.appendChild(empty);
+      }
+    }
+
+    function addFromInput() {
+      const v = input.value.trim();
+      if (!v) return;
+      if (!selected.includes(v)) selected.push(v);
+      input.value = '';
+      renderList(); renderSelected();
+    }
+
+    input.addEventListener('input', renderList);
+    input.addEventListener('keydown', (e) => {
+      if (e.key === 'Enter') { e.preventDefault(); addFromInput(); }
+      if (e.key === 'Escape') { overlay.remove(); resolve(null); }
+    });
+
+    document.getElementById('tag-editor-confirm').onclick = () => { overlay.remove(); resolve(selected); };
+    document.getElementById('tag-editor-cancel').onclick = () => { overlay.remove(); resolve(null); };
+
+    renderList();
+    renderSelected();
+    input.focus();
+  });
+}
 
 /* Custom Modal */
 function showPrompt(title, defaultValue) {
