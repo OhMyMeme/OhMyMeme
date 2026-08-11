@@ -94,6 +94,7 @@ class Config:
         "s3_access_key": "",
         "s3_secret_key": "",
         "s3_addressing_style": "virtual",
+        "s3_signature_version": "s3",
         # R2
         "r2_account_id": "",
         "r2_access_key_id": "",
