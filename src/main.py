@@ -59,7 +59,7 @@ class OhMyMemeApp:
             logger.warning("Linux 环境：跳过系统托盘（GTK 线程冲突）")
         else:
             self._tray = TrayManager(
-                on_show=self._on_hotkey,
+                on_show=self._on_tray_show,
                 on_quit=self._on_quit,
                 source_mode=not getattr(sys, "frozen", False),
             )
@@ -104,6 +104,10 @@ class OhMyMemeApp:
             logger.warning(f"快捷键注册失败: {e}")
 
     def _on_hotkey(self):
+        if self._webui:
+            self._webui.toggle_hotkey_safe()
+
+    def _on_tray_show(self):
         if self._webui:
             self._webui.toggle_safe()
 

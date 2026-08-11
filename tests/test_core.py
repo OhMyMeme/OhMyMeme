@@ -50,6 +50,7 @@ class TestConfig(unittest.TestCase):
     def test_defaults(self):
         cfg = Config(self.config_path)
         self.assertEqual(cfg.get("hotkey"), "Ctrl+Alt+N")
+        self.assertIs(cfg.get("hotkey_show_at_mouse"), False)
         self.assertEqual(cfg.get("sync_auto_fetch_index"), False)
         self.assertEqual(cfg.get("sync_auto_sync"), False)
         self.assertEqual(cfg.get("sync_type"), "")
@@ -78,6 +79,27 @@ class TestConfig(unittest.TestCase):
         cfg2 = Config(self.config_path)
         self.assertEqual(cfg2.get("hotkey"), "Ctrl+Alt+N")
         self.assertEqual(cfg2.get("s3_access_key"), "AKID123")
+
+    def test_hotkey_show_at_mouse_old_config_defaults_false(self):
+        self.config_path.write_text('{"hotkey": "Ctrl+Shift+X"}', encoding="utf-8")
+
+        cfg = Config(self.config_path)
+
+        self.assertIs(cfg.get("hotkey_show_at_mouse"), False)
+
+    def test_hotkey_show_at_mouse_persists_and_resets(self):
+        cfg = Config(self.config_path)
+        cfg.set("hotkey_show_at_mouse", True)
+        cfg.save()
+
+        reloaded = Config(self.config_path)
+        self.assertIs(reloaded.get("hotkey_show_at_mouse"), True)
+
+        reloaded.reset()
+        reloaded.save()
+
+        reset = Config(self.config_path)
+        self.assertIs(reset.get("hotkey_show_at_mouse"), False)
 
     def test_property_access(self):
         cfg = Config(self.config_path)
