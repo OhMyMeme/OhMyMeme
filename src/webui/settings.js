@@ -217,6 +217,10 @@ async function getSettings() {
   document.getElementById('s-ftp-pass').value = s.ftp_password || '';
   document.getElementById('s-ftp-path').value = s.ftp_path || '/';
   document.getElementById('s3-endpoint').value = s.s3_endpoint || '';
+  const s3Addr = document.getElementById('s3-addressing-style');
+  if (s3Addr) s3Addr.value = s.s3_addressing_style || 'virtual';
+  const s3Sig = document.getElementById('s3-signature-version');
+  if (s3Sig) s3Sig.value = s.s3_signature_version || 's3';
   document.getElementById('s3-region').value = s.s3_region || '';
   document.getElementById('s3-bucket').value = s.s3_bucket || '';
   document.getElementById('s3-access-key').value = s.s3_access_key || '';
@@ -368,6 +372,8 @@ function collectSyncSettings() {
     s3_access_key: document.getElementById('s3-access-key')?.value || '',
     s3_secret_key: document.getElementById('s3-secret-key')?.value || '',
     s3_path: document.getElementById('s3-path')?.value || '',
+    s3_addressing_style: document.getElementById('s3-addressing-style')?.value || 'virtual',
+    s3_signature_version: document.getElementById('s3-signature-version')?.value || 's3',
     r2_account_id: document.getElementById('r2-account-id')?.value || '',
     r2_access_key_id: document.getElementById('r2-access-key-id')?.value || '',
     r2_secret_access_key: document.getElementById('r2-secret-access-key')?.value || '',

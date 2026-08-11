@@ -250,6 +250,7 @@ class _S3Backend(_SyncBackend):
         self.prefix = ""
 
     def connect(self):
+        """连接 S3 后端，创建 boto3 客户端"""
         endpoint = self.cfg.get("s3_endpoint", "")
         region = self.cfg.get("s3_region", "")
         access_key = self.cfg.get("s3_access_key", "")
@@ -270,7 +271,16 @@ class _S3Backend(_SyncBackend):
             kwargs["region_name"] = region
 
         try:
-            config = BotoConfig(s3={"payload_signing_enabled": False})
+            addressing = self.cfg.get("s3_addressing_style", "virtual")
+            if addressing not in ("virtual", "path"):
+                addressing = "virtual"
+            sig_ver = self.cfg.get("s3_signature_version", "s3")
+            if sig_ver not in ("s3", "s3v4"):
+                sig_ver = "s3"
+            config = BotoConfig(
+                signature_version=sig_ver,
+                s3={"payload_signing_enabled": False, "addressing_style": addressing},
+            )
             self.client = boto3.client("s3", config=config, **kwargs)
             self.bucket = bucket
             prefix = self.cfg.get("s3_path", "").strip("/")
