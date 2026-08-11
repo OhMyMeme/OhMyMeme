@@ -149,6 +149,52 @@ def test_udp_discovery(lan_env):
     assert reply["ver"]
 
 
+def test_pktinfo_extract_linux_layout():
+    """Linux in_pktinfo 布局 (ifindex, spec_dst, addr) 解析"""
+    srv = lan.LanServer()
+    cdata = struct.pack(
+        "i4s4s",
+        1,
+        socket.inet_aton("192.168.1.5"),
+        socket.inet_aton("255.255.255.255"),
+    )
+    anc = [(socket.IPPROTO_IP, getattr(socket, "IP_PKTINFO", 8), cdata)]
+    assert srv._extract_pktinfo_src(anc) == ("ip", "192.168.1.5")
+
+
+def test_pktinfo_extract_windows_layout(monkeypatch):
+    """Windows in_pktinfo 仅 8 字节 (ipi_addr, ipi_ifindex)，返回接口索引"""
+    monkeypatch.setattr(lan.sys, "platform", "win32")
+    srv = lan.LanServer()
+    cdata = struct.pack("4sI", socket.inet_aton("255.255.255.255"), 7)
+    anc = [(socket.IPPROTO_IP, getattr(socket, "IP_PKTINFO", 8), cdata)]
+    assert srv._extract_pktinfo_src(anc) == ("ifindex", 7)
+
+
+def test_pktinfo_extract_windows_zero_ifindex(monkeypatch):
+    """Windows 接口索引为 0（不可用）时返回 None"""
+    monkeypatch.setattr(lan.sys, "platform", "win32")
+    srv = lan.LanServer()
+    cdata = struct.pack("4sI", socket.inet_aton("255.255.255.255"), 0)
+    anc = [(socket.IPPROTO_IP, getattr(socket, "IP_PKTINFO", 8), cdata)]
+    assert srv._extract_pktinfo_src(anc) is None
+
+
+@pytest.mark.skipif(not hasattr(socket, "IP_PKTINFO"), reason="平台不支持 IP_PKTINFO")
+def test_udp_reply_pins_source_interface(lan_env):
+    """回包源 IP 钉在广播到达的接口上（虚拟网卡环境发现可达）"""
+    cfg, db, tmp = lan_env
+    srv = lan._server
+    assert srv is not None and srv._udp_pktinfo
+    cli = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+    cli.settimeout(5)
+    cli.sendto(b'{"t":"discover"}', ("127.0.0.1", TEST_PORT))
+    data, src = cli.recvfrom(2048)
+    cli.close()
+    assert json.loads(data.decode("utf-8"))["t"] == "hello"
+    assert src[0] == "127.0.0.1"
+
+
 def test_handshake_success(lan_env):
     sock = _connect()
     key = _handshake(sock, "test-secret")
