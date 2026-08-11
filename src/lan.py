@@ -10,6 +10,7 @@ import os
 import platform
 import socket
 import struct
+import sys
 import threading
 import time
 from pathlib import Path
@@ -68,6 +69,7 @@ class LanServer:
         self._port = 0
         self._secret = ""
         self._clients = {}
+        self._udp_pktinfo = False
 
     # --- 生命周期 ---
 
@@ -89,6 +91,12 @@ class LanServer:
             self._udp_sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
             self._udp_sock.bind(("0.0.0.0", self._port))
             self._udp_sock.settimeout(0.5)
+            self._udp_pktinfo = False
+            try:
+                self._udp_sock.setsockopt(socket.IPPROTO_IP, socket.IP_PKTINFO, 1)
+                self._udp_pktinfo = True
+            except (AttributeError, OSError):
+                pass
             self._tcp_sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
             self._tcp_sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
             self._tcp_sock.bind(("0.0.0.0", self._port))
@@ -148,8 +156,16 @@ class LanServer:
     def _udp_loop(self):
         while self._running:
             try:
-                data, addr = self._udp_sock.recvfrom(2048)
+                if self._udp_pktinfo:
+                    data, ancdata, _, addr = self._udp_sock.recvmsg(2048, 256)
+                else:
+                    data, addr = self._udp_sock.recvfrom(2048)
+                    ancdata = []
             except socket.timeout:
+                continue
+            except (AttributeError, NotImplementedError):
+                # recvmsg 不可用的平台：禁 pktinfo 退化 recvfrom，继续发现
+                self._udp_pktinfo = False
                 continue
             except OSError:
                 break
@@ -166,12 +182,72 @@ class LanServer:
                 "ver": __version__,
                 "need_secret": bool(self._secret),
             }
+            payload = json.dumps(reply, ensure_ascii=False).encode("utf-8")
+            src_addr = self._extract_pktinfo_src(ancdata)
             try:
-                self._udp_sock.sendto(
-                    json.dumps(reply, ensure_ascii=False).encode("utf-8"), addr
-                )
+                self._send_udp_reply(payload, addr, src_addr)
             except OSError:
                 pass
+
+    def _extract_pktinfo_src(self, ancdata):
+        """提取广播到达的本地接口（Linux 返回 ("ip", ip)；Windows ("ifindex", n)）"""
+        for level, ctype, cdata in ancdata:
+            if level != socket.IPPROTO_IP or ctype != socket.IP_PKTINFO:
+                continue
+            try:
+                if sys.platform == "win32":
+                    # Windows in_pktinfo 仅 8 字节 (ipi_addr, ipi_ifindex)，无
+                    # spec_dst；ipi_addr 是目的地址（广播），只有接口索引可用
+                    _, ifindex = struct.unpack("4sI", cdata)
+                    if not ifindex:
+                        return None
+                    return ("ifindex", ifindex)
+                else:
+                    _, spec_dst, _ = struct.unpack("i4s4s", cdata)
+                    return ("ip", socket.inet_ntoa(spec_dst))
+            except (struct.error, OSError):
+                return None
+        return None
+
+    def _send_udp_reply(self, data, addr, src):
+        """UDP 回包：可固定源接口则 sendmsg（多网卡/虚拟网卡环境保证回包走真实网卡）"""
+        if self._udp_pktinfo and src:
+            try:
+                kind, val = src
+                pinfo = None
+                if sys.platform == "win32" and kind == "ifindex":
+                    src_ip = self._win_ifindex_source_ip(val, addr)
+                    if src_ip:
+                        # Windows 发送时 ipi_addr 为源地址，ipi_ifindex 指定出口
+                        pinfo = struct.pack("4sI", socket.inet_aton(src_ip), val)
+                elif kind == "ip":
+                    pinfo = struct.pack("i4s4s", 0, socket.inet_aton(val), b"\x00" * 4)
+                if pinfo:
+                    self._udp_sock.sendmsg(
+                        [data],
+                        [(socket.IPPROTO_IP, socket.IP_PKTINFO, pinfo)],
+                        0,
+                        addr,
+                    )
+                    return
+            except (AttributeError, NotImplementedError, struct.error, OSError):
+                logger.debug("LAN UDP 回包 sendmsg 失败，退化为 sendto")
+        self._udp_sock.sendto(data, addr)
+
+    def _win_ifindex_source_ip(self, ifindex, peer):
+        """Windows：用 IP_UNICAST_IF 钉住接收接口，connect 后 getsockname 取该接口 IP"""
+        try:
+            s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+            try:
+                opt = getattr(socket, "IP_UNICAST_IF", 31)
+                # IP_UNICAST_IF 接口索引须为网络字节序（MSDN），勿用本机字节序
+                s.setsockopt(socket.IPPROTO_IP, opt, struct.pack("!I", ifindex))
+                s.connect((peer[0], peer[1]))
+                return s.getsockname()[0]
+            finally:
+                s.close()
+        except OSError:
+            return None
 
     # --- TCP 会话 ---
 
