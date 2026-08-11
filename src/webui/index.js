@@ -1001,7 +1001,7 @@ document.getElementById('ctx-menu').addEventListener('click', async (e) => {
 /* Tag Editor Modal */
 function showTagEditor(memeId) {
   return new Promise(async resolve => {
-    const all = await api('get_all_tags') || [];
+    const all = await api('get_tags') || [];
     const cur = await api('get_meme_tags', memeId) || [];
     const selected = cur.slice();
 
