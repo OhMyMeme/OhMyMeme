@@ -109,7 +109,7 @@ tests/
 
 ### 数据库
 - 7 表: `memes`, `tags`, `meme_tags`, `collections`, `meme_collections`, `favorites`, `recent_uses`
-  - `tags`/`meme_tags`：DB 层方法（`get_all_tags`/`set_meme_tags`/`get_meme_tags`/`search` 标签筛选），已启用；右键表情「打标签」（`JsApi.get_meme_tags`/`set_meme_tags`）逗号分隔多标签，`_set_tags` 覆盖式写入；`_prune_orphan_tags` 在 `_set_tags` 与 `delete_meme` 中清理无任何表情使用的孤儿标签（tagbar 不残留幽灵标签）
+  - `tags`/`meme_tags`：DB 层方法（`get_all_tags`/`set_meme_tags`/`get_meme_tags`/`search` 标签筛选），已启用；右键表情「打标签」弹出标签编辑器（`showTagEditor`：点选已有标签/搜索过滤/输入新建，回车添加），`_set_tags` 覆盖式写入；`_prune_orphan_tags` 在 `_set_tags` 与 `delete_meme` 中清理无任何表情使用的孤儿标签（tagbar 不残留幽灵标签）
 - `PRAGMA journal_mode=WAL`, `PRAGMA foreign_keys=ON`
 - `MemeDB.search()`: 动态 WHERE, 多标签交集用 `HAVING COUNT = len(tags)`
 - `memes.sort_order`: 自定义排序（拖拽更新），默认 0，查询 `ORDER BY sort_order ASC, updated_at DESC`
