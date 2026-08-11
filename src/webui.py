@@ -105,6 +105,18 @@ install_log_buffer()
 
 HTML_DIR = Path(__file__).resolve().parent / "webui"
 
+# 静态资源扩展名 → 强制 Content-Type：本机 mimetypes/注册表 .js 映射可能为
+# text/plain，叠加 nosniff 会被 Chromium 拒执行脚本
+_STATIC_MIME_TYPES = {
+    ".js": "text/javascript",
+    ".css": "text/css",
+    ".html": "text/html",
+    ".svg": "image/svg+xml",
+    ".png": "image/png",
+    ".ico": "image/x-icon",
+    ".woff2": "font/woff2",
+}
+
 # ─── 工具函数  ───
 
 
@@ -2394,18 +2406,12 @@ class WebUI:
 
         @app.route("/<filepath:path>")
         def static_files(filepath):
-            # 按扩展名强制 MIME：本机 mimetypes/注册表 .js 映射可能为 text/plain，
-            # 叠加 nosniff 会被 Chromium 拒执行脚本（表现为加载动画永转）
-            ctype = {
-                ".js": "text/javascript",
-                ".css": "text/css",
-                ".html": "text/html",
-                ".svg": "image/svg+xml",
-                ".png": "image/png",
-                ".ico": "image/x-icon",
-                ".woff2": "font/woff2",
-            }.get(os.path.splitext(filepath)[1].lower())
-            return bottle.static_file(filepath, root=str(HTML_DIR), mimetype=ctype)
+            # 按扩展名强制 MIME，规避本机 .js 映射被改写成 text/plain 时
+            # 叠加 nosniff 导致 Chromium 拒执行脚本；未知类型走 bottle 自动检测
+            ctype = _STATIC_MIME_TYPES.get(os.path.splitext(filepath)[1].lower())
+            if ctype:
+                return bottle.static_file(filepath, root=str(HTML_DIR), mimetype=ctype)
+            return bottle.static_file(filepath, root=str(HTML_DIR))
 
         bottle.run(app, host="127.0.0.1", port=self._port, quiet=True)
 
