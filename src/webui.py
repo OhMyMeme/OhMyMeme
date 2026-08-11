@@ -2394,7 +2394,18 @@ class WebUI:
 
         @app.route("/<filepath:path>")
         def static_files(filepath):
-            return bottle.static_file(filepath, root=str(HTML_DIR))
+            # 按扩展名强制 MIME：本机 mimetypes/注册表 .js 映射可能为 text/plain，
+            # 叠加 nosniff 会被 Chromium 拒执行脚本（表现为加载动画永转）
+            ctype = {
+                ".js": "text/javascript",
+                ".css": "text/css",
+                ".html": "text/html",
+                ".svg": "image/svg+xml",
+                ".png": "image/png",
+                ".ico": "image/x-icon",
+                ".woff2": "font/woff2",
+            }.get(os.path.splitext(filepath)[1].lower())
+            return bottle.static_file(filepath, root=str(HTML_DIR), mimetype=ctype)
 
         bottle.run(app, host="127.0.0.1", port=self._port, quiet=True)
 
