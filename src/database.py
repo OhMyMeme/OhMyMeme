@@ -437,10 +437,20 @@ class MemeDB:
             params.append(len(tags))
 
         if collection_id is not None:
-            where.append("""m.id IN (
-                SELECT mc.meme_id FROM meme_collections mc WHERE mc.collection_id = ?
-            )""")
-            params.append(collection_id)
+            if isinstance(collection_id, list):
+                placeholders = ",".join("?" for _ in collection_id)
+                where.append(f"""m.id IN (
+                    SELECT mc.meme_id FROM meme_collections mc
+                    WHERE mc.collection_id IN ({placeholders})
+                )""")
+                params.extend(collection_id)
+            else:
+                where.append(
+                    "m.id IN ("
+                    "SELECT mc.meme_id FROM meme_collections mc "
+                    "WHERE mc.collection_id = ?)"
+                )
+                params.append(collection_id)
 
         if favorite_only:
             where.append("m.id IN (SELECT meme_id FROM favorites)")
@@ -453,8 +463,8 @@ class MemeDB:
         sql = "SELECT m.* FROM memes m"
         if where:
             sql += " WHERE " + " AND ".join(where)
-        if collection_id is not None:
-            # 分组/子分组内按 meme_collections.sort_order 排序（拖拽排序结果）
+        if collection_id is not None and isinstance(collection_id, int):
+            # 单分组内按 meme_collections.sort_order 排序（拖拽排序结果）
             sql += """ ORDER BY (
                 SELECT mc.sort_order FROM meme_collections mc
                 WHERE mc.meme_id = m.id AND mc.collection_id = ?
@@ -482,10 +492,18 @@ class MemeDB:
             kw = f"%{keyword}%"
             params.extend([kw, kw])
         if collection_id is not None:
-            where.append("""id IN (
-                SELECT meme_id FROM meme_collections WHERE collection_id = ?
-            )""")
-            params.append(collection_id)
+            if isinstance(collection_id, list):
+                placeholders = ",".join("?" for _ in collection_id)
+                where.append(f"""id IN (
+                    SELECT meme_id FROM meme_collections
+                    WHERE collection_id IN ({placeholders})
+                )""")
+                params.extend(collection_id)
+            else:
+                where.append("""id IN (
+                    SELECT meme_id FROM meme_collections WHERE collection_id = ?
+                )""")
+                params.append(collection_id)
         if favorite_only:
             where.append("id IN (SELECT meme_id FROM favorites)")
         if uncategorized_only:

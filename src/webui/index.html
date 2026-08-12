@@ -32,13 +32,23 @@
   <div id="search-wrap">
     <input id="search" type="text" placeholder="搜索表情包..." oninput="onSearch()" autofocus spellcheck="false">
   </div>
-  <div id="tagbar"></div>
-  <div id="colbar"></div>
-  <div id="grid-wrap">
-    <div id="meme-grid"></div>
-    <div id="empty" style="display:none">
-      <div class="icon">_(:3 」∠)_</div>
-      <div class="text">还没有表情包，点击「导入」添加</div>
+  <div id="content">
+    <div id="sidebar">
+      <div id="sidebar-header">
+        <span>分组</span>
+      </div>
+      <div id="tree"></div>
+    </div>
+    <button id="sidebar-toggle" onclick="toggleSidebar()" title="折叠/展开侧边栏">◀</button>
+    <div id="main">
+      <div id="tagbar"></div>
+      <div id="grid-wrap">
+        <div id="meme-grid"></div>
+        <div id="empty" style="display:none">
+          <div class="icon">_(:3 」∠)_</div>
+          <div class="text">还没有表情包，点击「导入」添加</div>
+        </div>
+      </div>
     </div>
   </div>
 </div>
