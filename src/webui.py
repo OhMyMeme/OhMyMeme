@@ -246,6 +246,8 @@ class JsApi:
         if recent_only:
             rows = self._db.get_recent(limit, offset)
         else:
+            if cid is not None and cid > 0:
+                cid = self._get_collection_ids_recursive(cid)
             rows = self._db.search(
                 keyword=keyword,
                 tags=tags,
@@ -501,14 +503,23 @@ class JsApi:
         build_manifest()
         return True
 
-    def _build_collection_tree(self, parent_id=None) -> list:
+    def _get_collection_ids_recursive(self, collection_id):
+        """递归获取分组及其所有子分组的 ID 列表"""
+        ids = [collection_id]
+        children = self._db.get_child_collections(collection_id)
+        for child in children:
+            ids.extend(self._get_collection_ids_recursive(child["id"]))
+        return ids
+
+    def _build_collection_tree(self, parent_id=None):
         raw = self._db.get_collections()
         result = []
         for cid, name, pid, _ in raw:
             if pid != parent_id:
                 continue
-            cnt = self._db.count(collection_id=cid)
             children = self._build_collection_tree(parent_id=cid)
+            all_ids = self._get_collection_ids_recursive(cid)
+            cnt = self._db.count(collection_id=all_ids)
             item = {"id": cid, "name": name, "count": cnt}
             if children:
                 item["children"] = children
@@ -2207,6 +2218,7 @@ class WebUI:
                     self._window.show()
                 if callable(self._window.focus):
                     self._window.focus()
+                self._window.evaluate_js("focusSearch()")
             except Exception as e:
                 logger.warning(f"show window error: {e}")
 

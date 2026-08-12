@@ -31,6 +31,7 @@ body {
   -moz-osx-font-smoothing: grayscale;
 }
 #app { display: flex; flex-direction: column; height: 100vh; max-width: 920px; margin: 0 auto; padding: 0 16px; }
+#content { flex: 1; display: flex; flex-direction: row; min-height: 0; position: relative; }
 
 /* Title */
 #titlebar {
@@ -66,6 +67,62 @@ body {
 }
 #search:focus { border-color: var(--accent); background: var(--surface-2); }
 #search::placeholder { color: var(--muted); }
+
+/* Sidebar */
+#sidebar {
+  width: 180px; flex-shrink: 0; display: flex; flex-direction: column;
+  border-right: 1px solid var(--border); padding: 4px 8px 8px 0;
+  transition: width var(--transition), padding var(--transition);
+  overflow: hidden;
+}
+#sidebar.collapsed { width: 0; padding: 0; border-right: none; }
+#sidebar-header {
+  display: flex; align-items: center; justify-content: space-between;
+  padding: 6px 8px 8px; font-size: 12px; font-weight: 600;
+  color: var(--fg-secondary); flex-shrink: 0;
+}
+#sidebar-toggle {
+  position: fixed; left: 30px; bottom: 30px;
+  z-index: 100; background: var(--surface); border: 1px solid var(--border);
+  color: var(--muted);
+  font-size: 18px; cursor: pointer;
+  width: 50px; height: 50px; padding: 0;
+  border-radius: var(--radius);
+  transition: all var(--transition); box-shadow: var(--shadow);
+  display: flex; align-items: center; justify-content: center;
+}
+#sidebar-toggle:hover { background: var(--surface-2); color: var(--accent); }
+#sidebar-toggle.collapsed { left: 0; }
+#tree { flex: 1; overflow-y: auto; scrollbar-width: thin; }
+#tree::-webkit-scrollbar { width: 5px; }
+#tree::-webkit-scrollbar-track { background: transparent; }
+#tree::-webkit-scrollbar-thumb { background: var(--border); border-radius: 100px; }
+
+/* Tree */
+.tree-node { user-select: none; }
+.tree-row {
+  display: flex; align-items: center; gap: 4px;
+  padding: 4px 6px; border-radius: var(--radius-sm);
+  cursor: pointer; font-size: 12px; color: var(--fg-secondary);
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+  transition: background var(--transition);
+}
+.tree-row:hover { background: var(--surface); color: var(--fg); }
+.tree-row.active { background: var(--accent-muted); color: var(--accent); }
+.tree-toggle {
+  width: 14px; height: 14px; flex-shrink: 0;
+  display: flex; align-items: center; justify-content: center;
+  font-size: 10px; color: var(--muted); cursor: pointer;
+  transition: transform var(--transition);
+}
+.tree-toggle.expanded { transform: rotate(90deg); }
+.tree-toggle.leaf { visibility: hidden; }
+.tree-label { flex: 1; overflow: hidden; text-overflow: ellipsis; }
+.tree-count { font-size: 10.5px; color: var(--muted); }
+.tree-children { padding-left: 12px; }
+
+/* Main */
+#main { flex: 1; display: flex; flex-direction: column; min-width: 0; padding-left: 18px; overflow: hidden; }
 
 /* Tags */
 #tagbar {
@@ -108,7 +165,7 @@ body {
 .col-tag.active { background: var(--accent-muted); color: var(--accent); border-color: var(--accent); }
 
 /* Grid */
-#grid-wrap { flex: 1; overflow-y: auto; overflow-x: hidden; padding: 2px 10px 8px 0; }
+#grid-wrap { flex: 1; overflow-y: scroll; overflow-x: hidden; padding: 2px 0 8px 0; }
 #grid-wrap::-webkit-scrollbar { width: 5px; }
 #grid-wrap::-webkit-scrollbar-track { background: transparent; }
 #grid-wrap::-webkit-scrollbar-thumb { background: var(--border); border-radius: 100px; }
@@ -131,7 +188,7 @@ body {
 .upd-notes .md-hr { border: none; border-top: 1px solid var(--border); margin: 8px 0; }
 .upd-notes strong { color: var(--fg); }
 #meme-grid {
-  display: grid; grid-template-columns: repeat(auto-fill, minmax(112px, 1fr));
+  display: grid; grid-template-columns: repeat(4, 1fr);
   gap: 10px; padding-bottom: 4px;
 }
 .meme-card {
@@ -146,6 +203,7 @@ body {
 }
 .meme-card:active { transform: scale(0.97); }
 .meme-card img { width: 100%; height: 100%; object-fit: cover; display: block; }
+.meme-card.folder-card > div { width: 100%; height: 100%; aspect-ratio: 1; }
 .meme-card .name {
   position: absolute; bottom: 0; left: 0; right: 0;
   padding: 20px 7px 5px 7px;
@@ -238,6 +296,7 @@ body {
 /* Folder cards */
 .meme-card.folder-card { cursor: pointer; border: 1px dashed var(--border-light); }
 .meme-card.folder-card:hover { border-color: var(--accent); background: var(--accent-muted) !important; }
+.meme-card.folder-card.drop-target { background: var(--accent-muted) !important; border-color: var(--accent) !important; }
 .meme-card.folder-card img { display: none; }
 .meme-card.folder-card .name { display: none; }
 
