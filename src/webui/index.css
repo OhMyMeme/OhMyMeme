@@ -132,19 +132,45 @@ body {
 .upd-notes strong { color: var(--fg); }
 #meme-grid {
   display: grid; grid-template-columns: repeat(auto-fill, minmax(112px, 1fr));
-  gap: 10px; padding-bottom: 4px;
+  gap: 10px; padding: 6px;
 }
 .meme-card {
   background: var(--card); border-radius: var(--radius);
   overflow: hidden; cursor: pointer; position: relative;
   aspect-ratio: 1; border: 1px solid var(--border);
-  transition: all var(--transition);
+  outline: 0 solid transparent; outline-offset: 3px;
+  transition: transform var(--transition), outline-color var(--transition), outline-width var(--transition);
 }
 .meme-card:hover {
   border-color: var(--accent); transform: translateY(-1px);
   box-shadow: 0 0 0 1px var(--accent);
 }
 .meme-card:active { transform: scale(0.97); }
+#meme-grid.sort-enabled .meme-card:not(.folder-card):not(.dragging) {
+  transform: scale(0.95); outline: 3px solid var(--border-light); outline-offset: 3px;
+}
+#meme-grid.sort-enabled .meme-card.sort-enter:not(.folder-card):not(.dragging) {
+  transform: scale(1); outline: 0 solid transparent; outline-offset: 3px;
+}
+#meme-grid.sort-enabled .meme-card:not(.folder-card):not(.dragging):hover {
+  transform: translateY(-1px) scale(0.95);
+}
+#meme-grid.sort-enabled .meme-card:not(.folder-card):not(.dragging):active {
+  transform: scale(0.93);
+}
+#meme-grid.sort-enabled:not(.drag-active) .meme-card:not(.folder-card):not(.dragging):not(.sort-enter) {
+  animation: sort-shake 120ms ease-in-out infinite alternate;
+}
+@keyframes sort-shake {
+  from { rotate: -0.75deg; }
+  to { rotate: 0.75deg; }
+}
+@media (prefers-reduced-motion: reduce) {
+  #meme-grid.sort-enabled:not(.drag-active) .meme-card:not(.folder-card):not(.dragging):not(.sort-enter) {
+    animation: none;
+    rotate: 0deg;
+  }
+}
 .meme-card img { width: 100%; height: 100%; object-fit: cover; display: block; }
 .meme-card .name {
   position: absolute; bottom: 0; left: 0; right: 0;

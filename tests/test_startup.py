@@ -1,6 +1,7 @@
 """启动流程测试 - pytest风格"""
 
 import os
+import re
 import sys
 from pathlib import Path
 
@@ -339,6 +340,274 @@ def test_webui_html_exists():
     settings_js = (HTML_DIR / "settings.js").read_text(encoding="utf-8")
     assert settings_js.count("s.hotkey_show_at_mouse === true") == 2
     assert "hotkey_show_at_mouse," in settings_js
+
+
+def test_sorting_visual_feedback_static_contract():
+    root = Path(__file__).resolve().parent.parent
+    index_js = (root / "src" / "webui" / "index.js").read_text(encoding="utf-8")
+    index_css = (root / "src" / "webui" / "index.css").read_text(encoding="utf-8")
+
+    grid_wrap = re.search(r"#grid-wrap\s*\{(?:(?!\}).)*?\}", index_css, re.DOTALL)
+    assert grid_wrap, "grid wrapper styles must remain locally inspectable"
+    assert re.search(r"overflow-y\s*:\s*auto", grid_wrap.group(0))
+    assert re.search(r"overflow-x\s*:\s*hidden", grid_wrap.group(0))
+
+    meme_grid = re.search(r"#meme-grid\s*\{(?:(?!\}).)*?\}", index_css, re.DOTALL)
+    assert meme_grid, "meme grid styles must remain locally inspectable"
+    grid_padding = re.search(r"padding\s*:\s*([^;]+)", meme_grid.group(0))
+    assert grid_padding, "meme grid must reserve space for sorting outlines"
+    padding_values = [
+        float(value)
+        for value in re.findall(r"(?:^|\s)(\d+(?:\.\d+)?)px", grid_padding.group(1))
+    ]
+    assert len(padding_values) in (1, 2, 3, 4)
+    if len(padding_values) == 1:
+        padding_top = padding_right = padding_bottom = padding_left = padding_values[0]
+    elif len(padding_values) == 2:
+        padding_top = padding_bottom = padding_values[0]
+        padding_right = padding_left = padding_values[1]
+    elif len(padding_values) == 3:
+        padding_top, padding_right, padding_bottom = padding_values
+        padding_left = padding_right
+    else:
+        padding_top, padding_right, padding_bottom, padding_left = padding_values
+    assert padding_top >= 6
+    assert padding_right >= 6
+    assert padding_left >= 6
+    assert padding_bottom >= 6
+
+    card_rule = re.search(r"\.meme-card\s*\{(?:(?!\}).)*?\}", index_css, re.DOTALL)
+    assert card_rule, "meme card base styles must remain locally inspectable"
+    assert re.search(r"outline\s*:\s*0\s+solid\s+transparent", card_rule.group(0))
+    assert re.search(r"outline-offset\s*:\s*3px", card_rule.group(0))
+    transition = re.search(r"transition\s*:\s*([^;]+)", card_rule.group(0))
+    assert transition, "meme card transitions must remain locally inspectable"
+    transition_value = transition.group(1)
+    for property_name in ("transform", "outline-color", "outline-width"):
+        assert re.search(rf"\b{property_name}\s+var\(--transition\)", transition_value)
+
+    render_grid = re.search(
+        r"function renderGrid\(\)\s*\{(?:(?!\n\}).)*\n\}", index_js, re.DOTALL
+    )
+    assert render_grid, "renderGrid must remain locally inspectable"
+    render_grid_body = render_grid.group(0)
+    assert re.search(r"const\s+sortEnabled\s*=\s*canReorderMemes\(\)", render_grid_body)
+    remove_sort = re.search(
+        r"grid\.classList\.remove\(\s*['\"]sort-enabled['\"]\s*\)",
+        render_grid_body,
+    )
+    clear_grid = re.search(r"grid\.innerHTML\s*=\s*['\"]['\"]", render_grid_body)
+    assert remove_sort and clear_grid
+    assert remove_sort.start() < clear_grid.start()
+
+    animation = re.search(
+        r"requestAnimationFrame\(\s*\(\)\s*=>\s*\{(?P<body>.*?)\}\s*\)\s*;",
+        render_grid_body,
+        re.DOTALL,
+    )
+    assert animation, "sorting state must be applied in requestAnimationFrame"
+    animation_body = animation.group("body")
+    assert re.search(
+        r"if\s*\(\s*renderToken\s*!==\s*gridRenderToken\s*\)\s*return\s*;",
+        animation_body,
+    ), "stale render callbacks must be ignored"
+    assert re.search(
+        r"grid\.classList\.toggle\(\s*['\"]sort-enabled['\"]\s*,\s*sortEnabled\s*\)",
+        animation_body,
+    )
+
+    normal_card_selector = (
+        "#meme-grid.sort-enabled .meme-card:not(.folder-card):not(.dragging)"
+    )
+    sorting_rule = re.search(
+        re.escape(normal_card_selector) + r"\s*\{(?:(?!\}).)*?\}",
+        index_css,
+        re.DOTALL,
+    )
+    assert (
+        sorting_rule
+    ), "sorting feedback must target only ordinary, non-dragging cards"
+    assert re.search(r"transform\s*:\s*scale\(0\.95\)", sorting_rule.group(0))
+    assert re.search(
+        r"outline\s*:\s*3px\s+solid\s+var\(--border-light\)", sorting_rule.group(0)
+    )
+    assert re.search(r"outline-offset\s*:\s*[^;]+", sorting_rule.group(0))
+
+    shake_selector = (
+        "#meme-grid.sort-enabled:not(.drag-active) "
+        ".meme-card:not(.folder-card):not(.dragging):not(.sort-enter)"
+    )
+    shake_rule = re.search(
+        re.escape(shake_selector) + r"\s*\{(?:(?!\}).)*?\}",
+        index_css,
+        re.DOTALL,
+    )
+    assert shake_rule, "sorting shake must exclude drag, FLIP, folder, and entry states"
+    assert re.search(r"animation\s*:\s*sort-shake\s+[^;]+", shake_rule.group(0))
+    assert "transform" not in shake_rule.group(0), (
+        "sorting shake must use the independent rotate property so it cannot replace "
+        "drag or FLIP transforms"
+    )
+    shake_keyframes = re.search(
+        r"@keyframes\s+sort-shake\s*\{(?P<body>.*?)\n\}",
+        index_css,
+        re.DOTALL,
+    )
+    assert shake_keyframes, "sorting shake must define named keyframes"
+    assert re.search(r"rotate\s*:\s*-?0\.75deg", shake_keyframes.group("body"))
+    assert re.search(r"rotate\s*:\s*0\.75deg", shake_keyframes.group("body"))
+    reduced_motion = re.search(
+        r"@media\s*\(prefers-reduced-motion\s*:\s*reduce\)\s*\{(?P<body>.*?)\n\}",
+        index_css,
+        re.DOTALL,
+    )
+    assert reduced_motion, "sorting shake must respect reduced-motion preferences"
+    assert shake_selector in reduced_motion.group("body")
+    assert re.search(r"animation\s*:\s*none", reduced_motion.group("body"))
+    assert re.search(r"rotate\s*:\s*0deg", reduced_motion.group("body"))
+
+    toggle_sort = re.search(
+        r"function toggleDragSort\(\)\s*\{(?P<body>.*?)\n\}",
+        index_js,
+        re.DOTALL,
+    )
+    assert toggle_sort, "toolbar sort toggle must remain locally inspectable"
+    toggle_sort_body = toggle_sort.group("body")
+    assert re.search(r"if\s*\(\s*dragSortEnabled\s*\)", toggle_sort_body)
+    enable_branch = re.search(
+        r"if\s*\(\s*dragSortEnabled\s*\)\s*\{(?P<body>.*?)\}",
+        toggle_sort_body,
+        re.DOTALL,
+    )
+    assert enable_branch, "enabling sort must have a distinct branch"
+    assert re.search(r"refreshMemes\s*\(\s*\)", enable_branch.group("body"))
+
+    disable_branch = toggle_sort_body[enable_branch.end() :]
+    assert not re.search(r"refreshMemes\s*\(\s*\)", disable_branch)
+    assert not re.search(r"grid\.innerHTML\s*=", disable_branch)
+    assert re.search(r"\+\+\s*gridRenderToken", disable_branch)
+    disable_animation = re.search(
+        r"requestAnimationFrame\(\s*\(\)\s*=>\s*\{(?P<body>.*?)\}\s*\)",
+        disable_branch,
+        re.DOTALL,
+    )
+    assert disable_animation, "disabling sort must defer exit feedback removal"
+    disable_animation_body = disable_animation.group("body")
+    assert re.search(
+        r"if\s*\(\s*\w+\s*!==\s*gridRenderToken\s*\|\|\s*dragSortEnabled\s*\)\s*return\s*;",
+        disable_animation_body,
+    )
+    assert re.search(
+        r"grid\.classList\.remove\(\s*['\"]sort-enabled['\"]\s*\)",
+        disable_animation_body,
+    )
+
+    sort_enter_selector = (
+        "#meme-grid.sort-enabled .meme-card.sort-enter:not(.folder-card):not(.dragging)"
+    )
+    sort_enter_rule = re.search(
+        re.escape(sort_enter_selector) + r"\s*\{(?:(?!\}).)*?\}",
+        index_css,
+        re.DOTALL,
+    )
+    assert (
+        sort_enter_rule
+    ), "pagination entry feedback must have a matching CSS baseline"
+    assert re.search(r"transform\s*:\s*scale\(1\)", sort_enter_rule.group(0))
+    assert re.search(r"outline\s*:\s*0\s+solid\s+transparent", sort_enter_rule.group(0))
+    assert re.search(r"outline-offset\s*:\s*3px", sort_enter_rule.group(0))
+
+    load_more = re.search(
+        r"async function loadMoreMemes\(\)\s*\{.*?\n\}\s*\n\s*"
+        r"async function refreshTags",
+        index_js,
+        re.DOTALL,
+    )
+    assert load_more, "pagination loader must remain locally inspectable"
+    load_more_body = load_more.group(0)
+    assert re.search(r"if\s*\(\s*sortEnabled\s*\)\s*cards\.forEach\(", load_more_body)
+    assert re.search(
+        r"cards\.forEach\(\s*card\s*=>\s*card\.classList\.add\(\s*['\"]sort-enter['\"]\s*\)\s*\)",
+        load_more_body,
+    )
+    assert re.search(
+        r"requestAnimationFrame\(\s*\(\)\s*=>\s*\{\s*cards\.forEach\(\s*card\s*=>\s*card\.classList\.remove\(\s*['\"]sort-enter['\"]\s*\)\s*\)\s*;?\s*\}\s*\)",
+        load_more_body,
+        re.DOTALL,
+    )
+    layout_read = (
+        r"(?:getBoundingClientRect\(\)|offset(?:Width|Height)|client(?:Width|Height))"
+    )
+    pagination_append = re.search(
+        r"cards\.forEach\(\s*card\s*=>\s*grid\.appendChild\(\s*card\s*\)\s*\)",
+        load_more_body,
+    )
+    pagination_animation = re.search(r"requestAnimationFrame\(", load_more_body)
+    assert pagination_append and pagination_animation
+    assert re.search(
+        layout_read,
+        load_more_body[pagination_append.end() : pagination_animation.start()],
+    ), "pagination sort baseline must commit layout before requestAnimationFrame"
+
+    drag_scales = [
+        float(scale)
+        for scale in re.findall(
+            r"d\.card\.style\.transform\s*=\s*['\"][^'\"]*?translate\([^)]*\)\s*"
+            r"scale\((0?\.\d+)\)",
+            index_js,
+        )
+    ]
+    assert drag_scales == [0.90, 0.90]
+    assert re.search(
+        r"c\.style\.transform\s*=\s*[^;]+?scale\(0\.95\)",
+        index_js,
+    ), "FLIP displacement must preserve the sorting-mode baseline scale"
+    assert not re.search(r"scale\([^)]*\)\s*scale\(", index_js)
+    assert (
+        "#meme-grid.drag-active .meme-card:not(.folder-card):not(.dragging)"
+        in index_css
+    )
+
+    grid_metrics = re.search(
+        r"function gridMetrics\(\)\s*\{(?:(?!\n\}).)*\n\}", index_js, re.DOTALL
+    )
+    assert grid_metrics, "grid slot metrics must remain locally inspectable"
+    assert "offsetWidth" in grid_metrics.group(0)
+    assert "offsetHeight" in grid_metrics.group(0), (
+        "grid slot geometry must use untransformed layout dimensions so sorting scale "
+        "cannot shift drag insertion slots"
+    )
+    grid_metrics_body = grid_metrics.group(0)
+    assert re.search(r"getComputedStyle\(\s*grid\s*\)", grid_metrics_body)
+    assert re.search(r"padding(?:Left|Right)", grid_metrics_body)
+    assert re.search(
+        r"(?:grid\.clientWidth|(?:gRect|gridRect)\.width)\s*-\s*"
+        r"[^;]*padding(?:Left|left)[^;]*padding(?:Right|right)",
+        grid_metrics_body,
+    ), "grid columns must use usable width after computed horizontal padding"
+
+    grid_slot = re.search(
+        r"function gridSlotIndex\(x, y\)\s*\{(?:(?!\n\}).)*\n\}",
+        index_js,
+        re.DOTALL,
+    )
+    assert grid_slot, "grid slot index must remain locally inspectable"
+    grid_slot_body = grid_slot.group(0)
+    assert "originX" in grid_metrics_body and "originY" in grid_metrics_body
+    assert re.search(r"x\s*-\s*originX", grid_slot_body)
+    assert re.search(r"y\s*-\s*originY", grid_slot_body)
+    assert not re.search(r"gRect\.left|gRect\.top", grid_slot_body)
+
+    initial_append = re.search(
+        r"memes\.forEach\(\s*m\s*=>\s*grid\.appendChild\(\s*renderMemeCard\(\s*m\s*\)\s*\)\s*\)",
+        render_grid_body,
+    )
+    initial_animation = re.search(r"requestAnimationFrame\(", render_grid_body)
+    assert initial_append and initial_animation
+    assert re.search(
+        layout_read,
+        render_grid_body[initial_append.end() : initial_animation.start()],
+    ), "initial sort baseline must commit layout before requestAnimationFrame"
 
 
 def test_webui_safe_serve_filename():
