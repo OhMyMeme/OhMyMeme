@@ -293,4 +293,4 @@ Windows 上 GIF 复制同时写入三个剪贴板格式：`CF_DIB`（首帧 BMP�
 
 ## 许可证
 
-MIT
+GPL-3.0
