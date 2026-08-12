@@ -522,8 +522,12 @@ async function copyMeme(id, filename) {
   if (ignoreClick) { ignoreClick = false; return; }
   if (copyPending) return;
   copyPending = true;
-  const result = await api('copy_meme', id);
-  copyPending = false;
+  let result;
+  try {
+    result = await api('copy_meme', id);
+  } finally {
+    copyPending = false;
+  }
   if (result?.ok) {
     if (result.status === 'copy_scheduled') {
       showToast(filename + ' 已复制，正在尝试粘贴');
