@@ -422,7 +422,10 @@ class JsApi:
         try:
             from .native_drag import start_native_drag as _start
 
-            return bool(_start(p))
+            ok = bool(_start(p))
+            if ok:
+                self._webui.schedule_hide()
+            return ok
         except Exception:
             return False
 
@@ -2083,6 +2086,7 @@ class WebUI:
         self._visible = False
         self._started = False
         self._pending_hide = False
+        self._hotkey_session = False
         self._on_hotkey_change_cb = None
         self._update_debug = update_debug
         self._silent_start = silent_start
@@ -2191,6 +2195,7 @@ class WebUI:
 
     def hide(self):
         self._visible = False
+        self._hotkey_session = False
         if self._window:
             try:
                 self._save_window_position()
@@ -2225,8 +2230,11 @@ class WebUI:
             except Exception as e:
                 logger.warning("hotkey window move error: %s", e)
         self.show()
+        self._hotkey_session = True
 
     def schedule_hide(self):
+        if not self._hotkey_session:
+            return
         self._pending_hide = True
         if self._window:
             self._run_on_gui(0.1, self._process_pending_hide)

@@ -523,7 +523,6 @@ async function copyMeme(id, filename) {
   const ok = await api('copy_meme', id);
   if (ok) {
     showToast(filename + ' 已复制');
-    setTimeout(hide, 300);
     if (activeCollection === -3) refreshMemes();
     refreshCollections();
   }
