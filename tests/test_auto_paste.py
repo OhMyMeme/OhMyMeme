@@ -208,6 +208,137 @@ def test_copy_meme_without_target_keeps_copy_only(monkeypatch):
     assert api.get_last_copy_result(1) == result
 
 
+def test_copy_meme_reports_deferred_paste_failure(monkeypatch):
+    import src.webui as webui_module
+
+    ui = _fake_webui(enabled=True)
+    ui._paste_target = 123
+    api = ui._api
+    api._cfg = ui._cfg
+    api._db = _FakeDB()
+    monkeypatch.setattr(api, "_find_meme_file", lambda _name: "meme.png")
+    monkeypatch.setattr(webui_module, "copy_image_to_clipboard", lambda _path: True)
+    monkeypatch.setattr("src.platform_util.try_paste_into_window", lambda _hwnd: False)
+
+    assert api.copy_meme(1) == {
+        "ok": True,
+        "status": "copy_scheduled",
+        "operation_id": 1,
+    }
+    ui._process_pending_hide()
+
+    assert api.get_last_copy_result(1) == {
+        "ok": False,
+        "status": "paste_failed",
+        "operation_id": 1,
+    }
+
+
+def test_copy_meme_reports_deferred_paste_exception(monkeypatch):
+    import src.webui as webui_module
+
+    ui = _fake_webui(enabled=True)
+    ui._paste_target = 123
+    api = ui._api
+    api._cfg = ui._cfg
+    api._db = _FakeDB()
+    monkeypatch.setattr(api, "_find_meme_file", lambda _name: "meme.png")
+    monkeypatch.setattr(webui_module, "copy_image_to_clipboard", lambda _path: True)
+
+    def raise_paste_error(_hwnd):
+        raise RuntimeError("paste failed")
+
+    monkeypatch.setattr("src.platform_util.try_paste_into_window", raise_paste_error)
+
+    assert api.copy_meme(1) == {
+        "ok": True,
+        "status": "copy_scheduled",
+        "operation_id": 1,
+    }
+    ui._process_pending_hide()
+
+    assert api.get_last_copy_result(1) == {
+        "ok": False,
+        "status": "paste_failed",
+        "operation_id": 1,
+    }
+
+
+def test_copy_meme_returns_copy_failed_for_missing_row(monkeypatch):
+    import src.webui as webui_module
+
+    ui = _fake_webui(enabled=True)
+    api = ui._api
+    api._cfg = ui._cfg
+    api._db = _FakeDB()
+    monkeypatch.setattr(
+        webui_module,
+        "copy_image_to_clipboard",
+        lambda _path: pytest.fail("missing row must not copy"),
+    )
+
+    assert api.copy_meme(999) == {"ok": False, "status": "copy_failed"}
+    assert api._db.recorded == []
+
+
+def test_copy_meme_returns_copy_failed_for_missing_file(monkeypatch):
+    import src.webui as webui_module
+
+    ui = _fake_webui(enabled=True)
+    api = ui._api
+    api._cfg = ui._cfg
+    api._db = _FakeDB()
+    monkeypatch.setattr(api, "_find_meme_file", lambda _name: "")
+    monkeypatch.setattr(
+        webui_module,
+        "copy_image_to_clipboard",
+        lambda _path: pytest.fail("missing file must not copy"),
+    )
+
+    assert api.copy_meme(1) == {"ok": False, "status": "copy_failed"}
+    assert api._db.recorded == []
+
+
+def test_copy_meme_returns_copy_failed_when_clipboard_copy_fails(monkeypatch):
+    import src.webui as webui_module
+
+    ui = _fake_webui(enabled=True)
+    api = ui._api
+    api._cfg = ui._cfg
+    api._db = _FakeDB()
+    monkeypatch.setattr(api, "_find_meme_file", lambda _name: "meme.png")
+    monkeypatch.setattr(webui_module, "copy_image_to_clipboard", lambda _path: False)
+
+    assert api.copy_meme(1) == {"ok": False, "status": "copy_failed"}
+    assert api._db.recorded == []
+
+
+def test_copy_meme_rejects_a_second_copy_until_pending_paste_finishes(monkeypatch):
+    import src.webui as webui_module
+
+    ui = _fake_webui(enabled=True)
+    ui._paste_target = 123
+    api = ui._api
+    api._cfg = ui._cfg
+    api._db = _FakeDB()
+    copied = []
+    monkeypatch.setattr(api, "_find_meme_file", lambda _name: "meme.png")
+    monkeypatch.setattr(
+        webui_module,
+        "copy_image_to_clipboard",
+        lambda path: copied.append(path) or True,
+    )
+    monkeypatch.setattr("src.platform_util.try_paste_into_window", lambda _hwnd: True)
+
+    assert api.copy_meme(1)["status"] == "copy_scheduled"
+    assert api.copy_meme(1) == {"ok": False, "status": "copy_busy"}
+    assert copied == ["meme.png"]
+
+    ui._process_pending_hide()
+
+    assert api.copy_meme(1)["status"] == "copied"
+
+
 def test_settings_api_returns_and_resets_auto_paste(monkeypatch):
     from src.webui import SettingsApi
 

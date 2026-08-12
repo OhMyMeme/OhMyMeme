@@ -1,5 +1,6 @@
 """平台工具 - 开机自启、系统相关"""
 
+import logging
 import os
 import platform
 import subprocess
@@ -7,6 +8,7 @@ import sys
 from pathlib import Path
 
 APP_NAME = "OhMyMeme"
+logger = logging.getLogger(__name__)
 
 
 def _get_windows_user32():
@@ -106,7 +108,8 @@ def try_paste_into_window(hwnd):
             input_type(1, input_union(ki=keybdinput(0x11, 0, 0x0002, 0, 0))),
         )
         return user32.SendInput(4, inputs, ctypes.sizeof(input_type)) == 4
-    except Exception:
+    except Exception as e:
+        logger.warning("auto paste input error: %s", e)
         return False
 
 

@@ -434,20 +434,28 @@ class JsApi:
         path = self._find_meme_file(row["filename"])
         if not path:
             return {"ok": False, "status": "copy_failed"}
+        if not self._webui.begin_copy():
+            return {"ok": False, "status": "copy_busy"}
+        scheduled = False
         resize_mode = int(self._cfg.get("copy_resize_mode", 1) or 0)
         resize_max = int(self._cfg.get("copy_resize_max", 200) or 200)
-        match resize_mode:
-            case 1:
-                path = convert_image_mode_1(path, resize_max) or path
-            case 2:
-                path = convert_image_mode_2(path, resize_max) or path
-            case 3:
-                path = convert_image_mode_3(path, resize_max) or path
-        ok = copy_image_to_clipboard(path)
-        if not ok:
-            return {"ok": False, "status": "copy_failed"}
-        self._db.record_use(meme_id)
-        return self._webui.schedule_copy_hide()
+        try:
+            match resize_mode:
+                case 1:
+                    path = convert_image_mode_1(path, resize_max) or path
+                case 2:
+                    path = convert_image_mode_2(path, resize_max) or path
+                case 3:
+                    path = convert_image_mode_3(path, resize_max) or path
+            ok = copy_image_to_clipboard(path)
+            if not ok:
+                return {"ok": False, "status": "copy_failed"}
+            self._db.record_use(meme_id)
+            scheduled = True
+            return self._webui.schedule_copy_hide()
+        finally:
+            if not scheduled:
+                self._webui.cancel_copy()
 
     def get_last_copy_result(self, operation_id: int) -> dict:
         return self._webui.get_last_copy_result(operation_id)
@@ -2094,6 +2102,8 @@ class WebUI:
         self._pending_paste_target = None
         self._pending_copy_operation_id = 0
         self._last_copy_result = {}
+        self._copy_lock = threading.Lock()
+        self._copy_pending = False
         self._on_hotkey_change_cb = None
         self._update_debug = update_debug
         self._silent_start = silent_start
@@ -2252,21 +2262,38 @@ class WebUI:
 
     def schedule_copy_hide(self):
         """安排复制后隐藏并按需自动粘贴"""
-        self._pending_copy_operation_id += 1
-        operation_id = self._pending_copy_operation_id
-        target = self._paste_target if self._cfg.get("auto_paste_meme", False) else None
-        self._paste_target = None
-        self._pending_paste_target = target
-        status = "copy_scheduled" if target else "copied"
-        result = {"ok": True, "status": status, "operation_id": operation_id}
-        self._last_copy_result = result
+        with self._copy_lock:
+            self._pending_copy_operation_id += 1
+            operation_id = self._pending_copy_operation_id
+            status = "copy_scheduled" if self._pending_paste_target else "copied"
+            result = {"ok": True, "status": status, "operation_id": operation_id}
+            self._last_copy_result = result
         self.schedule_hide()
         return result
 
+    def begin_copy(self):
+        """预留一次复制及其自动粘贴目标"""
+        with self._copy_lock:
+            if self._copy_pending:
+                return False
+            self._copy_pending = True
+            auto_paste_enabled = self._cfg.get("auto_paste_meme", False)
+            target = self._paste_target if auto_paste_enabled else None
+            self._paste_target = None
+            self._pending_paste_target = target
+            return True
+
+    def cancel_copy(self):
+        """取消未完成的复制操作"""
+        with self._copy_lock:
+            self._copy_pending = False
+            self._pending_paste_target = None
+
     def get_last_copy_result(self, operation_id):
         """返回指定复制操作的最近状态"""
-        if self._last_copy_result.get("operation_id") == operation_id:
-            return self._last_copy_result
+        with self._copy_lock:
+            if self._last_copy_result.get("operation_id") == operation_id:
+                return self._last_copy_result
         return {
             "ok": False,
             "status": "unknown_operation",
@@ -2277,18 +2304,27 @@ class WebUI:
         if self._pending_hide:
             self._pending_hide = False
             self.hide(clear_paste_target=False)
-            target = self._pending_paste_target
-            self._pending_paste_target = None
-            if target:
-                from .platform_util import try_paste_into_window
-
+            with self._copy_lock:
+                target = self._pending_paste_target
+                self._pending_paste_target = None
                 operation_id = self._pending_copy_operation_id
-                status = "pasted" if try_paste_into_window(target) else "paste_failed"
-                self._last_copy_result = {
-                    "ok": status == "pasted",
-                    "status": status,
-                    "operation_id": operation_id,
-                }
+            pasted = False
+            if target:
+                try:
+                    from .platform_util import try_paste_into_window
+
+                    pasted = try_paste_into_window(target)
+                except Exception as e:
+                    logger.warning("auto paste error: %s", e)
+            with self._copy_lock:
+                if target:
+                    status = "pasted" if pasted else "paste_failed"
+                    self._last_copy_result = {
+                        "ok": pasted,
+                        "status": status,
+                        "operation_id": operation_id,
+                    }
+                self._copy_pending = False
 
     def _run_on_gui(self, delay: float, func):
         """延时在 GUI 线程执行（pywebview Window 无 after 方法）"""
