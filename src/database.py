@@ -463,13 +463,17 @@ class MemeDB:
         sql = "SELECT m.* FROM memes m"
         if where:
             sql += " WHERE " + " AND ".join(where)
-        if collection_id is not None and isinstance(collection_id, int):
-            # 单分组内按 meme_collections.sort_order 排序（拖拽排序结果）
+
+        if collection_id is not None:
+            # 按主分组的 meme_collections.sort_order 排序（拖拽排序结果）
+            primary_cid = (
+                collection_id[0] if isinstance(collection_id, list) else collection_id
+            )
             sql += """ ORDER BY (
                 SELECT mc.sort_order FROM meme_collections mc
                 WHERE mc.meme_id = m.id AND mc.collection_id = ?
-            ) ASC, m.updated_at DESC LIMIT ? OFFSET ?"""
-            params.extend([collection_id, limit, offset])
+            ), m.id LIMIT ? OFFSET ?"""
+            params.extend([primary_cid, limit, offset])
         else:
             sql += " ORDER BY m.sort_order ASC, m.updated_at DESC LIMIT ? OFFSET ?"
             params.extend([limit, offset])

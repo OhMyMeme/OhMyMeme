@@ -82,16 +82,17 @@ body {
   color: var(--fg-secondary); flex-shrink: 0;
 }
 #sidebar-toggle {
-  position: fixed; left: 30px; bottom: 30px;
+  position: absolute; left: 180px; bottom: 30px;
   z-index: 100; background: var(--surface); border: 1px solid var(--border);
   color: var(--muted);
-  font-size: 18px; cursor: pointer;
+  font-size: 14px; cursor: pointer;
   width: 50px; height: 50px; padding: 0;
   border-radius: var(--radius);
   transition: all var(--transition); box-shadow: var(--shadow);
   display: flex; align-items: center; justify-content: center;
 }
 #sidebar-toggle:hover { background: var(--surface-2); color: var(--accent); }
+#sidebar-toggle.collapsed { left: 0; }
 #tree { flex: 1; overflow-y: auto; scrollbar-width: thin; }
 #tree::-webkit-scrollbar { width: 5px; }
 #tree::-webkit-scrollbar-track { background: transparent; }
@@ -295,6 +296,7 @@ body {
 /* Folder cards */
 .meme-card.folder-card { cursor: pointer; border: 1px dashed var(--border-light); }
 .meme-card.folder-card:hover { border-color: var(--accent); background: var(--accent-muted) !important; }
+.meme-card.folder-card.drop-target { background: var(--accent-muted) !important; border-color: var(--accent) !important; }
 .meme-card.folder-card img { display: none; }
 .meme-card.folder-card .name { display: none; }
 

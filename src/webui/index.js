@@ -125,20 +125,22 @@ function toggleTag(tag) {
 }
 
 let expandedNodes = new Set();
-
-function expandAll(cols) {
-  if (!cols) return;
-  cols.forEach(c => {
-    if (c.children && c.children.length > 0) {
-      expandedNodes.add(c.id);
-      expandAll(c.children);
-    }
-  });
-}
+let initialLoadDone = false;
 
 async function refreshCollections() {
   try { collections = await api('get_collections') || []; } catch(e) { collections = []; }
-  expandAll(collections);
+  if (!initialLoadDone) {
+    /* 首次加载：展开所有有子分组的节点 */
+    (function expandAll(items) {
+      items.forEach(c => {
+        if (c.children && c.children.length > 0) {
+          expandedNodes.add(c.id);
+          expandAll(c.children);
+        }
+      });
+    })(collections);
+    initialLoadDone = true;
+  }
   renderTree();
 }
 
@@ -146,11 +148,11 @@ function renderTree() {
   const tree = document.getElementById('tree');
   tree.innerHTML = '';
   collections.forEach(c => {
-    tree.appendChild(renderTreeNode(c, 0));
+    tree.appendChild(renderTreeNode(c));
   });
 }
 
-function renderTreeNode(c, depth) {
+function renderTreeNode(c) {
   const hasChildren = c.children && c.children.length > 0;
   const isActive = activeCollection === c.id;
   const isExpanded = expandedNodes.has(c.id);
@@ -160,7 +162,6 @@ function renderTreeNode(c, depth) {
 
   const row = document.createElement('div');
   row.className = 'tree-row' + (isActive ? ' active' : '');
-  row.style.paddingLeft = (4 + depth * 12) + 'px';
 
   const toggle = document.createElement('span');
   toggle.className = 'tree-toggle' + (hasChildren ? (isExpanded ? ' expanded' : '') : ' leaf');
@@ -193,7 +194,7 @@ function renderTreeNode(c, depth) {
     const childrenWrap = document.createElement('div');
     childrenWrap.className = 'tree-children';
     c.children.forEach(child => {
-      childrenWrap.appendChild(renderTreeNode(child, depth + 1));
+      childrenWrap.appendChild(renderTreeNode(child));
     });
     node.appendChild(childrenWrap);
   }
@@ -232,6 +233,17 @@ function setupHoverPlay(card, img, memeId, filename) {
   card.addEventListener('mouseleave', () => { clearTimeout(hoverTimer); img.src = thumbUrl; });
 }
 
+function findCollection(items, id) {
+  for (const c of items) {
+    if (c.id === id) return c;
+    if (c.children) {
+      const found = findCollection(c.children, id);
+      if (found) return found;
+    }
+  }
+  return null;
+}
+
 function renderGrid() {
   const grid = document.getElementById('meme-grid');
   const empty = document.getElementById('empty');
@@ -239,7 +251,7 @@ function renderGrid() {
   const curCol = activeCollection && activeCollection > 0 ? activeCollection : null;
   let hasFolderCards = false;
   if (curCol) {
-    const parentCol = collections.find(c => c.id === curCol);
+    const parentCol = findCollection(collections, curCol);
     if (parentCol && parentCol.children) {
       hasFolderCards = parentCol.children.length > 0;
       parentCol.children.forEach(child => {
@@ -336,7 +348,7 @@ function canReorderMemes() {
   const q = document.getElementById('search').value.trim();
   if (q || activeTags.size > 0) return false;
   if (!dragSortEnabled) return false;
-  return activeCollection > 0 || activeCollection === -4;
+  return activeCollection > 0;
 }
 
 function memeCardsInGrid() {
@@ -437,7 +449,7 @@ function initDragReorder() {
 
   function clearFolderHighlight() {
     if (dropTargetFolder) {
-      dropTargetFolder.style.background = 'var(--surface)';
+      dropTargetFolder.classList.remove('drop-target');
       dropTargetFolder = null;
     }
   }
@@ -450,7 +462,7 @@ function initDragReorder() {
     if (folderCard) {
       clearFolderHighlight();
       dropTargetFolder = folderCard;
-      folderCard.style.background = 'var(--accent-muted)';
+      folderCard.classList.add('drop-target');
       return;
     }
     clearFolderHighlight();
@@ -1117,6 +1129,7 @@ function showTagEditor(memeId) {
       renderList(); renderSelected();
     }
 
+    input.addEventListener('input', renderList);
     input.addEventListener('keydown', (e) => {
       if (e.key === 'Enter') { e.preventDefault(); addFromInput(); }
     });
@@ -1564,7 +1577,8 @@ document.addEventListener('DOMContentLoaded', async () => {
   document.getElementById('loading').classList.remove('hidden');
   // 等待 pywebview 桥接就绪
   let retries = 0;
-  while (typeof pywebview === 'undefined' && retries < 50) {
+  while (typeof pywebview === 'undefined' || !pywebview.api) {
+    if (retries >= 50) break;
     await new Promise(r => setTimeout(r, 100));
     retries++;
   }

@@ -503,7 +503,7 @@ class JsApi:
         build_manifest()
         return True
 
-    def _get_collection_ids_recursive(self, collection_id: int) -> list:
+    def _get_collection_ids_recursive(self, collection_id):
         """递归获取分组及其所有子分组的 ID 列表"""
         ids = [collection_id]
         children = self._db.get_child_collections(collection_id)
@@ -511,16 +511,16 @@ class JsApi:
             ids.extend(self._get_collection_ids_recursive(child["id"]))
         return ids
 
-    def _build_collection_tree(self, parent_id=None) -> list:
+    def _build_collection_tree(self, parent_id=None):
         raw = self._db.get_collections()
         result = []
         for cid, name, pid, _ in raw:
             if pid != parent_id:
                 continue
-            cnt = self._db.count(collection_id=cid)
             children = self._build_collection_tree(parent_id=cid)
-            child_cnt = sum(c.get("count", 0) for c in children)
-            item = {"id": cid, "name": name, "count": cnt + child_cnt}
+            all_ids = self._get_collection_ids_recursive(cid)
+            cnt = self._db.count(collection_id=all_ids)
+            item = {"id": cid, "name": name, "count": cnt}
             if children:
                 item["children"] = children
             result.append(item)
