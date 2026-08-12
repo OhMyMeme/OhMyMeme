@@ -128,8 +128,9 @@ let expandedNodes = new Set();
 let initialLoadDone = false;
 
 async function refreshCollections() {
-  try { collections = await api('get_collections') || []; } catch(e) { collections = []; }
-  if (!initialLoadDone) {
+  let ok = true;
+  try { collections = await api('get_collections') || []; } catch(e) { collections = []; ok = false; }
+  if (!initialLoadDone && ok && collections.length > 0) {
     /* 首次加载：展开所有有子分组的节点 */
     (function expandAll(items) {
       items.forEach(c => {
@@ -457,13 +458,15 @@ function initDragReorder() {
   const onMove = (e) => {
     const d = memeDrag;
     if (!d) return;
-    const elem = document.elementFromPoint(e.clientX, e.clientY);
-    const folderCard = elem && elem.closest && elem.closest('.folder-card');
-    if (folderCard) {
-      clearFolderHighlight();
-      dropTargetFolder = folderCard;
-      folderCard.classList.add('drop-target');
-      return;
+    if (!d.natDrag) {
+      const elem = document.elementFromPoint(e.clientX, e.clientY);
+      const folderCard = elem && elem.closest && elem.closest('.folder-card');
+      if (folderCard) {
+        clearFolderHighlight();
+        dropTargetFolder = folderCard;
+        folderCard.classList.add('drop-target');
+        return;
+      }
     }
     clearFolderHighlight();
     // 排序关闭：检测移动阈值后启动原生拖拽（QQ/微信真实文件）
@@ -1576,11 +1579,8 @@ document.addEventListener('DOMContentLoaded', async () => {
   });
   document.getElementById('loading').classList.remove('hidden');
   // 等待 pywebview 桥接就绪
-  let retries = 0;
   while (typeof pywebview === 'undefined' || !pywebview.api) {
-    if (retries >= 50) break;
     await new Promise(r => setTimeout(r, 100));
-    retries++;
   }
   const data = await api('get_init_data');
   if (data) {
