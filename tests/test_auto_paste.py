@@ -1,5 +1,3 @@
-"""自动粘贴表情测试"""
-
 import ctypes
 import platform
 import sys
@@ -41,6 +39,7 @@ class _FakeWindow:
         self.calls.append("hide")
 
 
+# 构造可控的 WebUI 测试实例
 def _fake_webui(enabled=False):
     from src.webui import WebUI
 
@@ -53,6 +52,7 @@ def _fake_webui(enabled=False):
     return ui
 
 
+# 验证自动粘贴配置默认值和持久化
 def test_config_auto_paste_defaults_false_and_persists(tmp_path):
     from src.config import Config
 
@@ -65,6 +65,7 @@ def test_config_auto_paste_defaults_false_and_persists(tmp_path):
     assert Config(tmp_path / "config.json").get("auto_paste_meme") is True
 
 
+# 验证非 Windows 平台拒绝自动粘贴
 def test_try_paste_rejects_non_windows(monkeypatch):
     from src import platform_util
 
@@ -72,6 +73,7 @@ def test_try_paste_rejects_non_windows(monkeypatch):
     assert platform_util.try_paste_into_window(123) is False
 
 
+# 验证前台窗口变化时不发送粘贴键
 def test_try_paste_requires_same_foreground_window(monkeypatch):
     from src import platform_util
 
@@ -90,6 +92,7 @@ def test_try_paste_requires_same_foreground_window(monkeypatch):
     assert platform_util.try_paste_into_window(123) is False
 
 
+# 验证自动粘贴仅发送完整 Ctrl+V 键序列
 def test_try_paste_sends_only_ctrl_v_and_requires_all_events(monkeypatch):
     from src import platform_util
 
@@ -124,6 +127,7 @@ def test_try_paste_sends_only_ctrl_v_and_requires_all_events(monkeypatch):
     assert 0x0D not in sent
 
 
+# 验证隐藏窗口由热键打开时才保存粘贴目标
 def test_hotkey_captures_target_only_when_enabled_and_hidden(monkeypatch):
     from src import platform_util
 
@@ -137,6 +141,7 @@ def test_hotkey_captures_target_only_when_enabled_and_hidden(monkeypatch):
     assert ui._paste_target is None
 
 
+# 验证关闭自动粘贴时不读取前台窗口
 def test_hotkey_does_not_capture_when_auto_paste_is_disabled(monkeypatch):
     from src import platform_util
 
@@ -150,6 +155,7 @@ def test_hotkey_does_not_capture_when_auto_paste_is_disabled(monkeypatch):
     assert ui._paste_target is None
 
 
+# 验证托盘会话清除热键粘贴目标
 def test_tray_session_clears_hotkey_target():
     ui = _fake_webui(enabled=True)
     ui._paste_target = 123
@@ -159,6 +165,7 @@ def test_tray_session_clears_hotkey_target():
     assert ui._paste_target is None
 
 
+# 验证热键会话复制后隐藏并粘贴到原窗口
 def test_copy_meme_hides_then_pastes_captured_target(monkeypatch):
     import src.webui as webui_module
 
@@ -189,6 +196,7 @@ def test_copy_meme_hides_then_pastes_captured_target(monkeypatch):
     }
 
 
+# 验证没有目标窗口时仅复制不注入按键
 def test_copy_meme_without_target_keeps_copy_only(monkeypatch):
     import src.webui as webui_module
 
@@ -209,6 +217,7 @@ def test_copy_meme_without_target_keeps_copy_only(monkeypatch):
     assert api.get_last_copy_result(1) == result
 
 
+# 验证延迟粘贴失败状态
 def test_copy_meme_reports_deferred_paste_failure(monkeypatch):
     import src.webui as webui_module
 
@@ -236,6 +245,7 @@ def test_copy_meme_reports_deferred_paste_failure(monkeypatch):
     }
 
 
+# 验证延迟粘贴异常状态
 def test_copy_meme_reports_deferred_paste_exception(monkeypatch):
     import src.webui as webui_module
 
@@ -248,6 +258,7 @@ def test_copy_meme_reports_deferred_paste_exception(monkeypatch):
     monkeypatch.setattr(api, "_find_meme_file", lambda _name: "meme.png")
     monkeypatch.setattr(webui_module, "copy_image_to_clipboard", lambda _path: True)
 
+    # 模拟粘贴注入异常
     def raise_paste_error(_hwnd):
         raise RuntimeError("paste failed")
 
@@ -267,6 +278,7 @@ def test_copy_meme_reports_deferred_paste_exception(monkeypatch):
     }
 
 
+# 验证缺少表情记录时复制失败
 def test_copy_meme_returns_copy_failed_for_missing_row(monkeypatch):
     import src.webui as webui_module
 
@@ -284,6 +296,7 @@ def test_copy_meme_returns_copy_failed_for_missing_row(monkeypatch):
     assert api._db.recorded == []
 
 
+# 验证缺少表情文件时复制失败
 def test_copy_meme_returns_copy_failed_for_missing_file(monkeypatch):
     import src.webui as webui_module
 
@@ -302,6 +315,7 @@ def test_copy_meme_returns_copy_failed_for_missing_file(monkeypatch):
     assert api._db.recorded == []
 
 
+# 验证写入剪贴板失败时返回复制失败
 def test_copy_meme_returns_copy_failed_when_clipboard_copy_fails(monkeypatch):
     import src.webui as webui_module
 
@@ -316,6 +330,7 @@ def test_copy_meme_returns_copy_failed_when_clipboard_copy_fails(monkeypatch):
     assert api._db.recorded == []
 
 
+# 验证待粘贴完成前拒绝重复复制
 def test_copy_meme_rejects_a_second_copy_until_pending_paste_finishes(monkeypatch):
     import src.webui as webui_module
 
@@ -343,6 +358,7 @@ def test_copy_meme_rejects_a_second_copy_until_pending_paste_finishes(monkeypatc
     assert api.copy_meme(1)["status"] == "copied"
 
 
+# 验证设置接口返回并重置自动粘贴开关
 def test_settings_api_returns_and_resets_auto_paste(monkeypatch):
     from src.webui import SettingsApi
 

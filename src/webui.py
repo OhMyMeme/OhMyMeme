@@ -431,7 +431,7 @@ class JsApi:
         except Exception:
             return False
 
-    def copy_meme(self, meme_id: int) -> dict:
+    def copy_meme(self, meme_id):
         # 复制表情到剪贴板；copy_resize_mode: 0不处理 1webp缩放 2转gif 3转gif隐写原图
         row = self._db.get_by_id(meme_id)
         if not row:
@@ -462,7 +462,7 @@ class JsApi:
             if not scheduled:
                 self._webui.cancel_copy()
 
-    def get_last_copy_result(self, operation_id: int) -> dict:
+    def get_last_copy_result(self, operation_id):
         return self._webui.get_last_copy_result(operation_id)
 
     def toggle_favorite(self, meme_id: int) -> bool:
@@ -506,14 +506,15 @@ class JsApi:
         build_manifest()
         return True
 
+    # 递归获取分组及其所有子分组的 ID 列表
     def _get_collection_ids_recursive(self, collection_id):
-        """递归获取分组及其所有子分组的 ID 列表"""
         ids = [collection_id]
         children = self._db.get_child_collections(collection_id)
         for child in children:
             ids.extend(self._get_collection_ids_recursive(child["id"]))
         return ids
 
+    # 构建嵌套分组树并统计各分组成员数
     def _build_collection_tree(self, parent_id=None):
         raw = self._db.get_collections()
         result = []
@@ -2212,6 +2213,7 @@ class WebUI:
             logger.warning("hotkey window position error: %s", e)
             return None
 
+    # 显示主窗口并清理非热键会话状态
     def show(self):
         self._visible = True
         self._hotkey_session = False
