@@ -368,7 +368,7 @@ body {
 }
 .icon-btn:hover { background: var(--surface-2); }
 .icon-btn:active { transform: scale(0.93); }
-.icon-btn svg { width: 16px; height: 16px; display: block; }
+.icon-btn svg { width: 16px; height: 16px; display: block; pointer-events: none; }
 .icon-btn svg path { fill: var(--muted); transition: fill var(--transition); }
 .icon-btn:hover svg path { fill: var(--fg); }
 
