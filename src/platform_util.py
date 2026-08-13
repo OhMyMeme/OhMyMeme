@@ -19,6 +19,8 @@ def _get_windows_user32():
     user32 = ctypes.WinDLL("user32", use_last_error=True)
     user32.GetForegroundWindow.argtypes = ()
     user32.GetForegroundWindow.restype = wintypes.HWND
+    user32.SetForegroundWindow.argtypes = (wintypes.HWND,)
+    user32.SetForegroundWindow.restype = wintypes.BOOL
     user32.IsWindow.argtypes = (wintypes.HWND,)
     user32.IsWindow.restype = wintypes.BOOL
     return user32
@@ -81,7 +83,7 @@ def capture_foreground_window():
 
 
 def try_paste_into_window(hwnd):
-    """确认目标仍在前台后向其发送一次 Ctrl+V"""
+    """恢复捕获窗口前台后向其发送一次 Ctrl+V"""
     if platform.system() != "Windows" or not hwnd:
         return False
     try:
@@ -91,6 +93,8 @@ def try_paste_into_window(hwnd):
         user32 = _get_windows_user32()
         if not user32.IsWindow(hwnd):
             return False
+        if user32.GetForegroundWindow() != hwnd:
+            user32.SetForegroundWindow(hwnd)
         if user32.GetForegroundWindow() != hwnd:
             return False
         keybdinput, input_union, input_type = _input_types()

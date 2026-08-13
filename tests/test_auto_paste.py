@@ -78,11 +78,16 @@ def test_try_paste_requires_same_foreground_window(monkeypatch):
     from src import platform_util
 
     class User32:
+        foreground = 456
+
         def IsWindow(self, _hwnd):
             return True
 
+        def SetForegroundWindow(self, _hwnd):
+            return 0
+
         def GetForegroundWindow(self):
-            return 456
+            return self.foreground
 
         def SendInput(self, *_args):
             raise AssertionError("must not send to a changed foreground window")
@@ -90,6 +95,42 @@ def test_try_paste_requires_same_foreground_window(monkeypatch):
     monkeypatch.setattr(platform, "system", lambda: "Windows")
     monkeypatch.setattr(platform_util, "_get_windows_user32", lambda: User32())
     assert platform_util.try_paste_into_window(123) is False
+
+
+def test_try_paste_restores_captured_foreground_window(monkeypatch):
+    from src import platform_util
+
+    sent = []
+
+    class User32:
+        foreground = 456
+
+        def IsWindow(self, _hwnd):
+            return True
+
+        def SetForegroundWindow(self, hwnd):
+            self.foreground = hwnd
+            return 1
+
+        def GetForegroundWindow(self):
+            return self.foreground
+
+        def SendInput(self, count, inputs, _size):
+            sent.extend(inputs[index].ki.wVk for index in range(count))
+            return count
+
+    input_type = platform_util._input_types()[2]
+
+    monkeypatch.setattr(platform, "system", lambda: "Windows")
+    monkeypatch.setattr(platform_util, "_get_windows_user32", lambda: User32())
+    monkeypatch.setattr(
+        platform_util,
+        "_input_size",
+        lambda: ctypes.sizeof(input_type),
+    )
+
+    assert platform_util.try_paste_into_window(123) is True
+    assert sent == [0x11, 0x56, 0x56, 0x11]
 
 
 # 验证自动粘贴仅发送完整 Ctrl+V 键序列
