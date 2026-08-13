@@ -2,6 +2,7 @@
 
 import os
 import re
+import subprocess
 import sys
 from pathlib import Path
 
@@ -742,7 +743,6 @@ def test_sorting_visual_feedback_static_contract():
     assert re.search(r"x\s*-\s*originX", grid_slot_body)
     assert re.search(r"y\s*-\s*originY", grid_slot_body)
     assert not re.search(r"gRect\.left|gRect\.top", grid_slot_body)
-
     initial_append = re.search(
         r"memes\.forEach\(\s*m\s*=>\s*grid\.appendChild\(\s*renderMemeCard\(\s*m\s*\)\s*\)\s*\)",
         render_grid_body,
@@ -753,6 +753,89 @@ def test_sorting_visual_feedback_static_contract():
         layout_read,
         render_grid_body[initial_append.end() : initial_animation.start()],
     ), "initial sort baseline must commit layout before requestAnimationFrame"
+
+
+def test_grid_slot_hit_testing_stays_aligned_when_layout_moves_and_scrolls():
+    root = Path(__file__).resolve().parent.parent
+    probe = r"""
+const fs = require('fs');
+const vm = require('vm');
+
+const source = fs.readFileSync('src/webui/index.js', 'utf8');
+const start = source.indexOf('function memeCardsInGrid()');
+const end = source.indexOf('function moveInArray(', start);
+if (start < 0 || end < 0) throw new Error('drag geometry helpers not found');
+
+const folder = { classList: { contains: name => name === 'folder-card' } };
+const meme = () => ({
+  offsetWidth: 100,
+  offsetHeight: 80,
+  classList: { contains: () => false },
+});
+const memes = [meme(), meme(), meme(), meme(), meme()];
+const allCards = [folder, ...memes];
+const layout = { left: 200, top: 100 };
+const grid = {
+  clientLeft: 0,
+  clientTop: 0,
+  clientWidth: 340,
+  getBoundingClientRect: () => ({ left: layout.left, top: layout.top }),
+};
+folder.offsetLeft = 218;
+folder.offsetTop = 110;
+
+const context = {
+  document: {
+    getElementById: id => {
+      if (id !== 'meme-grid') throw new Error('unexpected element id: ' + id);
+      return grid;
+    },
+    querySelectorAll: selector => selector.includes(':not(.folder-card)') ? memes : allCards,
+  },
+  getComputedStyle: () => ({
+    paddingLeft: '10px',
+    paddingRight: '10px',
+    paddingTop: '10px',
+    columnGap: '10px',
+    rowGap: '20px',
+  }),
+};
+vm.createContext(context);
+vm.runInContext(source.slice(start, end), context);
+
+function assertSlot(label, x, y, expected) {
+  const actual = context.gridSlotIndex(x, y);
+  if (actual !== expected) {
+    throw new Error(label + ': expected meme index ' + expected + ', got ' + actual);
+  }
+}
+
+function assertVisibleSlots(label) {
+  const originX = layout.left + 10;
+  const originY = layout.top + 10;
+  assertSlot(label + ' first meme after folder', originX + 110 + 50, originY + 40, 0);
+  assertSlot(label + ' third meme on next row', originX + 50, originY + 100 + 40, 2);
+}
+
+assertVisibleSlots('expanded sidebar');
+layout.left = 20;
+assertVisibleSlots('collapsed sidebar');
+layout.top = -90;
+assertVisibleSlots('scrolled grid');
+assertSlot('head clamp', -1000, -1000, 0);
+assertSlot('tail clamp', 10000, 10000, 4);
+console.log('grid slot behavior: PASS');
+"""
+    result = subprocess.run(
+        ["node", "-e", probe],
+        cwd=root,
+        capture_output=True,
+        text=True,
+        timeout=10,
+        check=False,
+    )
+    assert result.returncode == 0, result.stderr
+    assert result.stdout.strip() == "grid slot behavior: PASS"
 
 
 def test_webui_safe_serve_filename():

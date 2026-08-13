@@ -390,19 +390,21 @@ function gridMetrics() {
   const gRect = grid.getBoundingClientRect();
   const cards = memeCardsInGrid();
   if (!cards.length) return null;
-  const allCards = Array.from(document.querySelectorAll('#meme-grid .meme-card'));
   const style = getComputedStyle(grid);
-  const gap = parseFloat(style.rowGap) || 10;
-  const first = allCards[0];
+  const paddingLeft = parseFloat(style.paddingLeft) || 0;
+  const paddingRight = parseFloat(style.paddingRight) || 0;
+  const paddingTop = parseFloat(style.paddingTop) || 0;
+  const columnGap = parseFloat(style.columnGap) || 0;
+  const rowGap = parseFloat(style.rowGap) || 0;
   const cardWidth = cards[0].offsetWidth;
   const cardHeight = cards[0].offsetHeight;
-  const contentWidth = grid.clientWidth - parseFloat(style.paddingLeft) - parseFloat(style.paddingRight);
+  const contentWidth = grid.clientWidth - paddingLeft - paddingRight;
   return {
-    originX: gRect.left + first.offsetLeft,
-    originY: gRect.top + first.offsetTop,
-    pitchX: cardWidth + gap,
-    pitchY: cardHeight + gap,
-    cols: Math.max(1, Math.round((contentWidth + gap) / (cardWidth + gap))),
+    originX: gRect.left + grid.clientLeft + paddingLeft,
+    originY: gRect.top + grid.clientTop + paddingTop,
+    pitchX: cardWidth + columnGap,
+    pitchY: cardHeight + rowGap,
+    cols: Math.max(1, Math.round((contentWidth + columnGap) / (cardWidth + columnGap))),
   };
 }
 
