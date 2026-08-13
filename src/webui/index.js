@@ -353,15 +353,18 @@ function renderMemeCard(m) {
  * Pointer Events + 指针捕获，网格感知插入点，FLIP 让位动画 */
 let memeDrag = null;
 let ignoreClick = false;
-let dragSortEnabled = true;
+let dragSortEnabled = false;
+
+function renderDragSortToggle() {
+  const btn = document.getElementById('drag-sort-toggle');
+  if (!btn) return;
+  btn.classList.toggle('sort-on', dragSortEnabled);
+  btn.classList.toggle('sort-off', !dragSortEnabled);
+}
 
 function toggleDragSort() {
   dragSortEnabled = !dragSortEnabled;
-  const btn = document.getElementById('drag-sort-toggle');
-  if (btn) {
-    btn.classList.toggle('sort-on', dragSortEnabled);
-    btn.classList.toggle('sort-off', !dragSortEnabled);
-  }
+  renderDragSortToggle();
   if (dragSortEnabled) {
     refreshMemes();
   } else {
@@ -1464,12 +1467,20 @@ async function syncDownload() {
 function hide() { try { pywebview.api.hide_window(); } catch(e) {} }
 function openSettings() { try { pywebview.api.open_settings(); } catch(e) {} }
 function focusSearch() { document.getElementById('search')?.focus(); }
-function toggleSidebar() {
+let sidebarCollapsed = true;
+
+function renderSidebarState() {
   const sb = document.getElementById('sidebar');
   const btn = document.getElementById('sidebar-toggle');
-  sb.classList.toggle('collapsed');
-  btn.classList.toggle('collapsed');
-  btn.textContent = sb.classList.contains('collapsed') ? '▶' : '◀';
+  if (!sb || !btn) return;
+  sb.classList.toggle('collapsed', sidebarCollapsed);
+  btn.classList.toggle('collapsed', sidebarCollapsed);
+  btn.textContent = sidebarCollapsed ? '▶' : '◀';
+}
+
+function toggleSidebar() {
+  sidebarCollapsed = !sidebarCollapsed;
+  renderSidebarState();
 }
 
 /* Drag-and-drop import */
@@ -1605,6 +1616,8 @@ function initHScroll(barId) {
 
 /* Init */
 document.addEventListener('DOMContentLoaded', async () => {
+  renderDragSortToggle();
+  renderSidebarState();
   initDragReorder();
   initHScroll('tagbar');
   const gridWrap = document.getElementById('grid-wrap');

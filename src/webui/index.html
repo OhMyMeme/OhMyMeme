@@ -11,7 +11,7 @@
   <div id="titlebar">
     <div class="logo">OhMy<span>Meme</span></div>
     <span class="spacer"></span>
-    <button id="drag-sort-toggle" class="icon-btn sort-on" onclick="toggleDragSort()" title="拖拽排序（开启=网格内排序，关闭=可拖拽表情到聊天窗口）">
+    <button id="drag-sort-toggle" class="icon-btn sort-off" onclick="toggleDragSort()" title="拖拽排序（开启=网格内排序，关闭=可拖拽表情到聊天窗口）">
       <svg viewBox="0 0 1024 1024" xmlns="http://www.w3.org/2000/svg"><path d="M338.133333 725.333333l-82.133333 82.133334V648.533333a42.666667 42.666667 0 0 0-85.333333 0v204.8A42.666667 42.666667 0 0 0 213.333333 896h204.8a42.666667 42.666667 0 0 0 0-85.333333H298.666667l82.133333-82.133334a42.666667 42.666667 0 0 0-42.666667-3.2zM853.333333 170.666667H648.533333a42.666667 42.666667 0 0 0 0 85.333333h120.32l-82.133333 82.133333a42.666667 42.666667 0 0 0 3.2 63.573334A42.666667 42.666667 0 0 0 725.333333 426.666667l0 0a42.666667 42.666667 0 0 0 29.866667-12.8l130.986667-130.986667V413.866667a42.666667 42.666667 0 0 0 85.333333 0V213.333333a42.666667 42.666667 0 0 0-118.186667-42.666666zM307.2 298.666667a42.666667 42.666667 0 0 0-12.8 3.2L163.413333 432.853333V341.333333a42.666667 42.666667 0 0 0-85.333333 0v204.8a42.666667 42.666667 0 0 0 42.666667 42.666667h204.8a42.666667 42.666667 0 0 0 0-85.333333H217.6l82.133333-82.133334a42.666667 42.666667 0 0 0 3.2-63.573333A42.666667 42.666667 0 0 0 307.2 298.666667zM896 610.133333a42.666667 42.666667 0 0 0-85.333333 0v120.32l-82.133334-82.133333a42.666667 42.666667 0 0 0-63.573333-3.2 42.666667 42.666667 0 0 0 0 66.773333l130.986667 130.986667H682.666667a42.666667 42.666667 0 0 0 0 85.333333h213.333333a42.666667 42.666667 0 0 0 42.666667-42.666667V610.133333z"/></svg>
     </button>
     <button class="icon-btn" onclick="syncUpload()" title="上传到远端">
@@ -33,13 +33,13 @@
     <input id="search" type="text" placeholder="搜索表情包..." oninput="onSearch()" autofocus spellcheck="false">
   </div>
   <div id="content">
-    <div id="sidebar">
+    <div id="sidebar" class="collapsed">
       <div id="sidebar-header">
         <span>分组</span>
       </div>
       <div id="tree"></div>
     </div>
-    <button id="sidebar-toggle" onclick="toggleSidebar()" title="折叠/展开侧边栏">◀</button>
+    <button id="sidebar-toggle" class="collapsed" onclick="toggleSidebar()" title="折叠/展开侧边栏">▶</button>
     <div id="main">
       <div id="tagbar"></div>
       <div id="grid-wrap">
