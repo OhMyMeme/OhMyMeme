@@ -4,6 +4,7 @@ let dragSrcId = null;
 const MEME_PAGE = 200;
 let memeOffset = 0, memeHasMore = true, memeLoadingMore = false;
 let memeGen = 0, cbGen = 0;
+let gridRenderToken = 0;
 
 async function api(method, ...args) {
   try {
@@ -91,7 +92,16 @@ async function loadMoreMemes() {
       memeOffset += more.length;
       memeHasMore = more.length === MEME_PAGE;
       const grid = document.getElementById('meme-grid');
-      more.forEach(m => grid.appendChild(renderMemeCard(m)));
+      const sortEnabled = canReorderMemes();
+      const cards = more.map(renderMemeCard);
+      if (sortEnabled) cards.forEach(card => card.classList.add('sort-enter'));
+      cards.forEach(card => grid.appendChild(card));
+      if (sortEnabled) {
+        void cards[0].offsetWidth;
+        requestAnimationFrame(() => {
+          cards.forEach(card => card.classList.remove('sort-enter'));
+        });
+      }
     }
   } catch(e) {
     memeHasMore = false;
@@ -248,6 +258,9 @@ function findCollection(items, id) {
 function renderGrid() {
   const grid = document.getElementById('meme-grid');
   const empty = document.getElementById('empty');
+  const sortEnabled = canReorderMemes();
+  const renderToken = ++gridRenderToken;
+  grid.classList.remove('sort-enabled');
   grid.innerHTML = '';
   const curCol = activeCollection && activeCollection > 0 ? activeCollection : null;
   let hasFolderCards = false;
@@ -273,13 +286,20 @@ function renderGrid() {
 
   if (!memes || memes.length === 0) {
     if (!hasFolderCards) {
-      grid.style.display = 'none'; empty.style.display = 'flex'; return;
+      grid.style.display = 'none'; empty.style.display = 'flex';
+    } else {
+      grid.style.display = 'grid'; empty.style.display = 'none';
     }
-    grid.style.display = 'grid'; empty.style.display = 'none'; return;
+  } else {
+    grid.style.display = 'grid'; empty.style.display = 'none';
+    memes.forEach(m => grid.appendChild(renderMemeCard(m)));
   }
-  grid.style.display = 'grid'; empty.style.display = 'none';
 
-  memes.forEach(m => grid.appendChild(renderMemeCard(m)));
+  if (sortEnabled) void grid.offsetWidth;
+  requestAnimationFrame(() => {
+    if (renderToken !== gridRenderToken) return;
+    grid.classList.toggle('sort-enabled', sortEnabled);
+  });
 
 }
 
@@ -342,7 +362,16 @@ function toggleDragSort() {
     btn.classList.toggle('sort-on', dragSortEnabled);
     btn.classList.toggle('sort-off', !dragSortEnabled);
   }
-  refreshMemes();
+  if (dragSortEnabled) {
+    refreshMemes();
+  } else {
+    const renderToken = ++gridRenderToken;
+    const grid = document.getElementById('meme-grid');
+    requestAnimationFrame(() => {
+      if (renderToken !== gridRenderToken || dragSortEnabled) return;
+      grid.classList.remove('sort-enabled');
+    });
+  }
 }
 
 function canReorderMemes() {
@@ -361,22 +390,28 @@ function gridMetrics() {
   const gRect = grid.getBoundingClientRect();
   const cards = memeCardsInGrid();
   if (!cards.length) return null;
-  const gap = parseFloat(getComputedStyle(grid).rowGap) || 10;
-  const first = cards[0].getBoundingClientRect();
+  const allCards = Array.from(document.querySelectorAll('#meme-grid .meme-card'));
+  const style = getComputedStyle(grid);
+  const gap = parseFloat(style.rowGap) || 10;
+  const first = allCards[0];
+  const cardWidth = cards[0].offsetWidth;
+  const cardHeight = cards[0].offsetHeight;
+  const contentWidth = grid.clientWidth - parseFloat(style.paddingLeft) - parseFloat(style.paddingRight);
   return {
-    gRect, first,
-    pitchX: first.width + gap,
-    pitchY: first.height + gap,
-    cols: Math.max(1, Math.round((gRect.width + gap) / (first.width + gap))),
+    originX: gRect.left + first.offsetLeft,
+    originY: gRect.top + first.offsetTop,
+    pitchX: cardWidth + gap,
+    pitchY: cardHeight + gap,
+    cols: Math.max(1, Math.round((contentWidth + gap) / (cardWidth + gap))),
   };
 }
 
 function gridSlotIndex(x, y) {
   const m = gridMetrics();
   if (!m) return 0;
-  const { gRect, pitchX, pitchY, cols } = m;
-  const col = Math.max(0, Math.min(Math.floor((x - gRect.left) / pitchX), cols - 1));
-  const row = Math.max(0, Math.floor((y - gRect.top) / pitchY));
+  const { originX, originY, pitchX, pitchY, cols } = m;
+  const col = Math.max(0, Math.min(Math.floor((x - originX) / pitchX), cols - 1));
+  const row = Math.max(0, Math.floor((y - originY) / pitchY));
   // 绝对格子索引（含 folder-card 占位），再映射到非 folder 的 meme 卡数组索引
   const all = Array.from(document.querySelectorAll('#meme-grid .meme-card'));
   const absSlot = Math.min(row * cols + col, all.length - 1);
@@ -493,7 +528,9 @@ function initDragReorder() {
         try { grid.setPointerCapture(pointerId(e)); } catch (_) {}
       }
     }
-    d.card.style.transform = 'translate(' + (e.clientX - d.offX - d.base.left) + 'px,' + (e.clientY - d.offY - d.base.top) + 'px) scale(0.95)';
+    const dragX = e.clientX - d.offX - d.base.left;
+    const dragY = e.clientY - d.offY - d.base.top;
+    d.card.style.transform = 'translate(' + dragX + 'px,' + dragY + 'px) scale(0.90)';
     const all = memeCardsInGrid();
     const cur = all.indexOf(d.card);
     const target = gridSlotIndex(e.clientX, e.clientY);
@@ -507,7 +544,7 @@ function initDragReorder() {
     const lastRects = affected.map(c => c.getBoundingClientRect());
     affected.forEach((c, i) => {
       c.style.transition = 'none';
-      c.style.transform = 'translate(' + (firstRects[i].left - lastRects[i].left) + 'px,' + (firstRects[i].top - lastRects[i].top) + 'px)';
+      c.style.transform = 'translate(' + (firstRects[i].left - lastRects[i].left) + 'px,' + (firstRects[i].top - lastRects[i].top) + 'px) scale(0.95)';
     });
     requestAnimationFrame(() => {
       affected.forEach(c => { c.style.transition = ''; c.style.transform = ''; });
@@ -516,7 +553,9 @@ function initDragReorder() {
     d.card.style.transform = '';
     d.base = d.card.getBoundingClientRect();
     d.card.style.transform = prevTf;
-    d.card.style.transform = 'translate(' + (e.clientX - d.offX - d.base.left) + 'px,' + (e.clientY - d.offY - d.base.top) + 'px) scale(0.95)';
+    const updatedDragX = e.clientX - d.offX - d.base.left;
+    const updatedDragY = e.clientY - d.offY - d.base.top;
+    d.card.style.transform = 'translate(' + updatedDragX + 'px,' + updatedDragY + 'px) scale(0.90)';
   };
 
   const onUp = async (e) => {
