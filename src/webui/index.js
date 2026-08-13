@@ -1,5 +1,5 @@
 let allTags = [], activeTags = new Set(), memes = [], pending = false, copyPending = false;
-let collections = [], activeCollection = -4;
+let collections = [], activeCollection = null;
 let dragSrcId = null;
 const MEME_PAGE = 200;
 let memeOffset = 0, memeHasMore = true, memeLoadingMore = false;
@@ -378,7 +378,7 @@ function canReorderMemes() {
   const q = document.getElementById('search').value.trim();
   if (q || activeTags.size > 0) return false;
   if (!dragSortEnabled) return false;
-  return activeCollection > 0;
+  return activeCollection === null || activeCollection > 0;
 }
 
 function memeCardsInGrid() {
@@ -390,19 +390,25 @@ function gridMetrics() {
   const gRect = grid.getBoundingClientRect();
   const cards = memeCardsInGrid();
   if (!cards.length) return null;
-  const allCards = Array.from(document.querySelectorAll('#meme-grid .meme-card'));
   const style = getComputedStyle(grid);
-  const gap = parseFloat(style.rowGap) || 10;
-  const first = allCards[0];
+  const finiteStyleValue = (value) => {
+    const parsed = parseFloat(value);
+    return Number.isFinite(parsed) ? parsed : 0;
+  };
+  const paddingLeft = finiteStyleValue(style.paddingLeft);
+  const paddingRight = finiteStyleValue(style.paddingRight);
+  const paddingTop = finiteStyleValue(style.paddingTop);
+  const columnGap = finiteStyleValue(style.columnGap);
+  const rowGap = finiteStyleValue(style.rowGap);
   const cardWidth = cards[0].offsetWidth;
   const cardHeight = cards[0].offsetHeight;
-  const contentWidth = grid.clientWidth - parseFloat(style.paddingLeft) - parseFloat(style.paddingRight);
+  const contentWidth = grid.clientWidth - paddingLeft - paddingRight;
   return {
-    originX: gRect.left + first.offsetLeft,
-    originY: gRect.top + first.offsetTop,
-    pitchX: cardWidth + gap,
-    pitchY: cardHeight + gap,
-    cols: Math.max(1, Math.round((contentWidth + gap) / (cardWidth + gap))),
+    originX: gRect.left + grid.clientLeft + paddingLeft,
+    originY: gRect.top + grid.clientTop + paddingTop,
+    pitchX: cardWidth + columnGap,
+    pitchY: cardHeight + rowGap,
+    cols: Math.max(1, Math.round((contentWidth + columnGap) / (cardWidth + columnGap))),
   };
 }
 

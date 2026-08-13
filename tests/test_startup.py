@@ -2,6 +2,7 @@
 
 import os
 import re
+import subprocess
 import sys
 from pathlib import Path
 
@@ -456,6 +457,14 @@ def test_sorting_visual_feedback_static_contract():
     root = Path(__file__).resolve().parent.parent
     index_js = (root / "src" / "webui" / "index.js").read_text(encoding="utf-8")
     index_css = (root / "src" / "webui" / "index.css").read_text(encoding="utf-8")
+    initial_state = index_js.split("function ", 1)[0]
+
+    assert re.search(
+        r"\bcollections\s*=\s*\[\]", initial_state
+    ), "the initial view must initialize without collections"
+    assert re.search(
+        r"\bactiveCollection\s*=\s*null\b", initial_state
+    ), "the initial view must remain the all-memes view"
 
     grid_wrap = re.search(r"#grid-wrap\s*\{(?:(?!\}).)*?\}", index_css, re.DOTALL)
     assert grid_wrap, "grid wrapper styles must remain locally inspectable"
@@ -532,20 +541,27 @@ def test_sorting_visual_feedback_static_contract():
     assert can_reorder, "sorting eligibility must remain locally inspectable"
     can_reorder_body = can_reorder.group(0)
     assert re.search(
-        r"if\s*\(\s*q\s*\|\|\s*activeTags\.size\s*>\s*0\s*\)\s*return\s*false",
+        r"if\s*\(\s*q\s*\|\|\s*activeTags\s*\.\s*size\s*>\s*0\s*\)\s*"
+        r"return\s+false\s*;",
         can_reorder_body,
     )
     assert re.search(
-        r"if\s*\(\s*!dragSortEnabled\s*\)\s*return\s*false", can_reorder_body
+        r"if\s*\(\s*!\s*dragSortEnabled\s*\)\s*return\s+false\s*;",
+        can_reorder_body,
     )
-    assert re.search(r"return\s+activeCollection\s*>\s*0", can_reorder_body)
     assert re.search(
-        r"if\s*\(\s*activeCollection\s*>\s*0\s*\)\s*\{\s*"
-        r"ok\s*=\s*await\s+api\(\s*['\"]reorder_collection_members['\"]\s*,\s*"
-        r"activeCollection",
+        r"return\s+activeCollection\s*===\s*null\s*\|\|\s*"
+        r"activeCollection\s*>\s*0\s*;",
+        can_reorder_body,
+    )
+    assert re.search(
+        r"activeCollection\s*>\s*0[\s\S]*?api\(\s*['\"]reorder_collection_members['\"]\s*,\s*activeCollection",
         index_js,
-        re.DOTALL,
     ), "sortable collections must persist their member order through the active collection"
+    assert re.search(
+        r"api\(\s*['\"]reorder_memes['\"]\s*,\s*memes\.map\([^)]*\.id\s*\)",
+        index_js,
+    ), "the all-memes view must persist its global order through reorder_memes"
 
     normal_card_selector = (
         "#meme-grid.sort-enabled .meme-card:not(.folder-card):not(.dragging)"
@@ -728,7 +744,6 @@ def test_sorting_visual_feedback_static_contract():
     assert re.search(r"x\s*-\s*originX", grid_slot_body)
     assert re.search(r"y\s*-\s*originY", grid_slot_body)
     assert not re.search(r"gRect\.left|gRect\.top", grid_slot_body)
-
     initial_append = re.search(
         r"memes\.forEach\(\s*m\s*=>\s*grid\.appendChild\(\s*renderMemeCard\(\s*m\s*\)\s*\)\s*\)",
         render_grid_body,
@@ -739,6 +754,20 @@ def test_sorting_visual_feedback_static_contract():
         layout_read,
         render_grid_body[initial_append.end() : initial_animation.start()],
     ), "initial sort baseline must commit layout before requestAnimationFrame"
+
+
+def test_grid_slot_hit_testing_stays_aligned_when_layout_moves_and_scrolls():
+    root = Path(__file__).resolve().parent.parent
+    result = subprocess.run(
+        ["node", root / "tests" / "fixtures" / "grid_slot_probe.js"],
+        cwd=root,
+        capture_output=True,
+        text=True,
+        timeout=10,
+        check=False,
+    )
+    assert result.returncode == 0, result.stderr
+    assert result.stdout.strip() == "grid slot behavior: PASS"
 
 
 def test_webui_safe_serve_filename():
