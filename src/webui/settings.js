@@ -200,8 +200,6 @@ async function getSettings() {
   if (to) to.checked = s.try_original_image === true;  // DeepSeek V4 Flash
   const cm = document.getElementById('s-copy-mode');
   if (cm) cm.value = String(s.copy_resize_mode ?? 1);
-  const apm = document.getElementById('s-auto-paste-meme');
-  if (apm) apm.checked = s.auto_paste_meme === true;
   if (as) as.checked = s.auto_start === true;
   if (ss) ss.checked = s.silent_start === true;
   const unc = document.getElementById('s-show-uncategorized');
@@ -434,7 +432,6 @@ async function saveSettings() {
   const gif = document.getElementById('s-gif')?.checked !== false;
   const try_original = document.getElementById('s-try-original')?.checked === true;  // DeepSeek V4 Flash
   const copy_mode = parseInt(document.getElementById('s-copy-mode')?.value || '1', 10);
-  const auto_paste_meme = document.getElementById('s-auto-paste-meme')?.checked === true;
   const hotkey_show_at_mouse = document.getElementById('s-hotkey-show-at-mouse')?.checked === true;
   const auto_start = document.getElementById('s-auto-start')?.checked === true;
   const silent_start = document.getElementById('s-silent-start')?.checked === true;
@@ -447,7 +444,7 @@ async function saveSettings() {
   await api('save_settings', {
     hotkey, hotkey_show_at_mouse, auto_play_gif: gif, hover_to_play: hover_play,
     try_original_image: try_original,  // DeepSeek V4 Flash
-    copy_resize_mode: copy_mode, auto_paste_meme,
+    copy_resize_mode: copy_mode,
     auto_start, silent_start, show_uncategorized,
     lan_port, lan_secret,
     ...sync
@@ -474,8 +471,6 @@ async function resetSettings() {
     if (to) to.checked = false;
     const cm = document.getElementById('s-copy-mode');
     if (cm) cm.value = String(s.copy_resize_mode ?? 1);
-    const apm = document.getElementById('s-auto-paste-meme');
-    if (apm) apm.checked = s.auto_paste_meme === true;
     if (as) as.checked = s.auto_start === true;
     if (ss) ss.checked = s.silent_start === true;
     toggleSilentStart();

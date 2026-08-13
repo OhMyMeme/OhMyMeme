@@ -439,31 +439,21 @@ class JsApi:
         path = self._find_meme_file(row["filename"])
         if not path:
             return {"ok": False, "status": "copy_failed"}
-        if not self._webui.begin_copy():
-            return {"ok": False, "status": "copy_busy"}
-        scheduled = False
         resize_mode = int(self._cfg.get("copy_resize_mode", 1) or 0)
         resize_max = int(self._cfg.get("copy_resize_max", 200) or 200)
-        try:
-            match resize_mode:
-                case 1:
-                    path = convert_image_mode_1(path, resize_max) or path
-                case 2:
-                    path = convert_image_mode_2(path, resize_max) or path
-                case 3:
-                    path = convert_image_mode_3(path, resize_max) or path
-            ok = copy_image_to_clipboard(path)
-            if not ok:
-                return {"ok": False, "status": "copy_failed"}
-            self._db.record_use(meme_id)
-            scheduled = True
-            return self._webui.schedule_copy_hide()
-        finally:
-            if not scheduled:
-                self._webui.cancel_copy()
-
-    def get_last_copy_result(self, operation_id):
-        return self._webui.get_last_copy_result(operation_id)
+        match resize_mode:
+            case 1:
+                path = convert_image_mode_1(path, resize_max) or path
+            case 2:
+                path = convert_image_mode_2(path, resize_max) or path
+            case 3:
+                path = convert_image_mode_3(path, resize_max) or path
+        ok = copy_image_to_clipboard(path)
+        if not ok:
+            return {"ok": False, "status": "copy_failed"}
+        self._db.record_use(meme_id)
+        self._webui.schedule_hide()
+        return {"ok": True, "status": "copied"}
 
     def toggle_favorite(self, meme_id: int) -> bool:
         return self._db.toggle_favorite(meme_id)
@@ -1036,7 +1026,6 @@ class JsApi:
         return {
             "hotkey": d.get("hotkey", "Ctrl+Alt+N"),
             "hotkey_show_at_mouse": d.get("hotkey_show_at_mouse", False),
-            "auto_paste_meme": d.get("auto_paste_meme", False),
             "auto_play_gif": d.get("auto_play_gif", True),
             "try_original_image": d.get("try_original_image", False),
             "auto_start": is_auto_start_enabled(),
@@ -1099,7 +1088,6 @@ class JsApi:
         return {
             "hotkey": hotkey,
             "hotkey_show_at_mouse": self._cfg.get("hotkey_show_at_mouse", False),
-            "auto_paste_meme": self._cfg.get("auto_paste_meme", False),
             "auto_play_gif": self._cfg.get("auto_play_gif", True),
             "copy_resize_mode": self._cfg.get("copy_resize_mode", 1),
             "auto_start": False,
@@ -1323,7 +1311,6 @@ class SettingsApi:
         return {
             "hotkey": d.get("hotkey", "Ctrl+Alt+N"),
             "hotkey_show_at_mouse": d.get("hotkey_show_at_mouse", False),
-            "auto_paste_meme": d.get("auto_paste_meme", False),
             "auto_play_gif": d.get("auto_play_gif", True),
             "try_original_image": d.get("try_original_image", False),
             "copy_resize_mode": int(d.get("copy_resize_mode", 1) or 0),
@@ -1402,7 +1389,6 @@ class SettingsApi:
         return {
             "hotkey": hotkey,
             "hotkey_show_at_mouse": self._cfg.get("hotkey_show_at_mouse", False),
-            "auto_paste_meme": self._cfg.get("auto_paste_meme", False),
             "auto_play_gif": self._cfg.get("auto_play_gif", True),
             "copy_resize_mode": self._cfg.get("copy_resize_mode", 1),
             "auto_start": False,
@@ -2114,12 +2100,6 @@ class WebUI:
         self._started = False
         self._pending_hide = False
         self._hotkey_session = False
-        self._paste_target = None
-        self._pending_paste_target = None
-        self._pending_copy_operation_id = 0
-        self._last_copy_result = {}
-        self._copy_lock = threading.Lock()
-        self._copy_pending = False
         self._on_hotkey_change_cb = None
         self._update_debug = update_debug
         self._silent_start = silent_start
@@ -2217,7 +2197,6 @@ class WebUI:
     def show(self):
         self._visible = True
         self._hotkey_session = False
-        self._paste_target = None
         if self._window:
             try:
                 self._window.on_top = True  # 置顶一下提升 z-order，随即复位不长期置顶
@@ -2230,11 +2209,9 @@ class WebUI:
             except Exception as e:
                 logger.warning(f"show window error: {e}")
 
-    def hide(self, clear_paste_target=True):
+    def hide(self):
         self._visible = False
         self._hotkey_session = False
-        if clear_paste_target:
-            self._paste_target = None
         if self._window:
             try:
                 self._save_window_position()
@@ -2252,7 +2229,6 @@ class WebUI:
     def toggle_safe(self):
         # show/hide 底层为 Invoke 调度，任意线程调用均安全
         if self._window:
-            self._paste_target = None
             self.toggle()
 
     def toggle_hotkey_safe(self):
@@ -2262,11 +2238,6 @@ class WebUI:
         if self._visible:
             self.hide()
             return
-        paste_target = None
-        if self._cfg.get("auto_paste_meme", False):
-            from .platform_util import capture_foreground_window
-
-            paste_target = capture_foreground_window()
         if self._cfg.get("hotkey_show_at_mouse", False):
             try:
                 position = self._get_hotkey_window_position()
@@ -2275,7 +2246,6 @@ class WebUI:
             except Exception as e:
                 logger.warning("hotkey window move error: %s", e)
         self.show()
-        self._paste_target = paste_target
         self._hotkey_session = True
 
     def schedule_hide(self):
@@ -2286,78 +2256,10 @@ class WebUI:
             self._run_on_gui(0.1, self._process_pending_hide)
         return True
 
-    def schedule_copy_hide(self):
-        """安排复制后隐藏并按需自动粘贴"""
-        with self._copy_lock:
-            self._pending_copy_operation_id += 1
-            operation_id = self._pending_copy_operation_id
-            status = (
-                "copy_scheduled"
-                if self._hotkey_session and self._pending_paste_target
-                else "copied"
-            )
-            result = {"ok": True, "status": status, "operation_id": operation_id}
-            self._last_copy_result = result
-        if not self.schedule_hide():
-            with self._copy_lock:
-                self._pending_paste_target = None
-                self._copy_pending = False
-        return result
-
-    def begin_copy(self):
-        """预留一次复制及其自动粘贴目标"""
-        with self._copy_lock:
-            if self._copy_pending:
-                return False
-            self._copy_pending = True
-            auto_paste_enabled = self._cfg.get("auto_paste_meme", False)
-            target = self._paste_target if auto_paste_enabled else None
-            self._paste_target = None
-            self._pending_paste_target = target
-            return True
-
-    def cancel_copy(self):
-        """取消未完成的复制操作"""
-        with self._copy_lock:
-            self._copy_pending = False
-            self._pending_paste_target = None
-
-    def get_last_copy_result(self, operation_id):
-        """返回指定复制操作的最近状态"""
-        with self._copy_lock:
-            if self._last_copy_result.get("operation_id") == operation_id:
-                return self._last_copy_result
-        return {
-            "ok": False,
-            "status": "unknown_operation",
-            "operation_id": operation_id,
-        }
-
     def _process_pending_hide(self):
         if self._pending_hide:
             self._pending_hide = False
-            self.hide(clear_paste_target=False)
-            with self._copy_lock:
-                target = self._pending_paste_target
-                self._pending_paste_target = None
-                operation_id = self._pending_copy_operation_id
-            pasted = False
-            if target:
-                try:
-                    from .platform_util import try_paste_into_window
-
-                    pasted = try_paste_into_window(target)
-                except Exception as e:
-                    logger.warning("auto paste error: %s", e)
-            with self._copy_lock:
-                if target:
-                    status = "pasted" if pasted else "paste_failed"
-                    self._last_copy_result = {
-                        "ok": pasted,
-                        "status": status,
-                        "operation_id": operation_id,
-                    }
-                self._copy_pending = False
+            self.hide()
 
     def _run_on_gui(self, delay: float, func):
         """延时在 GUI 线程执行（pywebview Window 无 after 方法）"""
