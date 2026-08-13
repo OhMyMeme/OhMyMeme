@@ -98,6 +98,7 @@ tests/
 - 三级降级: `keyboard` → `pynput` → 200ms 轮询 (`keyboard.is_pressed`)
 - WSL 无法捕获全局快捷键
 - 配置 `hotkey_show_at_mouse` 默认 `false`；仅 Windows 生效。开启后仅在全局热键将隐藏主面板显示时，按鼠标所在显示器工作区依次尝试 `(cursor_x, cursor_y)`、`(right-width, cursor_y)`、`(cursor_x, bottom-height)`、`(right-width, bottom-height)`，仅使用首个完整容纳窗口的候选位置；出错或没有可用位置时不移动。托盘保持普通切换，热键回调仍为零参数。
+- WebUI 维护非持久的快捷键显示会话状态：仅隐藏主窗口被全局快捷键显示后，成功复制或成功原生向外文件拖拽才会自动隐藏；任意 hide、普通/托盘显示、LAN/其他 show、内部排序拖拽及失败交互均不会触发该自动隐藏。
 
 ### 窗口
 - 主窗口 ~700×500 frameless, 设置窗口 460×560 frameless

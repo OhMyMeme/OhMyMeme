@@ -54,6 +54,14 @@ class _FakeWindow:
         self.calls.append(("hide",))
 
 
+class _FakeMemeDB:
+    def get_by_id(self, meme_id):
+        return {"filename": f"meme-{meme_id}.png"}
+
+    def record_use(self, meme_id):
+        pass
+
+
 def _fake_webui(hotkey_show_at_mouse, visible=False):
     from src.webui import WebUI
 
@@ -183,6 +191,62 @@ def test_toggle_hotkey_safe_moves_then_shows_hidden_window(monkeypatch):
 
     assert ui._window.calls == [("move", 40, 50), ("show",), ("focus",)]
     assert ui._visible
+    assert ui._hotkey_session
+
+
+def test_hide_clears_hotkey_session():
+    ui = _fake_webui(True)
+    ui.toggle_hotkey_safe()
+
+    ui.hide()
+
+    assert not ui._hotkey_session
+
+
+def test_tray_toggle_show_does_not_mark_hotkey_session():
+    ui = _fake_webui(True)
+
+    ui.toggle_safe()
+
+    assert ui._visible
+    assert not ui._hotkey_session
+
+
+def test_ordinary_show_clears_existing_hotkey_session():
+    ui = _fake_webui(True)
+    ui.toggle_hotkey_safe()
+    ui._paste_target = object()
+
+    ui.show()
+
+    assert not ui._hotkey_session
+    assert ui._paste_target is None
+
+
+def test_schedule_hide_only_hides_hotkey_session():
+    ui = _fake_webui(True, visible=True)
+    ui.schedule_hide()
+    ui._process_pending_hide()
+    assert ui._visible is True
+
+    ui = _fake_webui(True)
+    ui.toggle_hotkey_safe()
+    ui.schedule_hide()
+    ui._process_pending_hide()
+    assert ui._visible is False
+
+
+def test_non_hotkey_copy_completion_releases_pending_paste_state():
+    ui = _fake_webui(True)
+    ui._copy_pending = True
+    ui._pending_paste_target = object()
+
+    result = ui.schedule_copy_hide()
+
+    assert result["ok"]
+    assert result["status"] == "copied"
+    assert not ui._copy_pending
+    assert ui._pending_paste_target is None
 
 
 def test_toggle_hotkey_safe_hides_visible_window_without_placement(monkeypatch):
@@ -225,6 +289,52 @@ def test_toggle_hotkey_safe_placement_exception_still_shows(monkeypatch):
 
     assert ui._window.calls == [("show",), ("focus",)]
     assert ui._visible
+
+
+def test_successful_native_drag_requests_hide_only_for_hotkey_session(monkeypatch):
+    import src.native_drag as native_drag
+    from src.webui import JsApi
+
+    ui = _fake_webui(True)
+    ui._api = JsApi(ui)
+    ui._api._db = _FakeMemeDB()
+    monkeypatch.setattr(ui._api, "_find_meme_file", lambda filename: filename)
+    monkeypatch.setattr(native_drag, "start_native_drag", lambda path: True)
+    monkeypatch.setattr(ui, "_run_on_gui", lambda delay, func: func())
+
+    ui.show()
+    assert ui._api.start_native_drag(1)
+    assert ui._visible is True
+
+    ui.hide()
+    ui.toggle_hotkey_safe()
+    assert ui._api.start_native_drag(1)
+    assert ui._visible is False
+
+
+def test_successful_copy_requests_hide_only_for_hotkey_session(monkeypatch):
+    import src.webui as webui_module
+    from src.webui import JsApi
+
+    ui = _fake_webui(True)
+    ui._api = JsApi(ui)
+    ui._api._db = _FakeMemeDB()
+    monkeypatch.setattr(ui._api, "_find_meme_file", lambda filename: filename)
+    monkeypatch.setattr(webui_module, "copy_image_to_clipboard", lambda path: True)
+    monkeypatch.setattr(ui, "_run_on_gui", lambda delay, func: func())
+
+    ui.show()
+    result = ui._api.copy_meme(1)
+    assert result["ok"]
+    assert result["status"] == "copied"
+    assert ui._visible is True
+    assert not ui._copy_pending
+    assert ui._pending_paste_target is None
+
+    ui.hide()
+    ui.toggle_hotkey_safe()
+    assert ui._api.copy_meme(1)
+    assert ui._visible is False
 
 
 def _start_fake_webui(monkeypatch, silent_start):

@@ -424,11 +424,14 @@ class JsApi:
         try:
             from .native_drag import start_native_drag as _start
 
-            return bool(_start(p))
+            ok = bool(_start(p))
+            if ok:
+                self._webui.schedule_hide()
+            return ok
         except Exception:
             return False
 
-    def copy_meme(self, meme_id: int) -> dict:
+    def copy_meme(self, meme_id):
         # 复制表情到剪贴板；copy_resize_mode: 0不处理 1webp缩放 2转gif 3转gif隐写原图
         row = self._db.get_by_id(meme_id)
         if not row:
@@ -459,7 +462,7 @@ class JsApi:
             if not scheduled:
                 self._webui.cancel_copy()
 
-    def get_last_copy_result(self, operation_id: int) -> dict:
+    def get_last_copy_result(self, operation_id):
         return self._webui.get_last_copy_result(operation_id)
 
     def toggle_favorite(self, meme_id: int) -> bool:
@@ -503,14 +506,15 @@ class JsApi:
         build_manifest()
         return True
 
+    # 递归获取分组及其所有子分组的 ID 列表
     def _get_collection_ids_recursive(self, collection_id):
-        """递归获取分组及其所有子分组的 ID 列表"""
         ids = [collection_id]
         children = self._db.get_child_collections(collection_id)
         for child in children:
             ids.extend(self._get_collection_ids_recursive(child["id"]))
         return ids
 
+    # 构建嵌套分组树并统计各分组成员数
     def _build_collection_tree(self, parent_id=None):
         raw = self._db.get_collections()
         result = []
@@ -2109,6 +2113,7 @@ class WebUI:
         self._visible = False
         self._started = False
         self._pending_hide = False
+        self._hotkey_session = False
         self._paste_target = None
         self._pending_paste_target = None
         self._pending_copy_operation_id = 0
@@ -2208,8 +2213,11 @@ class WebUI:
             logger.warning("hotkey window position error: %s", e)
             return None
 
+    # 显示主窗口并清理非热键会话状态
     def show(self):
         self._visible = True
+        self._hotkey_session = False
+        self._paste_target = None
         if self._window:
             try:
                 self._window.on_top = True  # 置顶一下提升 z-order，随即复位不长期置顶
@@ -2224,6 +2232,7 @@ class WebUI:
 
     def hide(self, clear_paste_target=True):
         self._visible = False
+        self._hotkey_session = False
         if clear_paste_target:
             self._paste_target = None
         if self._window:
@@ -2253,11 +2262,11 @@ class WebUI:
         if self._visible:
             self.hide()
             return
-        self._paste_target = None
+        paste_target = None
         if self._cfg.get("auto_paste_meme", False):
             from .platform_util import capture_foreground_window
 
-            self._paste_target = capture_foreground_window()
+            paste_target = capture_foreground_window()
         if self._cfg.get("hotkey_show_at_mouse", False):
             try:
                 position = self._get_hotkey_window_position()
@@ -2266,21 +2275,33 @@ class WebUI:
             except Exception as e:
                 logger.warning("hotkey window move error: %s", e)
         self.show()
+        self._paste_target = paste_target
+        self._hotkey_session = True
 
     def schedule_hide(self):
+        if not self._hotkey_session:
+            return False
         self._pending_hide = True
         if self._window:
             self._run_on_gui(0.1, self._process_pending_hide)
+        return True
 
     def schedule_copy_hide(self):
         """安排复制后隐藏并按需自动粘贴"""
         with self._copy_lock:
             self._pending_copy_operation_id += 1
             operation_id = self._pending_copy_operation_id
-            status = "copy_scheduled" if self._pending_paste_target else "copied"
+            status = (
+                "copy_scheduled"
+                if self._hotkey_session and self._pending_paste_target
+                else "copied"
+            )
             result = {"ok": True, "status": status, "operation_id": operation_id}
             self._last_copy_result = result
-        self.schedule_hide()
+        if not self.schedule_hide():
+            with self._copy_lock:
+                self._pending_paste_target = None
+                self._copy_pending = False
         return result
 
     def begin_copy(self):
