@@ -457,6 +457,11 @@ def test_sorting_visual_feedback_static_contract():
     index_js = (root / "src" / "webui" / "index.js").read_text(encoding="utf-8")
     index_css = (root / "src" / "webui" / "index.css").read_text(encoding="utf-8")
 
+    assert re.search(
+        r"let\s+collections\s*=\s*\[\]\s*,\s*activeCollection\s*=\s*null\s*;",
+        index_js,
+    ), "the initial view must remain the all-memes view"
+
     grid_wrap = re.search(r"#grid-wrap\s*\{(?:(?!\}).)*?\}", index_css, re.DOTALL)
     assert grid_wrap, "grid wrapper styles must remain locally inspectable"
     assert re.search(r"overflow-y\s*:\s*scroll", grid_wrap.group(0))
@@ -538,7 +543,10 @@ def test_sorting_visual_feedback_static_contract():
     assert re.search(
         r"if\s*\(\s*!dragSortEnabled\s*\)\s*return\s*false", can_reorder_body
     )
-    assert re.search(r"return\s+activeCollection\s*>\s*0", can_reorder_body)
+    assert re.search(
+        r"return\s+activeCollection\s*===\s*null\s*\|\|\s*" r"activeCollection\s*>\s*0",
+        can_reorder_body,
+    )
     assert re.search(
         r"if\s*\(\s*activeCollection\s*>\s*0\s*\)\s*\{\s*"
         r"ok\s*=\s*await\s+api\(\s*['\"]reorder_collection_members['\"]\s*,\s*"
@@ -546,6 +554,12 @@ def test_sorting_visual_feedback_static_contract():
         index_js,
         re.DOTALL,
     ), "sortable collections must persist their member order through the active collection"
+    assert re.search(
+        r"else\s*\{\s*ok\s*=\s*await\s+api\(\s*['\"]reorder_memes['\"]\s*,\s*"
+        r"memes\.map\(\s*x\s*=>\s*x\.id\s*\)",
+        index_js,
+        re.DOTALL,
+    ), "the all-memes view must persist its global order through reorder_memes"
 
     normal_card_selector = (
         "#meme-grid.sort-enabled .meme-card:not(.folder-card):not(.dragging)"

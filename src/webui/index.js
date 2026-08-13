@@ -1,5 +1,5 @@
 let allTags = [], activeTags = new Set(), memes = [], pending = false, copyPending = false;
-let collections = [], activeCollection = -4;
+let collections = [], activeCollection = null;
 let dragSrcId = null;
 const MEME_PAGE = 200;
 let memeOffset = 0, memeHasMore = true, memeLoadingMore = false;
@@ -378,7 +378,7 @@ function canReorderMemes() {
   const q = document.getElementById('search').value.trim();
   if (q || activeTags.size > 0) return false;
   if (!dragSortEnabled) return false;
-  return activeCollection > 0;
+  return activeCollection === null || activeCollection > 0;
 }
 
 function memeCardsInGrid() {
