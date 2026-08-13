@@ -212,6 +212,17 @@ def test_tray_toggle_show_does_not_mark_hotkey_session():
     assert not ui._hotkey_session
 
 
+def test_ordinary_show_clears_existing_hotkey_session():
+    ui = _fake_webui(True)
+    ui.toggle_hotkey_safe()
+    ui._paste_target = object()
+
+    ui.show()
+
+    assert not ui._hotkey_session
+    assert ui._paste_target is None
+
+
 def test_schedule_hide_only_hides_hotkey_session():
     ui = _fake_webui(True, visible=True)
     ui.schedule_hide()
@@ -223,6 +234,19 @@ def test_schedule_hide_only_hides_hotkey_session():
     ui.schedule_hide()
     ui._process_pending_hide()
     assert ui._visible is False
+
+
+def test_non_hotkey_copy_completion_releases_pending_paste_state():
+    ui = _fake_webui(True)
+    ui._copy_pending = True
+    ui._pending_paste_target = object()
+
+    result = ui.schedule_copy_hide()
+
+    assert result["ok"]
+    assert result["status"] == "copied"
+    assert not ui._copy_pending
+    assert ui._pending_paste_target is None
 
 
 def test_toggle_hotkey_safe_hides_visible_window_without_placement(monkeypatch):
@@ -300,8 +324,12 @@ def test_successful_copy_requests_hide_only_for_hotkey_session(monkeypatch):
     monkeypatch.setattr(ui, "_run_on_gui", lambda delay, func: func())
 
     ui.show()
-    assert ui._api.copy_meme(1)
+    result = ui._api.copy_meme(1)
+    assert result["ok"]
+    assert result["status"] == "copied"
     assert ui._visible is True
+    assert not ui._copy_pending
+    assert ui._pending_paste_target is None
 
     ui.hide()
     ui.toggle_hotkey_safe()

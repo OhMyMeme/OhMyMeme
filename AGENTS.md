@@ -123,6 +123,7 @@ tests/
 - 密钥字段 (ftp_password, s3_secret_key 等) 用 Fernet 加密存储
 - 全局单例: `get_config()`, `get_db()`
 - `hotkey_show_at_mouse` 默认 `false`，控制 Windows 上全局热键显示隐藏主面板时是否按鼠标位置放置
+- `auto_paste_meme` 默认 `false`，仅 Windows 生效；全局热键打开隐藏主面板时保存前台窗口句柄，复制成功并隐藏后仅在该窗口仍为前台时发送一次 `Ctrl+V`。托盘和可见窗口的热键切换不保存目标；失败保留剪贴板且绝不发送 `Enter` 或重试。
 - `cache_dir`（表情包图片目录）可自定义：配置键 `cache_dir` 非空时 `Config.cache_dir` 返回该路径，否则默认 `data_dir/cache`；设置页「存储位置」通过 `SettingsApi.pick_storage_dir`/`apply_storage_dir` 切换，`apply_storage_dir` 可选把旧目录文件递归迁移（`os.walk`+`shutil.move`，两阶段：先预检目标同名冲突整体中止、移动中出错回滚，跳过 `thumbnails`）；**切换后旧文件不再可见**，故未迁移时必须确保文件已存在于新目录；`_storage_dir_validation` 拒绝相对/相同/上下级目录以及 `data_dir`/`thumbnail_dir` 及其上下级（受保护路径）；DB/缩略图/manifest 仍留在 `data_dir`，数据库只存文件名，文件在新目录时按 basename 自动解析；`reset_settings` 恢复默认时保留 `cache_dir`
 
 ### 同步
