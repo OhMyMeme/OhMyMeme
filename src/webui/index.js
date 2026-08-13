@@ -353,7 +353,7 @@ function renderMemeCard(m) {
  * Pointer Events + 指针捕获，网格感知插入点，FLIP 让位动画 */
 let memeDrag = null;
 let ignoreClick = false;
-let dragSortEnabled = true;
+let dragSortEnabled = false;
 
 function toggleDragSort() {
   dragSortEnabled = !dragSortEnabled;
