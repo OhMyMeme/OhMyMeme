@@ -391,11 +391,15 @@ function gridMetrics() {
   const cards = memeCardsInGrid();
   if (!cards.length) return null;
   const style = getComputedStyle(grid);
-  const paddingLeft = parseFloat(style.paddingLeft) || 0;
-  const paddingRight = parseFloat(style.paddingRight) || 0;
-  const paddingTop = parseFloat(style.paddingTop) || 0;
-  const columnGap = parseFloat(style.columnGap) || 0;
-  const rowGap = parseFloat(style.rowGap) || 0;
+  const finiteStyleValue = (value) => {
+    const parsed = parseFloat(value);
+    return Number.isFinite(parsed) ? parsed : 0;
+  };
+  const paddingLeft = finiteStyleValue(style.paddingLeft);
+  const paddingRight = finiteStyleValue(style.paddingRight);
+  const paddingTop = finiteStyleValue(style.paddingTop);
+  const columnGap = finiteStyleValue(style.columnGap);
+  const rowGap = finiteStyleValue(style.rowGap);
   const cardWidth = cards[0].offsetWidth;
   const cardHeight = cards[0].offsetHeight;
   const contentWidth = grid.clientWidth - paddingLeft - paddingRight;

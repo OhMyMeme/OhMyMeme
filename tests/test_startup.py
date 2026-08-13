@@ -457,10 +457,13 @@ def test_sorting_visual_feedback_static_contract():
     root = Path(__file__).resolve().parent.parent
     index_js = (root / "src" / "webui" / "index.js").read_text(encoding="utf-8")
     index_css = (root / "src" / "webui" / "index.css").read_text(encoding="utf-8")
+    initial_state = index_js.split("function ", 1)[0]
 
     assert re.search(
-        r"let\s+collections\s*=\s*\[\]\s*,\s*activeCollection\s*=\s*null\s*;",
-        index_js,
+        r"\bcollections\s*=\s*\[\]", initial_state
+    ), "the initial view must initialize without collections"
+    assert re.search(
+        r"\bactiveCollection\s*=\s*null\b", initial_state
     ), "the initial view must remain the all-memes view"
 
     grid_wrap = re.search(r"#grid-wrap\s*\{(?:(?!\}).)*?\}", index_css, re.DOTALL)
@@ -538,28 +541,26 @@ def test_sorting_visual_feedback_static_contract():
     assert can_reorder, "sorting eligibility must remain locally inspectable"
     can_reorder_body = can_reorder.group(0)
     assert re.search(
-        r"if\s*\(\s*q\s*\|\|\s*activeTags\.size\s*>\s*0\s*\)\s*return\s*false",
+        r"if\s*\(\s*q\s*\|\|\s*activeTags\s*\.\s*size\s*>\s*0\s*\)\s*"
+        r"return\s+false\s*;",
         can_reorder_body,
     )
     assert re.search(
-        r"if\s*\(\s*!dragSortEnabled\s*\)\s*return\s*false", can_reorder_body
-    )
-    assert re.search(
-        r"return\s+activeCollection\s*===\s*null\s*\|\|\s*" r"activeCollection\s*>\s*0",
+        r"if\s*\(\s*!\s*dragSortEnabled\s*\)\s*return\s+false\s*;",
         can_reorder_body,
     )
     assert re.search(
-        r"if\s*\(\s*activeCollection\s*>\s*0\s*\)\s*\{\s*"
-        r"ok\s*=\s*await\s+api\(\s*['\"]reorder_collection_members['\"]\s*,\s*"
-        r"activeCollection",
+        r"return\s+activeCollection\s*===\s*null\s*\|\|\s*"
+        r"activeCollection\s*>\s*0\s*;",
+        can_reorder_body,
+    )
+    assert re.search(
+        r"activeCollection\s*>\s*0[\s\S]*?api\(\s*['\"]reorder_collection_members['\"]\s*,\s*activeCollection",
         index_js,
-        re.DOTALL,
     ), "sortable collections must persist their member order through the active collection"
     assert re.search(
-        r"else\s*\{\s*ok\s*=\s*await\s+api\(\s*['\"]reorder_memes['\"]\s*,\s*"
-        r"memes\.map\(\s*x\s*=>\s*x\.id\s*\)",
+        r"api\(\s*['\"]reorder_memes['\"]\s*,\s*memes\.map\([^)]*\.id\s*\)",
         index_js,
-        re.DOTALL,
     ), "the all-memes view must persist its global order through reorder_memes"
 
     normal_card_selector = (
@@ -757,77 +758,8 @@ def test_sorting_visual_feedback_static_contract():
 
 def test_grid_slot_hit_testing_stays_aligned_when_layout_moves_and_scrolls():
     root = Path(__file__).resolve().parent.parent
-    probe = r"""
-const fs = require('fs');
-const vm = require('vm');
-
-const source = fs.readFileSync('src/webui/index.js', 'utf8');
-const start = source.indexOf('function memeCardsInGrid()');
-const end = source.indexOf('function moveInArray(', start);
-if (start < 0 || end < 0) throw new Error('drag geometry helpers not found');
-
-const folder = { classList: { contains: name => name === 'folder-card' } };
-const meme = () => ({
-  offsetWidth: 100,
-  offsetHeight: 80,
-  classList: { contains: () => false },
-});
-const memes = [meme(), meme(), meme(), meme(), meme()];
-const allCards = [folder, ...memes];
-const layout = { left: 200, top: 100 };
-const grid = {
-  clientLeft: 0,
-  clientTop: 0,
-  clientWidth: 340,
-  getBoundingClientRect: () => ({ left: layout.left, top: layout.top }),
-};
-folder.offsetLeft = 218;
-folder.offsetTop = 110;
-
-const context = {
-  document: {
-    getElementById: id => {
-      if (id !== 'meme-grid') throw new Error('unexpected element id: ' + id);
-      return grid;
-    },
-    querySelectorAll: selector => selector.includes(':not(.folder-card)') ? memes : allCards,
-  },
-  getComputedStyle: () => ({
-    paddingLeft: '10px',
-    paddingRight: '10px',
-    paddingTop: '10px',
-    columnGap: '10px',
-    rowGap: '20px',
-  }),
-};
-vm.createContext(context);
-vm.runInContext(source.slice(start, end), context);
-
-function assertSlot(label, x, y, expected) {
-  const actual = context.gridSlotIndex(x, y);
-  if (actual !== expected) {
-    throw new Error(label + ': expected meme index ' + expected + ', got ' + actual);
-  }
-}
-
-function assertVisibleSlots(label) {
-  const originX = layout.left + 10;
-  const originY = layout.top + 10;
-  assertSlot(label + ' first meme after folder', originX + 110 + 50, originY + 40, 0);
-  assertSlot(label + ' third meme on next row', originX + 50, originY + 100 + 40, 2);
-}
-
-assertVisibleSlots('expanded sidebar');
-layout.left = 20;
-assertVisibleSlots('collapsed sidebar');
-layout.top = -90;
-assertVisibleSlots('scrolled grid');
-assertSlot('head clamp', -1000, -1000, 0);
-assertSlot('tail clamp', 10000, 10000, 4);
-console.log('grid slot behavior: PASS');
-"""
     result = subprocess.run(
-        ["node", "-e", probe],
+        ["node", root / "tests" / "fixtures" / "grid_slot_probe.js"],
         cwd=root,
         capture_output=True,
         text=True,

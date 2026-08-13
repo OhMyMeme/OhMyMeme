@@ -230,6 +230,8 @@ python -m pytest tests/ -v  # 测试
 
 CI 会自动运行 lint+test。
 
+网格拖拽槽位回归探针位于 `tests/fixtures/grid_slot_probe.js`。
+
 ## 贡献者
 
 [![Contributors](https://contributor.starsfire.top/OhMyMeme/OhMyMeme/)](https://github.com/OhMyMeme/OhMyMeme/graphs/contributors)

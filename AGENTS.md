@@ -78,6 +78,7 @@ scripts/
 tests/
   test_core.py    # unittest 风格: Version/Config/Crypto/Database
   test_startup.py # pytest 风格: 全生命周期集成测试
+  fixtures/grid_slot_probe.js # Node 网格拖拽槽位回归探针
 ```
 
 ## js_api 桥接规范
