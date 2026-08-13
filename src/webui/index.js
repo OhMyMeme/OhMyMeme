@@ -1620,6 +1620,10 @@ document.addEventListener('DOMContentLoaded', async () => {
   renderSidebarState();
   initDragReorder();
   initHScroll('tagbar');
+  const dragSortBtn = document.getElementById('drag-sort-toggle');
+  if (dragSortBtn) dragSortBtn.addEventListener('click', toggleDragSort);
+  const sidebarBtn = document.getElementById('sidebar-toggle');
+  if (sidebarBtn) sidebarBtn.addEventListener('click', toggleSidebar);
   const gridWrap = document.getElementById('grid-wrap');
   gridWrap.addEventListener('scroll', () => {
     if (gridWrap.scrollTop + gridWrap.clientHeight >= gridWrap.scrollHeight - 300) {
