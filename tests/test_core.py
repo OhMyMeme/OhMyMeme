@@ -62,6 +62,13 @@ class TestConfig(unittest.TestCase):
         cfg.set("hotkey", "Ctrl+Shift+X")
         self.assertEqual(cfg.get("hotkey"), "Ctrl+Shift+X")
 
+    def test_s3_path_persists_through_bulk_update(self):
+        cfg = Config(self.config_path)
+        cfg.update_from_dict({"s3_path": "memes"})
+        cfg.save()
+
+        self.assertEqual(Config(self.config_path).get("s3_path"), "memes")
+
     def test_encrypted_secret(self):
         cfg = Config(self.config_path)
         cfg.set("s3_secret_key", "my_secret")
@@ -100,6 +107,17 @@ class TestConfig(unittest.TestCase):
 
         reset = Config(self.config_path)
         self.assertIs(reset.get("hotkey_show_at_mouse"), False)
+
+    def test_removed_auto_paste_setting_is_not_retained(self):
+        self.config_path.write_text('{"auto_paste_meme": true}', encoding="utf-8")
+
+        cfg = Config(self.config_path)
+
+        self.assertNotIn("auto_paste_meme", cfg.to_dict())
+        cfg.save()
+        self.assertNotIn(
+            "auto_paste_meme", self.config_path.read_text(encoding="utf-8")
+        )
 
     def test_property_access(self):
         cfg = Config(self.config_path)

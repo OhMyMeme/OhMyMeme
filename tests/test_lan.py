@@ -514,6 +514,22 @@ def test_send_config_filters_secrets(lan_env):
     sock.close()
 
 
+def test_send_config_ignores_removed_settings(lan_env):
+    cfg, db, tmp = lan_env
+    sock = _connect()
+    key = _handshake(sock, "test-secret")
+    _send_frame(
+        sock,
+        key,
+        {"cmd": "send_config", "config": {"auto_paste_meme": True}},
+    )
+    resp = _recv_frame(sock, key)
+
+    assert resp["ok"] is True
+    assert "auto_paste_meme" not in cfg.to_dict()
+    sock.close()
+
+
 def test_send_config_with_secrets(lan_env):
     """allow_secret_config 开启时 send_config 应用密钥字段"""
     cfg, db, tmp = lan_env

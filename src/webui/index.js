@@ -625,16 +625,7 @@ async function copyMeme(id, filename) {
     copyPending = false;
   }
   if (result?.ok) {
-    if (result.status === 'copy_scheduled') {
-      showToast(filename + ' 已复制，正在尝试粘贴');
-      setTimeout(async () => {
-        const finalResult = await api('get_last_copy_result', result.operation_id);
-        if (finalResult?.status === 'pasted') showToast('已粘贴');
-        else if (finalResult?.status === 'paste_failed') showToast('已复制，自动粘贴失败');
-      }, 250);
-    } else {
-      showToast(filename + ' 已复制');
-    }
+    showToast(filename + ' 已复制');
     if (activeCollection === -3) refreshMemes();
     refreshCollections();
   }
