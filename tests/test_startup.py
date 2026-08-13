@@ -349,7 +349,7 @@ def test_sorting_visual_feedback_static_contract():
 
     grid_wrap = re.search(r"#grid-wrap\s*\{(?:(?!\}).)*?\}", index_css, re.DOTALL)
     assert grid_wrap, "grid wrapper styles must remain locally inspectable"
-    assert re.search(r"overflow-y\s*:\s*auto", grid_wrap.group(0))
+    assert re.search(r"overflow-y\s*:\s*scroll", grid_wrap.group(0))
     assert re.search(r"overflow-x\s*:\s*hidden", grid_wrap.group(0))
 
     meme_grid = re.search(r"#meme-grid\s*\{(?:(?!\}).)*?\}", index_css, re.DOTALL)
@@ -415,6 +415,27 @@ def test_sorting_visual_feedback_static_contract():
         r"grid\.classList\.toggle\(\s*['\"]sort-enabled['\"]\s*,\s*sortEnabled\s*\)",
         animation_body,
     )
+
+    can_reorder = re.search(
+        r"function canReorderMemes\(\)\s*\{(?:(?!\n\}).)*\n\}", index_js, re.DOTALL
+    )
+    assert can_reorder, "sorting eligibility must remain locally inspectable"
+    can_reorder_body = can_reorder.group(0)
+    assert re.search(
+        r"if\s*\(\s*q\s*\|\|\s*activeTags\.size\s*>\s*0\s*\)\s*return\s*false",
+        can_reorder_body,
+    )
+    assert re.search(
+        r"if\s*\(\s*!dragSortEnabled\s*\)\s*return\s*false", can_reorder_body
+    )
+    assert re.search(r"return\s+activeCollection\s*>\s*0", can_reorder_body)
+    assert re.search(
+        r"if\s*\(\s*activeCollection\s*>\s*0\s*\)\s*\{\s*"
+        r"ok\s*=\s*await\s+api\(\s*['\"]reorder_collection_members['\"]\s*,\s*"
+        r"activeCollection",
+        index_js,
+        re.DOTALL,
+    ), "sortable collections must persist their member order through the active collection"
 
     normal_card_selector = (
         "#meme-grid.sort-enabled .meme-card:not(.folder-card):not(.dragging)"

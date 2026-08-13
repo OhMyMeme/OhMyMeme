@@ -1,5 +1,6 @@
 """平台工具 - 开机自启、系统相关"""
 
+import logging
 import os
 import platform
 import subprocess
@@ -7,6 +8,109 @@ import sys
 from pathlib import Path
 
 APP_NAME = "OhMyMeme"
+logger = logging.getLogger(__name__)
+
+
+def _get_windows_user32():
+    """延迟获取 Windows 用户界面库"""
+    import ctypes
+    from ctypes import wintypes
+
+    user32 = ctypes.WinDLL("user32", use_last_error=True)
+    user32.GetForegroundWindow.argtypes = ()
+    user32.GetForegroundWindow.restype = wintypes.HWND
+    user32.IsWindow.argtypes = (wintypes.HWND,)
+    user32.IsWindow.restype = wintypes.BOOL
+    return user32
+
+
+def _input_types():
+    """创建 SendInput 所需结构"""
+    import ctypes
+    from ctypes import wintypes
+
+    class KEYBDINPUT(ctypes.Structure):
+        _fields_ = (
+            ("wVk", wintypes.WORD),
+            ("wScan", wintypes.WORD),
+            ("dwFlags", wintypes.DWORD),
+            ("time", wintypes.DWORD),
+            ("dwExtraInfo", ctypes.c_size_t),
+        )
+
+    class MOUSEINPUT(ctypes.Structure):
+        _fields_ = (
+            ("dx", wintypes.LONG),
+            ("dy", wintypes.LONG),
+            ("mouseData", wintypes.DWORD),
+            ("dwFlags", wintypes.DWORD),
+            ("time", wintypes.DWORD),
+            ("dwExtraInfo", ctypes.c_size_t),
+        )
+
+    class INPUT_UNION(ctypes.Union):
+        _fields_ = (("mi", MOUSEINPUT), ("ki", KEYBDINPUT))
+
+    class INPUT(ctypes.Structure):
+        _fields_ = (("type", wintypes.DWORD), ("union", INPUT_UNION))
+
+        @property
+        def ki(self):
+            return self.union.ki
+
+    return KEYBDINPUT, INPUT_UNION, INPUT
+
+
+def _input_size():
+    """获取本机 INPUT 结构大小"""
+    import ctypes
+
+    _, _, input_type = _input_types()
+    return ctypes.sizeof(input_type)
+
+
+def capture_foreground_window():
+    """捕获当前 Windows 前台窗口句柄"""
+    if platform.system() != "Windows":
+        return None
+    try:
+        hwnd = _get_windows_user32().GetForegroundWindow()
+        return hwnd or None
+    except Exception:
+        return None
+
+
+def try_paste_into_window(hwnd):
+    """确认目标仍在前台后向其发送一次 Ctrl+V"""
+    if platform.system() != "Windows" or not hwnd:
+        return False
+    try:
+        import ctypes
+        from ctypes import wintypes
+
+        user32 = _get_windows_user32()
+        if not user32.IsWindow(hwnd):
+            return False
+        if user32.GetForegroundWindow() != hwnd:
+            return False
+        keybdinput, input_union, input_type = _input_types()
+        if hasattr(user32.SendInput, "argtypes"):
+            user32.SendInput.argtypes = (
+                wintypes.UINT,
+                ctypes.POINTER(input_type),
+                ctypes.c_int,
+            )
+            user32.SendInput.restype = wintypes.UINT
+        inputs = (input_type * 4)(
+            input_type(1, input_union(ki=keybdinput(0x11, 0, 0, 0, 0))),
+            input_type(1, input_union(ki=keybdinput(0x56, 0, 0, 0, 0))),
+            input_type(1, input_union(ki=keybdinput(0x56, 0, 0x0002, 0, 0))),
+            input_type(1, input_union(ki=keybdinput(0x11, 0, 0x0002, 0, 0))),
+        )
+        return user32.SendInput(4, inputs, ctypes.sizeof(input_type)) == 4
+    except Exception as e:
+        logger.warning("auto paste input error: %s", e)
+        return False
 
 
 def is_wsl() -> bool:
