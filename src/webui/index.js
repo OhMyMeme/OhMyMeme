@@ -1573,7 +1573,7 @@ let dragState = null;
 const titlebar = document.getElementById('titlebar');
 titlebar.addEventListener('mousedown', async (e) => {
   if (e.button !== 0) return;
-  if (e.target.closest('.title-btn')) return;
+  if (e.target.closest('.title-btn') || e.target.closest('.icon-btn')) return;
   const nativeDrag = await api('start_window_drag', e.button + 1, e.screenX, e.screenY);
   if (nativeDrag) return;   // Linux：交给合成器拖动
   dragState = { sx: e.screenX, sy: e.screenY };
@@ -1621,7 +1621,10 @@ document.addEventListener('DOMContentLoaded', async () => {
   initDragReorder();
   initHScroll('tagbar');
   const dragSortBtn = document.getElementById('drag-sort-toggle');
-  if (dragSortBtn) dragSortBtn.addEventListener('click', toggleDragSort);
+  if (dragSortBtn) {
+    dragSortBtn.addEventListener('click', toggleDragSort);
+    dragSortBtn.addEventListener('mousedown', function(e) { e.stopPropagation(); });
+  }
   const sidebarBtn = document.getElementById('sidebar-toggle');
   if (sidebarBtn) sidebarBtn.addEventListener('click', toggleSidebar);
   const gridWrap = document.getElementById('grid-wrap');
