@@ -124,6 +124,7 @@ class Config:
         "hover_to_play": False,
         "try_original_image": False,
         "show_uncategorized": True,  # 显示「未分类」分组
+        "record_recent_use": True,  # 复制时记录最近使用
     }
 
     def __init__(self, path: Path = None):

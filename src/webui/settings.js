@@ -204,6 +204,8 @@ async function getSettings() {
   if (ss) ss.checked = s.silent_start === true;
   const unc = document.getElementById('s-show-uncategorized');
   if (unc) unc.checked = s.show_uncategorized !== false;
+  const rec = document.getElementById('s-record-recent');
+  if (rec) rec.checked = s.record_recent_use !== false;
   toggleSilentStart();
   const ff = document.getElementById('s-sync-fetch');
   const sa = document.getElementById('s-sync-auto');
@@ -436,6 +438,7 @@ async function saveSettings() {
   const auto_start = document.getElementById('s-auto-start')?.checked === true;
   const silent_start = document.getElementById('s-silent-start')?.checked === true;
   const show_uncategorized = document.getElementById('s-show-uncategorized')?.checked !== false;
+  const record_recent_use = document.getElementById('s-record-recent')?.checked !== false;
   const sync = collectSyncSettings();
   if (!validateSync(sync)) return;
   const lan_port = parseInt(document.getElementById('s-lan-port')?.value) || 17852;
@@ -445,7 +448,7 @@ async function saveSettings() {
     hotkey, hotkey_show_at_mouse, auto_play_gif: gif, hover_to_play: hover_play,
     try_original_image: try_original,  // DeepSeek V4 Flash
     copy_resize_mode: copy_mode,
-    auto_start, silent_start, show_uncategorized,
+    auto_start, silent_start, show_uncategorized, record_recent_use,
     lan_port, lan_secret,
     ...sync
   });
@@ -515,6 +518,8 @@ async function resetSettings() {
     if (ud) ud.checked = true;
     if (dp) dp.checked = true;
     if (dd) dd.checked = true;
+    const rec = document.getElementById('s-record-recent');
+    if (rec) rec.checked = true;
     const lport = document.getElementById('s-lan-port');
     if (lport) lport.value = '17852';
     const lsec = document.getElementById('s-lan-secret');

@@ -472,9 +472,10 @@ function initDragReorder() {
     const card = e.target.closest('.meme-card:not(.folder-card)');
     if (!card) return;
     const q = document.getElementById('search').value.trim();
-    if (q || activeTags.size > 0) return; // 搜索/筛选时禁止拖拽
-    // 排序开启时仅可排序视图记录 memeDrag；排序关闭时允许原生拖出
-    if (dragSortEnabled && !canReorderMemes()) return;
+    const filtering = !!(q || activeTags.size > 0);
+    // 搜索/筛选时仅允许原生拖出（拖拽使用），不参与排序；
+    // 非搜索状态：排序开启时仅可排序视图记录 memeDrag，排序关闭时允许原生拖出
+    if (!filtering && dragSortEnabled && !canReorderMemes()) return;
     const rect = card.getBoundingClientRect();
     memeDrag = {
       card,
@@ -483,10 +484,10 @@ function initDragReorder() {
       active: false,
       originalOrder: memes.slice(),
       base: rect,
-      // 排序关闭时用于原生拖拽（拖出到外部应用）的起点
+      // 搜索/筛选或排序关闭时用于原生拖拽（拖出到外部应用）的起点
       startX: e.clientX,
       startY: e.clientY,
-      natDrag: !dragSortEnabled,
+      natDrag: filtering || !dragSortEnabled,
     };
   };
 

@@ -451,7 +451,8 @@ class JsApi:
         ok = copy_image_to_clipboard(path)
         if not ok:
             return {"ok": False, "status": "copy_failed"}
-        self._db.record_use(meme_id)
+        if self._cfg.get("record_recent_use", True):
+            self._db.record_use(meme_id)
         self._webui.schedule_hide()
         return {"ok": True, "status": "copied"}
 
@@ -1061,6 +1062,7 @@ class JsApi:
             "show_download_progress": d.get("show_download_progress", True),
             "show_download_done": d.get("show_download_done", True),
             "show_uncategorized": d.get("show_uncategorized", True),
+            "record_recent_use": d.get("record_recent_use", True),
         }
 
     def save_settings(self, settings: dict):
@@ -1350,6 +1352,7 @@ class SettingsApi:
             "show_download_progress": d.get("show_download_progress", True),
             "show_download_done": d.get("show_download_done", True),
             "show_uncategorized": d.get("show_uncategorized", True),
+            "record_recent_use": d.get("record_recent_use", True),
             "tg_tdata_path": d.get("tg_tdata_path", ""),
             "hover_to_play": d.get("hover_to_play", False),
         }
@@ -1423,6 +1426,7 @@ class SettingsApi:
             "show_upload_done": True,
             "show_download_progress": True,
             "show_download_done": True,
+            "record_recent_use": True,
             "tg_tdata_path": self._cfg.get("tg_tdata_path", ""),
             "hover_to_play": self._cfg.get("hover_to_play", False),
         }
