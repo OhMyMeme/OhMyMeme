@@ -954,9 +954,33 @@ document.addEventListener('keydown', (e) => {
     const sub = document.getElementById('ctx-subgroup-menu');
     if ((menu && menu.classList.contains('show')) || (sub && sub.classList.contains('show'))) {
       hideCtxMenu();
-    } else {
-      hide();
+      return;
     }
+    const importOverlay = document.getElementById('import-overlay');
+    if (importOverlay && importOverlay.style.display === 'flex') {
+      closeImportMenu();
+      return;
+    }
+    const dropOverlay = document.getElementById('drop-overlay');
+    if (dropOverlay && dropOverlay.style.display === 'flex') {
+      dropOverlay.style.display = 'none';
+      return;
+    }
+    const syncOverlay = document.getElementById('sync-progress-overlay');
+    if (syncOverlay && syncOverlay.style.display === 'flex') {
+      return;
+    }
+    const syncDoneOverlay = document.getElementById('sync-done-overlay');
+    if (syncDoneOverlay && syncDoneOverlay.style.display === 'flex') {
+      syncDoneOverlay.style.display = 'none';
+      return;
+    }
+    const cbOverlay = document.getElementById('cb-overlay');
+    if (cbOverlay && cbOverlay.style.display === 'flex') {
+      cbClose();
+      return;
+    }
+    hide();
   }
 });
 
@@ -1278,7 +1302,7 @@ function showPrompt(title, defaultValue) {
     document.getElementById('modal-cancel').onclick = () => { cleanup(); resolve(null); };
     input.onkeydown = (e) => {
       if (e.key === 'Enter') { const v = input.value; cleanup(); resolve(v); }
-      if (e.key === 'Escape') { cleanup(); resolve(null); }
+      if (e.key === 'Escape') { e.stopPropagation(); cleanup(); resolve(null); }
     };
   });
 }
@@ -1341,7 +1365,7 @@ function showUpdateDialogFromMain(current, latest, url, notes) {
     }, 500);
   };
   document.getElementById('upd-later').onclick = () => { overlay.remove(); };
-  overlay.onkeydown = (e) => { if (e.key === 'Escape') overlay.remove(); };
+  overlay.onkeydown = (e) => { if (e.key === 'Escape') { e.stopPropagation(); overlay.remove(); } };
 }
 
 function showConfirm(title, message) {
@@ -1362,7 +1386,7 @@ function showConfirm(title, message) {
     const cleanup = () => { overlay.remove(); };
     document.getElementById('modal-confirm').onclick = () => { cleanup(); resolve(true); };
     document.getElementById('modal-cancel').onclick = () => { cleanup(); resolve(false); };
-    overlay.onkeydown = (e) => { if (e.key === 'Escape') { cleanup(); resolve(false); } };
+    overlay.onkeydown = (e) => { if (e.key === 'Escape') { e.stopPropagation(); cleanup(); resolve(false); } };
   });
 }
 
@@ -1431,7 +1455,7 @@ async function showUploadWarning() {
       cleanup(); resolve(true);
     };
     document.getElementById('modal-cancel').onclick = () => { cleanup(); resolve(false); };
-    overlay.onkeydown = (e) => { if (e.key === 'Escape') { cleanup(); resolve(false); } };
+    overlay.onkeydown = (e) => { if (e.key === 'Escape') { e.stopPropagation(); cleanup(); resolve(false); } };
   });
 }
 
@@ -2013,7 +2037,7 @@ document.getElementById('cb-name').addEventListener('keydown', (e) => {
       cbCloseDropdown();
     }
   }
-  if (e.key === 'Escape') cbCloseDropdown();
+  if (e.key === 'Escape') { e.stopPropagation(); cbCloseDropdown(); }
 });
 
 let cbSearchTimer;

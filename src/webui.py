@@ -1607,6 +1607,28 @@ class SettingsApi:
     def cancel_tg_import(self):
         tg_stickers.cancel_tg_import()
 
+    def start_douyin_import(self, cookie: str) -> dict:
+        """启动抖音表情包下载导入（全部下载）"""
+        try:
+            from . import douyin
+        except ImportError as e:
+            return {"ok": False, "error": f"缺少依赖: {e}"}
+
+        started = douyin.start_douyin_import(self._webui, cookie)
+        if not started:
+            return {"ok": False, "error": "已有导入任务正在进行"}
+        return {"ok": True}
+
+    def get_douyin_import_progress(self) -> dict:
+        from . import douyin
+
+        return douyin.get_douyin_progress()
+
+    def cancel_douyin_import(self):
+        from . import douyin
+
+        douyin.cancel_douyin_import()
+
     def pick_wechat_root(self):
         """手动选择微信文件根目录"""
         try:
