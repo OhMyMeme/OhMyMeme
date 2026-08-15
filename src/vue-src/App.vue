@@ -34,6 +34,30 @@ let dragState: { sx: number; sy: number } | null = null
 
 const gridCols = computed(() => sidebarCollapsed.value ? 5 : 4)
 
+// 当前分组（正 ID）下的子分组列表，用于网格顶部显示文件夹卡片
+const folderCards = computed(() => {
+  if (!state.activeCollection || state.activeCollection < 0) return []
+  const find = (items: any[]): any[] => {
+    for (const c of items) {
+      if (c.id === state.activeCollection) return c.children || []
+      if (c.children && c.children.length) {
+        const r = find(c.children)
+        if (r.length) return r
+      }
+    }
+    return []
+  }
+  return find(state.collections)
+})
+
+function onFolderCardClick(childId: number) {
+  setActiveCollection(childId)
+}
+
+function onFolderCardContext(e: MouseEvent, childId: number, childName: string) {
+  onFolderRightClick(e, childId, childName)
+}
+
 async function handleCopy(meme: Meme) {
   if (ignoreClick) { ignoreClick = false; return }
   const ok = await copyMeme(meme.id, meme.filename)
@@ -419,6 +443,22 @@ onUnmounted(() => {
         </div>
 
         <div id="grid-wrap">
+          <div v-if="folderCards.length" class="meme-grid folder-grid" :style="{ gridTemplateColumns: `repeat(${gridCols}, 1fr)` }">
+            <div
+              v-for="child in folderCards"
+              :key="'folder-' + child.id"
+              class="meme-card folder-card"
+              :data-folder-id="child.id"
+              @click="onFolderCardClick(child.id)"
+              @contextmenu="onFolderCardContext($event, child.id, child.name)"
+            >
+              <div class="folder-preview">
+                <svg viewBox="0 0 24 24" width="32" height="32" fill="none" stroke="var(--accent)" stroke-width="1.5"><path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"/></svg>
+                <span class="folder-name">{{ child.name }}</span>
+              </div>
+            </div>
+          </div>
+
           <TransitionGroup
             id="meme-grid"
             tag="div"

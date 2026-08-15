@@ -402,6 +402,41 @@ body {
   opacity: 1;
 }
 
+.folder-grid {
+  margin-bottom: 10px;
+}
+
+.folder-card {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  min-height: 120px;
+}
+
+.folder-card:hover {
+  border-color: var(--accent);
+  background: var(--surface-2);
+}
+
+.folder-preview {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex-direction: column;
+  gap: 4px;
+  padding: 16px;
+}
+
+.folder-name {
+  font-size: 11px;
+  color: var(--fg-secondary);
+  text-align: center;
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
 .meme-card img {
   width: 100%;
   aspect-ratio: 1;
