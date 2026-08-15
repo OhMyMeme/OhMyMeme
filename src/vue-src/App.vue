@@ -1,16 +1,23 @@
 <script setup lang="ts">
 import { ref, onMounted, onUnmounted, computed } from 'vue'
-import { useMemes } from './composables/useMemes'
+import { useMemes, useDragSort } from './composables/useMemes'
 import { useContextMenu } from './composables/useContextMenu'
 import { useCollectionBuilder } from './composables/useCollectionBuilder'
 import ContextMenu from './components/ContextMenu.vue'
 import CollectionBuilder from './components/CollectionBuilder.vue'
-import { VueDraggableNext } from 'vue-draggable-next'
 import type { Meme } from './types'
 
-const { state, setMemes, search, goToPage, setSearch, toggleTag, setActiveCollection, refreshTags, refreshCollections, copyMeme, onSortChange, startNativeDrag, loadInitData, canReorder } = useMemes()
+const { state, setMemes, search, goToPage, setSearch, toggleTag, setActiveCollection, refreshTags, refreshCollections, copyMeme, reorderMemes, canReorder, startNativeDrag, loadInitData } = useMemes()
 const ctx = useContextMenu()
 const cb = useCollectionBuilder()
+
+const drag = useDragSort(
+  () => state.memes,
+  setMemes,
+  canReorder,
+  () => dragSortEnabled.value,
+  startNativeDrag,
+)
 
 const sidebarCollapsed = ref(false)
 const sortEnabled = ref(false)
@@ -48,25 +55,17 @@ function debounceSearch() {
   searchTimer = setTimeout(() => search(), 300)
 }
 
-function openSettings() {
-  settingsVisible.value = true
-}
-
-function closeSettings() {
-  settingsVisible.value = false
-}
-
-function toggleSidebar() {
-  sidebarCollapsed.value = !sidebarCollapsed.value
-}
+function openSettings() { settingsVisible.value = true }
+function closeSettings() { settingsVisible.value = false }
+function toggleSidebar() { sidebarCollapsed.value = !sidebarCollapsed.value }
 
 function toggleSort() {
   sortEnabled.value = !sortEnabled.value
+  if (sortEnabled.value) drag.enable()
+  else drag.disable()
 }
 
-function showImportMenu() {
-  showToast('导入功能开发中...')
-}
+function showImportMenu() { showToast('导入功能开发中...') }
 
 function rescanCache() {
   showToast('缓存刷新中...')
@@ -75,9 +74,7 @@ function rescanCache() {
 }
 
 function hideWindow() {
-  try {
-    window.pywebview?.api?.hide_window()
-  } catch (_) {}
+  try { window.pywebview?.api?.hide_window() } catch (_) {}
 }
 
 async function onTitlebarMouseDown(e: MouseEvent) {
@@ -96,17 +93,13 @@ function onWindowMouseMove(e: MouseEvent) {
   const dx = e.screenX - dragState.sx
   const dy = e.screenY - dragState.sy
   if (dx !== 0 || dy !== 0) {
-    try {
-      window.pywebview?.api?.move_window(dx, dy)
-    } catch (_) {}
+    try { window.pywebview?.api?.move_window(dx, dy) } catch (_) {}
     dragState.sx = e.screenX
     dragState.sy = e.screenY
   }
 }
 
-function onWindowMouseUp() {
-  dragState = null
-}
+function onWindowMouseUp() { dragState = null }
 
 function onMemeRightClick(e: MouseEvent, meme: Meme) {
   e.preventDefault()
@@ -136,116 +129,83 @@ async function onCtxAction(action: string) {
   switch (action) {
     case 'rename': {
       const name = prompt('重命名', t.memeName || '')
-      if (name && name !== t.memeName) {
-        await window.pywebview?.api?.rename_meme(t.memeId, name)
-        search()
-      }
+      if (name && name !== t.memeName) { await window.pywebview?.api?.rename_meme(t.memeId, name); search() }
       break
     }
-    case 'favorite': {
-      await window.pywebview?.api?.toggle_favorite(t.memeId)
-      search()
-      break
-    }
+    case 'favorite': { await window.pywebview?.api?.toggle_favorite(t.memeId); search(); break }
     case 'tag': {
       const tag = prompt('输入标签（多个用逗号分隔）')
-      if (tag) {
-        await window.pywebview?.api?.set_meme_tags(t.memeId, tag.split(',').map((s: string) => s.trim()).filter(Boolean))
-        refreshTags()
-        search()
-      }
+      if (tag) { await window.pywebview?.api?.set_meme_tags(t.memeId, tag.split(',').map((s: string) => s.trim()).filter(Boolean)); refreshTags(); search() }
       break
     }
-    case 'collection': {
-      showCollectionBuilder()
-      break
-    }
+    case 'collection': { showCollectionBuilder(); break }
     case 'delete': {
-      if (confirm('确定删除这个表情包吗？')) {
-        await window.pywebview?.api?.delete_meme(t.memeId)
-        search()
-        refreshCollections()
-      }
+      if (confirm('确定删除这个表情包吗？')) { await window.pywebview?.api?.delete_meme(t.memeId); search(); refreshCollections() }
       break
     }
     case 'rename-collection': {
       const name = prompt('重命名分组', t.folderName || '')
-      if (name && name !== t.folderName) {
-        await window.pywebview?.api?.rename_collection(t.folderId, name)
-        refreshCollections()
-      }
+      if (name && name !== t.folderName) { await window.pywebview?.api?.rename_collection(t.folderId, name); refreshCollections() }
       break
     }
     case 'delete-collection': {
-      if (confirm('确定删除这个分组吗？')) {
-        await window.pywebview?.api?.delete_collection(t.folderId)
-        refreshCollections()
-      }
+      if (confirm('确定删除这个分组吗？')) { await window.pywebview?.api?.delete_collection(t.folderId); refreshCollections() }
       break
     }
-    default:
-      showToast(`${action} 功能开发中`)
+    default: showToast(`${action} 功能开发中`)
   }
 }
 
 async function showCollectionBuilder() {
   cb.open(async (name, memeIds) => {
     const result = await window.pywebview?.api?.create_collection_with_memes(name, memeIds)
-    if (result?.ok) {
-      showToast('分组已创建')
-      refreshCollections()
-      search()
-    } else {
-      showToast('创建失败')
-    }
+    if (result?.ok) { showToast('分组已创建'); refreshCollections(); search() }
+    else showToast('创建失败')
   })
 }
+
+const hoverTimers = new Map<number, ReturnType<typeof setTimeout>>()
 
 function onCardMouseEnter(meme: Meme) {
   if (!meme.is_animated || !meme.hover_to_play || meme.auto_play_gif) return
   const timer = setTimeout(() => {
     const img = document.querySelector(`.meme-card[data-meme-id="${meme.id}"] img`) as HTMLImageElement
-    if (img) {
-      img.dataset.thumb = img.src
-      img.src = `/api/original/${meme.id}/${encodeURIComponent(meme.filename)}`
-    }
+    if (img) { img.dataset.thumb = img.src; img.src = `/api/original/${meme.id}/${encodeURIComponent(meme.filename)}` }
   }, 150)
   hoverTimers.set(meme.id, timer)
 }
 
 function onCardMouseLeave(meme: Meme) {
   const timer = hoverTimers.get(meme.id)
-  if (timer) {
-    clearTimeout(timer)
-    hoverTimers.delete(meme.id)
-  }
+  if (timer) { clearTimeout(timer); hoverTimers.delete(meme.id) }
   if (!meme.is_animated || !meme.hover_to_play || meme.auto_play_gif) return
   const img = document.querySelector(`.meme-card[data-meme-id="${meme.id}"] img`) as HTMLImageElement
-  if (img && img.dataset.thumb) {
-    img.src = img.dataset.thumb
-  }
+  if (img && img.dataset.thumb) img.src = img.dataset.thumb
 }
-
-const hoverTimers = new Map<number, ReturnType<typeof setTimeout>>()
 
 let nativeDragStart: { x: number; y: number; memeId: number } | null = null
 
-function onCardMouseDown(e: MouseEvent, memeId: number) {
-  if (sortEnabled.value || e.button !== 0) return
-  nativeDragStart = { x: e.clientX, y: e.clientY, memeId }
+function onCardPointerDown(e: PointerEvent, meme: Meme, card: HTMLElement) {
+  if (sortEnabled.value && canReorder()) {
+    drag.onPointerDown(e, meme.id, card)
+    return
+  }
+  if (e.button !== 0) return
+  nativeDragStart = { x: e.clientX, y: e.clientY, memeId: meme.id }
 }
 
-function onCardMouseMove(e: MouseEvent) {
+function onCardPointerMove(e: PointerEvent) {
+  if (drag.dragState.memeId) {
+    drag.onPointerMove(e)
+    return
+  }
   if (!nativeDragStart || sortEnabled.value) return
   const dist = Math.hypot(e.clientX - nativeDragStart.x, e.clientY - nativeDragStart.y)
-  if (dist > 8) {
-    const id = nativeDragStart.memeId
-    nativeDragStart = null
-    startNativeDrag(id)
-  }
+  if (dist > 8) { const id = nativeDragStart.memeId; nativeDragStart = null; startNativeDrag(id) }
 }
 
-function onCardMouseUp() {
+function onCardPointerUp() {
+  if (drag.dragState.memeId) { drag.onPointerUp(); return }
   nativeDragStart = null
 }
 
@@ -265,34 +225,24 @@ function onDragLeave(e: DragEvent) {
   e.preventDefault()
   if (nativeDragActive) return
   dragCounter--
-  if (dragCounter <= 0) {
-    dragCounter = 0
-    dragOver.value = false
-  }
+  if (dragCounter <= 0) { dragCounter = 0; dragOver.value = false }
 }
 
 async function onDrop(e: DragEvent) {
   e.preventDefault()
-  if (nativeDragActive) {
-    dragCounter = 0
-    dragOver.value = false
-    return
-  }
+  if (nativeDragActive) { dragCounter = 0; dragOver.value = false; return }
   dragCounter = 0
   dragOver.value = false
   const dt = e.dataTransfer
   if (!dt) return
-
   let uri = ''
   let file: File | null = null
-
   if (!uri) { try { uri = dt.getData('text/uri-list') || '' } catch (_) {} }
   if (!uri) { try { uri = dt.getData('text/plain') || '' } catch (_) {} }
   uri = uri.trim()
-
   if (!uri) {
     try {
-      if (dt.items && dt.items.length) {
+      if (dt.items?.length) {
         for (let i = 0; i < dt.items.length; i++) {
           const item = dt.items[i]
           if (item.kind === 'string' && item.type === 'text/html') {
@@ -305,11 +255,10 @@ async function onDrop(e: DragEvent) {
       }
     } catch (_) {}
   }
-
-  if (!uri) { try { if (dt.files && dt.files.length) file = dt.files[0] } catch (_) {} }
+  if (!uri) { try { if (dt.files?.length) file = dt.files[0] } catch (_) {} }
   if (!uri && !file) {
     try {
-      if (dt.items && dt.items.length) {
+      if (dt.items?.length) {
         for (let i = 0; i < dt.items.length; i++) {
           const it = dt.items[i]
           if (it.kind === 'file') { file = it.getAsFile(); if (file) break }
@@ -317,19 +266,9 @@ async function onDrop(e: DragEvent) {
       }
     } catch (_) {}
   }
-
   if (uri) {
-    try {
-      const r = await window.pywebview?.api?.download_original_image(uri)
-      if (r && r.ok) {
-        showToast('导入成功')
-        search()
-        refreshCollections()
-        return
-      }
-    } catch (_) {}
+    try { const r = await window.pywebview?.api?.download_original_image(uri); if (r?.ok) { showToast('导入成功'); search(); refreshCollections(); return } } catch (_) {}
   }
-
   if (file) {
     try {
       const b64 = await new Promise<string>((resolve, reject) => {
@@ -338,16 +277,8 @@ async function onDrop(e: DragEvent) {
         reader.onerror = () => reject(reader.error)
         reader.readAsDataURL(file!)
       })
-      const res = await fetch('/api/upload/', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ files: [{ name: file.name, data: b64 }] }),
-      })
-      if (res.ok) {
-        showToast('导入成功')
-        search()
-        refreshCollections()
-      }
+      const res = await fetch('/api/upload/', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ files: [{ name: file.name, data: b64 }] }) })
+      if (res.ok) { showToast('导入成功'); search(); refreshCollections() }
     } catch (_) {}
   }
 }
@@ -411,9 +342,7 @@ onUnmounted(() => {
 
     <div id="content">
       <aside id="sidebar" :class="{ collapsed: sidebarCollapsed }">
-        <div id="sidebar-header">
-          <span v-if="!sidebarCollapsed">分组</span>
-        </div>
+        <div id="sidebar-header"><span v-if="!sidebarCollapsed">分组</span></div>
         <div id="tree">
           <div v-for="c in state.collections" :key="c.id" class="tree-node">
             <div class="tree-row" :class="{ active: state.activeCollection === c.id }" @click="setActiveCollection(c.id)" @contextmenu="onFolderRightClick($event, c.id, c.name)">
@@ -427,54 +356,27 @@ onUnmounted(() => {
 
       <div id="main">
         <div id="tagbar">
-          <span v-for="tag in state.allTags" :key="tag" class="tag" :class="{ active: state.activeTags.has(tag) }" @click="toggleTag(tag)">
-            {{ tag }}
-          </span>
+          <span v-for="tag in state.allTags" :key="tag" class="tag" :class="{ active: state.activeTags.has(tag) }" @click="toggleTag(tag)">{{ tag }}</span>
         </div>
 
         <div id="grid-wrap">
-          <VueDraggableNext
-            v-if="sortEnabled && canReorder()"
-            :model-value="state.memes"
-            item-key="id"
+          <div
+            id="meme-grid"
             class="meme-grid"
-            ghost-class="meme-ghost"
-            chosen-class="meme-chosen"
-            drag-class="meme-dragging"
-            :animation="200"
+            :class="{ 'sort-enabled': sortEnabled && canReorder() }"
             :style="{ gridTemplateColumns: `repeat(${gridCols}, 1fr)` }"
-            @update:model-value="setMemes($event)"
-            @change="onSortChange"
           >
-            <template #item="{ element }">
-              <div
-                class="meme-card"
-                :data-meme-id="element.id"
-                @click="handleCopy(element)"
-                @contextmenu="onMemeRightClick($event, element)"
-                @mousedown="onCardMouseDown($event, element.id)"
-                @mousemove="onCardMouseMove($event)"
-                @mouseup="onCardMouseUp()"
-                @mouseenter="onCardMouseEnter(element)"
-                @mouseleave="onCardMouseLeave(element)"
-              >
-                <img :src="`/api/thumb/${element.id}/${encodeURIComponent(element.filename)}`" :alt="element.name" loading="lazy">
-                <span class="meme-name">{{ element.name }}</span>
-              </div>
-            </template>
-          </VueDraggableNext>
-
-          <div v-else class="meme-grid" :style="{ gridTemplateColumns: `repeat(${gridCols}, 1fr)` }">
             <div
               v-for="meme in state.memes"
               :key="meme.id"
               class="meme-card"
+              :class="{ 'dragging': drag.dragState.active && drag.dragState.memeId === meme.id }"
               :data-meme-id="meme.id"
               @click="handleCopy(meme)"
               @contextmenu="onMemeRightClick($event, meme)"
-              @mousedown="onCardMouseDown($event, meme.id)"
-              @mousemove="onCardMouseMove($event)"
-              @mouseup="onCardMouseUp()"
+              @pointerdown="onCardPointerDown($event, meme, $event.currentTarget as HTMLElement)"
+              @pointermove="onCardPointerMove($event)"
+              @pointerup="onCardPointerUp()"
               @mouseenter="onCardMouseEnter(meme)"
               @mouseleave="onCardMouseLeave(meme)"
             >
@@ -482,11 +384,11 @@ onUnmounted(() => {
               <span class="meme-name">{{ meme.name }}</span>
             </div>
           </div>
-        </div>
 
-        <div v-if="state.memes.length === 0 && !state.loading" id="empty">
-          <div class="icon">_(:3 」∠)_</div>
-          <div class="text">还没有表情包，点击「导入」添加</div>
+          <div v-if="state.memes.length === 0 && !state.loading" id="empty">
+            <div class="icon">_(:3 」∠)_</div>
+            <div class="text">还没有表情包，点击「导入」添加</div>
+          </div>
         </div>
 
         <div v-if="state.pageCount > 1" id="pager">
@@ -499,58 +401,25 @@ onUnmounted(() => {
   </div>
 
   <CollectionBuilder @confirm="showCollectionBuilder" />
-
   <ContextMenu
-    :visible="ctx.visible.value"
-    :x="ctx.x.value"
-    :y="ctx.y.value"
-    :items="ctx.items.value"
-    :trigger="ctx.trigger.value"
-    :submenu-visible="ctx.submenuVisible.value"
-    :submenu-items="ctx.submenuItems.value"
-    :submenu-x="ctx.submenuX.value"
-    :submenu-y="ctx.submenuY.value"
-    @action="onCtxAction"
-    @close="ctx.hide"
+    :visible="ctx.visible.value" :x="ctx.x.value" :y="ctx.y.value"
+    :items="ctx.items.value" :trigger="ctx.trigger.value"
+    :submenu-visible="ctx.submenuVisible.value" :submenu-items="ctx.submenuItems.value"
+    :submenu-x="ctx.submenuX.value" :submenu-y="ctx.submenuY.value"
+    @action="onCtxAction" @close="ctx.hide"
   />
 
   <div id="drop-overlay" :class="{ 'drag-over': dragOver }">
-    <div class="drop-content">
-      <div class="drop-icon">📁</div>
-      <div class="drop-text">拖放图片到此处导入</div>
-    </div>
+    <div class="drop-content"><div class="drop-icon">📁</div><div class="drop-text">拖放图片到此处导入</div></div>
   </div>
 
   <div v-if="settingsVisible" id="settings-overlay" @click.self="closeSettings">
     <div class="settings-panel">
-      <div class="settings-header">
-        <h2>设置</h2>
-        <button class="icon-btn" @click="closeSettings">×</button>
-      </div>
+      <div class="settings-header"><h2>设置</h2><button class="icon-btn" @click="closeSettings">×</button></div>
       <div class="settings-body">
-        <div class="settings-section">
-          <h3>全局快捷键</h3>
-          <div class="settings-row">
-            <label>呼出窗口</label>
-            <input type="text" value="Ctrl+Alt+N" readonly>
-          </div>
-        </div>
-        <div class="settings-section">
-          <h3>复制处理</h3>
-          <div class="settings-row">
-            <label>处理模式</label>
-            <select>
-              <option>不处理</option>
-              <option selected>WebP 缩放</option>
-              <option>转 GIF</option>
-              <option>GIF 隐写原图</option>
-            </select>
-          </div>
-        </div>
-        <div class="settings-section">
-          <h3>导入</h3>
-          <button class="btn btn-primary" style="width:100%">从抖音下载表情</button>
-        </div>
+        <div class="settings-section"><h3>全局快捷键</h3><div class="settings-row"><label>呼出窗口</label><input type="text" value="Ctrl+Alt+N" readonly></div></div>
+        <div class="settings-section"><h3>复制处理</h3><div class="settings-row"><label>处理模式</label><select><option>不处理</option><option selected>WebP 缩放</option><option>转 GIF</option><option>GIF 隐写原图</option></select></div></div>
+        <div class="settings-section"><h3>导入</h3><button class="btn btn-primary" style="width:100%">从抖音下载表情</button></div>
       </div>
     </div>
   </div>

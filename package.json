@@ -10,8 +10,7 @@
   },
   "dependencies": {
     "jsdom": "^30.0.1",
-    "vue": "^3.5.0",
-    "vue-draggable-next": "^2.3.0"
+    "vue": "^3.5.0"
   },
   "devDependencies": {
     "@vitejs/plugin-vue": "^5.2.0",

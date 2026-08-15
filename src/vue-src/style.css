@@ -348,28 +348,31 @@ body {
   cursor: grabbing;
 }
 
-.meme-grid {
+#meme-grid {
   display: grid;
   gap: 10px;
   align-content: start;
+  transition: padding 0.2s;
 }
 
-.meme-ghost {
-  opacity: 0.4;
-  background: var(--surface-2);
-  border-radius: var(--radius);
+#meme-grid.sort-enabled .meme-card {
+  cursor: grab;
+  transition: transform 0.1s, box-shadow 0.1s;
 }
 
-.meme-chosen {
-  box-shadow: 0 0 0 3px var(--primary), 0 4px 12px rgba(99, 102, 241, 0.3);
-  transform: scale(1.02);
+#meme-grid.sort-enabled .meme-card:hover {
+  box-shadow: 0 0 0 2px rgba(99, 102, 241, 0.3);
 }
 
-.meme-dragging {
-  opacity: 0.9;
-  transform: scale(0.95);
+#meme-grid.sort-enabled .meme-card:active {
+  cursor: grabbing;
+}
+
+.meme-card.dragging {
+  opacity: 0.6;
+  cursor: grabbing !important;
   box-shadow: 0 8px 24px rgba(0, 0, 0, 0.4);
-  z-index: 10;
+  border-color: var(--primary) !important;
 }
 
 .meme-card img {

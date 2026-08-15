@@ -1,12 +1,12 @@
 import { reactive, ref, readonly } from 'vue'
 import { api } from '../utils/api'
-import type { Meme, Collection } from './types'
+import type { Meme } from '../types'
 
 const MEME_PAGE = 200
 
 const state = reactive({
   memes: [] as Meme[],
-  collections: [] as Collection[],
+  collections: [] as any[],
   activeCollection: null as number | null,
   activeTags: new Set<string>(),
   allTags: [] as string[],
@@ -43,7 +43,6 @@ export function useMemes() {
     const gen = ++searchGen
     if (resetPage) state.page = 1
     state.loading = true
-
     const offset = (state.page - 1) * MEME_PAGE
     try {
       const [countResult, memesResult] = await Promise.all([
@@ -74,43 +73,23 @@ export function useMemes() {
     }
   }
 
-  function setSearch(q: string) {
-    state.searchQuery = q
-  }
-
+  function setSearch(q: string) { state.searchQuery = q }
   function toggleTag(tag: string) {
     if (state.activeTags.has(tag)) state.activeTags.delete(tag)
     else state.activeTags.add(tag)
     search()
   }
-
   function setActiveCollection(id: number | null) {
     if (state.activeCollection === id) state.activeCollection = null
     else state.activeCollection = id
     search()
   }
-
-  async function refreshTags() {
-    try {
-      state.allTags = (await api('get_tags')) || []
-    } catch (e) {
-      state.allTags = []
-    }
-  }
-
-  async function refreshCollections() {
-    try {
-      state.collections = (await api('get_collections')) || []
-    } catch (e) {
-      state.collections = []
-    }
-  }
-
+  async function refreshTags() { try { state.allTags = (await api('get_tags')) || [] } catch { state.allTags = [] } }
+  async function refreshCollections() { try { state.collections = (await api('get_collections')) || [] } catch { state.collections = [] } }
   async function copyMeme(id: number, filename: string): Promise<boolean> {
     const result = await api('copy_meme', id)
     return !!result?.ok
   }
-
   async function reorderMemes(orderedIds: number[]): Promise<boolean> {
     const collectionId = state.activeCollection && state.activeCollection > 0 ? state.activeCollection : null
     const result = collectionId
@@ -118,6 +97,7 @@ export function useMemes() {
       : await api('reorder_memes', orderedIds)
     return !!result
   }
+  function setMemes(newMemes: Meme[]) { state.memes = newMemes }
 
   function canReorder(): boolean {
     const q = state.searchQuery.trim()
@@ -125,24 +105,8 @@ export function useMemes() {
     return state.activeCollection === null || state.activeCollection > 0
   }
 
-  function setMemes(newMemes: Meme[]) {
-    state.memes = newMemes
-  }
-
-  async function onSortChange(evt: any) {
-    if (evt.moved) {
-      const ok = await reorderMemes(state.memes.map((m: Meme) => m.id))
-      if (!ok) search()
-    }
-  }
-
   async function startNativeDrag(memeId: number): Promise<boolean> {
-    try {
-      const result = await api('start_native_drag', memeId)
-      return !!result
-    } catch {
-      return false
-    }
+    try { return !!await api('start_native_drag', memeId) } catch { return false }
   }
 
   return {
@@ -158,10 +122,87 @@ export function useMemes() {
     copyMeme,
     reorderMemes,
     canReorder,
-    onSortChange,
     startNativeDrag,
     loadInitData,
     waitForPywebview,
     MEME_PAGE,
+  }
+}
+
+const dragSortEnabled = ref(false)
+const dragState = reactive({
+  active: false,
+  memeId: null as number | null,
+  card: null as HTMLElement | null,
+  offX: 0,
+  offY: 0,
+  base: null as DOMRect | null,
+  startX: 0,
+  startY: 0,
+  originalOrder: [] as Meme[],
+})
+
+export function useDragSort(
+  getMemes: () => Meme[],
+  setMemesFn: (m: Meme[]) => void,
+  canReorderFn: () => boolean,
+  getSortEnabled: () => boolean,
+  startNativeDragFn: (id: number) => Promise<boolean>,
+) {
+  function enable() { dragSortEnabled.value = true }
+  function disable() { dragSortEnabled.value = false }
+  function toggle() { dragSortEnabled.value = !dragSortEnabled.value }
+
+  function onPointerDown(e: PointerEvent, memeId: number, card: HTMLElement) {
+    if (e.button !== 0 || !getSortEnabled() || !canReorderFn()) return
+    const rect = card.getBoundingClientRect()
+    dragState.active = false
+    dragState.memeId = memeId
+    dragState.card = card
+    dragState.offX = e.clientX - rect.left
+    dragState.offY = e.clientY - rect.top
+    dragState.base = rect
+    dragState.startX = e.clientX
+    dragState.startY = e.clientY
+    dragState.originalOrder = [...getMemes()]
+  }
+
+  function onPointerMove(e: PointerEvent) {
+    const d = dragState
+    if (!d.memeId || !d.card) return
+    if (!d.active) {
+      const dist = Math.hypot(e.clientX - d.startX, e.clientY - d.startY)
+      if (dist <= 8) return
+      d.active = true
+      d.card.classList.add('dragging')
+    }
+    const dx = e.clientX - d.offX - d.base!.left
+    const dy = e.clientY - d.offY - d.base!.top
+    d.card.style.transform = `translate(${dx}px, ${dy}px) scale(0.90)`
+    d.card.style.zIndex = '10'
+  }
+
+  function onPointerUp() {
+    const d = dragState
+    if (!d.memeId) return
+    if (d.card) {
+      d.card.classList.remove('dragging')
+      d.card.style.transform = ''
+      d.card.style.zIndex = ''
+    }
+    d.active = false
+    d.memeId = null
+    d.card = null
+  }
+
+  return {
+    dragSortEnabled: readonly(dragSortEnabled),
+    dragState: readonly(dragState),
+    enable,
+    disable,
+    toggle,
+    onPointerDown,
+    onPointerMove,
+    onPointerUp,
   }
 }
