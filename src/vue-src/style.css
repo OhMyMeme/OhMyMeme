@@ -495,41 +495,6 @@ body {
   font-size: 13px;
 }
 
-/* Pager */
-#pager {
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  gap: 12px;
-  padding: 10px;
-  border-top: 1px solid var(--border);
-  flex-shrink: 0;
-}
-
-#pager button {
-  padding: 5px 12px;
-  border-radius: var(--radius-sm);
-  border: 1px solid var(--border);
-  background: var(--surface);
-  color: var(--fg);
-  cursor: pointer;
-  font-size: 13px;
-}
-
-#pager button:disabled {
-  opacity: 0.4;
-  cursor: not-allowed;
-}
-
-#pager button:not(:disabled):hover {
-  background: var(--surface-2);
-}
-
-.pager-info {
-  font-size: 12px;
-  color: var(--fg-secondary);
-}
-
 /* Settings Overlay */
 #settings-overlay {
   position: fixed;

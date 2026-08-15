@@ -8,6 +8,7 @@ import ContextMenu from './components/ContextMenu.vue'
 import CollectionBuilder from './components/CollectionBuilder.vue'
 import CollectionTreeNode from './components/CollectionTreeNode.vue'
 import ImportMenu from './components/ImportMenu.vue'
+import Pager from './components/Pager.vue'
 import SyncOverlay from './components/SyncOverlay.vue'
 import type { Meme } from './types'
 
@@ -444,6 +445,13 @@ onUnmounted(() => {
           <span v-for="tag in state.allTags" :key="tag" class="tag" :class="{ active: state.activeTags.has(tag) }" @click="toggleTag(tag)">{{ tag }}</span>
         </div>
 
+        <Pager
+          v-if="state.pageCount > 1"
+          :page="state.page"
+          :page-count="state.pageCount"
+          @go="goToPage"
+        />
+
         <div id="grid-wrap">
           <div v-if="folderCards.length" class="meme-grid folder-grid" :style="{ gridTemplateColumns: `repeat(${gridCols}, 1fr)` }">
             <div
@@ -492,12 +500,6 @@ onUnmounted(() => {
             <div class="icon">_(:3 」∠)_</div>
             <div class="text">还没有表情包，点击「导入」添加</div>
           </div>
-        </div>
-
-        <div v-if="state.pageCount > 1" id="pager">
-          <button :disabled="state.page <= 1" @click="goToPage(state.page - 1)">&lt;</button>
-          <span class="pager-info">{{ state.page }} / {{ state.pageCount }}</span>
-          <button :disabled="state.page >= state.pageCount" @click="goToPage(state.page + 1)">&gt;</button>
         </div>
       </div>
     </div>
