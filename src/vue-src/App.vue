@@ -6,6 +6,7 @@ import { useContextMenu } from './composables/useContextMenu'
 import { useCollectionBuilder } from './composables/useCollectionBuilder'
 import ContextMenu from './components/ContextMenu.vue'
 import CollectionBuilder from './components/CollectionBuilder.vue'
+import ImportMenu from './components/ImportMenu.vue'
 import type { Meme } from './types'
 
 const { state, setMemes, search, goToPage, setSearch, toggleTag, setActiveCollection, refreshTags, refreshCollections, copyMeme, reorderMemes, canReorder, startNativeDrag, loadInitData } = useMemes()
@@ -67,7 +68,17 @@ function toggleSort() {
   drag.toggle()
 }
 
-function showImportMenu() { showToast('导入功能开发中...') }
+const importMenu = ref<InstanceType<typeof ImportMenu> | null>(null)
+
+function showImportMenu() {
+  importMenu.value?.open()
+}
+
+function onImportDone() {
+  search()
+  refreshTags()
+  refreshCollections()
+}
 
 function rescanCache() {
   showToast('缓存刷新中...')
@@ -422,6 +433,7 @@ onUnmounted(() => {
   </div>
 
   <CollectionBuilder @confirm="showCollectionBuilder" />
+  <ImportMenu ref="importMenu" @imported="onImportDone" />
   <ContextMenu
     :visible="ctx.visible.value" :x="ctx.x.value" :y="ctx.y.value"
     :items="ctx.items.value" :trigger="ctx.trigger.value"
