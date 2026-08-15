@@ -954,9 +954,33 @@ document.addEventListener('keydown', (e) => {
     const sub = document.getElementById('ctx-subgroup-menu');
     if ((menu && menu.classList.contains('show')) || (sub && sub.classList.contains('show'))) {
       hideCtxMenu();
-    } else {
-      hide();
+      return;
     }
+    const importOverlay = document.getElementById('import-overlay');
+    if (importOverlay && importOverlay.style.display === 'flex') {
+      closeImportMenu();
+      return;
+    }
+    const dropOverlay = document.getElementById('drop-overlay');
+    if (dropOverlay && dropOverlay.style.display === 'flex') {
+      dropOverlay.style.display = 'none';
+      return;
+    }
+    const syncOverlay = document.getElementById('sync-progress-overlay');
+    if (syncOverlay && syncOverlay.style.display === 'flex') {
+      return;
+    }
+    const syncDoneOverlay = document.getElementById('sync-done-overlay');
+    if (syncDoneOverlay && syncDoneOverlay.style.display === 'flex') {
+      syncDoneOverlay.style.display = 'none';
+      return;
+    }
+    const cbOverlay = document.getElementById('cb-overlay');
+    if (cbOverlay && cbOverlay.style.display === 'flex') {
+      cbClose();
+      return;
+    }
+    hide();
   }
 });
 
