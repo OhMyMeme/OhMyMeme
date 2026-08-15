@@ -32,6 +32,7 @@ let dragState: { sx: number; sy: number } | null = null
 const gridCols = computed(() => sidebarCollapsed.value ? 5 : 4)
 
 async function handleCopy(meme: Meme) {
+  if (ignoreClick) { ignoreClick = false; return }
   const ok = await copyMeme(meme.id, meme.filename)
   if (ok) showToast(`${meme.name} 已复制`)
   else showToast('复制失败')
@@ -185,8 +186,10 @@ function onCardMouseLeave(meme: Meme) {
 }
 
 let nativeDragStart: { x: number; y: number; memeId: number } | null = null
+let ignoreClick = false
 
 function onCardPointerDown(e: PointerEvent, meme: Meme, card: HTMLElement) {
+  ignoreClick = false
   if (sortEnabled.value && canReorder()) {
     drag.onPointerDown(e, meme.id, card)
     return
@@ -195,7 +198,7 @@ function onCardPointerDown(e: PointerEvent, meme: Meme, card: HTMLElement) {
   nativeDragStart = { x: e.clientX, y: e.clientY, memeId: meme.id }
 }
 
-function onCardPointerMove(e: PointerEvent) {
+function onDocPointerMove(e: PointerEvent) {
   if (drag.dragState.memeId) {
     drag.onPointerMove(e)
     return
@@ -205,8 +208,17 @@ function onCardPointerMove(e: PointerEvent) {
   if (dist > 8) { const id = nativeDragStart.memeId; nativeDragStart = null; startNativeDrag(id) }
 }
 
-function onCardPointerUp() {
-  if (drag.dragState.memeId) { drag.onPointerUp(); return }
+async function onDocPointerUp(e: PointerEvent) {
+  if (drag.dragState.memeId) {
+    const wasActive = await drag.onPointerUp()
+    if (wasActive) ignoreClick = true
+    return
+  }
+  nativeDragStart = null
+}
+
+function onDocPointerCancel() {
+  if (drag.dragState.memeId) drag.cancel()
   nativeDragStart = null
 }
 
@@ -291,6 +303,10 @@ onMounted(() => {
   document.addEventListener('drop', onDrop)
   document.addEventListener('mousemove', onWindowMouseMove)
   document.addEventListener('mouseup', onWindowMouseUp)
+  document.addEventListener('pointermove', onDocPointerMove)
+  document.addEventListener('pointerup', onDocPointerUp)
+  document.addEventListener('pointercancel', onDocPointerCancel)
+  window.addEventListener('blur', onDocPointerCancel)
 })
 
 onUnmounted(() => {
@@ -300,6 +316,10 @@ onUnmounted(() => {
   document.removeEventListener('drop', onDrop)
   document.removeEventListener('mousemove', onWindowMouseMove)
   document.removeEventListener('mouseup', onWindowMouseUp)
+  document.removeEventListener('pointermove', onDocPointerMove)
+  document.removeEventListener('pointerup', onDocPointerUp)
+  document.removeEventListener('pointercancel', onDocPointerCancel)
+  window.removeEventListener('blur', onDocPointerCancel)
 })
 
 ;(async () => {
@@ -378,8 +398,6 @@ onUnmounted(() => {
               @click="handleCopy(meme)"
               @contextmenu="onMemeRightClick($event, meme)"
               @pointerdown="onCardPointerDown($event, meme, $event.currentTarget as HTMLElement)"
-              @pointermove="onCardPointerMove($event)"
-              @pointerup="onCardPointerUp()"
               @mouseenter="onCardMouseEnter(meme)"
               @mouseleave="onCardMouseLeave(meme)"
             >
