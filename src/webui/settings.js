@@ -1521,15 +1521,38 @@ document.addEventListener('keydown', (e) => {
       return;
     }
     const dyOverlay = document.getElementById('dy-import-overlay');
+    if (dyOverlay && dyOverlay.style.display === 'flex') {
+      closeDYOverlay();
+      return;
+    }
     const tgOverlay = document.getElementById('tg-import-overlay');
+    if (tgOverlay && tgOverlay.style.display === 'flex') {
+      closeTGOverlay();
+      return;
+    }
     const wechatOverlay = document.getElementById('wechat-import-overlay');
-    const importOverlay = document.getElementById('qq-import-overlay');
-    if (
-      (dyOverlay && dyOverlay.style.display === 'flex') ||
-      (tgOverlay && tgOverlay.style.display === 'flex') ||
-      (wechatOverlay && wechatOverlay.style.display === 'flex') ||
-      (importOverlay && importOverlay.style.display === 'flex')
-    ) {
+    if (wechatOverlay && wechatOverlay.style.display === 'flex') {
+      closeWechatOverlay();
+      return;
+    }
+    const qqOverlay = document.getElementById('qq-import-overlay');
+    if (qqOverlay && qqOverlay.style.display === 'flex') {
+      closeQQOverlay();
+      return;
+    }
+    const qqntOverlay = document.getElementById('qqnt-overlay');
+    if (qqntOverlay && qqntOverlay.style.display === 'flex') {
+      qqntOverlay.style.display = 'none';
+      return;
+    }
+    const syncOverlay = document.getElementById('sync-progress-overlay');
+    if (syncOverlay && syncOverlay.style.display === 'flex') {
+      hideSyncProgress();
+      return;
+    }
+    const syncDoneOverlay = document.getElementById('sync-done-overlay');
+    if (syncDoneOverlay && syncDoneOverlay.style.display === 'flex') {
+      syncDoneOverlay.style.display = 'none';
       return;
     }
     closeSettings();
