@@ -24,7 +24,7 @@ function onClick(action: string) {
 }
 
 function onSubmenuEnter(e: MouseEvent, action: string) {
-  if (action === 'collection' || action === 'add-to-subgroup') {
+  if (action === 'add-to-subgroup') {
     emit('show-submenu', [], e.clientX, e.clientY)
   }
 }

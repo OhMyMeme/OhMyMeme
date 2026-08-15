@@ -96,7 +96,11 @@ function onFolderCardClick(childId: number) {
 }
 
 function onFolderCardContext(e: MouseEvent, childId: number, childName: string) {
-  onFolderRightClick(e, childId, childName)
+  e.preventDefault()
+  e.stopPropagation()
+  ctx.show([
+    { action: 'delete-folder', label: '删除小分组', danger: true },
+  ], { folderId: childId, folderName: childName, isFolder: true }, e.clientX, e.clientY)
 }
 
 async function handleCopy(meme: Meme) {
@@ -203,23 +207,44 @@ function onWindowMouseUp() { dragState = null }
 function onMemeRightClick(e: MouseEvent, meme: Meme) {
   e.preventDefault()
   e.stopPropagation()
-  ctx.show([
+  const items = [
     { action: 'rename', label: '重命名' },
-    { action: 'favorite', label: '收藏' },
+    { action: 'favorite', label: meme.favorited ? '取消收藏' : '收藏' },
     { action: 'tag', label: '打标签' },
     { action: 'collection', label: '添加分组' },
-    { action: 'delete', label: '删除', danger: true },
-  ], { memeId: meme.id, filename: meme.filename, memeName: meme.name }, e.clientX, e.clientY)
+  ]
+  if (state.activeCollection && state.activeCollection > 0) {
+    items.push({ action: 'add-to-subgroup', label: '加入小分组' })
+    items.push({ action: 'remove-collection', label: '移出该分组' })
+  }
+  if (state.activeCollection === -3) {
+    items.push({ action: 'remove-recent', label: '从最近使用中删除' })
+  }
+  items.push({ action: 'delete', label: '删除', danger: true })
+  ctx.show(items, { memeId: meme.id, filename: meme.filename, memeName: meme.name, favorited: meme.favorited }, e.clientX, e.clientY)
 }
 
 function onFolderRightClick(e: MouseEvent, folderId: number, folderName: string) {
   e.preventDefault()
   e.stopPropagation()
-  ctx.show([
-    { action: 'rename-collection', label: '重命名' },
-    { action: 'add-to-subgroup', label: '新建子分组' },
-    { action: 'delete-collection', label: '删除', danger: true },
-  ], { folderId, folderName, isFolder: true }, e.clientX, e.clientY)
+  const items = [{ action: 'rename-collection', label: '重命名' }]
+  if (folderId === -3) {
+    items.push({ action: 'clear-recent', label: '清空最近使用', danger: true })
+  } else if (folderId > 0) {
+    items.push({ action: 'add-to-subgroup', label: '新建子分组' })
+    items.push({ action: 'delete-collection', label: '删除', danger: true })
+  }
+  ctx.show(items, { folderId, folderName, isFolder: true }, e.clientX, e.clientY)
+}
+
+// 右键「加入小分组」子菜单：加载已有分组
+async function onShowSubmenu(_items: any[], x: number, y: number) {
+  const all = (await window.pywebview?.api?.search_collections()) || []
+  const sub = [{ action: '__new-subgroup__', label: '新建分组' }]
+  for (const c of all) {
+    sub.push({ action: 'subgroup-' + c.id, label: '　'.repeat(c.depth || 0) + c.name })
+  }
+  ctx.showSubmenu(sub, x, y)
 }
 
 async function onCtxAction(action: string) {
@@ -231,13 +256,55 @@ async function onCtxAction(action: string) {
       if (name && name !== t.memeName) { await window.pywebview?.api?.rename_meme(t.memeId, name); search() }
       break
     }
-    case 'favorite': { await window.pywebview?.api?.toggle_favorite(t.memeId); search(); break }
+    case 'favorite': {
+      const ok = await window.pywebview?.api?.toggle_favorite(t.memeId)
+      if (ok !== null) {
+        await refreshCollections()
+        if (!ok && state.activeCollection === -2) {
+          const fav = state.collections.find((c: any) => c.id === -2)
+          if (!fav || fav.count === 0) setActiveCollection(-4)
+        }
+        search()
+      }
+      break
+    }
     case 'tag': {
       const tag = prompt('输入标签（多个用逗号分隔）')
       if (tag) { await window.pywebview?.api?.set_meme_tags(t.memeId, tag.split(',').map((s: string) => s.trim()).filter(Boolean)); refreshTags(); search() }
       break
     }
     case 'collection': { showCollectionBuilder(); break }
+    case 'add-to-subgroup': { /* 子菜单在 hover 时加载，点击走 subgroup-N / __new-subgroup__ */ break }
+    case '__new-subgroup__': {
+      const name = prompt('新建分组', '')
+      if (!name) break
+      const ok = await window.pywebview?.api?.add_to_collection(t.memeId, name)
+      if (ok) { showToast('已添加到分组：' + name); refreshCollections(); search() }
+      else showToast('添加分组失败')
+      break
+    }
+    case 'remove-collection': {
+      const removedFrom = state.activeCollection
+      const ok = await window.pywebview?.api?.remove_from_collection(t.memeId, removedFrom)
+      if (ok) {
+        // 从子分组移除时加回上层大分组
+        const parent = findParentCollection(state.collections, removedFrom)
+        if (parent) await window.pywebview?.api?.add_to_existing_collection(t.memeId, parent.id)
+        await refreshCollections()
+        const c = state.collections.find((x: any) => x.id === removedFrom)
+        if (!c || c.count === 0) {
+          if (removedFrom > 0) await window.pywebview?.api?.delete_collection(removedFrom)
+          setActiveCollection(parent ? parent.id : -4)
+        }
+        search()
+      }
+      break
+    }
+    case 'remove-recent': {
+      await window.pywebview?.api?.remove_from_recent(t.memeId)
+      search()
+      break
+    }
     case 'delete': {
       if (confirm('确定删除这个表情包吗？')) { await window.pywebview?.api?.delete_meme(t.memeId); search(); refreshCollections() }
       break
@@ -248,11 +315,63 @@ async function onCtxAction(action: string) {
       break
     }
     case 'delete-collection': {
-      if (confirm('确定删除这个分组吗？')) { await window.pywebview?.api?.delete_collection(t.folderId); refreshCollections() }
+      if (confirm('确定删除这个分组吗？')) {
+        // 先移除组内表情到上层，再删组
+        const parent = findParentCollection(state.collections, t.folderId)
+        const members = (await window.pywebview?.api?.search_memes('', [], t.folderId, 0, 9999)) || []
+        for (const mm of members) {
+          if (parent) await window.pywebview?.api?.add_to_existing_collection(mm.id, parent.id)
+        }
+        await window.pywebview?.api?.delete_collection(t.folderId)
+        if (state.activeCollection === t.folderId) setActiveCollection(parent ? parent.id : -4)
+        refreshCollections(); search()
+      }
       break
     }
-    default: showToast(`${action} 功能开发中`)
+    case 'delete-folder': {
+      if (confirm('确定删除小分组「' + t.folderName + '」？分组内表情包将移回上层分组。')) {
+        const parent = findParentCollection(state.collections, t.folderId)
+        const members = (await window.pywebview?.api?.search_memes('', [], t.folderId, 0, 9999)) || []
+        for (const mm of members) {
+          if (parent) await window.pywebview?.api?.add_to_existing_collection(mm.id, parent.id)
+        }
+        await window.pywebview?.api?.delete_collection(t.folderId)
+        if (state.activeCollection === t.folderId) setActiveCollection(parent ? parent.id : -4)
+        refreshCollections(); search()
+      }
+      break
+    }
+    case 'clear-recent': {
+      if (confirm('确定清空最近使用记录吗？')) {
+        await window.pywebview?.api?.clear_recent()
+        search()
+      }
+      break
+    }
+    default:
+      if (action.startsWith('subgroup-')) {
+        const cid = Number(action.slice('subgroup-'.length))
+        const ok = await window.pywebview?.api?.add_to_existing_collection(t.memeId, cid)
+        if (ok) { showToast('已添加到分组'); refreshCollections(); search() }
+        else showToast('添加失败')
+      } else {
+        showToast(`${action} 功能开发中`)
+      }
   }
+}
+
+// 在 collections 树中查找 target 的父分组
+function findParentCollection(items: any[], target: number): any | null {
+  for (const c of items) {
+    if (c.children) {
+      for (const ch of c.children) {
+        if (ch.id === target) return c
+      }
+      const r = findParentCollection(c.children, target)
+      if (r) return r
+    }
+  }
+  return null
 }
 
 async function showCollectionBuilder() {
@@ -402,6 +521,13 @@ async function onDrop(e: DragEvent) {
   }
 }
 
+// ESC：有右键菜单时先关菜单，否则隐藏窗口
+function onDocKeydown(e: KeyboardEvent) {
+  if (e.key !== 'Escape') return
+  if (ctx.visible.value) { ctx.hide(); return }
+  hideWindow()
+}
+
 onMounted(() => {
   document.addEventListener('dragenter', onDragEnter)
   document.addEventListener('dragover', onDragOver)
@@ -412,6 +538,7 @@ onMounted(() => {
   document.addEventListener('pointermove', onDocPointerMove)
   document.addEventListener('pointerup', onDocPointerUp)
   document.addEventListener('pointercancel', onDocPointerCancel)
+  document.addEventListener('keydown', onDocKeydown)
   window.addEventListener('blur', onDocPointerCancel)
 })
 
@@ -425,6 +552,7 @@ onUnmounted(() => {
   document.removeEventListener('pointermove', onDocPointerMove)
   document.removeEventListener('pointerup', onDocPointerUp)
   document.removeEventListener('pointercancel', onDocPointerCancel)
+  document.removeEventListener('keydown', onDocKeydown)
   window.removeEventListener('blur', onDocPointerCancel)
 })
 
@@ -437,6 +565,15 @@ onUnmounted(() => {
     await refreshTags()
     await refreshCollections()
   }, 300)
+  // 每日更新检测（静默，发现新版本时提示去设置页更新）
+  try {
+    const upd = await window.pywebview?.api?.check_update()
+    if (upd && upd.has_update) {
+      setTimeout(() => {
+        if (confirm(`发现新版本 ${upd.latest}，是否前往设置页更新？`)) openSettings()
+      }, 2000)
+    }
+  } catch (_) {}
 })()
 </script>
 
@@ -575,6 +712,7 @@ onUnmounted(() => {
     :submenu-visible="ctx.submenuVisible.value" :submenu-items="ctx.submenuItems.value"
     :submenu-x="ctx.submenuX.value" :submenu-y="ctx.submenuY.value"
     @action="onCtxAction" @close="ctx.hide"
+    @show-submenu="onShowSubmenu"
   />
 
   <div id="drop-overlay" :class="{ 'drag-over': dragOver }">

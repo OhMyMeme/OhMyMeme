@@ -12,6 +12,7 @@ export interface MenuTrigger {
   memeId?: number
   filename?: string
   memeName?: string
+  favorited?: boolean
   isFolder?: boolean
   folderId?: number
   folderName?: string

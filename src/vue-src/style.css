@@ -446,18 +446,41 @@ body {
 
 #meme-grid.sort-enabled .meme-card {
   cursor: grab;
+  transform: scale(0.95);
+  outline: 3px solid var(--border-light);
+  outline-offset: 3px;
 }
 
 #meme-grid.sort-enabled .meme-card:hover {
-  box-shadow: 0 0 0 2px rgba(59, 130, 246, 0.3);
+  transform: translateY(-1px) scale(0.95);
+  outline-color: var(--primary);
 }
 
 #meme-grid.sort-enabled .meme-card:active {
   cursor: grabbing;
+  transform: scale(0.93);
 }
 
 #meme-grid.sort-enabled .meme-card.dragging {
   transition: none;
+  outline: 0 solid transparent;
+}
+
+/* 稳定卡轻微晃动循环：用独立 rotate 属性，避免覆盖拖拽/FLIP 的 transform */
+#meme-grid.sort-enabled:not(.drag-active) .meme-card:not(.dragging):not(.sort-enter) {
+  animation: sort-shake 120ms ease-in-out infinite alternate;
+}
+
+@keyframes sort-shake {
+  from { rotate: -0.75deg; }
+  to { rotate: 0.75deg; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  #meme-grid.sort-enabled:not(.drag-active) .meme-card:not(.dragging):not(.sort-enter) {
+    animation: none;
+    rotate: 0deg;
+  }
 }
 
 .meme-card.dragging {
