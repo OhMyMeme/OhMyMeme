@@ -1,9 +1,12 @@
 <script setup lang="ts">
 import { ref, onMounted, onUnmounted } from 'vue'
 import { useMemes } from './composables/useMemes'
+import { useContextMenu } from './composables/useContextMenu'
+import ContextMenu from './components/ContextMenu.vue'
 import type { Meme } from './types'
 
-const { state, search, goToPage, setSearch, toggleTag, setActiveCollection, refreshTags, refreshCollections, copyMeme, reorderMemes } = useMemes()
+const { state, dragSort, search, goToPage, setSearch, toggleTag, setActiveCollection, refreshTags, refreshCollections, copyMeme, onSortDragStart, onSortDragOver, onSortDragLeave, onSortDrop, onSortDragEnd } = useMemes()
+const ctx = useContextMenu()
 
 const sidebarCollapsed = ref(false)
 const sortEnabled = ref(false)
@@ -11,6 +14,7 @@ const settingsVisible = ref(false)
 const dragOver = ref(false)
 let dragCounter = 0
 let nativeDragActive = false
+let dragState: { sx: number; sy: number } | null = null
 
 async function handleCopy(meme: Meme) {
   const ok = await copyMemes(meme.id, meme.filename)
@@ -62,6 +66,123 @@ function rescanCache() {
   showToast('缓存刷新中...')
   search()
   refreshCollections()
+}
+
+function hideWindow() {
+  try {
+    window.pywebview?.api?.hide_window()
+  } catch (_) {}
+}
+
+async function onTitlebarMouseDown(e: MouseEvent) {
+  if (e.button !== 0) return
+  if ((e.target as HTMLElement).closest('.title-btn') || (e.target as HTMLElement).closest('.icon-btn') || (e.target as HTMLElement).closest('.sidebar-toggle')) return
+  try {
+    const nativeDrag = await window.pywebview?.api?.start_window_drag(e.button + 1, e.screenX, e.screenY)
+    if (nativeDrag) return
+  } catch (_) {}
+  dragState = { sx: e.screenX, sy: e.screenY }
+  e.preventDefault()
+}
+
+function onWindowMouseMove(e: MouseEvent) {
+  if (!dragState) return
+  const dx = e.screenX - dragState.sx
+  const dy = e.screenY - dragState.sy
+  if (dx !== 0 || dy !== 0) {
+    try {
+      window.pywebview?.api?.move_window(dx, dy)
+    } catch (_) {}
+    dragState.sx = e.screenX
+    dragState.sy = e.screenY
+  }
+}
+
+function onWindowMouseUp() {
+  dragState = null
+}
+
+function onMemeRightClick(e: MouseEvent, meme: Meme) {
+  e.preventDefault()
+  e.stopPropagation()
+  const isRecent = state.activeCollection === -3
+  const isFavorite = state.activeCollection === -2
+  const isAllView = state.activeCollection === null
+  ctx.show([
+    { action: 'rename', label: '重命名' },
+    { action: 'favorite', label: '收藏' },
+    { action: 'tag', label: '打标签' },
+    { action: 'collection', label: '添加分组' },
+    { action: 'add-to-subgroup', label: '加入小分组', display: 'none' },
+    { action: 'remove-collection', label: '移至上级分组', display: 'none' },
+    { action: 'remove-recent', label: '从最近使用中删除', display: 'none' },
+    { action: 'delete', label: '删除', danger: true },
+  ], { memeId: meme.id, filename: meme.filename, memeName: meme.original_name || meme.filename }, e.clientX, e.clientY)
+}
+
+function onFolderRightClick(e: MouseEvent, folderId: number, folderName: string) {
+  e.preventDefault()
+  e.stopPropagation()
+  ctx.show([
+    { action: 'rename-collection', label: '重命名' },
+    { action: 'add-to-subgroup', label: '新建子分组' },
+    { action: 'clear-recent', label: '清空最近使用', display: 'none' },
+    { action: 'delete-collection', label: '删除', danger: true },
+  ], { folderId, folderName, isFolder: true }, e.clientX, e.clientY)
+}
+
+async function onCtxAction(action: string) {
+  ctx.hide()
+  const t = ctx.trigger.value
+  switch (action) {
+    case 'rename': {
+      const name = prompt('重命名', t.memeName || '')
+      if (name && name !== t.memeName) {
+        await window.pywebview?.api?.rename_meme(t.memeId, name)
+        search()
+      }
+      break
+    }
+    case 'favorite': {
+      await window.pywebview?.api?.toggle_favorite(t.memeId)
+      search()
+      break
+    }
+    case 'tag': {
+      const tag = prompt('输入标签（多个用逗号分隔）')
+      if (tag) {
+        await window.pywebview?.api?.set_meme_tags(t.memeId, tag.split(',').map((s: string) => s.trim()).filter(Boolean))
+        refreshTags()
+        search()
+      }
+      break
+    }
+    case 'delete': {
+      if (confirm('确定删除这个表情包吗？')) {
+        await window.pywebview?.api?.delete_meme(t.memeId)
+        search()
+        refreshCollections()
+      }
+      break
+    }
+    case 'rename-collection': {
+      const name = prompt('重命名分组', t.folderName || '')
+      if (name && name !== t.folderName) {
+        await window.pywebview?.api?.rename_collection(t.folderId, name)
+        refreshCollections()
+      }
+      break
+    }
+    case 'delete-collection': {
+      if (confirm('确定删除这个分组吗？')) {
+        await window.webview?.api?.delete_collection(t.folderId)
+        refreshCollections()
+      }
+      break
+    }
+    default:
+      showToast(`${action} 功能开发中`)
+  }
 }
 
 function onDragEnter(e: DragEvent) {
@@ -173,6 +294,8 @@ onMounted(() => {
   document.addEventListener('dragover', onDragOver)
   document.addEventListener('dragleave', onDragLeave)
   document.addEventListener('drop', onDrop)
+  document.addEventListener('mousemove', onWindowMouseMove)
+  document.addEventListener('mouseup', onWindowMouseUp)
 })
 
 onUnmounted(() => {
@@ -180,6 +303,8 @@ onUnmounted(() => {
   document.removeEventListener('dragover', onDragOver)
   document.removeEventListener('dragleave', onDragLeave)
   document.removeEventListener('drop', onDrop)
+  document.removeEventListener('mousemove', onWindowMouseMove)
+  document.removeEventListener('mouseup', onWindowMouseUp)
 })
 
 search()
@@ -189,7 +314,7 @@ refreshCollections()
 
 <template>
   <div id="app">
-    <header id="titlebar">
+    <header id="titlebar" @mousedown="onTitlebarMouseDown">
       <div class="titlebar__left">
         <button class="sidebar-toggle" :class="{ collapsed: sidebarCollapsed }" @click="toggleSidebar" title="折叠/展开侧边栏">
           <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
@@ -206,7 +331,7 @@ refreshCollections()
         <button class="title-btn" @click="showImportMenu()">导入</button>
         <button class="title-btn" @click="rescanCache()">刷新</button>
         <button class="title-btn" @click="openSettings()">设置</button>
-        <button class="title-btn close-btn" @click="window.pywebview?.api?.hide_window()">×</button>
+        <button class="title-btn close-btn" @click="hideWindow()">×</button>
       </div>
     </header>
 
@@ -225,7 +350,7 @@ refreshCollections()
             :key="c.id"
             class="tree-node"
           >
-            <div class="tree-row" :class="{ active: state.activeCollection === c.id }" @click="setActiveCollection(c.id)">
+            <div class="tree-row" :class="{ active: state.activeCollection === c.id }" @click="setActiveCollection(c.id)" @contextmenu="onFolderRightClick($event, c.id, c.name)">
               <span class="tree-icon">📁</span>
               <span v-if="!sidebarCollapsed" class="tree-label">{{ c.name }}</span>
               <span v-if="!sidebarCollapsed" class="tree-count">{{ c.count || 0 }}</span>
@@ -247,8 +372,15 @@ refreshCollections()
               v-for="meme in state.memes"
               :key="meme.id"
               class="meme-card"
+              :class="{ 'dragging': dragSort.draggedId === meme.id, 'drag-over': dragSort.overId === meme.id }"
               :draggable="sortEnabled"
               @click="handleCopy(meme)"
+              @contextmenu="onMemeRightClick($event, meme)"
+              @dragstart="onSortDragStart(meme.id)"
+              @dragover.prevent="onSortDragOver(meme.id)"
+              @dragleave="onSortDragLeave()"
+              @drop="onSortDrop(meme.id)"
+              @dragend="onSortDragEnd()"
             >
               <img :src="`/api/thumb/${meme.id}/${encodeURIComponent(meme.filename)}`" :alt="meme.original_name || meme.filename" loading="lazy">
               <span class="meme-name">{{ meme.original_name || meme.filename }}</span>
@@ -304,6 +436,20 @@ refreshCollections()
       </div>
     </div>
   </div>
+
+  <ContextMenu
+    :visible="ctx.visible.value"
+    :x="ctx.x.value"
+    :y="ctx.y.value"
+    :items="ctx.items.value"
+    :trigger="ctx.trigger.value"
+    :submenu-visible="ctx.submenuVisible.value"
+    :submenu-items="ctx.submenuItems.value"
+    :submenu-x="ctx.submenuX.value"
+    :submenu-y="ctx.submenuY.value"
+    @action="onCtxAction"
+    @close="ctx.hide"
+  />
 
   <div id="drop-overlay" :class="{ 'drag-over': dragOver }">
     <div class="drop-content">

@@ -2,6 +2,11 @@ import { reactive, ref, computed, readonly } from 'vue'
 import { api } from '../utils/api'
 import type { Meme, Collection } from './types'
 
+export interface DragSortState {
+  draggedId: number | null
+  overId: number | null
+}
+
 const MEME_PAGE = 200
 
 const state = reactive({
@@ -18,6 +23,11 @@ const state = reactive({
 })
 
 let searchGen = 0
+
+const dragSort = reactive({
+  draggedId: null as number | null,
+  overId: null as number | null,
+})
 
 export function useMemes() {
   async function search(resetPage = true) {
@@ -100,8 +110,49 @@ export function useMemes() {
     return !!result
   }
 
+  function onSortDragStart(memeId: number) {
+    dragSort.draggedId = memeId
+  }
+
+  function onSortDragOver(memeId: number) {
+    if (dragSort.draggedId === memeId) return
+    dragSort.overId = memeId
+  }
+
+  function onSortDragLeave() {
+    dragSort.overId = null
+  }
+
+  async function onSortDrop(memeId: number) {
+    const draggedId = dragSort.draggedId
+    dragSort.draggedId = null
+    dragSort.overId = null
+    if (!draggedId || draggedId === memeId) return
+
+    const memes = state.memes
+    const fromIdx = memes.findIndex(m => m.id === draggedId)
+    const toIdx = memes.findIndex(m => m.id === memeId)
+    if (fromIdx < 0 || toIdx < 0) return
+
+    const newMemes = [...memes]
+    const [moved] = newMemes.splice(fromIdx, 1)
+    newMemes.splice(toIdx, 0, moved)
+    state.memes = newMemes
+
+    const ok = await reorderMemes(newMemes.map(m => m.id))
+    if (!ok) {
+      state.memes = memes
+    }
+  }
+
+  function onSortDragEnd() {
+    dragSort.draggedId = null
+    dragSort.overId = null
+  }
+
   return {
     state: readonly(state),
+    dragSort: readonly(dragSort),
     search,
     goToPage,
     setSearch,
@@ -111,6 +162,11 @@ export function useMemes() {
     refreshCollections,
     copyMeme,
     reorderMemes,
+    onSortDragStart,
+    onSortDragOver,
+    onSortDragLeave,
+    onSortDrop,
+    onSortDragEnd,
   }
 }
 

@@ -354,6 +354,16 @@ body {
   cursor: grabbing;
 }
 
+.meme-card.dragging {
+  opacity: 0.4;
+  transform: scale(0.95);
+}
+
+.meme-card.drag-over {
+  border-color: var(--primary) !important;
+  box-shadow: 0 0 0 3px rgba(99, 102, 241, 0.3);
+}
+
 .meme-card img {
   width: 100%;
   aspect-ratio: 1;
