@@ -10,11 +10,13 @@ import CollectionTreeNode from './components/CollectionTreeNode.vue'
 import ImportMenu from './components/ImportMenu.vue'
 import Pager from './components/Pager.vue'
 import SyncOverlay from './components/SyncOverlay.vue'
+import TagEditor from './components/TagEditor.vue'
 import type { Meme } from './types'
 
 const { state, setMemes, search, goToPage, setSearch, toggleTag, setActiveCollection, refreshTags, refreshCollections, copyMeme, reorderMemes, canReorder, startNativeDrag, loadInitData } = useMemes()
 const ctx = useContextMenu()
 const cb = useCollectionBuilder()
+const tagEditor = ref<InstanceType<typeof TagEditor> | null>(null)
 
 const sortEnabled = ref(false)
 const drag = useDragSort(
@@ -269,8 +271,12 @@ async function onCtxAction(action: string) {
       break
     }
     case 'tag': {
-      const tag = prompt('输入标签（多个用逗号分隔）')
-      if (tag) { await window.pywebview?.api?.set_meme_tags(t.memeId, tag.split(',').map((s: string) => s.trim()).filter(Boolean)); refreshTags(); search() }
+      const tags = await tagEditor.value?.open(t.memeId)
+      if (tags === null) break
+      await window.pywebview?.api?.set_meme_tags(t.memeId, tags)
+      // 同步已激活标签筛选，避免已删除标签继续筛
+      refreshTags()
+      search()
       break
     }
     case 'collection': { showCollectionBuilder(); break }
@@ -706,6 +712,7 @@ onUnmounted(() => {
   <CollectionBuilder @confirm="showCollectionBuilder" />
   <ImportMenu ref="importMenu" @imported="onImportDone" />
   <SyncOverlay ref="syncOverlay" @synced="onSyncDone" />
+  <TagEditor ref="tagEditor" />
   <ContextMenu
     :visible="ctx.visible.value" :x="ctx.x.value" :y="ctx.y.value"
     :items="ctx.items.value" :trigger="ctx.trigger.value"
