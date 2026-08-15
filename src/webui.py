@@ -2710,7 +2710,7 @@ class WebUI:
                 "设置 - OhMyMeme",
                 settings_url,
                 js_api=self._settings_api,
-                width=460,
+                width=720,
                 height=560,
                 resizable=False,
                 frameless=True,
