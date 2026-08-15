@@ -1,0 +1,582 @@
+<!DOCTYPE html>
+<html lang="zh-CN" style="background:#0d0d0f">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>设置 - OhMyMeme</title>
+<link rel="stylesheet" href="/settings.css">
+</head>
+<body>
+<div id="app">
+  <div id="titlebar">
+    <div class="logo">OhMy<span>Meme</span> 设置</div>
+    <span class="spacer"></span>
+    <button class="title-btn" onclick="closeSettings()">x</button>
+  </div>
+
+  <div id="body">
+    <div class="section">
+      <div class="form-group">
+        <label>全局快捷键</label>
+        <input id="s-hotkey" readonly onclick="startHotkeyCapture(this)">
+      </div>
+      <label class="check-row">
+        <input id="s-hotkey-show-at-mouse" type="checkbox">通过全局快捷键打开时显示在鼠标位置
+      </label>
+    </div>
+
+    <div class="section">
+      <div class="section-title">版本更新</div>
+      <div style="display:flex;align-items:center;gap:10px;margin-bottom:6px">
+        <span style="font-size:12.5px;color:var(--fg-secondary)" id="s-ver-current">当前版本: --</span>
+        <button class="btn btn-secondary btn-sm" id="btn-check-update" onclick="checkUpdate()">检查更新</button>
+      </div>
+      <div id="s-update-status" style="font-size:11.5px;color:var(--muted)"></div>
+    </div>
+
+    <div class="section">
+      <div class="section-title">启动与开机自启</div>
+      <label class="check-row">
+        <input id="s-auto-start" type="checkbox" onchange="toggleSilentStart()">开机自启
+      </label>
+      <label class="check-row" id="s-silent-row" style="display:none">
+        <input id="s-silent-start" type="checkbox">开机自启时静默启动（直接托盘运行）
+      </label>
+    </div>
+
+    <div class="section">
+      <div class="section-title">分组显示</div>
+      <label class="check-row">
+        <input id="s-show-uncategorized" type="checkbox">显示「未分类」分组
+      </label>
+      <label class="check-row">
+        <input id="s-record-recent" type="checkbox">记录最近使用
+      </label>
+    </div>
+
+    <div class="section">
+      <div class="section-title">动图</div>
+      <label class="check-row">
+        <input id="s-gif" type="checkbox">动图自动播放
+      </label>
+      <label class="check-row">
+        <input id="s-hover-play" type="checkbox">动图悬停播放（性能不足时启用）
+      </label>
+    </div>
+
+    <div class="section">
+      <!-- DeepSeek V4 Flash -->
+      <div class="section-title">图片来源</div>
+      <label class="check-row">
+        <input id="s-try-original" type="checkbox" onchange="checkConnectivity()">浏览器来源尝试获取原图
+      </label>
+      <div id="s-net-status" style="font-size:12px;margin-top:4px;padding-left:4px;color:var(--muted)"></div>
+    </div>
+
+    <div class="section">
+      <div class="section-title">复制处理</div>
+      <label class="check-row" style="gap:8px">
+        复制超限静态图时
+        <select id="s-copy-mode" style="flex:1">
+          <option value="0">不处理，直接复制原图</option>
+          <option value="1">缩放为 WebP</option>
+          <option value="2">转换为 GIF</option>
+          <option value="3">转换为 GIF 并隐写原图（可无损还原）</option>
+        </select>
+      </label>
+      <p style="font-size:11.5px;color:var(--muted);margin-top:4px;line-height:1.6">复制超过尺寸上限的静态图时按此处模式处理；动图不受影响。隐写模式会把原图信息随 GIF 隐藏，接收方可运行解码工具还原，但会显著增大文件体积。</p>
+    </div>
+
+    <div class="section">
+      <div class="section-title">存储位置</div>
+      <p style="font-size:11.5px;color:var(--muted);margin-bottom:10px;line-height:1.6">表情包图片文件存放目录；数据库与缩略图仍保留在系统数据目录</p>
+      <div class="form-group">
+        <label>当前存储目录</label>
+        <input id="s-cache-dir" readonly placeholder="加载中...">
+      </div>
+      <div id="s-storage-pending" style="display:none;margin-bottom:10px">
+        <div class="form-group">
+          <label>新存储目录</label>
+          <input id="s-cache-dir-new" readonly>
+        </div>
+        <label class="check-row" style="margin-bottom:8px">
+          <input id="s-move-files" type="checkbox" checked>同时把现有表情包移动到新目录
+        </label>
+        <div style="display:flex;gap:8px">
+          <button id="btn-storage-apply" class="btn btn-primary btn-sm btn-flex" onclick="applyStorageDir()">应用更改</button>
+          <button class="btn btn-ghost btn-sm" onclick="cancelStoragePick()">取消</button>
+        </div>
+      </div>
+      <div style="display:flex;gap:8px">
+        <button id="btn-pick-storage" class="btn btn-secondary btn-sm btn-flex" onclick="pickStorageDir()">更改位置</button>
+      </div>
+      <div id="s-storage-status" style="font-size:11.5px;color:var(--muted);margin-top:6px;line-height:1.6"></div>
+    </div>
+
+    <div class="section">
+      <div class="section-title">从手机导入</div>
+      <p style="font-size:11.5px;color:var(--muted);margin-bottom:10px;line-height:1.6">通过 ADB 从连接的 Android 手机拉取 QQ 表情包缓存并打包 ZIP</p>
+      <div style="display:flex;gap:8px">
+        <button id="btn-qq-import" class="btn btn-primary btn-sm btn-flex" onclick="startQQImport()">从手机版 QQ 缓存导入</button>
+      </div>
+      <div id="qq-status"></div>
+    </div>
+
+    <div class="section">
+      <div class="section-title">从电脑导入</div>
+      <p style="font-size:11.5px;color:var(--muted);margin-bottom:10px;line-height:1.6">从 PC 版 QQ（QQNT）本地缓存批量提取收藏表情</p>
+      <div style="display:flex;gap:8px">
+        <button id="btn-qqnt-start" class="btn btn-primary btn-sm btn-flex" onclick="startQQNTWizard()">从电脑版 QQ 提取</button>
+      </div>
+      <div id="qqnt-status"></div>
+    </div>
+
+    <div class="section">
+      <div class="section-title">从 Telegram 导入</div>
+      <p style="font-size:11.5px;color:var(--muted);margin-bottom:10px;line-height:1.6">从 Telegram Desktop 本地缓存解密提取表情包（WebP 直取，WebM 无损转 WebP 并保留透明通道）</p>
+      <div class="form-group">
+        <label>tdata 目录</label>
+        <input id="s-tg-tdata" readonly placeholder="未设置，将自动检测">
+      </div>
+      <div style="display:flex;gap:8px;margin-bottom:10px">
+        <button id="btn-tg-pick" class="btn btn-secondary btn-sm btn-flex" onclick="pickTGTdata()">手动指定 tdata 目录</button>
+      </div>
+      <div class="form-group" style="margin-bottom:10px">
+        <label>本地密码（可选）</label>
+        <input id="s-tg-passcode" type="password" placeholder="Telegram Desktop 设置了本地密码时填写" autocomplete="off">
+      </div>
+      <label class="check-row" style="margin-bottom:10px">
+        <input id="s-tg-convert" type="checkbox" checked>WebM 转 WebP（保留透明动画，需 ffmpeg）
+      </label>
+      <div style="display:flex;gap:8px">
+        <button id="btn-tg-start" class="btn btn-primary btn-sm btn-flex" onclick="startTGImport()">从 Telegram 缓存提取</button>
+      </div>
+      <div id="tg-status"></div>
+    </div>
+
+    <div class="section">
+      <div class="section-title">从抖音导入</div>
+      <p style="font-size:11.5px;color:var(--muted);margin-bottom:10px;line-height:1.6">通过抖音网页版 API 下载自定义表情包（WebP 原格式保存，需登录 Cookie）</p>
+      <div class="form-group">
+        <label>抖音 Cookie</label>
+        <input id="s-dy-cookie" type="password" placeholder="粘贴抖音网页版 Cookie（sessionid=xxx; ...）" autocomplete="off">
+      </div>
+      <div style="display:flex;gap:8px">
+        <button id="btn-dy-start" class="btn btn-primary btn-sm btn-flex" onclick="startDYImport()">从抖音下载全部表情</button>
+      </div>
+      <div id="dy-status"></div>
+    </div>
+
+    <div class="section">
+      <div class="section-title">从微信导入</div>
+      <p style="font-size:11.5px;color:var(--muted);margin-bottom:10px;line-height:1.6">从微信电脑版本地缓存提取收藏表情（需微信正在运行，仅 Windows 支持）。微信文件目录是存放所有账号数据的根目录（xwechat_files），其下的 wxid_* 文件夹为各账号目录</p>
+      <div class="form-group">
+        <label>微信文件目录（根目录）</label>
+        <input id="s-wechat-root" readonly placeholder="未设置，将自动检测">
+      </div>
+      <div style="display:flex;gap:8px;margin-bottom:10px">
+        <button id="btn-wechat-pick" class="btn btn-secondary btn-sm btn-flex" onclick="pickWechatRoot()">手动指定微信目录</button>
+      </div>
+      <div class="form-group" style="margin-bottom:10px" id="s-wechat-account-group" hidden>
+        <label>账号（wxid_* 目录）</label>
+        <select id="s-wechat-account">
+          <option value="">自动选择（仅一个账号时）</option>
+        </select>
+      </div>
+      <div style="display:flex;gap:8px">
+        <button id="btn-wechat-inspect" class="btn btn-secondary btn-sm btn-flex" onclick="inspectWechat()">检测环境</button>
+        <button id="btn-wechat-start" class="btn btn-primary btn-sm btn-flex" onclick="startWechatImport()">从微信缓存提取</button>
+      </div>
+      <div id="wechat-status"></div>
+    </div>
+
+    <div class="section">
+      <div class="section-title">局域网互联</div>
+      <p style="font-size:11.5px;color:var(--muted);margin-bottom:10px;line-height:1.6">与手机版 OhMyMeme 在同一局域网内配对，互相同步表情包与配置</p>
+      <div class="form-group">
+        <label>端口</label>
+        <input id="s-lan-port" value="17852">
+      </div>
+      <div class="form-group">
+        <label>连接密钥</label>
+        <input id="s-lan-secret" type="password" placeholder="留空表示同一局域网无需密钥">
+      </div>
+      <label class="check-row" style="margin-bottom:12px">
+        <input id="s-lan-enable" type="checkbox" onchange="toggleLan()">开启互联访问
+      </label>
+      <label class="check-row" style="margin-bottom:12px">
+        <input id="s-lan-secret-config" type="checkbox" onchange="toggleLanSecretConfig()">允许密钥传输（配置同步时包含 FTP/S3/R2/WebDAV 密码等密钥字段）
+      </label>
+      <div style="display:flex;gap:8px">
+        <button id="btn-lan-refresh" class="btn btn-secondary btn-sm btn-flex" onclick="refreshLanStatus()">刷新状态</button>
+      </div>
+      <div id="lan-status" style="font-size:11.5px;color:var(--muted);margin-top:6px;line-height:1.8"></div>
+    </div>
+
+    <div class="section">
+      <div class="section-title">云端同步</div>
+
+      <label class="check-row">
+        <input id="s-sync-fetch" type="checkbox">启动时自动获取远端索引
+      </label>
+      <label class="check-row" style="margin-bottom:12px">
+        <input id="s-sync-auto" type="checkbox">启动时自动同步
+      </label>
+
+      <div class="form-group">
+        <label>存储类型</label>
+        <select id="s-sync-type" onchange="toggleSyncType()">
+          <option value="">无</option>
+          <option value="ftp">FTP</option>
+          <option value="s3">S3 兼容存储</option>
+          <option value="r2">Cloudflare R2</option>
+          <option value="webdav">WebDAV</option>
+        </select>
+      </div>
+
+      <div id="s-sync-options" style="display:none">
+        <label class="check-row">
+          <input id="s-delete-remote" type="checkbox">上传时删除远端文件
+        </label>
+        <label class="check-row">
+          <input id="s-remove-local" type="checkbox">下载时删除本地多余文件
+        </label>
+      <label class="check-row" style="margin-bottom:12px">
+          <input id="s-hide-upload-warn" type="checkbox">上传前不再提醒</label>
+        <label class="check-row">
+          <input id="s-show-up-progress" type="checkbox">上传时显示进度条
+        </label>
+        <label class="check-row">
+          <input id="s-show-up-done" type="checkbox">上传完毕显示提示
+        </label>
+        <label class="check-row">
+          <input id="s-show-dl-progress" type="checkbox">下载时显示进度条
+        </label>
+        <label class="check-row">
+          <input id="s-show-dl-done" type="checkbox">下载完毕显示提示
+        </label>
+        </div>
+
+      <div id="s-sync-ftp" style="display:none">
+        <div class="form-group">
+          <label>FTP 服务器</label>
+          <input id="s-ftp-host" placeholder="ftp.example.com">
+        </div>
+        <div class="ftp-row">
+          <div class="form-group">
+            <label>端口</label>
+            <input id="s-ftp-port" value="21">
+          </div>
+          <div class="form-group">
+            <label>用户名</label>
+            <input id="s-ftp-user" placeholder="anonymous">
+          </div>
+        </div>
+        <div class="form-group">
+          <label>密码</label>
+          <input id="s-ftp-pass" type="password">
+        </div>
+        <div class="form-group">
+          <label>远程路径</label>
+          <input id="s-ftp-path" value="/">
+        </div>
+      </div>
+      <div id="s-sync-s3" style="display:none">
+        <div class="form-group">
+          <label>Endpoint URL</label>
+          <input id="s3-endpoint" placeholder="https://s3.amazonaws.com">
+        </div>
+        <div class="form-group">
+          <label>寻址方式</label>
+          <select id="s3-addressing-style">
+            <option value="virtual">虚拟主机型 (Virtual-hosted)</option>
+            <option value="path">路径型 (Path-style)</option>
+          </select>
+        </div>
+        <div class="form-group">
+          <label>签名版本</label>
+          <select id="s3-signature-version">
+            <option value="s3">V2（兼容 OSS）</option>
+            <option value="s3v4">V4（AWS S3）</option>
+          </select>
+        </div>
+        <div class="ftp-row">
+          <div class="form-group">
+            <label>Region</label>
+            <input id="s3-region" placeholder="us-east-1">
+          </div>
+          <div class="form-group">
+            <label>Bucket</label>
+            <input id="s3-bucket" placeholder="my-bucket">
+          </div>
+        </div>
+        <div class="form-group">
+          <label>Access Key</label>
+          <input id="s3-access-key">
+        </div>
+        <div class="form-group">
+          <label>Secret Key</label>
+          <input id="s3-secret-key" type="password">
+        </div>
+        <div class="form-group">
+          <label>路径前缀（可选）</label>
+          <input id="s3-path" placeholder="ohmy meme">
+        </div>
+      </div>
+      <div id="s-sync-r2" style="display:none">
+        <div class="form-group">
+          <label>Cloudflare Account ID</label>
+          <input id="r2-account-id" placeholder="32 位十六进制字符串">
+        </div>
+        <div class="form-group">
+          <label>R2 Access Key ID</label>
+          <input id="r2-access-key-id">
+        </div>
+        <div class="form-group">
+          <label>R2 Secret Access Key</label>
+          <input id="r2-secret-access-key" type="password">
+        </div>
+        <div class="form-group">
+          <label>Bucket 名称</label>
+          <input id="r2-bucket" placeholder="my-bucket">
+        </div>
+        <div class="form-group">
+          <label>路径前缀（可选）</label>
+          <input id="r2-path" placeholder="ohmy meme">
+        </div>
+      </div>
+      <div id="s-sync-webdav" style="display:none">
+        <div class="form-group">
+          <label>WebDAV URL</label>
+          <input id="wd-url" placeholder="https://example.com/remote.php/dav/files/user">
+        </div>
+        <div class="form-group">
+          <label>用户名</label>
+          <input id="wd-user">
+        </div>
+        <div class="form-group">
+          <label>密码</label>
+          <input id="wd-pass" type="password">
+        </div>
+        <div class="form-group">
+          <label>远程路径（可选）</label>
+          <input id="wd-path" placeholder="ohmy meme">
+        </div>
+      </div>
+      <div id="s-sync-buttons" style="display:none">
+        <div style="display:flex;gap:8px;margin-top:14px">
+          <button id="btn-ftp-test" class="btn btn-secondary btn-sm btn-flex" onclick="testSync()">测试连接</button>
+          <button class="btn btn-secondary btn-sm btn-flex" onclick="checkSyncStatus()">检查同步状态</button>
+          <button id="btn-sync-push" class="btn btn-primary btn-sm btn-flex" onclick="syncPush()">上传到远端</button>
+          <button id="btn-sync-pull" class="btn btn-primary btn-sm btn-flex" onclick="syncPull()">从远端下载</button>
+        </div>
+        <div id="s-sync-status" style="margin-top:6px"></div>
+        <div style="display:flex;gap:8px;margin-top:12px;align-items:center;flex-wrap:wrap">
+          <span style="font-size:12px;color:var(--muted)">云端孤儿文件</span>
+          <button id="btn-orphan-scan" class="btn btn-secondary btn-sm" onclick="scanOrphans()">扫描</button>
+          <button id="btn-orphan-delete" class="btn btn-secondary btn-sm" style="border-color:#ef4444;color:#ef4444" onclick="deleteOrphans()" disabled>删除孤儿</button>
+          <span id="s-orphan-status" style="font-size:11.5px;color:var(--muted)"></span>
+        </div>
+      </div>
+    </div>
+
+    <div class="section" style="border-color:var(--accent-muted)">
+      <div class="section-title" style="color:#ef4444">危险操作</div>
+      <p style="font-size:11.5px;color:var(--muted);margin-bottom:12px;line-height:1.6">以下操作不可撤销，请谨慎使用</p>
+      <div style="display:flex;gap:8px">
+        <button class="btn btn-flex" style="border-color:#ef4444;color:#ef4444" onclick="showDangerConfirm('local')">删除本地所有表情包</button>
+        <button class="btn btn-flex" style="border-color:#ef4444;color:#ef4444" onclick="showDangerConfirm('cloud')">删除云端所有表情包</button>
+      </div>
+    </div>
+
+    <div class="section">
+      <div class="section-title">日志</div>
+      <p style="font-size:11.5px;color:var(--muted);margin-bottom:10px;line-height:1.6">导出本次运行至今的 Debug 级日志，便于排查问题</p>
+      <div style="display:flex;gap:8px">
+        <button class="btn btn-secondary btn-sm btn-flex" onclick="exportLogs()">导出日志</button>
+      </div>
+      <div id="log-export-status" style="font-size:11.5px;color:var(--muted);margin-top:6px"></div>
+    </div>
+  </div>
+
+  <div id="bottom">
+    <button class="btn btn-ghost btn-sm" onclick="resetSettings()">恢复默认</button>
+    <span class="spacer" style="flex:1"></span>
+    <button class="btn btn-secondary" onclick="closeSettings()">取消</button>
+    <button class="btn btn-primary" onclick="saveSettings()">保存</button>
+  </div>
+</div>
+
+<div id="toast"></div>
+
+<!-- Danger confirm overlay -->
+<div id="sync-progress-overlay" style="display:none;position:fixed;inset:0;background:rgba(0,0,0,.6);align-items:center;justify-content:center;z-index:400;animation:fadeIn .15s">
+  <div style="background:var(--surface);border-radius:var(--radius-lg);padding:24px 28px;width:420px;border:1px solid var(--border);box-shadow:var(--shadow-lg);text-align:center">
+    <div style="font-size:14px;font-weight:600;color:var(--fg);margin-bottom:4px" id="sync-progress-title">同步中...</div>
+    <div style="font-size:12px;color:var(--fg-secondary);margin-bottom:12px;word-break:break-all" id="sync-progress-file">准备中</div>
+    <div style="width:100%;height:8px;background:var(--bg);border-radius:4px;overflow:hidden;margin-bottom:6px">
+      <div id="sync-progress-bar" style="width:0%;height:100%;background:var(--accent);border-radius:4px;transition:width .3s"></div>
+    </div>
+    <div style="font-size:11.5px;color:var(--muted);margin-bottom:16px">
+      <span id="sync-progress-pct">0%</span>
+      <span id="sync-progress-speed" style="margin-left:12px">0 KB/s</span>
+    </div>
+    <button id="sync-progress-bg-btn" class="btn btn-secondary btn-sm" onclick="hideSyncProgress()">后台运行</button>
+  </div>
+</div>
+
+<div id="sync-done-overlay" style="display:none;position:fixed;inset:0;background:rgba(0,0,0,.6);align-items:center;justify-content:center;z-index:400;animation:fadeIn .15s">
+  <div style="background:var(--surface);border-radius:var(--radius-lg);padding:24px 28px;width:380px;border:1px solid var(--border);box-shadow:var(--shadow-lg);text-align:center">
+    <div style="font-size:14px;font-weight:600;color:var(--fg);margin-bottom:8px" id="sync-done-title">同步完成</div>
+    <div style="font-size:13px;color:var(--fg-secondary);line-height:1.6;margin-bottom:18px" id="sync-done-detail"></div>
+    <button class="btn btn-primary" onclick="hideSyncDone()">关闭</button>
+  </div>
+</div>
+
+<div id="qq-import-overlay" style="display:none;position:fixed;inset:0;background:rgba(0,0,0,.6);align-items:center;justify-content:center;z-index:400;animation:fadeIn .15s">
+  <div style="background:var(--surface);border-radius:var(--radius-lg);padding:24px 28px;width:400px;border:1px solid var(--border);box-shadow:var(--shadow-lg);text-align:center">
+    <div style="font-size:14px;font-weight:600;color:var(--fg);margin-bottom:4px" id="qq-import-title">正在导入...</div>
+    <div style="font-size:12px;color:var(--fg-secondary);margin-bottom:12px;word-break:break-all" id="qq-import-msg">准备中</div>
+    <div style="width:100%;height:8px;background:var(--bg);border-radius:4px;overflow:hidden;margin-bottom:6px">
+      <div id="qq-import-bar" style="width:0%;height:100%;background:var(--accent);border-radius:4px;transition:width .3s"></div>
+    </div>
+    <div style="font-size:11.5px;color:var(--muted);margin-bottom:16px">
+      <span id="qq-import-pct">0%</span>
+    </div>
+    <button id="btn-qq-save" class="btn btn-primary" style="display:none" onclick="saveQQZip()">选择保存位置</button>
+    <div id="qq-after-save" style="display:none;margin-top:8px">
+      <p style="font-size:12px;color:var(--fg-secondary);margin-bottom:12px;line-height:1.6">请从 ZIP 中筛选需要的表情包，然后点击下方按钮导入</p>
+      <button id="btn-qq-import-files" class="btn btn-primary" onclick="startImportFromZip()" style="width:100%">选择文件导入</button>
+    </div>
+    <button id="btn-qq-help" class="btn btn-ghost btn-sm" onclick="openADBHelp()" style="display:none">不知道怎么办？</button>
+    <button id="btn-qq-close" class="btn btn-secondary btn-sm" onclick="closeQQOverlay()">关闭</button>
+    <div id="qq-import-error" style="display:none;font-size:12px;color:#ef4444;margin-top:8px"></div>
+  </div>
+</div>
+
+<div id="qqnt-overlay" style="display:none;position:fixed;inset:0;background:rgba(0,0,0,.6);align-items:center;justify-content:center;z-index:400;animation:fadeIn .15s">
+  <div style="background:var(--surface);border-radius:var(--radius-lg);padding:24px 28px;width:460px;border:1px solid var(--border);box-shadow:var(--shadow-lg)">
+    <div style="font-size:14px;font-weight:600;color:var(--fg);margin-bottom:14px">从电脑版 QQ 提取</div>
+
+    <div id="qqnt-step-1">
+      <div style="font-size:12px;color:var(--muted);margin-bottom:10px;line-height:1.6" id="qqnt-env-msg">正在检查环境...</div>
+      <div id="qqnt-accounts" style="max-height:220px;overflow-y:auto;margin-bottom:12px"></div>
+      <div id="qqnt-env-actions" style="display:none;margin-bottom:12px">
+        <div style="font-size:12px;color:var(--muted);margin-bottom:8px" id="qqnt-env-actions-msg"></div>
+        <div style="display:flex;gap:8px">
+          <button id="qqnt-pick-ini" class="btn btn-secondary btn-sm" onclick="qqntPickIni()">选择配置文件</button>
+          <button id="qqnt-pick-userdata" class="btn btn-secondary btn-sm" onclick="qqntPickUserdata()">选择用户数据目录</button>
+        </div>
+      </div>
+    </div>
+
+    <div id="qqnt-step-2" style="display:none">
+      <div style="font-size:12px;color:var(--muted);margin-bottom:10px;line-height:1.6">选择保存文件夹，将导出到其下「昵称（QQ号）_提取的表情」目录</div>
+      <div style="display:flex;gap:8px;margin-bottom:10px">
+        <input id="qqnt-out-base" readonly placeholder="选择保存文件夹" style="flex:1">
+        <button class="btn btn-secondary btn-sm" onclick="qqntPickBase()">选择文件夹</button>
+      </div>
+      <label style="font-size:11.5px;color:var(--muted);margin-bottom:4px">输出目录</label>
+      <input id="qqnt-out-dir" readonly style="margin-bottom:10px">
+      <label style="display:flex;align-items:center;gap:8px;cursor:pointer;font-size:12.5px;color:var(--muted);margin-bottom:8px;user-select:none">
+        <input id="qqnt-image-only" type="checkbox" style="width:15px;height:15px;accent-color:var(--accent);cursor:pointer">仅提取图片（跳过非图片文件）
+      </label>
+      <label style="display:flex;align-items:center;gap:8px;cursor:pointer;font-size:12.5px;color:var(--muted);margin-bottom:8px;user-select:none">
+        <input id="qqnt-overwrite" type="checkbox" style="width:15px;height:15px;accent-color:var(--accent);cursor:pointer">输出目录已存在时覆盖清空
+      </label>
+    </div>
+
+    <div id="qqnt-step-3" style="display:none">
+      <div style="font-size:13px;font-weight:500;color:var(--fg);margin-bottom:4px" id="qqnt-progress-title">正在提取...</div>
+      <div style="font-size:12px;color:var(--fg-secondary);margin-bottom:12px;word-break:break-all" id="qqnt-progress-msg">准备中</div>
+      <div style="width:100%;height:8px;background:var(--bg);border-radius:4px;overflow:hidden;margin-bottom:6px">
+        <div id="qqnt-progress-bar" style="width:0%;height:100%;background:var(--accent);border-radius:4px;transition:width .3s"></div>
+      </div>
+      <div style="font-size:11.5px;color:var(--muted);margin-bottom:12px"><span id="qqnt-progress-pct">0%</span></div>
+      <div id="qqnt-progress-log" style="max-height:160px;overflow-y:auto;font-size:11px;color:var(--muted);text-align:left;line-height:1.6;background:var(--bg);border-radius:var(--radius-sm);padding:8px 10px"></div>
+    </div>
+
+    <div id="qqnt-step-4" style="display:none">
+      <div style="font-size:13px;font-weight:500;color:var(--fg);margin-bottom:10px" id="qqnt-done-title">提取完成</div>
+      <div style="font-size:12.5px;color:var(--fg-secondary);line-height:1.8;margin-bottom:14px" id="qqnt-done-detail"></div>
+      <button id="qqnt-open-dir" class="btn btn-secondary btn-sm" onclick="qqntOpenDir()" style="width:100%">打开输出目录</button>
+    </div>
+
+    <div id="qqnt-error" style="display:none;font-size:12px;color:#ef4444;margin-top:8px"></div>
+
+    <div style="display:flex;gap:8px;justify-content:flex-end;margin-top:16px">
+      <button id="qqnt-prev" class="btn btn-secondary btn-sm" onclick="qqntPrev()">上一步</button>
+      <button id="qqnt-next" class="btn btn-primary btn-sm" onclick="qqntNext()">下一步</button>
+      <button id="qqnt-close" class="btn btn-ghost btn-sm" onclick="qqntClose()">关闭</button>
+    </div>
+  </div>
+</div>
+
+<div id="tg-import-overlay" style="display:none;position:fixed;inset:0;background:rgba(0,0,0,.6);align-items:center;justify-content:center;z-index:400;animation:fadeIn .15s">
+  <div style="background:var(--surface);border-radius:var(--radius-lg);padding:24px 28px;width:420px;border:1px solid var(--border);box-shadow:var(--shadow-lg);text-align:center">
+    <div style="font-size:14px;font-weight:600;color:var(--fg);margin-bottom:4px" id="tg-import-title">正在导入...</div>
+    <div style="font-size:12px;color:var(--fg-secondary);margin-bottom:12px;word-break:break-all" id="tg-import-msg">准备中</div>
+    <div style="width:100%;height:8px;background:var(--bg);border-radius:4px;overflow:hidden;margin-bottom:6px">
+      <div id="tg-import-bar" style="width:0%;height:100%;background:var(--accent);border-radius:4px;transition:width .3s"></div>
+    </div>
+    <div style="font-size:11.5px;color:var(--muted);margin-bottom:16px">
+      <span id="tg-import-pct">0%</span>
+    </div>
+    <button id="btn-tg-retry" class="btn btn-secondary btn-sm" onclick="tgRetryPick()" style="display:none">手动选择 tdata 目录</button>
+    <button id="btn-tg-close" class="btn btn-secondary btn-sm" onclick="closeTGOverlay()">关闭</button>
+    <div id="tg-import-error" style="display:none;font-size:12px;color:#ef4444;margin-top:8px;word-break:break-all"></div>
+  </div>
+</div>
+
+<div id="dy-import-overlay" style="display:none;position:fixed;inset:0;background:rgba(0,0,0,.6);align-items:center;justify-content:center;z-index:400;animation:fadeIn .15s">
+  <div style="background:var(--surface);border-radius:var(--radius-lg);padding:24px 28px;width:420px;border:1px solid var(--border);box-shadow:var(--shadow-lg);text-align:center">
+    <div style="font-size:14px;font-weight:600;color:var(--fg);margin-bottom:4px" id="dy-import-title">正在导入...</div>
+    <div style="font-size:12px;color:var(--fg-secondary);margin-bottom:12px;word-break:break-all" id="dy-import-msg">准备中</div>
+    <div style="width:100%;height:8px;background:var(--bg);border-radius:4px;overflow:hidden;margin-bottom:6px">
+      <div id="dy-import-bar" style="width:0%;height:100%;background:var(--accent);border-radius:4px;transition:width .3s"></div>
+    </div>
+    <div style="font-size:11.5px;color:var(--muted);margin-bottom:16px">
+      <span id="dy-import-pct">0%</span>
+    </div>
+    <button id="btn-dy-close" class="btn btn-secondary btn-sm" onclick="closeDYOverlay()">关闭</button>
+    <div id="dy-import-error" style="display:none;font-size:12px;color:#ef4444;margin-top:8px;word-break:break-all"></div>
+  </div>
+</div>
+
+<div id="wechat-import-overlay" style="display:none;position:fixed;inset:0;background:rgba(0,0,0,.6);align-items:center;justify-content:center;z-index:400;animation:fadeIn .15s">
+  <div style="background:var(--surface);border-radius:var(--radius-lg);padding:24px 28px;width:420px;border:1px solid var(--border);box-shadow:var(--shadow-lg);text-align:center">
+    <div style="font-size:14px;font-weight:600;color:var(--fg);margin-bottom:4px" id="wechat-import-title">正在导入...</div>
+    <div style="font-size:12px;color:var(--fg-secondary);margin-bottom:12px;word-break:break-all" id="wechat-import-msg">准备中</div>
+    <div style="width:100%;height:8px;background:var(--bg);border-radius:4px;overflow:hidden;margin-bottom:6px">
+      <div id="wechat-import-bar" style="width:0%;height:100%;background:var(--accent);border-radius:4px;transition:width .3s"></div>
+    </div>
+    <div style="font-size:11.5px;color:var(--muted);margin-bottom:16px">
+      <span id="wechat-import-pct">0%</span>
+    </div>
+    <button id="btn-wechat-close" class="btn btn-secondary btn-sm" onclick="closeWechatOverlay()">关闭</button>
+    <div id="wechat-import-error" style="display:none;font-size:12px;color:#ef4444;margin-top:8px;word-break:break-all"></div>
+  </div>
+</div>
+
+<div id="danger-overlay" style="display:none;position:fixed;inset:0;background:rgba(0,0,0,.6);align-items:center;justify-content:center;z-index:400;animation:fadeIn .15s" onclick="if(event.target===this)dangerCancel()">
+  <div style="background:var(--surface);border-radius:var(--radius-lg);padding:24px 28px;width:400px;border:1px solid var(--border);box-shadow:var(--shadow-lg)" onclick="event.stopPropagation()">
+    <h2 style="font-size:15px;font-weight:600;color:#ef4444;margin-bottom:10px" id="danger-title">危险操作</h2>
+    <p style="font-size:13px;color:var(--fg-secondary);line-height:1.6;margin-bottom:16px" id="danger-desc">此操作不可撤销。</p>
+    <div style="margin-bottom:10px">
+      <label style="display:block;font-size:12px;font-weight:500;color:var(--fg-secondary);margin-bottom:2px">请在上方输入框输入 <b style="color:#ef4444">confirm</b> 确认</label>
+      <input class="danger-input" id="danger-input-1" placeholder="在此输入 confirm" spellcheck="false" autocomplete="off">
+    </div>
+    <div style="margin-bottom:18px">
+      <label style="display:block;font-size:12px;font-weight:500;color:var(--fg-secondary);margin-bottom:2px">请在下方输入框再次输入 <b style="color:#ef4444">confirm</b> 确认</label>
+      <input class="danger-input" id="danger-input-2" placeholder="在此输入 confirm" spellcheck="false" autocomplete="off">
+    </div>
+    <div style="display:flex;gap:8px;justify-content:flex-end">
+      <button class="btn btn-secondary" onclick="dangerCancel()">取消</button>
+      <button class="btn" id="danger-confirm-btn" disabled style="border-color:#ef4444;color:#ef4444" onclick="dangerExec()">确认执行</button>
+    </div>
+  </div>
+</div>
+
+<script src="/settings.js" defer></script>
+</body>
+</html>

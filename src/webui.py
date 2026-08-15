@@ -2494,6 +2494,9 @@ class WebUI:
 
         @app.route("/")
         def index():
+            vue_html = HTML_DIR / "vue.html"
+            if vue_html.exists():
+                return bottle.static_file("vue.html", root=str(HTML_DIR))
             html_path = HTML_DIR / "index.html"
             if html_path.exists():
                 return bottle.static_file("index.html", root=str(HTML_DIR))
