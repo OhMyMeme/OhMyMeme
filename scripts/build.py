@@ -8,7 +8,8 @@ Usage:
     python scripts/build.py                  # build + installer (auto-detect)
     python scripts/build.py --windows        # Windows target
     python scripts/build.py --linux          # Linux target
-    python scripts/build.py --macos          # macOS target (.app + .dmg)
+    python scripts/build.py --macos          # macOS target (.app + .dmg, arch auto-detect)
+    python scripts/build.py --macos --arch x86_64  # macOS Intel build
     python scripts/build.py --installer-only # installer only (assumes already built)
     python scripts/build.py --build-only     # build only, skip installer
     python scripts/build.py --package deb    # Linux package type: all|appimage|deb|rpm
@@ -172,7 +173,9 @@ def build_pyinstaller(target=None):
             cmd += ["--icon=" + str(icon_png)]
     elif target == "Darwin":
         icon_icns = _ensure_icns()
-        cmd += ["--windowed", "--icon=" + str(icon_icns)]
+        cmd += ["--windowed"]
+        if icon_icns:
+            cmd += ["--icon=" + str(icon_icns)]
 
     print(L("running"), " ".join(cmd))
     result = subprocess.run(cmd, cwd=str(PROJECT_ROOT))
@@ -274,7 +277,7 @@ def build_installer(version, target=None, filename_version=None):
         print(L("installer_not_found"), installer)
 
 
-def build_linux_packages(version, package="all"):
+def build_linux_packages(version, package="all", pkg_version=None):
     build_sh = PROJECT_ROOT / "scripts" / "installer" / "linux" / "build.sh"
     if not build_sh.exists():
         print(L("linux_sh_not_found", build_sh))
@@ -282,6 +285,9 @@ def build_linux_packages(version, package="all"):
 
     env = os.environ.copy()
     env["SKIP_PYINSTALLER"] = "1"
+    # deb/rpm 的 Version 字段必须是数字开头；nightly 时回退到基础版本号
+    if pkg_version:
+        env["OHMYMEME_PKG_VERSION"] = pkg_version
     print(L("building_linux"))
     result = subprocess.run(
         ["bash", str(build_sh), package],
@@ -293,15 +299,16 @@ def build_linux_packages(version, package="all"):
         sys.exit(result.returncode)
 
 
-def _ensure_icns() -> Path:
-    """将 icon.png 转为 macOS .icns（PyInstaller 需要），返回路径"""
+def _ensure_icns():
+    """将 icon.png 转为 macOS .icns（PyInstaller 需要）；成功返回路径，失败返回 None"""
     png = SRC_DIR / "resources" / "icon.png"
     icns = BUILD_DIR / "OhMyMeme.icns"
     if not png.exists():
-        return icns
+        return None
     # icon.png 存在但 icns 未生成或已过期时重新生成
     if icns.exists() and icns.stat().st_mtime >= png.stat().st_mtime:
         return icns
+    BUILD_DIR.mkdir(parents=True, exist_ok=True)
     try:
         from PIL import Image
         import tempfile
@@ -326,19 +333,35 @@ def _ensure_icns() -> Path:
             resized = img.resize((px, px), Image.LANCZOS)
             resized.save(iconset / name)
         # 用 iconutil 生成 .icns（macOS 自带）
-        subprocess.run(
+        result = subprocess.run(
             ["iconutil", "-c", "icns", str(iconset), "-o", str(icns)],
-            check=True,
+            capture_output=True,
+            text=True,
         )
+        if result.returncode != 0:
+            print("WARNING: iconutil failed:", result.stderr or result.stdout)
+            return None
         shutil.rmtree(tmp, ignore_errors=True)
+        return icns
     except Exception as e:
         print("WARNING: failed to generate .icns:", e)
-    return icns
+        return None
 
 
-def build_macos_packages(version, filename_version=None):
-    """制作 macOS .dmg（内含 .app）；version 用于 dmg 文件名版本段"""
+def get_macos_arch(arch=None):
+    """返回 macOS 架构名（arm64 / x86_64）；未指定时按当前机器检测"""
+    if arch:
+        return arch
+    machine = platform.machine().lower()
+    if machine in ("arm64", "aarch64"):
+        return "arm64"
+    return "x86_64"
+
+
+def build_macos_packages(version, filename_version=None, arch=None):
+    """制作 macOS .dmg（内含 .app）；version 用于 dmg 文件名版本段，arch 追加架构后缀"""
     filename_version = filename_version or version
+    arch = get_macos_arch(arch)
     app_dir = BUILD_DIR / (APP_NAME + ".app")
     if not app_dir.is_dir():
         print(L("outdir_not_found"), app_dir)
@@ -346,7 +369,7 @@ def build_macos_packages(version, filename_version=None):
         return
 
     print(L("building_macos"))
-    dmg_name = "%s-v%s-macos.dmg" % (APP_NAME, filename_version)
+    dmg_name = "%s-v%s-%s.dmg" % (APP_NAME, filename_version, arch)
     dmg_path = BUILD_DIR / dmg_name
     if dmg_path.exists():
         dmg_path.unlink()
@@ -409,6 +432,8 @@ if __name__ == "__main__":
                         help="Only run PyInstaller, skip installer")
     parser.add_argument("--package", choices=["all", "appimage", "deb", "rpm"], default="all",
                         help="Linux package type to build (default: all)")
+    parser.add_argument("--arch", choices=["arm64", "x86_64"], default=None,
+                        help="macOS architecture (default: auto-detect from machine)")
     target_group = parser.add_mutually_exclusive_group()
     target_group.add_argument("--windows", action="store_true", dest="target_windows",
                               help="Build for Windows")
@@ -461,9 +486,9 @@ if __name__ == "__main__":
             if target == "Windows":
                 build_installer(app_version, target=target, filename_version=build_version)
             elif target == "Linux":
-                build_linux_packages(build_version, args.package)
+                build_linux_packages(build_version, args.package, pkg_version=app_version)
             elif target == "Darwin":
-                build_macos_packages(build_version, filename_version=build_version)
+                build_macos_packages(build_version, filename_version=build_version, arch=args.arch)
             else:
                 print(L("installer_only_unsupported", target))
                 sys.exit(1)
@@ -474,9 +499,9 @@ if __name__ == "__main__":
             elif target == "Windows":
                 build_installer(app_version, target=target, filename_version=build_version)
             elif target == "Linux":
-                build_linux_packages(version, args.package)
+                build_linux_packages(version, args.package, pkg_version=app_version)
             elif target == "Darwin":
-                build_macos_packages(version, filename_version=build_version)
+                build_macos_packages(version, filename_version=build_version, arch=args.arch)
     finally:
         if patched:
             set_version(base_version)

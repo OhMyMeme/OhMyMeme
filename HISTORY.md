@@ -17,6 +17,7 @@
 - **快捷键呼出聚焦搜索栏** — 主窗口弹出后自动聚焦搜索框
 - **Nightly 非正式版构建** — `nightly.yml` 每日定时 + 手动触发，从 `dev` 分支以版本号 `nightly` 构建 Windows/Linux/macOS 三平台安装包并以 prerelease 发布，更新检查绝不会指向该版本
 - **macOS 构建支持** — `build.py --macos` 生成 `.app`（PyInstaller `--windowed` + iconutil 从 icon.png 生成 icns）与 `.dmg`（hdiutil）；`build.yml` 新增 `build-macos` job；更新检查支持 `.dmg` 资产，安装走 `hdiutil attach` + `ditto` 复制到 `/Applications`
+- **macOS 双架构构建** — dmg 文件名带架构后缀 `OhMyMeme-v{version}-{arch}.dmg`，`--arch` 指定 arm64/x86_64（默认自动检测）；`build.yml`/`nightly.yml` 矩阵双架构（arm64 用 macos-latest，x86_64 用 macos-15-intel）；更新检查按本机架构选取对应 dmg
 
 ## 变更
 
