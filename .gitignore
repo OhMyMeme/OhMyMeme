@@ -33,4 +33,5 @@ Thumbs.db
 *.deb
 *.rpm
 *.dmg
-nuitka-crash-report.xml
+nuitka-crash-report.xmlcookie.txt
+uv.lock
