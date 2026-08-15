@@ -382,18 +382,24 @@ body {
 }
 
 /* TransitionGroup FLIP 动画 */
+/* 仅保留 move（拖拽让位动画）；enter/leave 瞬时切换，避免标签筛选时
+   整列卡片逐个淡入淡出导致卡顿 */
 .meme-list-move {
   transition: transform 0.2s ease;
 }
 
 .meme-list-enter-active,
 .meme-list-leave-active {
-  transition: opacity 0.2s ease;
+  transition: none;
+}
+
+.meme-list-leave-active {
+  display: none;
 }
 
 .meme-list-enter-from,
 .meme-list-leave-to {
-  opacity: 0;
+  opacity: 1;
 }
 
 .meme-card img {

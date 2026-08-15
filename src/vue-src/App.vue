@@ -160,9 +160,9 @@ async function onCtxAction(action: string) {
 
 async function showCollectionBuilder() {
   cb.open(async (name, memeIds) => {
-    const result = await window.pywebview?.api?.create_collection_with_memes(name, memeIds)
+    const result = await window.pywebview?.api?.set_collection_members_new(name, memeIds)
     if (result?.ok) { showToast('分组已创建'); refreshCollections(); search() }
-    else showToast('创建失败')
+    else showToast(result?.error || '创建失败')
   })
 }
 
