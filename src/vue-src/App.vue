@@ -2,11 +2,14 @@
 import { ref, onMounted, onUnmounted } from 'vue'
 import { useMemes } from './composables/useMemes'
 import { useContextMenu } from './composables/useContextMenu'
+import { useCollectionBuilder } from './composables/useCollectionBuilder'
 import ContextMenu from './components/ContextMenu.vue'
+import CollectionBuilder from './components/CollectionBuilder.vue'
 import type { Meme } from './types'
 
 const { state, dragSort, search, goToPage, setSearch, toggleTag, setActiveCollection, refreshTags, refreshCollections, copyMeme, onSortDragStart, onSortDragOver, onSortDragLeave, onSortDrop, onSortDragEnd } = useMemes()
 const ctx = useContextMenu()
+const cb = useCollectionBuilder()
 
 const sidebarCollapsed = ref(false)
 const sortEnabled = ref(false)
@@ -60,6 +63,19 @@ function toggleSort() {
 
 function showImportMenu() {
   showToast('导入功能开发中...')
+}
+
+async function showCollectionBuilder() {
+  cb.open(async (name, memeIds) => {
+    const result = await window.pywebview?.api?.create_collection_with_memes(name, memeIds)
+    if (result?.ok) {
+      showToast('分组已创建')
+      refreshCollections()
+      search()
+    } else {
+      showToast('创建失败')
+    }
+  })
 }
 
 function rescanCache() {
@@ -155,6 +171,10 @@ async function onCtxAction(action: string) {
         refreshTags()
         search()
       }
+      break
+    }
+    case 'collection': {
+      showCollectionBuilder()
       break
     }
     case 'delete': {
@@ -436,6 +456,8 @@ refreshCollections()
       </div>
     </div>
   </div>
+
+  <CollectionBuilder @confirm="showCollectionBuilder" />
 
   <ContextMenu
     :visible="ctx.visible.value"
