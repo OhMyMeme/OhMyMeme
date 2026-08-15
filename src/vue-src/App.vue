@@ -265,8 +265,17 @@ async function showCollectionBuilder() {
 
 const hoverTimers = new Map<number, ReturnType<typeof setTimeout>>()
 
+// 与原始实现一致：auto_play_gif && !hover_to_play 时网格直接播原图；
+// hover_to_play 开启时显示缩略图，悬停切原图
+function memeSrc(meme: Meme): string {
+  if (meme.is_animated && meme.auto_play_gif && !meme.hover_to_play) {
+    return `/api/original/${meme.id}/${encodeURIComponent(meme.filename)}`
+  }
+  return `/api/thumb/${meme.id}/${encodeURIComponent(meme.filename)}`
+}
+
 function onCardMouseEnter(meme: Meme) {
-  if (!meme.is_animated || !meme.hover_to_play || meme.auto_play_gif) return
+  if (!meme.is_animated || !meme.hover_to_play) return
   const timer = setTimeout(() => {
     const img = document.querySelector(`.meme-card[data-meme-id="${meme.id}"] img`) as HTMLImageElement
     if (img) { img.dataset.thumb = img.src; img.src = `/api/original/${meme.id}/${encodeURIComponent(meme.filename)}` }
@@ -277,7 +286,7 @@ function onCardMouseEnter(meme: Meme) {
 function onCardMouseLeave(meme: Meme) {
   const timer = hoverTimers.get(meme.id)
   if (timer) { clearTimeout(timer); hoverTimers.delete(meme.id) }
-  if (!meme.is_animated || !meme.hover_to_play || meme.auto_play_gif) return
+  if (!meme.is_animated || !meme.hover_to_play) return
   const img = document.querySelector(`.meme-card[data-meme-id="${meme.id}"] img`) as HTMLImageElement
   if (img && img.dataset.thumb) img.src = img.dataset.thumb
 }
@@ -541,7 +550,7 @@ onUnmounted(() => {
               @mouseenter="onCardMouseEnter(meme)"
               @mouseleave="onCardMouseLeave(meme)"
             >
-              <img :src="`/api/thumb/${meme.id}/${encodeURIComponent(meme.filename)}`" :alt="meme.name" loading="lazy">
+              <img :src="memeSrc(meme)" :alt="meme.name" loading="lazy">
               <span v-if="meme.from_stego" class="gif-badge stego-badge">隐写导入</span>
               <span v-else-if="meme.is_animated" class="gif-badge">{{ meme.is_gif ? 'GIF' : 'WebP' }}</span>
               <span class="meme-name">{{ meme.name }}</span>
