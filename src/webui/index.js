@@ -2,9 +2,11 @@ let allTags = [], activeTags = new Set(), memes = [], pending = false, copyPendi
 let collections = [], activeCollection = null;
 let dragSrcId = null;
 const MEME_PAGE = 200;
+let memePage = 1, memeTotal = 0, memePageCount = 1;
 let memeOffset = 0, memeHasMore = true, memeLoadingMore = false;
 let memeGen = 0, cbGen = 0;
 let gridRenderToken = 0;
+let nativeDragActive = false;
 
 async function api(method, ...args) {
   try {
@@ -68,13 +70,62 @@ function onSearch() {
 async function refreshMemes() {
   const q = document.getElementById('search').value.trim();
   const gen = ++memeGen;
-  memeOffset = 0; memeHasMore = true;
+  memePage = 1;
+  memeTotal = await api('count_memes', q, [...activeTags], activeCollection) || 0;
+  memePageCount = Math.max(1, Math.ceil(memeTotal / MEME_PAGE));
   try { memes = await api('search_memes', q, [...activeTags], activeCollection, 0, MEME_PAGE) || []; }
   catch(e) { memes = []; }
   if (gen !== memeGen) return;   // 期间查询条件已变，丢弃过期结果
-  memeOffset = memes.length;
-  memeHasMore = memes.length === MEME_PAGE;
   renderGrid();
+  renderPager();
+}
+
+async function goToPage(p) {
+  if (p < 1 || p > memePageCount || p === memePage) return;
+  memePage = p;
+  const q = document.getElementById('search').value.trim();
+  const gen = ++memeGen;
+  const offset = (memePage - 1) * MEME_PAGE;
+  try { memes = await api('search_memes', q, [...activeTags], activeCollection, offset, MEME_PAGE) || []; }
+  catch(e) { memes = []; }
+  if (gen !== memeGen) return;   // 过期响应丢弃
+  if (memes.length === 0 && memePage > 1) {
+    // 当前页无数据（如删除后），回退到可用末页
+    memePage = Math.max(1, Math.min(memePage, memePageCount));
+    const back = (memePage - 1) * MEME_PAGE;
+    try { memes = await api('search_memes', q, [...activeTags], activeCollection, back, MEME_PAGE) || []; }
+    catch(e) { memes = []; }
+    if (gen !== memeGen) return;
+  }
+  renderGrid();
+  renderPager();
+}
+
+function renderPager() {
+  const pager = document.getElementById('pager');
+  if (!pager) return;
+  if (memePageCount <= 1) { pager.style.display = 'none'; return; }
+  pager.style.display = 'flex';
+  const pages = [];
+  const cur = memePage;
+  const total = memePageCount;
+  const win = [];
+  const show = (p) => { if (p >= 1 && p <= total) win.push(p); };
+  show(1);
+  show(cur - 2); show(cur - 1); show(cur); show(cur + 1); show(cur + 2);
+  show(total);
+  const uniq = [...new Set(win)].sort((a, b) => a - b);
+  let html = '';
+  html += '<button class="pager-btn" data-page="prev"' + (cur <= 1 ? ' disabled' : '') + '>&lt;</button>';
+  let last = 0;
+  for (const p of uniq) {
+    if (p - last > 1) html += '<span class="pager-dots">…</span>';
+    html += '<button class="pager-btn' + (p === cur ? ' active' : '') + '" data-page="' + p + '">' + p + '</button>';
+    last = p;
+  }
+  html += '<button class="pager-btn" data-page="next"' + (cur >= total ? ' disabled' : '') + '>&gt;</button>';
+  html += '<button class="pager-btn" data-page="last"' + (cur >= total ? ' disabled' : '') + '>&gt;&gt;</button>';
+  pager.innerHTML = html;
 }
 
 async function loadMoreMemes() {
@@ -213,7 +264,9 @@ function renderTreeNode(c) {
 }
 
 function toggleCollection(cid) {
-  activeCollection = cid;
+  // 点击当前所在分组名直接回到首页（全部表情）
+  if (activeCollection === cid) activeCollection = null;
+  else activeCollection = cid;
   renderTree();
   refreshMemes();
 }
@@ -285,7 +338,7 @@ function renderGrid() {
   }
 
   if (!memes || memes.length === 0) {
-    if (!hasFolderCards) {
+    if (!hasFolderCards && memeTotal === 0) {
       grid.style.display = 'none'; empty.style.display = 'flex';
     } else {
       grid.style.display = 'grid'; empty.style.display = 'none';
@@ -520,11 +573,13 @@ function initDragReorder() {
       if (dist <= 8) return;
       d.active = true;
       const id = Number(d.card.dataset.memeId);
+      nativeDragActive = true;
       api('start_native_drag', id).then((ok) => {
+        nativeDragActive = false;
         ignoreClick = true;
         if (!ok && memeDrag === d) { d.active = false; showToast('拖拽失败：本地文件不存在'); }
         if (memeDrag === d) cleanupMemeDrag();
-      }).catch(() => { if (memeDrag === d) cleanupMemeDrag(); });
+      }).catch(() => { nativeDragActive = false; if (memeDrag === d) cleanupMemeDrag(); });
       return;
     }
     if (d.natDrag) return; // 原生拖拽进行中，跳过排序逻辑
@@ -1491,18 +1546,23 @@ function toggleSidebar() {
   let dragCounter = 0;
   document.addEventListener('dragenter', (e) => {
     e.preventDefault();
+    if (nativeDragActive) return; // 原生拖拽回拖窗口时忽略
     dragCounter++;
     overlay.classList.add('drag-over');
   });
   document.addEventListener('dragover', (e) => {
     e.preventDefault();
+    if (nativeDragActive) return;
   });
-  document.addEventListener('dragleave', () => {
+  document.addEventListener('dragleave', (e) => {
+    e.preventDefault();
+    if (nativeDragActive) return;
     dragCounter--;
     if (dragCounter <= 0) { dragCounter = 0; overlay.classList.remove('drag-over'); }
   });
   document.addEventListener('drop', async (e) => {
     e.preventDefault();
+    if (nativeDragActive) { dragCounter = 0; overlay.classList.remove('drag-over'); return; } // 原生拖拽拖回视为取消
     dragCounter = 0;
     overlay.classList.remove('drag-over');
     const dt = e.dataTransfer;
@@ -1628,12 +1688,18 @@ document.addEventListener('DOMContentLoaded', async () => {
   }
   const sidebarBtn = document.getElementById('sidebar-toggle');
   if (sidebarBtn) sidebarBtn.addEventListener('click', toggleSidebar);
-  const gridWrap = document.getElementById('grid-wrap');
-  gridWrap.addEventListener('scroll', () => {
-    if (gridWrap.scrollTop + gridWrap.clientHeight >= gridWrap.scrollHeight - 300) {
-      loadMoreMemes();
-    }
-  });
+  const pager = document.getElementById('pager');
+  if (pager) {
+    pager.addEventListener('click', (e) => {
+      const btn = e.target.closest('button.pager-btn');
+      if (!btn || btn.disabled) return;
+      const dp = btn.dataset.page;
+      if (dp === 'prev') goToPage(memePage - 1);
+      else if (dp === 'next') goToPage(memePage + 1);
+      else if (dp === 'last') goToPage(memePageCount);
+      else goToPage(parseInt(dp, 10));
+    });
+  }
   document.getElementById('loading').classList.remove('hidden');
   // 等待 pywebview 桥接就绪
   while (typeof pywebview === 'undefined' || !pywebview.api) {
@@ -1642,9 +1708,11 @@ document.addEventListener('DOMContentLoaded', async () => {
   const data = await api('get_init_data');
   if (data) {
     memes = data.memes || [];
-    memeOffset = memes.length;
-    memeHasMore = memes.length === MEME_PAGE;
+    memePage = 1;
+    memeTotal = await api('count_memes', '', [], activeCollection) || memes.length;
+    memePageCount = Math.max(1, Math.ceil(memeTotal / MEME_PAGE));
     renderGrid();
+    renderPager();
     allTags = data.tags || [];
     renderTags();
     collections = data.collections || [];
@@ -1655,10 +1723,7 @@ document.addEventListener('DOMContentLoaded', async () => {
   setTimeout(async () => {
     await api('rescan_cache');
     await api('run_auto_sync');
-    memes = await api('search_memes', '', [], activeCollection, 0, MEME_PAGE) || [];
-    memeOffset = memes.length;
-    memeHasMore = memes.length === MEME_PAGE;
-    renderGrid();
+    await refreshMemes();
     allTags = await api('get_tags') || [];
     renderTags();
     collections = await api('get_collections') || [];

@@ -82,6 +82,19 @@ def get_version():
     return m.group(1) if m else "0.1.0"
 
 
+def set_version(v: str):
+    """临时改写 src/__init__.py 的 __version__（nightly 构建用，构建后恢复）"""
+    init_py = SRC_DIR / "__init__.py"
+    content = init_py.read_text(encoding="utf-8")
+    new_content = re.sub(
+        r'__version__\s*=\s*"[^"]*"',
+        '__version__ = "%s"' % v,
+        content,
+        count=1,
+    )
+    init_py.write_text(new_content, encoding="utf-8")
+
+
 def find_iscc():
     paths = [
         os.environ.get("ISCC_DIR", ""),
@@ -184,7 +197,8 @@ def _ensure_lang_file(iscc_exe):
         print("WARNING: failed to download language file:", e)
 
 
-def build_installer(version, target=None):
+def build_installer(version, target=None, filename_version=None):
+    """生成 InnoSetup 安装包；filename_version 仅用于输出文件名（nightly 版本）"""
     if target is None:
         target = platform.system()
     if target != "Windows":
@@ -209,10 +223,18 @@ def build_installer(version, target=None):
         print(L("iss_not_found"), iss_template)
         return
 
+    filename_version = filename_version or version
+    # InnoSetup 要求 AppVersion 为纯数字版本；nightly 时文件名可含 -nightly 后缀
+    numeric_version = re.match(r"^\d+(\.\d+)*", filename_version)
+    app_version = numeric_version.group(0) if numeric_version else version
     iss_content = iss_template.read_text(encoding="utf-8")
     iss_content = iss_content.replace(
         '#define MyAppVersion "0.1.0"',
-        '#define MyAppVersion "%s"' % version,
+        '#define MyAppVersion "%s"' % app_version,
+    )
+    iss_content = iss_content.replace(
+        "OutputBaseFilename=OhMyMeme-{#MyAppVersion}-setup",
+        "OutputBaseFilename=OhMyMeme-%s-setup" % filename_version,
     )
     source_dir_abs = str(dist_dir.resolve())
     iss_content = iss_content.replace(
@@ -238,7 +260,7 @@ def build_installer(version, target=None):
     if iss_temp.exists():
         iss_temp.unlink()
 
-    output_name = "%s-%s-setup.exe" % (APP_NAME, version)
+    output_name = "%s-%s-setup.exe" % (APP_NAME, filename_version)
     installer = BUILD_DIR / output_name
     if installer.exists():
         print(L("installer_done"), installer)
@@ -270,6 +292,17 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="OhMyMeme build script (PyInstaller)")
     parser.add_argument("--lang", choices=["zh", "en"], default=None,
                         help="Output language (auto-detect: zh locally, en on GitHub Actions)")
+    parser.add_argument(
+        "--version",
+        default=None,
+        help="Override version string "
+        "(default: read from src/__init__.py)",
+    )
+    parser.add_argument(
+        "--nightly",
+        action="store_true",
+        help="Build a nightly (non-stable) release: version is 'nightly'",
+    )
     parser.add_argument("--installer-only", action="store_true",
                         help="Only build installer (assumes PyInstaller already ran)")
     parser.add_argument("--build-only", action="store_true",
@@ -302,19 +335,40 @@ if __name__ == "__main__":
     else:
         target = platform.system()
 
-    if args.installer_only:
-        if target == "Windows":
-            build_installer(get_version(), target=target)
-        elif target == "Linux":
-            build_linux_packages(get_version(), args.package)
+    # --- version override / nightly ---
+    base_version = get_version()
+    build_version = base_version
+    if args.nightly:
+        build_version = "nightly"
+    if args.version:
+        build_version = args.version
+
+    # InnoSetup 要求 AppVersion 为纯数字；nightly 时回退到基础版本号
+    m = re.match(r"^\d+(\.\d+)*", build_version)
+    app_version = m.group(0) if m else base_version
+
+    # nightly / 指定版本时临时改写 __init__.py，构建后恢复
+    patched = build_version != base_version
+    if patched:
+        set_version(build_version)
+
+    try:
+        if args.installer_only:
+            if target == "Windows":
+                build_installer(app_version, target=target, filename_version=build_version)
+            elif target == "Linux":
+                build_linux_packages(build_version, args.package)
+            else:
+                print(L("installer_only_unsupported", target))
+                sys.exit(1)
         else:
-            print(L("installer_only_unsupported", target))
-            sys.exit(1)
-    else:
-        version = build_pyinstaller(target=target)
-        if args.build_only:
-            pass
-        elif target == "Windows":
-            build_installer(version, target=target)
-        elif target == "Linux":
-            build_linux_packages(version, args.package)
+            version = build_pyinstaller(target=target)
+            if args.build_only:
+                pass
+            elif target == "Windows":
+                build_installer(app_version, target=target, filename_version=build_version)
+            elif target == "Linux":
+                build_linux_packages(version, args.package)
+    finally:
+        if patched:
+            set_version(base_version)

@@ -75,6 +75,9 @@ _LOG_BUFFER = []
 _LOG_LOCK = threading.Lock()
 _LOG_MAX = 5000
 
+# 分页：主窗口单页展示的表情包数量（与前端 index.js MEME_PAGE 保持一致）
+MEME_PAGE = 200
+
 
 class _LogBufferHandler(logging.Handler):
     """把 DEBUG 级日志缓存在内存中（限量 5000 条）"""
@@ -300,6 +303,26 @@ class JsApi:
             )
         return result
 
+    def count_memes(self, keyword="", tags=None, collection_id=None) -> int:
+        """统计符合搜索条件（关键字/标签/分组/收藏/最近使用）的表情总数，供分页"""
+        if tags is not None and len(tags) == 0:
+            tags = None
+        fav_only = collection_id == -2
+        recent_only = collection_id == -3
+        uncategorized = collection_id == -4
+        if recent_only:
+            return self._db.count_recent()
+        cid = None if (fav_only or recent_only or uncategorized) else collection_id
+        if cid is not None and cid > 0:
+            cid = self._get_collection_ids_recursive(cid)
+        return self._db.count(
+            keyword=keyword,
+            tags=tags,
+            collection_id=cid,
+            favorite_only=fav_only,
+            uncategorized_only=uncategorized,
+        )
+
     def get_tags(self) -> list:
         return self._db.get_all_tags()
 
@@ -331,7 +354,7 @@ class JsApi:
             tags=tags,
             collection_id=collection_id,
             favorite_only=fav_only,
-            limit=200,
+            limit=MEME_PAGE,
         )
         favorited_ids = set()
         try:

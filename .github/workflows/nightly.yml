@@ -1,0 +1,50 @@
+name: Nightly
+
+on:
+  schedule:
+    - cron: "0 20 * * *"
+  workflow_dispatch:
+
+jobs:
+  nightly-windows:
+    if: ${{ github.repository == 'TNTXZ/OhMyMeme' }}
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: dev
+          fetch-depth: 0
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install dependencies
+        run: |
+          pip install -r requirements.txt
+          pip install pyinstaller
+      - name: Build with PyInstaller
+        run: python scripts/build.py --build-only --nightly
+      - name: Install InnoSetup
+        run: |
+          choco install innosetup --no-progress
+          echo "ISCC_DIR=C:\Program Files (x86)\Inno Setup 6\ISCC.exe" | Out-File -FilePath $env:GITHUB_ENV -Append
+      - name: Build installer
+        run: python scripts/build.py --installer-only --nightly
+      - name: Publish nightly release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        shell: pwsh
+        run: |
+          $setup = Get-ChildItem dist/OhMyMeme-nightly-setup.exe | Select-Object -First 1
+          if (-not $setup) { Write-Error "nightly installer not found"; exit 1 }
+          gh release delete nightly --repo TNTXZ/OhMyMeme --yes 2>$null | Out-Null
+          gh release create nightly --repo TNTXZ/OhMyMeme --prerelease --title "Nightly Build ($(Get-Date -Format 'yyyy-MM-dd'))" --notes @"
+          # 非正式版（Nightly Build）
+
+          > **注意：这是非正式测试版本，仅供开发者和高级用户测试使用！**
+          >
+          > - 可能存在未知 Bug 或未完成功能，请勿用于生产环境
+          > - 不代表最终发布质量，功能与界面可能随时变动
+          > - 软件内的更新检查 **不会** 提示此版本，请勿将其用于日常更新路径
+          >
+          > 正式版请从 [Releases](https://github.com/OhMyMeme/OhMyMeme/releases) 下载。
+          "@ $setup.FullName

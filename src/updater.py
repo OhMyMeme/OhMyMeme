@@ -29,8 +29,14 @@ _GH_MIRRORS = [
 
 
 def _parse_version(v: str):
-    parts = v.strip("vV").split(".")
-    return tuple(int(x) for x in parts) if parts else (0, 0, 0)
+    """解析版本号，跳过非数字段（如 -nightly 后缀）"""
+    parts = v.strip("vV").split("-")[0].split(".")
+    nums = []
+    for x in parts:
+        if not x.isdigit():
+            break
+        nums.append(int(x))
+    return tuple(nums) if nums else (0, 0, 0)
 
 
 def _pick_asset_url(assets: list) -> str:
@@ -146,6 +152,9 @@ def _parse_release(rel: dict):
     tag = (rel.get("tag_name") or "").lstrip("v")
     if not tag:
         return None
+    # 跳过预发布与非正式版（nightly 等），避免更新到非正式版本
+    if rel.get("prerelease") or "nightly" in tag.lower():
+        return None
     url = _pick_asset_url(rel.get("assets", []))
     if not url:
         return None
@@ -154,7 +163,7 @@ def _parse_release(rel: dict):
 
 
 def check_latest() -> dict:
-    """查询 GitHub 最新版本（优先稳定版，无稳定版时回退到预发布）"""
+    """查询 GitHub 最新版本（仅稳定版，绝不指向 prerelease/nightly）"""
     current = _parse_version(__version__)
 
     # 1. 尝试 releases/latest（仅非预发布稳定版）
@@ -174,7 +183,7 @@ def check_latest() -> dict:
         logger.warning("check update (latest) failed: %s", e)
         # 任何失败（含 403/404）均回落至列表
 
-    # 2. 回退：遍历 release 列表（含预发布），取最高版本
+    # 2. 回退：遍历 release 列表，取最高稳定版本（跳过 prerelease/nightly）
     try:
         releases = _fetch_json(_GITHUB_LIST)
     except Exception as e:

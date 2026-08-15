@@ -170,6 +170,20 @@ body {
 #grid-wrap::-webkit-scrollbar-track { background: transparent; }
 #grid-wrap::-webkit-scrollbar-thumb { background: var(--border); border-radius: 100px; }
 #grid-wrap::-webkit-scrollbar-thumb:hover { background: var(--border-light); }
+
+/* Pager */
+#pager { display: flex; align-items: center; justify-content: center; gap: 4px; padding: 12px 0 4px; flex-wrap: wrap; }
+.pager-btn {
+  min-width: 26px; height: 26px; padding: 0 6px;
+  background: var(--card); color: var(--fg-secondary);
+  border: 1px solid var(--border); border-radius: var(--radius-sm);
+  font-size: 12px; cursor: pointer; user-select: none;
+  transition: all var(--transition);
+}
+.pager-btn:hover:not(:disabled):not(.active) { color: var(--fg); border-color: var(--border-light); }
+.pager-btn.active { background: var(--accent-muted); color: var(--accent); border-color: var(--accent); }
+.pager-btn:disabled { opacity: .4; cursor: default; }
+.pager-dots { color: var(--muted); font-size: 12px; padding: 0 2px; user-select: none; }
 .upd-notes::-webkit-scrollbar { width: 5px; }
 .upd-notes::-webkit-scrollbar-track { background: transparent; }
 .upd-notes::-webkit-scrollbar-thumb { background: var(--border); border-radius: 100px; }
