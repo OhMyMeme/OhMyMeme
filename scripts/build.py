@@ -172,7 +172,9 @@ def build_pyinstaller(target=None):
             cmd += ["--icon=" + str(icon_png)]
     elif target == "Darwin":
         icon_icns = _ensure_icns()
-        cmd += ["--windowed", "--icon=" + str(icon_icns)]
+        cmd += ["--windowed"]
+        if icon_icns:
+            cmd += ["--icon=" + str(icon_icns)]
 
     print(L("running"), " ".join(cmd))
     result = subprocess.run(cmd, cwd=str(PROJECT_ROOT))
@@ -293,15 +295,16 @@ def build_linux_packages(version, package="all"):
         sys.exit(result.returncode)
 
 
-def _ensure_icns() -> Path:
-    """将 icon.png 转为 macOS .icns（PyInstaller 需要），返回路径"""
+def _ensure_icns():
+    """将 icon.png 转为 macOS .icns（PyInstaller 需要）；成功返回路径，失败返回 None"""
     png = SRC_DIR / "resources" / "icon.png"
     icns = BUILD_DIR / "OhMyMeme.icns"
     if not png.exists():
-        return icns
+        return None
     # icon.png 存在但 icns 未生成或已过期时重新生成
     if icns.exists() and icns.stat().st_mtime >= png.stat().st_mtime:
         return icns
+    BUILD_DIR.mkdir(parents=True, exist_ok=True)
     try:
         from PIL import Image
         import tempfile
@@ -326,14 +329,19 @@ def _ensure_icns() -> Path:
             resized = img.resize((px, px), Image.LANCZOS)
             resized.save(iconset / name)
         # 用 iconutil 生成 .icns（macOS 自带）
-        subprocess.run(
+        result = subprocess.run(
             ["iconutil", "-c", "icns", str(iconset), "-o", str(icns)],
-            check=True,
+            capture_output=True,
+            text=True,
         )
+        if result.returncode != 0:
+            print("WARNING: iconutil failed:", result.stderr or result.stdout)
+            return None
         shutil.rmtree(tmp, ignore_errors=True)
+        return icns
     except Exception as e:
         print("WARNING: failed to generate .icns:", e)
-    return icns
+        return None
 
 
 def build_macos_packages(version, filename_version=None):
