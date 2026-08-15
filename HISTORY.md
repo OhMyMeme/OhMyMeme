@@ -34,6 +34,7 @@
 - **局域网虚拟网卡发现回包错接口** — UDP 发现单播回包钉在广播到达接口（Linux `IP_PKTINFO` / Windows `IP_UNICAST_IF`）（#48）
 - **QQNT 手动路径重定向** — 环境探测成功时仍保留「选择配置文件/用户数据目录」入口，应对多用户 Windows（#30）
 - **分页空页回退** — 删除/搜索后当前页无数据时自动回退到可用末页
+- **macOS 运行崩溃/秒退** — pystray 在 macOS 需主线程抢占 NSApplication runloop，与 pywebview 主循环冲突（导致段错误或 `webview.start()` 立即返回），macOS 与 Linux 一样跳过系统托盘；`keyboard` 库 darwin 后端需 root 权限（`Error 13`），macOS 直接改用 pynput（CGEventTap）
 
 # v0.5.2 — 局域网互联（紧急修复）
 

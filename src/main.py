@@ -55,8 +55,12 @@ class OhMyMemeApp:
         self._register_hotkey()
 
         # 3. 启动系统托盘
-        if platform.system() == "Linux":
-            logger.warning("Linux 环境：跳过系统托盘（GTK 线程冲突）")
+        if platform.system() in ("Linux", "Darwin"):
+            # Linux: GTK 线程冲突；macOS: pystray 抢占 NSApplication
+            # runloop 与 webview 主循环冲突（窗口无法启动/段错误）
+            logger.warning(
+                f"{platform.system()} 环境：跳过系统托盘（与 WebView 主循环冲突）"
+            )
         else:
             self._tray = TrayManager(
                 on_show=self._on_tray_show,
