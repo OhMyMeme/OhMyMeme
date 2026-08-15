@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { ref } from 'vue'
+import { ref, onMounted, onUnmounted } from 'vue'
 import { useMemes } from './composables/useMemes'
 import type { Meme } from './types'
 
@@ -8,6 +8,9 @@ const { state, search, goToPage, setSearch, toggleTag, setActiveCollection, refr
 const sidebarCollapsed = ref(false)
 const sortEnabled = ref(false)
 const settingsVisible = ref(false)
+const dragOver = ref(false)
+let dragCounter = 0
+let nativeDragActive = false
 
 async function handleCopy(meme: Meme) {
   const ok = await copyMemes(meme.id, meme.filename)
@@ -60,6 +63,124 @@ function rescanCache() {
   search()
   refreshCollections()
 }
+
+function onDragEnter(e: DragEvent) {
+  e.preventDefault()
+  if (nativeDragActive) return
+  dragCounter++
+  dragOver.value = true
+}
+
+function onDragOver(e: DragEvent) {
+  e.preventDefault()
+  if (nativeDragActive) return
+}
+
+function onDragLeave(e: DragEvent) {
+  e.preventDefault()
+  if (nativeDragActive) return
+  dragCounter--
+  if (dragCounter <= 0) {
+    dragCounter = 0
+    dragOver.value = false
+  }
+}
+
+async function onDrop(e: DragEvent) {
+  e.preventDefault()
+  if (nativeDragActive) {
+    dragCounter = 0
+    dragOver.value = false
+    return
+  }
+  dragCounter = 0
+  dragOver.value = false
+
+  const dt = e.dataTransfer
+  if (!dt) return
+
+  let uri = ''
+  let file: File | null = null
+
+  if (!uri) { try { uri = dt.getData('text/uri-list') || '' } catch (_) {} }
+  if (!uri) { try { uri = dt.getData('text/plain') || '' } catch (_) {} }
+  uri = uri.trim()
+
+  if (!uri) {
+    try {
+      if (dt.items && dt.items.length) {
+        for (let i = 0; i < dt.items.length; i++) {
+          const item = dt.items[i]
+          if (item.kind === 'string' && item.type === 'text/html') {
+            const html = await new Promise<string>(res => item.getAsString(res))
+            if (!html) continue
+            const text = html.replace(/<[^>]+>/g, '').trim()
+            if (text.startsWith('file://')) { uri = text; break }
+          }
+        }
+      }
+    } catch (_) {}
+  }
+
+  if (!uri) { try { if (dt.files && dt.files.length) file = dt.files[0] } catch (_) {} }
+  if (!uri && !file) {
+    try {
+      if (dt.items && dt.items.length) {
+        for (let i = 0; i < dt.items.length; i++) {
+          const it = dt.items[i]
+          if (it.kind === 'file') { file = it.getAsFile(); if (file) break }
+        }
+      }
+    } catch (_) {}
+  }
+
+  if (uri) {
+    try {
+      const r = await window.pywebview?.api?.download_original_image(uri)
+      if (r && r.ok) {
+        showToast('导入成功')
+        search()
+        refreshCollections()
+        return
+      }
+    } catch (_) {}
+  }
+
+  if (file) {
+    try {
+      const b64 = await new Promise<string>((resolve, reject) => {
+        const reader = new FileReader()
+        reader.onload = () => resolve((reader.result as string).split(',')[1])
+        reader.onerror = () => reject(reader.error)
+        reader.readAsDataURL(file!)
+      })
+      const res = await fetch('/api/upload/', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ files: [{ name: file.name, data: b64 }] }),
+      })
+      if (res.ok) {
+        showToast('导入成功')
+        search()
+        refreshCollections()
+      }
+    } catch (_) {}
+  }
+}
+
+onMounted(() => {
+  document.addEventListener('dragenter', onDragEnter)
+  document.addEventListener('dragover', onDragOver)
+  document.addEventListener('dragleave', onDragLeave)
+  document.addEventListener('drop', onDrop)
+})
+
+onUnmounted(() => {
+  document.removeEventListener('dragenter', onDragEnter)
+  document.removeEventListener('dragover', onDragOver)
+  document.removeEventListener('dragleave', onDragLeave)
+  document.removeEventListener('drop', onDrop)
+})
 
 search()
 refreshTags()
@@ -181,6 +302,13 @@ refreshCollections()
           <button class="btn btn-primary" style="width:100%">从抖音下载表情</button>
         </div>
       </div>
+    </div>
+  </div>
+
+  <div id="drop-overlay" :class="{ 'drag-over': dragOver }">
+    <div class="drop-content">
+      <div class="drop-icon">📁</div>
+      <div class="drop-text">拖放图片到此处导入</div>
     </div>
   </div>
 

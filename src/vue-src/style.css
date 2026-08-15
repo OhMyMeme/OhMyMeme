@@ -517,6 +517,41 @@ body {
   opacity: 0.6;
 }
 
+/* Drop Overlay */
+#drop-overlay {
+  position: fixed;
+  inset: 0;
+  background: rgba(99, 102, 241, 0.12);
+  border: 2px dashed var(--primary);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 600;
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity 0.2s ease;
+}
+
+#drop-overlay.drag-over {
+  opacity: 1;
+  pointer-events: all;
+}
+
+.drop-content {
+  text-align: center;
+  color: var(--primary);
+}
+
+.drop-icon {
+  font-size: 48px;
+  margin-bottom: 12px;
+}
+
+.drop-text {
+  font-size: 16px;
+  font-weight: 500;
+}
+
 /* Toast */
 #toast {
   position: fixed;
