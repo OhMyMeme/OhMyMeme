@@ -6,6 +6,7 @@ import { useContextMenu } from './composables/useContextMenu'
 import { useCollectionBuilder } from './composables/useCollectionBuilder'
 import ContextMenu from './components/ContextMenu.vue'
 import CollectionBuilder from './components/CollectionBuilder.vue'
+import CollectionTreeNode from './components/CollectionTreeNode.vue'
 import ImportMenu from './components/ImportMenu.vue'
 import SyncOverlay from './components/SyncOverlay.vue'
 import type { Meme } from './types'
@@ -399,13 +400,16 @@ onUnmounted(() => {
       <aside id="sidebar" :class="{ collapsed: sidebarCollapsed }">
         <div id="sidebar-header"><span v-if="!sidebarCollapsed">分组</span></div>
         <div id="tree">
-          <div v-for="c in state.collections" :key="c.id" class="tree-node">
-            <div class="tree-row" :class="{ active: state.activeCollection === c.id }" @click="setActiveCollection(c.id)" @contextmenu="onFolderRightClick($event, c.id, c.name)">
-              <span class="tree-icon">📁</span>
-              <span v-if="!sidebarCollapsed" class="tree-label">{{ c.name }}</span>
-              <span v-if="!sidebarCollapsed" class="tree-count">{{ c.count || 0 }}</span>
-            </div>
-          </div>
+          <CollectionTreeNode
+            v-for="c in state.collections"
+            :key="c.id"
+            :node="c"
+            :active-id="state.activeCollection"
+            :depth="0"
+            :collapsed="sidebarCollapsed"
+            @select="setActiveCollection"
+            @folder-context="onFolderRightClick"
+          />
         </div>
       </aside>
 
