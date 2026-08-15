@@ -29,15 +29,79 @@ jobs:
           echo "ISCC_DIR=C:\Program Files (x86)\Inno Setup 6\ISCC.exe" | Out-File -FilePath $env:GITHUB_ENV -Append
       - name: Build installer
         run: python scripts/build.py --installer-only --nightly
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: nightly-windows
+          path: dist/OhMyMeme-nightly-setup.exe
+
+  nightly-linux:
+    if: ${{ github.repository == 'TNTXZ/OhMyMeme' }}
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: dev
+          fetch-depth: 0
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y rpm
+          pip install -r requirements.txt
+          pip install pyinstaller
+      - name: Build Linux nightly (AppImage only; deb/rpm need numeric version)
+        run: python scripts/build.py --linux --nightly --package appimage
+      - name: Upload artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: nightly-linux
+          path: dist/OhMyMeme-v*-x86_64.AppImage
+
+  nightly-macos:
+    if: ${{ github.repository == 'TNTXZ/OhMyMeme' }}
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: dev
+          fetch-depth: 0
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install dependencies
+        run: |
+          pip install -r requirements.txt
+          pip install pyinstaller
+      - name: Build macOS nightly (.app + .dmg)
+        run: python scripts/build.py --macos --nightly
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: nightly-macos
+          path: dist/OhMyMeme-v*-macos.dmg
+
+  publish-nightly:
+    if: ${{ github.repository == 'TNTXZ/OhMyMeme' }}
+    needs: [nightly-windows, nightly-linux, nightly-macos]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+          merge-multiple: true
       - name: Publish nightly release
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        shell: pwsh
         run: |
-          $setup = Get-ChildItem dist/OhMyMeme-nightly-setup.exe | Select-Object -First 1
-          if (-not $setup) { Write-Error "nightly installer not found"; exit 1 }
-          gh release delete nightly --repo TNTXZ/OhMyMeme --yes 2>$null | Out-Null
-          gh release create nightly --repo TNTXZ/OhMyMeme --prerelease --title "Nightly Build ($(Get-Date -Format 'yyyy-MM-dd'))" --notes @"
+          gh release delete nightly --repo TNTXZ/OhMyMeme --yes 2>/dev/null || true
+          gh release create nightly --repo TNTXZ/OhMyMeme --prerelease \
+            --title "Nightly Build ($(date -u +'%Y-%m-%d'))" \
+            --notes "$(cat <<'EOF'
           # 非正式版（Nightly Build）
 
           > **注意：这是非正式测试版本，仅供开发者和高级用户测试使用！**
@@ -46,5 +110,7 @@ jobs:
           > - 不代表最终发布质量，功能与界面可能随时变动
           > - 软件内的更新检查 **不会** 提示此版本，请勿将其用于日常更新路径
           >
-          > 正式版请从 [Releases](https://github.com/OhMyMeme/OhMyMeme/releases) 下载。
-          "@ $setup.FullName
+          > 正式版请从 [Releases](https://github.com/TNTXZ/OhMyMeme/releases) 下载。
+          EOF
+          )"
+          gh release upload nightly --repo TNTXZ/OhMyMeme artifacts/* --clobber

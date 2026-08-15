@@ -63,3 +63,25 @@ jobs:
             dist/OhMyMeme-v*-x86_64.AppImage
             dist/OhMyMeme-v*-amd64.deb
             dist/OhMyMeme-v*-x86_64.rpm
+
+  build-macos:
+    if: ${{ github.event_name == 'workflow_dispatch' || github.event.workflow_run.conclusion == 'success' }}
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.workflow_run.head_sha || github.ref }}
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install dependencies
+        run: |
+          pip install -r requirements.txt
+          pip install pyinstaller
+      - name: Build macOS packages (.app + .dmg)
+        run: python scripts/build.py --macos
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: OhMyMeme-macOS
+          path: dist/OhMyMeme-v*-macos.dmg
