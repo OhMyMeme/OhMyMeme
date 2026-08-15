@@ -26,7 +26,6 @@ const drag = useDragSort(
 )
 
 const sidebarCollapsed = ref(false)
-const settingsVisible = ref(false)
 const dragOver = ref(false)
 let dragCounter = 0
 let nativeDragActive = false
@@ -85,8 +84,11 @@ function debounceSearch() {
   searchTimer = setTimeout(() => search(), 300)
 }
 
-function openSettings() { settingsVisible.value = true }
-function closeSettings() { settingsVisible.value = false }
+function openSettings() {
+  try {
+    window.pywebview?.api?.open_settings()
+  } catch (_) {}
+}
 function toggleSidebar() { sidebarCollapsed.value = !sidebarCollapsed.value }
 
 function toggleSort() {
@@ -512,17 +514,6 @@ onUnmounted(() => {
 
   <div id="drop-overlay" :class="{ 'drag-over': dragOver }">
     <div class="drop-content"><div class="drop-icon">📁</div><div class="drop-text">拖放图片到此处导入</div></div>
-  </div>
-
-  <div v-if="settingsVisible" id="settings-overlay" @click.self="closeSettings">
-    <div class="settings-panel">
-      <div class="settings-header"><h2>设置</h2><button class="icon-btn" @click="closeSettings">×</button></div>
-      <div class="settings-body">
-        <div class="settings-section"><h3>全局快捷键</h3><div class="settings-row"><label>呼出窗口</label><input type="text" value="Ctrl+Alt+N" readonly></div></div>
-        <div class="settings-section"><h3>复制处理</h3><div class="settings-row"><label>处理模式</label><select><option>不处理</option><option selected>WebP 缩放</option><option>转 GIF</option><option>GIF 隐写原图</option></select></div></div>
-        <div class="settings-section"><h3>导入</h3><button class="btn btn-primary" style="width:100%">从抖音下载表情</button></div>
-      </div>
-    </div>
   </div>
 
   <div id="toast"></div>
