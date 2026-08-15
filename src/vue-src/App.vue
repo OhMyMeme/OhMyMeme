@@ -7,6 +7,7 @@ import { useCollectionBuilder } from './composables/useCollectionBuilder'
 import ContextMenu from './components/ContextMenu.vue'
 import CollectionBuilder from './components/CollectionBuilder.vue'
 import ImportMenu from './components/ImportMenu.vue'
+import SyncOverlay from './components/SyncOverlay.vue'
 import type { Meme } from './types'
 
 const { state, setMemes, search, goToPage, setSearch, toggleTag, setActiveCollection, refreshTags, refreshCollections, copyMeme, reorderMemes, canReorder, startNativeDrag, loadInitData } = useMemes()
@@ -75,6 +76,22 @@ function showImportMenu() {
 }
 
 function onImportDone() {
+  search()
+  refreshTags()
+  refreshCollections()
+}
+
+const syncOverlay = ref<InstanceType<typeof SyncOverlay> | null>(null)
+
+function syncUpload() {
+  syncOverlay.value?.start('sync_push', '上传中', 'show_upload_progress', 'show_upload_done')
+}
+
+function syncDownload() {
+  syncOverlay.value?.start('sync_pull', '下载中', 'show_download_progress', 'show_download_done')
+}
+
+function onSyncDone() {
   search()
   refreshTags()
   refreshCollections()
@@ -361,6 +378,12 @@ onUnmounted(() => {
         <button class="icon-btn" :class="{ 'sort-on': sortEnabled }" title="拖拽排序" @click="toggleSort">
           <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 6h18M3 12h18M3 18h18"/></svg>
         </button>
+        <button class="icon-btn" title="上传到远端" @click="syncUpload()">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 19V5m-7 7l7-7 7 7"/></svg>
+        </button>
+        <button class="icon-btn" title="从远端下载" @click="syncDownload()">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 5v14m-7-7l7 7 7-7"/></svg>
+        </button>
         <button class="title-btn" @click="showImportMenu()">导入</button>
         <button class="title-btn" @click="rescanCache()">刷新</button>
         <button class="title-btn" @click="openSettings()">设置</button>
@@ -434,6 +457,7 @@ onUnmounted(() => {
 
   <CollectionBuilder @confirm="showCollectionBuilder" />
   <ImportMenu ref="importMenu" @imported="onImportDone" />
+  <SyncOverlay ref="syncOverlay" @synced="onSyncDone" />
   <ContextMenu
     :visible="ctx.visible.value" :x="ctx.x.value" :y="ctx.y.value"
     :items="ctx.items.value" :trigger="ctx.trigger.value"
