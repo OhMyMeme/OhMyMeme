@@ -1,11 +1,6 @@
-import { reactive, ref, computed, readonly } from 'vue'
+import { reactive, ref, readonly } from 'vue'
 import { api } from '../utils/api'
 import type { Meme, Collection } from './types'
-
-export interface DragSortState {
-  draggedId: number | null
-  overId: number | null
-}
 
 const MEME_PAGE = 200
 
@@ -30,6 +25,25 @@ const dragSort = reactive({
 })
 
 export function useMemes() {
+  async function waitForPywebview(): Promise<void> {
+    while (typeof window.pywebview === 'undefined' || !window.pywebview.api) {
+      await new Promise(r => setTimeout(r, 100))
+    }
+  }
+
+  async function loadInitData() {
+    await waitForPywebview()
+    const data = await api('get_init_data')
+    if (data) {
+      state.memes = data.memes || []
+      state.allTags = data.tags || []
+      state.collections = data.collections || []
+      state.page = 1
+      state.total = await api('count_memes', '', [], state.activeCollection) || state.memes.length
+      state.pageCount = Math.max(1, Math.ceil(state.total / MEME_PAGE))
+    }
+  }
+
   async function search(resetPage = true) {
     const gen = ++searchGen
     if (resetPage) state.page = 1
@@ -110,6 +124,12 @@ export function useMemes() {
     return !!result
   }
 
+  function canReorder(): boolean {
+    const q = state.searchQuery.trim()
+    if (q || state.activeTags.size > 0) return false
+    return state.activeCollection === null || state.activeCollection > 0
+  }
+
   function onSortDragStart(memeId: number) {
     dragSort.draggedId = memeId
   }
@@ -150,7 +170,7 @@ export function useMemes() {
     dragSort.overId = null
   }
 
-  async function startNativeDrag(memeId: number, startX: number, startY: number): Promise<boolean> {
+  async function startNativeDrag(memeId: number): Promise<boolean> {
     try {
       const result = await api('start_native_drag', memeId)
       return !!result
@@ -171,26 +191,15 @@ export function useMemes() {
     refreshCollections,
     copyMeme,
     reorderMemes,
+    canReorder,
     onSortDragStart,
     onSortDragOver,
     onSortDragLeave,
-    onSortDrop,
     onSortDragEnd,
+    onSortDrop,
     startNativeDrag,
+    loadInitData,
+    waitForPywebview,
+    MEME_PAGE,
   }
-}
-
-export function useCollections() {
-  const expandedNodes = ref(new Set<number>())
-
-  function toggleExpand(id: number) {
-    if (expandedNodes.value.has(id)) expandedNodes.value.delete(id)
-    else expandedNodes.value.add(id)
-  }
-
-  function isExpanded(id: number): boolean {
-    return expandedNodes.value.has(id)
-  }
-
-  return { expandedNodes: readonly(expandedNodes), toggleExpand, isExpanded }
 }

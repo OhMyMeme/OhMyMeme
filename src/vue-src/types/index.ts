@@ -1,15 +1,15 @@
 export interface Meme {
   id: number
   filename: string
+  name: string
   file_hash: string
+  from_stego?: number
   width: number
   height: number
-  file_size: number
   mime_type: string
-  original_name: string | null
-  collection_sort_order?: number
-  tags?: string[]
+  is_gif?: boolean
   is_animated?: boolean
+  favorited?: boolean
   auto_play_gif?: boolean
   hover_to_play?: boolean
 }

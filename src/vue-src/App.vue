@@ -7,7 +7,7 @@ import ContextMenu from './components/ContextMenu.vue'
 import CollectionBuilder from './components/CollectionBuilder.vue'
 import type { Meme } from './types'
 
-const { state, dragSort, search, goToPage, setSearch, toggleTag, setActiveCollection, refreshTags, refreshCollections, copyMeme, onSortDragStart, onSortDragOver, onSortDragLeave, onSortDrop, onSortDragEnd, startNativeDrag } = useMemes()
+const { state, dragSort, search, goToPage, setSearch, toggleTag, setActiveCollection, refreshTags, refreshCollections, copyMeme, onSortDragStart, onSortDragOver, onSortDragLeave, onSortDrop, onSortDragEnd, startNativeDrag, loadInitData, canReorder } = useMemes()
 const ctx = useContextMenu()
 const cb = useCollectionBuilder()
 
@@ -19,9 +19,13 @@ let dragCounter = 0
 let nativeDragActive = false
 let dragState: { sx: number; sy: number } | null = null
 
+// For hover-to-play
+const hoverTimers = new Map<number, ReturnType<typeof setTimeout>>()
+const hoverUrls = new Map<number, string>()
+
 async function handleCopy(meme: Meme) {
-  const ok = await copyMemes(meme.id, meme.filename)
-  if (ok) showToast(`${meme.original_name || meme.filename} 已复制`)
+  const ok = await copyMeme(meme.id, meme.filename)
+  if (ok) showToast(`${meme.name} 已复制`)
   else showToast('复制失败')
 }
 
@@ -65,19 +69,6 @@ function showImportMenu() {
   showToast('导入功能开发中...')
 }
 
-async function showCollectionBuilder() {
-  cb.open(async (name, memeIds) => {
-    const result = await window.pywebview?.api?.create_collection_with_memes(name, memeIds)
-    if (result?.ok) {
-      showToast('分组已创建')
-      refreshCollections()
-      search()
-    } else {
-      showToast('创建失败')
-    }
-  })
-}
-
 function rescanCache() {
   showToast('缓存刷新中...')
   search()
@@ -118,65 +109,16 @@ function onWindowMouseUp() {
   dragState = null
 }
 
-let nativeDragStart: { x: number; y: number; memeId: number } | null = null
-
-function onCardMouseDown(e: MouseEvent, memeId: number) {
-  if (sortEnabled.value || e.button !== 0) return
-  nativeDragStart = { x: e.clientX, y: e.clientY, memeId }
-}
-
-function onCardMouseMove(e: MouseEvent) {
-  if (!nativeDragStart || sortEnabled.value) return
-  const dist = Math.hypot(e.clientX - nativeDragStart.x, e.clientY - nativeDragStart.y)
-  if (dist > 8) {
-    const id = nativeDragStart.memeId
-    nativeDragStart = null
-    startNativeDrag(id)
-  }
-}
-
-function onCardMouseUp() {
-  nativeDragStart = null
-}
-
-const hoverTimers = new Map<number, ReturnType<typeof setTimeout>>()
-
-function onCardMouseEnter(meme: Meme) {
-  if (!meme.is_animated || meme.auto_play_gif) return
-  const timer = setTimeout(() => {
-    const img = document.querySelector(`.meme-card[data-meme-id="${meme.id}"] img`) as HTMLImageElement
-    if (img) img.src = `/api/original/${meme.id}/${encodeURIComponent(meme.filename)}`
-  }, 150)
-  hoverTimers.set(meme.id, timer)
-}
-
-function onCardMouseLeave(meme: Meme) {
-  const timer = hoverTimers.get(meme.id)
-  if (timer) {
-    clearTimeout(timer)
-    hoverTimers.delete(meme.id)
-  }
-  if (!meme.is_animated) return
-  const img = document.querySelector(`.meme-card[data-meme-id="${meme.id}"] img`) as HTMLImageElement
-  if (img) img.src = `/api/thumb/${meme.id}/${encodeURIComponent(meme.filename)}`
-}
-
 function onMemeRightClick(e: MouseEvent, meme: Meme) {
   e.preventDefault()
   e.stopPropagation()
-  const isRecent = state.activeCollection === -3
-  const isFavorite = state.activeCollection === -2
-  const isAllView = state.activeCollection === null
   ctx.show([
     { action: 'rename', label: '重命名' },
     { action: 'favorite', label: '收藏' },
     { action: 'tag', label: '打标签' },
     { action: 'collection', label: '添加分组' },
-    { action: 'add-to-subgroup', label: '加入小分组', display: 'none' },
-    { action: 'remove-collection', label: '移至上级分组', display: 'none' },
-    { action: 'remove-recent', label: '从最近使用中删除', display: 'none' },
     { action: 'delete', label: '删除', danger: true },
-  ], { memeId: meme.id, filename: meme.filename, memeName: meme.original_name || meme.filename }, e.clientX, e.clientY)
+  ], { memeId: meme.id, filename: meme.filename, memeName: meme.name }, e.clientX, e.clientY)
 }
 
 function onFolderRightClick(e: MouseEvent, folderId: number, folderName: string) {
@@ -185,7 +127,6 @@ function onFolderRightClick(e: MouseEvent, folderId: number, folderName: string)
   ctx.show([
     { action: 'rename-collection', label: '重命名' },
     { action: 'add-to-subgroup', label: '新建子分组' },
-    { action: 'clear-recent', label: '清空最近使用', display: 'none' },
     { action: 'delete-collection', label: '删除', danger: true },
   ], { folderId, folderName, isFolder: true }, e.clientX, e.clientY)
 }
@@ -238,7 +179,7 @@ async function onCtxAction(action: string) {
     }
     case 'delete-collection': {
       if (confirm('确定删除这个分组吗？')) {
-        await window.webview?.api?.delete_collection(t.folderId)
+        await window.pywebview?.api?.delete_collection(t.folderId)
         refreshCollections()
       }
       break
@@ -246,6 +187,65 @@ async function onCtxAction(action: string) {
     default:
       showToast(`${action} 功能开发中`)
   }
+}
+
+async function showCollectionBuilder() {
+  cb.open(async (name, memeIds) => {
+    const result = await window.pywebview?.api?.create_collection_with_memes(name, memeIds)
+    if (result?.ok) {
+      showToast('分组已创建')
+      refreshCollections()
+      search()
+    } else {
+      showToast('创建失败')
+    }
+  })
+}
+
+function onCardMouseEnter(meme: Meme) {
+  if (!meme.is_animated || meme.auto_play_gif || !meme.hover_to_play) return
+  const timer = setTimeout(() => {
+    const img = document.querySelector(`.meme-card[data-meme-id="${meme.id}"] img`) as HTMLImageElement
+    if (img) {
+      hoverUrls.set(meme.id, img.src)
+      img.src = `/api/original/${meme.id}/${encodeURIComponent(meme.filename)}`
+    }
+  }, 150)
+  hoverTimers.set(meme.id, timer)
+}
+
+function onCardMouseLeave(meme: Meme) {
+  const timer = hoverTimers.get(meme.id)
+  if (timer) {
+    clearTimeout(timer)
+    hoverTimers.delete(meme.id)
+  }
+  if (!meme.is_animated) return
+  const img = document.querySelector(`.meme-card[data-meme-id="${meme.id}"] img`) as HTMLImageElement
+  if (img && hoverUrls.has(meme.id)) {
+    img.src = hoverUrls.get(meme.id) || `/api/thumb/${meme.id}/${encodeURIComponent(meme.filename)}`
+  }
+}
+
+let nativeDragStart: { x: number; y: number; memeId: number } | null = null
+
+function onCardMouseDown(e: MouseEvent, memeId: number) {
+  if (sortEnabled.value || e.button !== 0) return
+  nativeDragStart = { x: e.clientX, y: e.clientY, memeId }
+}
+
+function onCardMouseMove(e: MouseEvent) {
+  if (!nativeDragStart || sortEnabled.value) return
+  const dist = Math.hypot(e.clientX - nativeDragStart.x, e.clientY - nativeDragStart.y)
+  if (dist > 8) {
+    const id = nativeDragStart.memeId
+    nativeDragStart = null
+    startNativeDrag(id)
+  }
+}
+
+function onCardMouseUp() {
+  nativeDragStart = null
 }
 
 function onDragEnter(e: DragEvent) {
@@ -279,7 +279,6 @@ async function onDrop(e: DragEvent) {
   }
   dragCounter = 0
   dragOver.value = false
-
   const dt = e.dataTransfer
   if (!dt) return
 
@@ -370,9 +369,17 @@ onUnmounted(() => {
   document.removeEventListener('mouseup', onWindowMouseUp)
 })
 
-search()
-refreshTags()
-refreshCollections()
+// Startup sequence (matches original: wait for pywebview → load init data → delayed rescan)
+;(async () => {
+  await loadInitData()
+  setTimeout(async () => {
+    await window.pywebview?.api?.rescan_cache()
+    await window.pywebview?.api?.run_auto_sync()
+    await search()
+    await refreshTags()
+    await refreshCollections()
+  }, 300)
+})()
 </script>
 
 <template>
@@ -436,10 +443,10 @@ refreshCollections()
               :key="meme.id"
               class="meme-card"
               :class="{ 'dragging': dragSort.draggedId === meme.id, 'drag-over': dragSort.overId === meme.id }"
-              :draggable="sortEnabled"
+              :data-meme-id="meme.id"
+              :draggable="sortEnabled && canReorder()"
               @click="handleCopy(meme)"
               @contextmenu="onMemeRightClick($event, meme)"
-              :data-meme-id="meme.id"
               @mousedown="onCardMouseDown($event, meme.id)"
               @mousemove="onCardMouseMove($event)"
               @mouseup="onCardMouseUp()"
@@ -451,8 +458,8 @@ refreshCollections()
               @drop="onSortDrop(meme.id)"
               @dragend="onSortDragEnd()"
             >
-              <img :src="`/api/thumb/${meme.id}/${encodeURIComponent(meme.filename)}`" :alt="meme.original_name || meme.filename" loading="lazy">
-              <span class="meme-name">{{ meme.original_name || meme.filename }}</span>
+              <img :src="`/api/thumb/${meme.id}/${encodeURIComponent(meme.filename)}`" :alt="meme.name" loading="lazy">
+              <span class="meme-name">{{ meme.name }}</span>
             </div>
           </div>
 
@@ -471,7 +478,29 @@ refreshCollections()
     </div>
   </div>
 
-  <!-- Settings Overlay -->
+  <CollectionBuilder @confirm="showCollectionBuilder" />
+
+  <ContextMenu
+    :visible="ctx.visible.value"
+    :x="ctx.x.value"
+    :y="ctx.y.value"
+    :items="ctx.items.value"
+    :trigger="ctx.trigger.value"
+    :submenu-visible="ctx.submenuVisible.value"
+    :submenu-items="ctx.submenuItems.value"
+    :submenu-x="ctx.submenuX.value"
+    :submenu-y="ctx.submenuY.value"
+    @action="onCtxAction"
+    @close="ctx.hide"
+  />
+
+  <div id="drop-overlay" :class="{ 'drag-over': dragOver }">
+    <div class="drop-content">
+      <div class="drop-icon">📁</div>
+      <div class="drop-text">拖放图片到此处导入</div>
+    </div>
+  </div>
+
   <div v-if="settingsVisible" id="settings-overlay" @click.self="closeSettings">
     <div class="settings-panel">
       <div class="settings-header">
@@ -503,29 +532,6 @@ refreshCollections()
           <button class="btn btn-primary" style="width:100%">从抖音下载表情</button>
         </div>
       </div>
-    </div>
-  </div>
-
-  <CollectionBuilder @confirm="showCollectionBuilder" />
-
-  <ContextMenu
-    :visible="ctx.visible.value"
-    :x="ctx.x.value"
-    :y="ctx.y.value"
-    :items="ctx.items.value"
-    :trigger="ctx.trigger.value"
-    :submenu-visible="ctx.submenuVisible.value"
-    :submenu-items="ctx.submenuItems.value"
-    :submenu-x="ctx.submenuX.value"
-    :submenu-y="ctx.submenuY.value"
-    @action="onCtxAction"
-    @close="ctx.hide"
-  />
-
-  <div id="drop-overlay" :class="{ 'drag-over': dragOver }">
-    <div class="drop-content">
-      <div class="drop-icon">📁</div>
-      <div class="drop-text">拖放图片到此处导入</div>
     </div>
   </div>
 
