@@ -182,6 +182,9 @@ def _fetch_sticker_list(session: requests.Session) -> list:
     stickers = []
 
     while has_more:
+        if _check_cancel():
+            return stickers
+
         params = {
             "device_platform": "webapp",
             "aid": "1128",
@@ -238,9 +241,10 @@ def _fetch_sticker_list(session: requests.Session) -> list:
                         )
 
             has_more = page.get("has_more", False)
-            cursor = page.get("next_cursor", cursor)
-            if not has_more or cursor == 0:
+            next_cursor = page.get("next_cursor", cursor)
+            if not has_more or next_cursor == 0 or next_cursor == cursor:
                 break
+            cursor = next_cursor
 
         except Exception as e:
             logger.warning("fetch list error: %s", e)
@@ -249,14 +253,15 @@ def _fetch_sticker_list(session: requests.Session) -> list:
     return stickers
 
 
-def _download_sticker(url: str, tmp_dir: str, sticker_id: str) -> str:
+def _download_sticker(url: str, tmp_dir: str, session, sticker_id: str = "") -> str:
+    """下载单个表情包到临时目录，复用已配置的 session 保持 cookies/TLS 状态"""
     ext = "webp"
     if ".gif" in url.lower():
         ext = "gif"
     elif ".png" in url.lower():
         ext = "png"
 
-    resp = requests.get(url, timeout=12, impersonate="chrome124")
+    resp = session.get(url, timeout=12)
     resp.raise_for_status()
 
     data = resp.content
@@ -275,9 +280,18 @@ def start_douyin_import(webui, cookie: str) -> bool:
     with _DOUYIN_LOCK:
         if _DOUYIN_STATE["status"] == "running":
             return False
-
-    _reset_state()
-    _update_dy(status="running", message="正在连接...")
+        _DOUYIN_CANCEL = False
+        _DOUYIN_STATE.update(
+            status="running",
+            progress=0,
+            message="正在连接...",
+            error="",
+            error_code="",
+            total=0,
+            done=0,
+            imported=0,
+            rejected=0,
+        )
 
     def _run():
         global _DOUYIN_CANCEL
@@ -329,7 +343,7 @@ def start_douyin_import(webui, cookie: str) -> bool:
                     return
 
                 try:
-                    fpath = _download_sticker(item["url"], tmp_dir, item["id"])
+                    fpath = _download_sticker(item["url"], tmp_dir, session, item["id"])
                     downloaded.append(fpath)
                     done = i + 1
                     _update_dy(

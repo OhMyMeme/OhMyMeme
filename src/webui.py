@@ -1609,7 +1609,10 @@ class SettingsApi:
 
     def start_douyin_import(self, cookie: str) -> dict:
         """启动抖音表情包下载导入（全部下载）"""
-        from . import douyin
+        try:
+            from . import douyin
+        except ImportError as e:
+            return {"ok": False, "error": f"缺少依赖: {e}"}
 
         started = douyin.start_douyin_import(self._webui, cookie)
         if not started:
