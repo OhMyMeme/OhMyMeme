@@ -482,6 +482,8 @@ onUnmounted(() => {
               @mouseleave="onCardMouseLeave(meme)"
             >
               <img :src="`/api/thumb/${meme.id}/${encodeURIComponent(meme.filename)}`" :alt="meme.name" loading="lazy">
+              <span v-if="meme.from_stego" class="gif-badge stego-badge">隐写导入</span>
+              <span v-else-if="meme.is_animated" class="gif-badge">{{ meme.is_gif ? 'GIF' : 'WebP' }}</span>
               <span class="meme-name">{{ meme.name }}</span>
             </div>
           </TransitionGroup>

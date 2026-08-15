@@ -437,6 +437,24 @@ body {
   white-space: nowrap;
 }
 
+.gif-badge {
+  position: absolute;
+  top: 6px;
+  right: 6px;
+  padding: 2px 6px;
+  border-radius: 4px;
+  font-size: 9px;
+  font-weight: 600;
+  background: rgba(0, 0, 0, 0.6);
+  color: #fff;
+  pointer-events: none;
+}
+
+.gif-badge.stego-badge {
+  background: rgba(217, 119, 6, 0.85);
+  color: #fff;
+}
+
 .meme-card img {
   width: 100%;
   aspect-ratio: 1;
