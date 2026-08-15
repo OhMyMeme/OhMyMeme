@@ -7,7 +7,7 @@ on:
 
 jobs:
   nightly-windows:
-    if: ${{ github.repository == 'TNTXZ/OhMyMeme' }}
+    if: ${{ github.repository == 'OhMyMeme/OhMyMeme' }}
     runs-on: windows-latest
     steps:
       - uses: actions/checkout@v4
@@ -36,7 +36,7 @@ jobs:
           path: dist/OhMyMeme-nightly-setup.exe
 
   nightly-linux:
-    if: ${{ github.repository == 'TNTXZ/OhMyMeme' }}
+    if: ${{ github.repository == 'OhMyMeme/OhMyMeme' }}
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -61,7 +61,7 @@ jobs:
           path: dist/OhMyMeme-v*-x86_64.AppImage
 
   nightly-macos:
-    if: ${{ github.repository == 'TNTXZ/OhMyMeme' }}
+    if: ${{ github.repository == 'OhMyMeme/OhMyMeme' }}
     runs-on: macos-latest
     steps:
       - uses: actions/checkout@v4
@@ -84,7 +84,7 @@ jobs:
           path: dist/OhMyMeme-v*-macos.dmg
 
   publish-nightly:
-    if: ${{ github.repository == 'TNTXZ/OhMyMeme' }}
+    if: ${{ github.repository == 'OhMyMeme/OhMyMeme' }}
     needs: [nightly-windows, nightly-linux, nightly-macos]
     runs-on: ubuntu-latest
     permissions:
@@ -98,8 +98,8 @@ jobs:
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          gh release delete nightly --repo TNTXZ/OhMyMeme --yes 2>/dev/null || true
-          gh release create nightly --repo TNTXZ/OhMyMeme --prerelease \
+          gh release delete nightly --repo OhMyMeme/OhMyMeme --yes 2>/dev/null || true
+          gh release create nightly --repo OhMyMeme/OhMyMeme --prerelease \
             --title "Nightly Build ($(date -u +'%Y-%m-%d'))" \
             --notes "$(cat <<'EOF'
           # 非正式版（Nightly Build）
