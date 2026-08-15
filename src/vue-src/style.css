@@ -322,11 +322,6 @@ body {
   padding: 12px;
 }
 
-#meme-grid-wrapper {
-  display: grid;
-  gap: 10px;
-}
-
 .meme-card {
   position: relative;
   border-radius: var(--radius);
@@ -354,11 +349,15 @@ body {
 }
 
 .meme-grid {
-  display: contents;
+  display: grid;
+  gap: 10px;
+  align-content: start;
 }
 
 .meme-ghost {
   opacity: 0.4;
+  background: var(--surface-2);
+  border-radius: var(--radius);
 }
 
 .meme-chosen {
@@ -367,9 +366,10 @@ body {
 }
 
 .meme-dragging {
-  opacity: 0.8;
+  opacity: 0.9;
   transform: scale(0.95);
   box-shadow: 0 8px 24px rgba(0, 0, 0, 0.4);
+  z-index: 10;
 }
 
 .meme-card img {

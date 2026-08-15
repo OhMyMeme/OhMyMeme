@@ -125,6 +125,10 @@ export function useMemes() {
     return state.activeCollection === null || state.activeCollection > 0
   }
 
+  function setMemes(newMemes: Meme[]) {
+    state.memes = newMemes
+  }
+
   async function onSortChange(evt: any) {
     if (evt.moved) {
       const ok = await reorderMemes(state.memes.map((m: Meme) => m.id))
@@ -142,7 +146,8 @@ export function useMemes() {
   }
 
   return {
-    state: readonly(state),
+    state,
+    setMemes,
     search,
     goToPage,
     setSearch,

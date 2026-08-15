@@ -5,10 +5,10 @@ import { useContextMenu } from './composables/useContextMenu'
 import { useCollectionBuilder } from './composables/useCollectionBuilder'
 import ContextMenu from './components/ContextMenu.vue'
 import CollectionBuilder from './components/CollectionBuilder.vue'
-import { VueDraggableNext as draggable } from 'vue-draggable-next'
+import { VueDraggableNext } from 'vue-draggable-next'
 import type { Meme } from './types'
 
-const { state, search, goToPage, setSearch, toggleTag, setActiveCollection, refreshTags, refreshCollections, copyMeme, onSortChange, startNativeDrag, loadInitData, canReorder } = useMemes()
+const { state, setMemes, search, goToPage, setSearch, toggleTag, setActiveCollection, refreshTags, refreshCollections, copyMeme, onSortChange, startNativeDrag, loadInitData, canReorder } = useMemes()
 const ctx = useContextMenu()
 const cb = useCollectionBuilder()
 
@@ -20,9 +20,7 @@ let dragCounter = 0
 let nativeDragActive = false
 let dragState: { sx: number; sy: number } | null = null
 
-// For hover-to-play
-const hoverTimers = new Map<number, ReturnType<typeof setTimeout>>()
-const hoverUrls = new Map<number, string>()
+const gridCols = computed(() => sidebarCollapsed.value ? 5 : 4)
 
 async function handleCopy(meme: Meme) {
   const ok = await copyMeme(meme.id, meme.filename)
@@ -204,11 +202,11 @@ async function showCollectionBuilder() {
 }
 
 function onCardMouseEnter(meme: Meme) {
-  if (!meme.is_animated || meme.auto_play_gif || !meme.hover_to_play) return
+  if (!meme.is_animated || !meme.hover_to_play || meme.auto_play_gif) return
   const timer = setTimeout(() => {
     const img = document.querySelector(`.meme-card[data-meme-id="${meme.id}"] img`) as HTMLImageElement
     if (img) {
-      hoverUrls.set(meme.id, img.src)
+      img.dataset.thumb = img.src
       img.src = `/api/original/${meme.id}/${encodeURIComponent(meme.filename)}`
     }
   }, 150)
@@ -221,12 +219,14 @@ function onCardMouseLeave(meme: Meme) {
     clearTimeout(timer)
     hoverTimers.delete(meme.id)
   }
-  if (!meme.is_animated) return
+  if (!meme.is_animated || !meme.hover_to_play || meme.auto_play_gif) return
   const img = document.querySelector(`.meme-card[data-meme-id="${meme.id}"] img`) as HTMLImageElement
-  if (img && hoverUrls.has(meme.id)) {
-    img.src = hoverUrls.get(meme.id) || `/api/thumb/${meme.id}/${encodeURIComponent(meme.filename)}`
+  if (img && img.dataset.thumb) {
+    img.src = img.dataset.thumb
   }
 }
+
+const hoverTimers = new Map<number, ReturnType<typeof setTimeout>>()
 
 let nativeDragStart: { x: number; y: number; memeId: number } | null = null
 
@@ -370,7 +370,6 @@ onUnmounted(() => {
   document.removeEventListener('mouseup', onWindowMouseUp)
 })
 
-// Startup sequence (matches original: wait for pywebview → load init data → delayed rescan)
 ;(async () => {
   await loadInitData()
   setTimeout(async () => {
@@ -416,11 +415,7 @@ onUnmounted(() => {
           <span v-if="!sidebarCollapsed">分组</span>
         </div>
         <div id="tree">
-          <div
-            v-for="c in state.collections"
-            :key="c.id"
-            class="tree-node"
-          >
+          <div v-for="c in state.collections" :key="c.id" class="tree-node">
             <div class="tree-row" :class="{ active: state.activeCollection === c.id }" @click="setActiveCollection(c.id)" @contextmenu="onFolderRightClick($event, c.id, c.name)">
               <span class="tree-icon">📁</span>
               <span v-if="!sidebarCollapsed" class="tree-label">{{ c.name }}</span>
@@ -438,61 +433,60 @@ onUnmounted(() => {
         </div>
 
         <div id="grid-wrap">
-          <div id="meme-grid-wrapper" :style="{ gridTemplateColumns: `repeat(${sidebarCollapsed ? 5 : 4}, 1fr)` }">
-            <draggable
-              v-if="sortEnabled && canReorder()"
-              :model-value="state.memes"
-              item-key="id"
-              class="meme-grid"
-              ghost-class="meme-ghost"
-              chosen-class="meme-chosen"
-              drag-class="meme-dragging"
-              :animation="200"
-              @update:model-value="state.memes = $event"
-              @change="onSortChange"
-            >
-              <template #item="{ element }">
-                <div
-                  class="meme-card"
-                  :data-meme-id="element.id"
-                  @click="handleCopy(element)"
-                  @contextmenu="onMemeRightClick($event, element)"
-                  @mousedown="onCardMouseDown($event, element.id)"
-                  @mousemove="onCardMouseMove($event)"
-                  @mouseup="onCardMouseUp()"
-                  @mouseenter="onCardMouseEnter(element)"
-                  @mouseleave="onCardMouseLeave(element)"
-                >
-                  <img :src="`/api/thumb/${element.id}/${encodeURIComponent(element.filename)}`" :alt="element.name" loading="lazy">
-                  <span class="meme-name">{{ element.name }}</span>
-                </div>
-              </template>
-            </draggable>
-
-            <div v-else id="meme-grid" class="meme-grid">
+          <VueDraggableNext
+            v-if="sortEnabled && canReorder()"
+            :model-value="state.memes"
+            item-key="id"
+            class="meme-grid"
+            ghost-class="meme-ghost"
+            chosen-class="meme-chosen"
+            drag-class="meme-dragging"
+            :animation="200"
+            :style="{ gridTemplateColumns: `repeat(${gridCols}, 1fr)` }"
+            @update:model-value="setMemes($event)"
+            @change="onSortChange"
+          >
+            <template #item="{ element }">
               <div
-                v-for="meme in state.memes"
-                :key="meme.id"
                 class="meme-card"
-                :data-meme-id="meme.id"
-                @click="handleCopy(meme)"
-                @contextmenu="onMemeRightClick($event, meme)"
-                @mousedown="onCardMouseDown($event, meme.id)"
+                :data-meme-id="element.id"
+                @click="handleCopy(element)"
+                @contextmenu="onMemeRightClick($event, element)"
+                @mousedown="onCardMouseDown($event, element.id)"
                 @mousemove="onCardMouseMove($event)"
                 @mouseup="onCardMouseUp()"
-                @mouseenter="onCardMouseEnter(meme)"
-                @mouseleave="onCardMouseLeave(meme)"
+                @mouseenter="onCardMouseEnter(element)"
+                @mouseleave="onCardMouseLeave(element)"
               >
-                <img :src="`/api/thumb/${meme.id}/${encodeURIComponent(meme.filename)}`" :alt="meme.name" loading="lazy">
-                <span class="meme-name">{{ meme.name }}</span>
+                <img :src="`/api/thumb/${element.id}/${encodeURIComponent(element.filename)}`" :alt="element.name" loading="lazy">
+                <span class="meme-name">{{ element.name }}</span>
               </div>
+            </template>
+          </VueDraggableNext>
+
+          <div v-else class="meme-grid" :style="{ gridTemplateColumns: `repeat(${gridCols}, 1fr)` }">
+            <div
+              v-for="meme in state.memes"
+              :key="meme.id"
+              class="meme-card"
+              :data-meme-id="meme.id"
+              @click="handleCopy(meme)"
+              @contextmenu="onMemeRightClick($event, meme)"
+              @mousedown="onCardMouseDown($event, meme.id)"
+              @mousemove="onCardMouseMove($event)"
+              @mouseup="onCardMouseUp()"
+              @mouseenter="onCardMouseEnter(meme)"
+              @mouseleave="onCardMouseLeave(meme)"
+            >
+              <img :src="`/api/thumb/${meme.id}/${encodeURIComponent(meme.filename)}`" :alt="meme.name" loading="lazy">
+              <span class="meme-name">{{ meme.name }}</span>
             </div>
           </div>
+        </div>
 
-          <div v-if="state.memes.length === 0 && !state.loading" id="empty">
-            <div class="icon">_(:3 」∠)_</div>
-            <div class="text">还没有表情包，点击「导入」添加</div>
-          </div>
+        <div v-if="state.memes.length === 0 && !state.loading" id="empty">
+          <div class="icon">_(:3 」∠)_</div>
+          <div class="text">还没有表情包，点击「导入」添加</div>
         </div>
 
         <div v-if="state.pageCount > 1" id="pager">
