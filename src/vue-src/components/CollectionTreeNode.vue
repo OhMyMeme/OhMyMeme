@@ -43,7 +43,7 @@ function onChildContext(e: MouseEvent, id: number, name: string) {
         @click="toggleExpand"
       >▶</span>
       <span v-else-if="!collapsed" class="tree-toggle leaf"></span>
-      <span v-if="!collapsed" class="tree-icon">{{ node.id === -4 ? '🗂️' : '📁' }}</span>
+      <span class="tree-icon" :title="collapsed ? node.name : ''">{{ node.id === -4 ? '🗂️' : '📁' }}</span>
       <span v-if="!collapsed" class="tree-label">{{ node.name }}</span>
       <span v-if="!collapsed" class="tree-count">{{ node.count || 0 }}</span>
     </div>

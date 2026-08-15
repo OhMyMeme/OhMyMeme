@@ -50,6 +50,47 @@ const folderCards = computed(() => {
   return find(state.collections)
 })
 
+// 面包屑：当前分组从「全部」到自身的祖先链
+const breadcrumb = computed(() => {
+  if (!state.activeCollection) return []
+  const walk = (items: any[], target: number, trail: any[]): any[] | null => {
+    for (const c of items) {
+      if (c.id === target) return [...trail, c]
+      if (c.children && c.children.length) {
+        const r = walk(c.children, target, [...trail, c])
+        if (r) return r
+      }
+    }
+    return null
+  }
+  const path = walk(state.collections, state.activeCollection, [])
+  if (path) return [{ id: null, name: '全部' }, ...path]
+  const sys = state.collections.find(c => c.id === state.activeCollection)
+  return sys ? [{ id: null, name: '全部' }, sys] : []
+})
+
+// 图标条祖先高亮：当前分组所属的顶层分组 id（用于折叠时高亮）
+const activeTopLevel = computed(() => {
+  if (!state.activeCollection || state.activeCollection < 0) return state.activeCollection
+  const findTop = (items: any[], target: number, inherited: number | null): number | null => {
+    for (const c of items) {
+      const thisTop = inherited ?? c.id
+      if (c.id === target) return thisTop
+      if (c.children && c.children.length) {
+        const r = findTop(c.children, target, thisTop)
+        if (r != null) return r
+      }
+    }
+    return null
+  }
+  const r = findTop(state.collections, state.activeCollection, null)
+  return r != null ? r : state.activeCollection
+})
+
+function onBreadcrumbClick(id: number | null) {
+  setActiveCollection(id)
+}
+
 function onFolderCardClick(childId: number) {
   setActiveCollection(childId)
 }
@@ -431,7 +472,7 @@ onUnmounted(() => {
             v-for="c in state.collections"
             :key="c.id"
             :node="c"
-            :active-id="state.activeCollection"
+            :active-id="sidebarCollapsed ? activeTopLevel : state.activeCollection"
             :depth="0"
             :collapsed="sidebarCollapsed"
             @select="setActiveCollection"
@@ -443,6 +484,17 @@ onUnmounted(() => {
       <div id="main">
         <div id="tagbar">
           <span v-for="tag in state.allTags" :key="tag" class="tag" :class="{ active: state.activeTags.has(tag) }" @click="toggleTag(tag)">{{ tag }}</span>
+        </div>
+
+        <div v-if="breadcrumb.length > 1" id="breadcrumb">
+          <template v-for="(crumb, idx) in breadcrumb" :key="idx">
+            <span v-if="idx > 0" class="crumb-sep">›</span>
+            <button
+              class="crumb"
+              :class="{ current: idx === breadcrumb.length - 1 }"
+              @click="onBreadcrumbClick(crumb.id)"
+            >{{ crumb.name }}</button>
+          </template>
         </div>
 
         <Pager

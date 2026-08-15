@@ -251,8 +251,25 @@ body {
   flex-shrink: 0;
 }
 
+#sidebar.collapsed .tree-row {
+  justify-content: center;
+  padding: 8px 0;
+  margin: 1px 0;
+}
+
 #sidebar.collapsed .tree-icon {
-  font-size: 16px;
+  font-size: 17px;
+  line-height: 1;
+}
+
+/* 折叠时的图标条高亮提示：胶囊底色 + 描边 */
+#sidebar.collapsed .tree-row.active {
+  background: rgba(99, 102, 241, 0.12);
+  box-shadow: inset 0 0 0 1px var(--primary);
+}
+
+#sidebar.collapsed .tree-row.active .tree-icon {
+  filter: brightness(1.2);
 }
 
 .tree-label {
@@ -279,6 +296,50 @@ body {
   flex-direction: column;
   overflow: hidden;
   min-width: 0;
+}
+
+/* Breadcrumb */
+#breadcrumb {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  padding: 6px 12px;
+  border-bottom: 1px solid var(--border);
+  flex-shrink: 0;
+  overflow-x: auto;
+  white-space: nowrap;
+  scrollbar-width: none;
+}
+
+#breadcrumb::-webkit-scrollbar { display: none; }
+
+.crumb {
+  border: none;
+  background: transparent;
+  color: var(--fg-secondary);
+  font-size: 12px;
+  font-family: inherit;
+  cursor: pointer;
+  padding: 3px 6px;
+  border-radius: 4px;
+  transition: all 0.12s;
+}
+
+.crumb:hover:not(.current) {
+  color: var(--fg);
+  background: var(--surface-2);
+}
+
+.crumb.current {
+  color: var(--fg);
+  font-weight: 600;
+  cursor: default;
+}
+
+.crumb-sep {
+  color: var(--muted);
+  font-size: 12px;
+  user-select: none;
 }
 
 /* Tagbar */
