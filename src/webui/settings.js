@@ -1727,7 +1727,7 @@ function switchSettingsGroup(group) {
     btn.classList.toggle('active', btn.dataset.group === group);
   });
   document.querySelectorAll('#settings-content .section').forEach(sec => {
-    sec.style.display = (sec.dataset.group === group) ? '' : 'none';
+    sec.style.display = (sec.dataset.group === group) ? 'block' : 'none';
   });
   const content = document.getElementById('settings-content');
   if (content) content.scrollTop = 0;
