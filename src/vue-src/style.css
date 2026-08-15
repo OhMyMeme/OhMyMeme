@@ -352,12 +352,14 @@ body {
   display: grid;
   gap: 10px;
   align-content: start;
-  transition: padding 0.2s;
+}
+
+#meme-grid .meme-card {
+  transition: transform 0.2s ease;
 }
 
 #meme-grid.sort-enabled .meme-card {
   cursor: grab;
-  transition: transform 0.1s, box-shadow 0.1s;
 }
 
 #meme-grid.sort-enabled .meme-card:hover {
@@ -368,11 +370,30 @@ body {
   cursor: grabbing;
 }
 
+#meme-grid.sort-enabled .meme-card.dragging {
+  transition: none;
+}
+
 .meme-card.dragging {
   opacity: 0.6;
   cursor: grabbing !important;
   box-shadow: 0 8px 24px rgba(0, 0, 0, 0.4);
   border-color: var(--primary) !important;
+}
+
+/* TransitionGroup FLIP 动画 */
+.meme-list-move {
+  transition: transform 0.2s ease;
+}
+
+.meme-list-enter-active,
+.meme-list-leave-active {
+  transition: opacity 0.2s ease;
+}
+
+.meme-list-enter-from,
+.meme-list-leave-to {
+  opacity: 0;
 }
 
 .meme-card img {

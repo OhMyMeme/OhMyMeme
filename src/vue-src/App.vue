@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { ref, onMounted, onUnmounted, computed } from 'vue'
-import { useMemes, useDragSort } from './composables/useMemes'
+import { useMemes } from './composables/useMemes'
+import { useDragSort } from './composables/useDragSort'
 import { useContextMenu } from './composables/useContextMenu'
 import { useCollectionBuilder } from './composables/useCollectionBuilder'
 import ContextMenu from './components/ContextMenu.vue'
@@ -11,16 +12,17 @@ const { state, setMemes, search, goToPage, setSearch, toggleTag, setActiveCollec
 const ctx = useContextMenu()
 const cb = useCollectionBuilder()
 
+const sortEnabled = ref(false)
 const drag = useDragSort(
   () => state.memes,
   setMemes,
   canReorder,
-  () => dragSortEnabled.value,
-  startNativeDrag,
+  () => sortEnabled.value,
+  reorderMemes,
+  () => { showToast('排序保存失败'); search() },
 )
 
 const sidebarCollapsed = ref(false)
-const sortEnabled = ref(false)
 const settingsVisible = ref(false)
 const dragOver = ref(false)
 let dragCounter = 0
@@ -61,8 +63,7 @@ function toggleSidebar() { sidebarCollapsed.value = !sidebarCollapsed.value }
 
 function toggleSort() {
   sortEnabled.value = !sortEnabled.value
-  if (sortEnabled.value) drag.enable()
-  else drag.disable()
+  drag.toggle()
 }
 
 function showImportMenu() { showToast('导入功能开发中...') }
@@ -360,8 +361,10 @@ onUnmounted(() => {
         </div>
 
         <div id="grid-wrap">
-          <div
+          <TransitionGroup
             id="meme-grid"
+            tag="div"
+            name="meme-list"
             class="meme-grid"
             :class="{ 'sort-enabled': sortEnabled && canReorder() }"
             :style="{ gridTemplateColumns: `repeat(${gridCols}, 1fr)` }"
@@ -383,7 +386,7 @@ onUnmounted(() => {
               <img :src="`/api/thumb/${meme.id}/${encodeURIComponent(meme.filename)}`" :alt="meme.name" loading="lazy">
               <span class="meme-name">{{ meme.name }}</span>
             </div>
-          </div>
+          </TransitionGroup>
 
           <div v-if="state.memes.length === 0 && !state.loading" id="empty">
             <div class="icon">_(:3 」∠)_</div>
