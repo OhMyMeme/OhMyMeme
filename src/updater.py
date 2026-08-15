@@ -54,7 +54,7 @@ def _pick_asset_url(assets: list) -> str:
     elif platform.system() == "Darwin":
         for a in assets:
             name = a.get("name", "")
-            if name.endswith(".dmg"):
+            if name.endswith(".dmg") and ("-" + _macos_arch() + ".dmg") in name:
                 return a.get("browser_download_url", "")
     return ""
 
@@ -232,12 +232,20 @@ def check_latest() -> dict:
     }
 
 
+def _macos_arch() -> str:
+    """当前 macOS 机器架构（arm64 / x86_64）"""
+    machine = platform.machine().lower()
+    if machine in ("arm64", "aarch64"):
+        return "arm64"
+    return "x86_64"
+
+
 def _default_asset_name() -> str:
     """URL 无文件名时的平台默认资产名"""
     if platform.system() == "Linux":
         return f"OhMyMeme-v{__version__}-x86_64.AppImage"
     if platform.system() == "Darwin":
-        return f"OhMyMeme-v{__version__}-macos.dmg"
+        return f"OhMyMeme-v{__version__}-{_macos_arch()}.dmg"
     return "OhMyMeme-setup.exe"
 
 

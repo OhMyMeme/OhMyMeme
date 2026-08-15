@@ -8,7 +8,8 @@ Usage:
     python scripts/build.py                  # build + installer (auto-detect)
     python scripts/build.py --windows        # Windows target
     python scripts/build.py --linux          # Linux target
-    python scripts/build.py --macos          # macOS target (.app + .dmg)
+    python scripts/build.py --macos          # macOS target (.app + .dmg, arch auto-detect)
+    python scripts/build.py --macos --arch x86_64  # macOS Intel build
     python scripts/build.py --installer-only # installer only (assumes already built)
     python scripts/build.py --build-only     # build only, skip installer
     python scripts/build.py --package deb    # Linux package type: all|appimage|deb|rpm
@@ -347,9 +348,20 @@ def _ensure_icns():
         return None
 
 
-def build_macos_packages(version, filename_version=None):
-    """制作 macOS .dmg（内含 .app）；version 用于 dmg 文件名版本段"""
+def get_macos_arch(arch=None):
+    """返回 macOS 架构名（arm64 / x86_64）；未指定时按当前机器检测"""
+    if arch:
+        return arch
+    machine = platform.machine().lower()
+    if machine in ("arm64", "aarch64"):
+        return "arm64"
+    return "x86_64"
+
+
+def build_macos_packages(version, filename_version=None, arch=None):
+    """制作 macOS .dmg（内含 .app）；version 用于 dmg 文件名版本段，arch 追加架构后缀"""
     filename_version = filename_version or version
+    arch = get_macos_arch(arch)
     app_dir = BUILD_DIR / (APP_NAME + ".app")
     if not app_dir.is_dir():
         print(L("outdir_not_found"), app_dir)
@@ -357,7 +369,7 @@ def build_macos_packages(version, filename_version=None):
         return
 
     print(L("building_macos"))
-    dmg_name = "%s-v%s-macos.dmg" % (APP_NAME, filename_version)
+    dmg_name = "%s-v%s-%s.dmg" % (APP_NAME, filename_version, arch)
     dmg_path = BUILD_DIR / dmg_name
     if dmg_path.exists():
         dmg_path.unlink()
@@ -420,6 +432,8 @@ if __name__ == "__main__":
                         help="Only run PyInstaller, skip installer")
     parser.add_argument("--package", choices=["all", "appimage", "deb", "rpm"], default="all",
                         help="Linux package type to build (default: all)")
+    parser.add_argument("--arch", choices=["arm64", "x86_64"], default=None,
+                        help="macOS architecture (default: auto-detect from machine)")
     target_group = parser.add_mutually_exclusive_group()
     target_group.add_argument("--windows", action="store_true", dest="target_windows",
                               help="Build for Windows")
@@ -474,7 +488,7 @@ if __name__ == "__main__":
             elif target == "Linux":
                 build_linux_packages(build_version, args.package, pkg_version=app_version)
             elif target == "Darwin":
-                build_macos_packages(build_version, filename_version=build_version)
+                build_macos_packages(build_version, filename_version=build_version, arch=args.arch)
             else:
                 print(L("installer_only_unsupported", target))
                 sys.exit(1)
@@ -487,7 +501,7 @@ if __name__ == "__main__":
             elif target == "Linux":
                 build_linux_packages(version, args.package, pkg_version=app_version)
             elif target == "Darwin":
-                build_macos_packages(version, filename_version=build_version)
+                build_macos_packages(version, filename_version=build_version, arch=args.arch)
     finally:
         if patched:
             set_version(base_version)

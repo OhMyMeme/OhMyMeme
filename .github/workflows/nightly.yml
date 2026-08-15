@@ -65,7 +65,14 @@ jobs:
 
   nightly-macos:
     if: ${{ github.repository == 'OhMyMeme/OhMyMeme' }}
-    runs-on: macos-latest
+    strategy:
+      matrix:
+        include:
+          - arch: arm64
+            runner: macos-latest
+          - arch: x86_64
+            runner: macos-13
+    runs-on: ${{ matrix.runner }}
     steps:
       - uses: actions/checkout@v4
         with:
@@ -79,12 +86,12 @@ jobs:
           pip install -r requirements.txt
           pip install pyinstaller
       - name: Build macOS nightly (.app + .dmg)
-        run: python scripts/build.py --macos --nightly
+        run: python scripts/build.py --macos --nightly --arch ${{ matrix.arch }}
       - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
-          name: nightly-macos
-          path: dist/OhMyMeme-v*-macos.dmg
+          name: nightly-macos-${{ matrix.arch }}
+          path: dist/OhMyMeme-v*-${{ matrix.arch }}.dmg
 
   publish-nightly:
     if: ${{ github.repository == 'OhMyMeme/OhMyMeme' }}

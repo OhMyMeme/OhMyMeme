@@ -191,8 +191,11 @@ python scripts/build.py --windows
 # Linux 目标（仅在 Linux 上运行）
 python scripts/build.py --linux
 
-# macOS 目标（仅在 macOS 上运行，产出 .app + .dmg）
+# macOS 目标（仅在 macOS 上运行，产出 .app + .dmg；架构默认按机器自动检测）
 python scripts/build.py --macos
+
+# 指定 macOS 架构（arm64 / x86_64）
+python scripts/build.py --macos --arch x86_64
 
 # 仅打包，跳过安装包
 python scripts/build.py --build-only
@@ -208,7 +211,7 @@ python scripts/build.py --linux --installer-only --package deb
 
 **Linux 包**: 支持 .deb / .rpm / AppImage，`--package` 指定包类型（`all` / `appimage` / `deb` / `rpm`，默认 `all`）。构建前需安装 GTK/WebKit 依赖（同上）。
 
-**macOS 包**: `--macos` 产出 `.app`（PyInstaller `--windowed`，自动用 iconutil 从 `src/resources/icon.png` 生成 icns）与 `.dmg`（hdiutil 打包，含 /Applications 快捷方式）。
+**macOS 包**: `--macos` 产出 `.app`（PyInstaller `--windowed`，自动用 iconutil 从 `src/resources/icon.png` 生成 icns）与 `.dmg`（hdiutil 打包，含 /Applications 快捷方式）；文件名带架构后缀 `OhMyMeme-v{version}-{arch}.dmg`，`--arch` 指定 arm64/x86_64（默认自动检测）。
 
 ```bash
 # 等价于 bash scripts/installer/linux/build.sh all / deb / rpm / appimage
