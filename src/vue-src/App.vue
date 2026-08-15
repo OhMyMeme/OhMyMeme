@@ -1,13 +1,14 @@
 <script setup lang="ts">
-import { ref, onMounted, onUnmounted } from 'vue'
+import { ref, onMounted, onUnmounted, computed } from 'vue'
 import { useMemes } from './composables/useMemes'
 import { useContextMenu } from './composables/useContextMenu'
 import { useCollectionBuilder } from './composables/useCollectionBuilder'
 import ContextMenu from './components/ContextMenu.vue'
 import CollectionBuilder from './components/CollectionBuilder.vue'
+import { VueDraggableNext as draggable } from 'vue-draggable-next'
 import type { Meme } from './types'
 
-const { state, dragSort, search, goToPage, setSearch, toggleTag, setActiveCollection, refreshTags, refreshCollections, copyMeme, onSortDragStart, onSortDragOver, onSortDragLeave, onSortDrop, onSortDragEnd, startNativeDrag, loadInitData, canReorder } = useMemes()
+const { state, search, goToPage, setSearch, toggleTag, setActiveCollection, refreshTags, refreshCollections, copyMeme, onSortChange, startNativeDrag, loadInitData, canReorder } = useMemes()
 const ctx = useContextMenu()
 const cb = useCollectionBuilder()
 
@@ -437,29 +438,54 @@ onUnmounted(() => {
         </div>
 
         <div id="grid-wrap">
-          <div id="meme-grid" :style="{ gridTemplateColumns: `repeat(${sidebarCollapsed ? 5 : 4}, 1fr)` }">
-            <div
-              v-for="meme in state.memes"
-              :key="meme.id"
-              class="meme-card"
-              :class="{ 'dragging': dragSort.draggedId === meme.id, 'drag-over': dragSort.overId === meme.id }"
-              :data-meme-id="meme.id"
-              :draggable="sortEnabled && canReorder()"
-              @click="handleCopy(meme)"
-              @contextmenu="onMemeRightClick($event, meme)"
-              @mousedown="onCardMouseDown($event, meme.id)"
-              @mousemove="onCardMouseMove($event)"
-              @mouseup="onCardMouseUp()"
-              @mouseenter="onCardMouseEnter(meme)"
-              @mouseleave="onCardMouseLeave(meme)"
-              @dragstart="onSortDragStart(meme.id)"
-              @dragover.prevent="onSortDragOver(meme.id)"
-              @dragleave="onSortDragLeave()"
-              @drop="onSortDrop(meme.id)"
-              @dragend="onSortDragEnd()"
+          <div id="meme-grid-wrapper" :style="{ gridTemplateColumns: `repeat(${sidebarCollapsed ? 5 : 4}, 1fr)` }">
+            <draggable
+              v-if="sortEnabled && canReorder()"
+              :model-value="state.memes"
+              item-key="id"
+              class="meme-grid"
+              ghost-class="meme-ghost"
+              chosen-class="meme-chosen"
+              drag-class="meme-dragging"
+              :animation="200"
+              @update:model-value="state.memes = $event"
+              @change="onSortChange"
             >
-              <img :src="`/api/thumb/${meme.id}/${encodeURIComponent(meme.filename)}`" :alt="meme.name" loading="lazy">
-              <span class="meme-name">{{ meme.name }}</span>
+              <template #item="{ element }">
+                <div
+                  class="meme-card"
+                  :data-meme-id="element.id"
+                  @click="handleCopy(element)"
+                  @contextmenu="onMemeRightClick($event, element)"
+                  @mousedown="onCardMouseDown($event, element.id)"
+                  @mousemove="onCardMouseMove($event)"
+                  @mouseup="onCardMouseUp()"
+                  @mouseenter="onCardMouseEnter(element)"
+                  @mouseleave="onCardMouseLeave(element)"
+                >
+                  <img :src="`/api/thumb/${element.id}/${encodeURIComponent(element.filename)}`" :alt="element.name" loading="lazy">
+                  <span class="meme-name">{{ element.name }}</span>
+                </div>
+              </template>
+            </draggable>
+
+            <div v-else id="meme-grid" class="meme-grid">
+              <div
+                v-for="meme in state.memes"
+                :key="meme.id"
+                class="meme-card"
+                :data-meme-id="meme.id"
+                @click="handleCopy(meme)"
+                @contextmenu="onMemeRightClick($event, meme)"
+                @mousedown="onCardMouseDown($event, meme.id)"
+                @mousemove="onCardMouseMove($event)"
+                @mouseup="onCardMouseUp()"
+                @mouseenter="onCardMouseEnter(meme)"
+                @mouseleave="onCardMouseLeave(meme)"
+              >
+                <img :src="`/api/thumb/${meme.id}/${encodeURIComponent(meme.filename)}`" :alt="meme.name" loading="lazy">
+                <span class="meme-name">{{ meme.name }}</span>
+              </div>
             </div>
           </div>
 

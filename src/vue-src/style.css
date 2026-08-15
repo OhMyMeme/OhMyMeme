@@ -322,10 +322,9 @@ body {
   padding: 12px;
 }
 
-#meme-grid {
+#meme-grid-wrapper {
   display: grid;
   gap: 10px;
-  transition: grid-template-columns 0.25s cubic-bezier(0.4, 0, 0.2, 1);
 }
 
 .meme-card {
@@ -354,18 +353,23 @@ body {
   cursor: grabbing;
 }
 
-.meme-card.dragging {
-  opacity: 0.5;
-  transform: scale(0.92);
-  border-color: var(--primary) !important;
-  box-shadow: 0 0 0 3px rgba(99, 102, 241, 0.4), 0 4px 12px rgba(99, 102, 241, 0.3);
-  background: rgba(99, 102, 241, 0.08);
+.meme-grid {
+  display: contents;
 }
 
-.meme-card.drag-over {
-  border-color: var(--primary) !important;
-  box-shadow: 0 0 0 3px rgba(99, 102, 241, 0.3);
+.meme-ghost {
+  opacity: 0.4;
+}
+
+.meme-chosen {
+  box-shadow: 0 0 0 3px var(--primary), 0 4px 12px rgba(99, 102, 241, 0.3);
   transform: scale(1.02);
+}
+
+.meme-dragging {
+  opacity: 0.8;
+  transform: scale(0.95);
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.4);
 }
 
 .meme-card img {

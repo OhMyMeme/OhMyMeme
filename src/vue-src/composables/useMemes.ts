@@ -19,11 +19,6 @@ const state = reactive({
 
 let searchGen = 0
 
-const dragSort = reactive({
-  draggedId: null as number | null,
-  overId: null as number | null,
-})
-
 export function useMemes() {
   async function waitForPywebview(): Promise<void> {
     while (typeof window.pywebview === 'undefined' || !window.pywebview.api) {
@@ -130,44 +125,11 @@ export function useMemes() {
     return state.activeCollection === null || state.activeCollection > 0
   }
 
-  function onSortDragStart(memeId: number) {
-    dragSort.draggedId = memeId
-  }
-
-  function onSortDragOver(memeId: number) {
-    if (dragSort.draggedId === memeId) return
-    dragSort.overId = memeId
-  }
-
-  function onSortDragLeave() {
-    dragSort.overId = null
-  }
-
-  async function onSortDrop(memeId: number) {
-    const draggedId = dragSort.draggedId
-    dragSort.draggedId = null
-    dragSort.overId = null
-    if (!draggedId || draggedId === memeId) return
-
-    const memes = state.memes
-    const fromIdx = memes.findIndex(m => m.id === draggedId)
-    const toIdx = memes.findIndex(m => m.id === memeId)
-    if (fromIdx < 0 || toIdx < 0) return
-
-    const newMemes = [...memes]
-    const [moved] = newMemes.splice(fromIdx, 1)
-    newMemes.splice(toIdx, 0, moved)
-    state.memes = newMemes
-
-    const ok = await reorderMemes(newMemes.map(m => m.id))
-    if (!ok) {
-      state.memes = memes
+  async function onSortChange(evt: any) {
+    if (evt.moved) {
+      const ok = await reorderMemes(state.memes.map((m: Meme) => m.id))
+      if (!ok) search()
     }
-  }
-
-  function onSortDragEnd() {
-    dragSort.draggedId = null
-    dragSort.overId = null
   }
 
   async function startNativeDrag(memeId: number): Promise<boolean> {
@@ -181,7 +143,6 @@ export function useMemes() {
 
   return {
     state: readonly(state),
-    dragSort: readonly(dragSort),
     search,
     goToPage,
     setSearch,
@@ -192,11 +153,7 @@ export function useMemes() {
     copyMeme,
     reorderMemes,
     canReorder,
-    onSortDragStart,
-    onSortDragOver,
-    onSortDragLeave,
-    onSortDragEnd,
-    onSortDrop,
+    onSortChange,
     startNativeDrag,
     loadInitData,
     waitForPywebview,
