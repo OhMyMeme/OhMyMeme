@@ -150,6 +150,15 @@ export function useMemes() {
     dragSort.overId = null
   }
 
+  async function startNativeDrag(memeId: number, startX: number, startY: number): Promise<boolean> {
+    try {
+      const result = await api('start_native_drag', memeId)
+      return !!result
+    } catch {
+      return false
+    }
+  }
+
   return {
     state: readonly(state),
     dragSort: readonly(dragSort),
@@ -167,6 +176,7 @@ export function useMemes() {
     onSortDragLeave,
     onSortDrop,
     onSortDragEnd,
+    startNativeDrag,
   }
 }
 

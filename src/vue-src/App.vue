@@ -7,7 +7,7 @@ import ContextMenu from './components/ContextMenu.vue'
 import CollectionBuilder from './components/CollectionBuilder.vue'
 import type { Meme } from './types'
 
-const { state, dragSort, search, goToPage, setSearch, toggleTag, setActiveCollection, refreshTags, refreshCollections, copyMeme, onSortDragStart, onSortDragOver, onSortDragLeave, onSortDrop, onSortDragEnd } = useMemes()
+const { state, dragSort, search, goToPage, setSearch, toggleTag, setActiveCollection, refreshTags, refreshCollections, copyMeme, onSortDragStart, onSortDragOver, onSortDragLeave, onSortDrop, onSortDragEnd, startNativeDrag } = useMemes()
 const ctx = useContextMenu()
 const cb = useCollectionBuilder()
 
@@ -116,6 +116,49 @@ function onWindowMouseMove(e: MouseEvent) {
 
 function onWindowMouseUp() {
   dragState = null
+}
+
+let nativeDragStart: { x: number; y: number; memeId: number } | null = null
+
+function onCardMouseDown(e: MouseEvent, memeId: number) {
+  if (sortEnabled.value || e.button !== 0) return
+  nativeDragStart = { x: e.clientX, y: e.clientY, memeId }
+}
+
+function onCardMouseMove(e: MouseEvent) {
+  if (!nativeDragStart || sortEnabled.value) return
+  const dist = Math.hypot(e.clientX - nativeDragStart.x, e.clientY - nativeDragStart.y)
+  if (dist > 8) {
+    const id = nativeDragStart.memeId
+    nativeDragStart = null
+    startNativeDrag(id)
+  }
+}
+
+function onCardMouseUp() {
+  nativeDragStart = null
+}
+
+const hoverTimers = new Map<number, ReturnType<typeof setTimeout>>()
+
+function onCardMouseEnter(meme: Meme) {
+  if (!meme.is_animated || meme.auto_play_gif) return
+  const timer = setTimeout(() => {
+    const img = document.querySelector(`.meme-card[data-meme-id="${meme.id}"] img`) as HTMLImageElement
+    if (img) img.src = `/api/original/${meme.id}/${encodeURIComponent(meme.filename)}`
+  }, 150)
+  hoverTimers.set(meme.id, timer)
+}
+
+function onCardMouseLeave(meme: Meme) {
+  const timer = hoverTimers.get(meme.id)
+  if (timer) {
+    clearTimeout(timer)
+    hoverTimers.delete(meme.id)
+  }
+  if (!meme.is_animated) return
+  const img = document.querySelector(`.meme-card[data-meme-id="${meme.id}"] img`) as HTMLImageElement
+  if (img) img.src = `/api/thumb/${meme.id}/${encodeURIComponent(meme.filename)}`
 }
 
 function onMemeRightClick(e: MouseEvent, meme: Meme) {
@@ -396,6 +439,12 @@ refreshCollections()
               :draggable="sortEnabled"
               @click="handleCopy(meme)"
               @contextmenu="onMemeRightClick($event, meme)"
+              :data-meme-id="meme.id"
+              @mousedown="onCardMouseDown($event, meme.id)"
+              @mousemove="onCardMouseMove($event)"
+              @mouseup="onCardMouseUp()"
+              @mouseenter="onCardMouseEnter(meme)"
+              @mouseleave="onCardMouseLeave(meme)"
               @dragstart="onSortDragStart(meme.id)"
               @dragover.prevent="onSortDragOver(meme.id)"
               @dragleave="onSortDragLeave()"

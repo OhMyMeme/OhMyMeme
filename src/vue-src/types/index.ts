@@ -9,6 +9,9 @@ export interface Meme {
   original_name: string | null
   collection_sort_order?: number
   tags?: string[]
+  is_animated?: boolean
+  auto_play_gif?: boolean
+  hover_to_play?: boolean
 }
 
 export interface Collection {
