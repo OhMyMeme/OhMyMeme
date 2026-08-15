@@ -15,7 +15,8 @@
 - **导入大小与分辨率上限** — 超过 `_IMPORT_MAX_PX`（2560px 最长边）/ `_IMPORT_MAX_BYTES`（20MiB）的文件拒绝接收并计数提示（#32）
 - **ADB 存储卷自动识别** — QQ 缓存目录定位回退链支持枚举 `/storage/` 下多存储卷（TF 卡）（#31）
 - **快捷键呼出聚焦搜索栏** — 主窗口弹出后自动聚焦搜索框
-- **Nightly 非正式版构建** — `nightly.yml` 每日定时 + 手动触发，从 `dev` 分支以版本号 `nightly` 构建并以 prerelease 发布，更新检查绝不会指向该版本
+- **Nightly 非正式版构建** — `nightly.yml` 每日定时 + 手动触发，从 `dev` 分支以版本号 `nightly` 构建 Windows/Linux/macOS 三平台安装包并以 prerelease 发布，更新检查绝不会指向该版本
+- **macOS 构建支持** — `build.py --macos` 生成 `.app`（PyInstaller `--windowed` + iconutil 从 icon.png 生成 icns）与 `.dmg`（hdiutil）；`build.yml` 新增 `build-macos` job；更新检查支持 `.dmg` 资产，安装走 `hdiutil attach` + `ditto` 复制到 `/Applications`
 
 ## 变更
 

@@ -176,8 +176,8 @@ python -m src
 
 依赖 PyInstaller 6.0+。
 
-> **⚠️ 注意**: PyInstaller **不支持交叉编译**。`--windows` 参数只能在 Windows 系统上使用，`--linux` 参数只能在 Linux 系统上使用。
-> 如需在 Linux 上构建 Windows 安装包，请使用 [GitHub Actions](#ci-github-actions)（推送到 `main` 分支自动触发，或手动运行 workflow）。
+> **⚠️ 注意**: PyInstaller **不支持交叉编译**。`--windows` 参数只能在 Windows 系统上使用，`--linux` 参数只能在 Linux 系统上使用，`--macos` 参数只能在 macOS 上使用。
+> 如需在本地构建其他平台安装包，请使用 [GitHub Actions](#ci-github-actions)（推送到 `main` 分支自动触发，或手动运行 workflow）。
 
 ```bash
 pip install pyinstaller
@@ -190,6 +190,9 @@ python scripts/build.py --windows
 
 # Linux 目标（仅在 Linux 上运行）
 python scripts/build.py --linux
+
+# macOS 目标（仅在 macOS 上运行，产出 .app + .dmg）
+python scripts/build.py --macos
 
 # 仅打包，跳过安装包
 python scripts/build.py --build-only
@@ -204,6 +207,8 @@ python scripts/build.py --linux --installer-only --package deb
 **Windows 安装包**: 需 [InnoSetup 6/7](https://jrsoftware.org/isdl.php)。
 
 **Linux 包**: 支持 .deb / .rpm / AppImage，`--package` 指定包类型（`all` / `appimage` / `deb` / `rpm`，默认 `all`）。构建前需安装 GTK/WebKit 依赖（同上）。
+
+**macOS 包**: `--macos` 产出 `.app`（PyInstaller `--windowed`，自动用 iconutil 从 `src/resources/icon.png` 生成 icns）与 `.dmg`（hdiutil 打包，含 /Applications 快捷方式）。
 
 ```bash
 # 等价于 bash scripts/installer/linux/build.sh all / deb / rpm / appimage
