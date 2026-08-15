@@ -1,22 +1,18 @@
 <script setup lang="ts">
 import { ref } from 'vue'
 import { useMemes } from './composables/useMemes'
-import type { Meme, Collection } from './types'
+import type { Meme } from './types'
 
 const { state, search, goToPage, setSearch, toggleTag, setActiveCollection, refreshTags, refreshCollections, copyMeme, reorderMemes } = useMemes()
 
 const sidebarCollapsed = ref(false)
 const sortEnabled = ref(false)
+const settingsVisible = ref(false)
 
 async function handleCopy(meme: Meme) {
-  const ok = await copyMeme(meme.id, meme.filename)
+  const ok = await copyMemes(meme.id, meme.filename)
   if (ok) showToast(`${meme.original_name || meme.filename} 已复制`)
   else showToast('复制失败')
-}
-
-async function handleReorder(memes: Meme[]) {
-  const ok = await reorderMemes(memes.map(m => m.id))
-  if (!ok) showToast('排序保存失败')
 }
 
 function showToast(msg: string) {
@@ -40,11 +36,11 @@ function debounceSearch() {
 }
 
 function openSettings() {
-  window.pywebview?.api?.open_settings()
+  settingsVisible.value = true
 }
 
-function hide() {
-  window.pywebview?.api?.hide_window()
+function closeSettings() {
+  settingsVisible.value = false
 }
 
 function toggleSidebar() {
@@ -55,6 +51,16 @@ function toggleSort() {
   sortEnabled.value = !sortEnabled.value
 }
 
+function showImportMenu() {
+  showToast('导入功能开发中...')
+}
+
+function rescanCache() {
+  showToast('缓存刷新中...')
+  search()
+  refreshCollections()
+}
+
 search()
 refreshTags()
 refreshCollections()
@@ -63,13 +69,24 @@ refreshCollections()
 <template>
   <div id="app">
     <header id="titlebar">
-      <div class="logo">OhMy<span>Meme</span></div>
+      <div class="titlebar__left">
+        <button class="sidebar-toggle" :class="{ collapsed: sidebarCollapsed }" @click="toggleSidebar" title="折叠/展开侧边栏">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+            <line x1="3" y1="6" x2="21" y2="6"/><line x1="3" y1="12" x2="21" y2="12"/><line x1="3" y1="18" x2="21" y2="18"/>
+          </svg>
+        </button>
+        <div class="logo">OhMy<span>Meme</span></div>
+      </div>
       <span class="spacer"></span>
-      <button class="icon-btn" :class="{ 'sort-on': sortEnabled }" title="拖拽排序" @click="toggleSort">
-        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 6h18M3 12h18M3 18h18"/></svg>
-      </button>
-      <button class="title-btn" @click="openSettings()">设置</button>
-      <button class="title-btn close-btn" @click="hide()">×</button>
+      <div class="titlebar__actions">
+        <button class="icon-btn" :class="{ 'sort-on': sortEnabled }" title="拖拽排序" @click="toggleSort">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 6h18M3 12h18M3 18h18"/></svg>
+        </button>
+        <button class="title-btn" @click="showImportMenu()">导入</button>
+        <button class="title-btn" @click="rescanCache()">刷新</button>
+        <button class="title-btn" @click="openSettings()">设置</button>
+        <button class="title-btn close-btn" @click="window.pywebview?.api?.hide_window()">×</button>
+      </div>
     </header>
 
     <div id="search-wrap">
@@ -79,7 +96,7 @@ refreshCollections()
     <div id="content">
       <aside id="sidebar" :class="{ collapsed: sidebarCollapsed }">
         <div id="sidebar-header">
-          <span>分组</span>
+          <span v-if="!sidebarCollapsed">分组</span>
         </div>
         <div id="tree">
           <div
@@ -88,15 +105,13 @@ refreshCollections()
             class="tree-node"
           >
             <div class="tree-row" :class="{ active: state.activeCollection === c.id }" @click="setActiveCollection(c.id)">
-              <span class="tree-label">{{ c.name }}</span>
-              <span class="tree-count">{{ c.count || 0 }}</span>
+              <span class="tree-icon">📁</span>
+              <span v-if="!sidebarCollapsed" class="tree-label">{{ c.name }}</span>
+              <span v-if="!sidebarCollapsed" class="tree-count">{{ c.count || 0 }}</span>
             </div>
           </div>
         </div>
       </aside>
-      <button id="sidebar-toggle" :class="{ collapsed: sidebarCollapsed }" @click="toggleSidebar()">
-        {{ sidebarCollapsed ? '▶' : '◀' }}
-      </button>
 
       <div id="main">
         <div id="tagbar">
@@ -129,6 +144,41 @@ refreshCollections()
           <button :disabled="state.page <= 1" @click="goToPage(state.page - 1)">&lt;</button>
           <span class="pager-info">{{ state.page }} / {{ state.pageCount }}</span>
           <button :disabled="state.page >= state.pageCount" @click="goToPage(state.page + 1)">&gt;</button>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Settings Overlay -->
+  <div v-if="settingsVisible" id="settings-overlay" @click.self="closeSettings">
+    <div class="settings-panel">
+      <div class="settings-header">
+        <h2>设置</h2>
+        <button class="icon-btn" @click="closeSettings">×</button>
+      </div>
+      <div class="settings-body">
+        <div class="settings-section">
+          <h3>全局快捷键</h3>
+          <div class="settings-row">
+            <label>呼出窗口</label>
+            <input type="text" value="Ctrl+Alt+N" readonly>
+          </div>
+        </div>
+        <div class="settings-section">
+          <h3>复制处理</h3>
+          <div class="settings-row">
+            <label>处理模式</label>
+            <select>
+              <option>不处理</option>
+              <option selected>WebP 缩放</option>
+              <option>转 GIF</option>
+              <option>GIF 隐写原图</option>
+            </select>
+          </div>
+        </div>
+        <div class="settings-section">
+          <h3>导入</h3>
+          <button class="btn btn-primary" style="width:100%">从抖音下载表情</button>
         </div>
       </div>
     </div>
