@@ -276,7 +276,7 @@ def build_installer(version, target=None, filename_version=None):
         print(L("installer_not_found"), installer)
 
 
-def build_linux_packages(version, package="all"):
+def build_linux_packages(version, package="all", pkg_version=None):
     build_sh = PROJECT_ROOT / "scripts" / "installer" / "linux" / "build.sh"
     if not build_sh.exists():
         print(L("linux_sh_not_found", build_sh))
@@ -284,6 +284,9 @@ def build_linux_packages(version, package="all"):
 
     env = os.environ.copy()
     env["SKIP_PYINSTALLER"] = "1"
+    # deb/rpm 的 Version 字段必须是数字开头；nightly 时回退到基础版本号
+    if pkg_version:
+        env["OHMYMEME_PKG_VERSION"] = pkg_version
     print(L("building_linux"))
     result = subprocess.run(
         ["bash", str(build_sh), package],
@@ -469,7 +472,7 @@ if __name__ == "__main__":
             if target == "Windows":
                 build_installer(app_version, target=target, filename_version=build_version)
             elif target == "Linux":
-                build_linux_packages(build_version, args.package)
+                build_linux_packages(build_version, args.package, pkg_version=app_version)
             elif target == "Darwin":
                 build_macos_packages(build_version, filename_version=build_version)
             else:
@@ -482,7 +485,7 @@ if __name__ == "__main__":
             elif target == "Windows":
                 build_installer(app_version, target=target, filename_version=build_version)
             elif target == "Linux":
-                build_linux_packages(version, args.package)
+                build_linux_packages(version, args.package, pkg_version=app_version)
             elif target == "Darwin":
                 build_macos_packages(version, filename_version=build_version)
     finally:

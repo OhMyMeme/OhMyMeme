@@ -52,13 +52,16 @@ jobs:
           sudo apt-get install -y rpm
           pip install -r requirements.txt
           pip install pyinstaller
-      - name: Build Linux nightly (AppImage only; deb/rpm need numeric version)
-        run: python scripts/build.py --linux --nightly --package appimage
+      - name: Build Linux nightly
+        run: python scripts/build.py --linux --nightly
       - name: Upload artifacts
         uses: actions/upload-artifact@v4
         with:
           name: nightly-linux
-          path: dist/OhMyMeme-v*-x86_64.AppImage
+          path: |
+            dist/OhMyMeme-v*-x86_64.AppImage
+            dist/OhMyMeme-v*-amd64.deb
+            dist/OhMyMeme-v*-x86_64.rpm
 
   nightly-macos:
     if: ${{ github.repository == 'OhMyMeme/OhMyMeme' }}
@@ -110,7 +113,7 @@ jobs:
           > - 不代表最终发布质量，功能与界面可能随时变动
           > - 软件内的更新检查 **不会** 提示此版本，请勿将其用于日常更新路径
           >
-          > 正式版请从 [Releases](https://github.com/TNTXZ/OhMyMeme/releases) 下载。
+          > 正式版请从 [Releases](https://github.com/OhMyMeme/OhMyMeme/releases) 下载。
           EOF
           )"
-          gh release upload nightly --repo TNTXZ/OhMyMeme artifacts/* --clobber
+          gh release upload nightly --repo OhMyMeme/OhMyMeme artifacts/* --clobber
