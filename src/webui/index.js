@@ -1278,7 +1278,7 @@ function showPrompt(title, defaultValue) {
     document.getElementById('modal-cancel').onclick = () => { cleanup(); resolve(null); };
     input.onkeydown = (e) => {
       if (e.key === 'Enter') { const v = input.value; cleanup(); resolve(v); }
-      if (e.key === 'Escape') { cleanup(); resolve(null); }
+      if (e.key === 'Escape') { e.stopPropagation(); cleanup(); resolve(null); }
     };
   });
 }
@@ -1341,7 +1341,7 @@ function showUpdateDialogFromMain(current, latest, url, notes) {
     }, 500);
   };
   document.getElementById('upd-later').onclick = () => { overlay.remove(); };
-  overlay.onkeydown = (e) => { if (e.key === 'Escape') overlay.remove(); };
+  overlay.onkeydown = (e) => { if (e.key === 'Escape') { e.stopPropagation(); overlay.remove(); } };
 }
 
 function showConfirm(title, message) {
@@ -1362,7 +1362,7 @@ function showConfirm(title, message) {
     const cleanup = () => { overlay.remove(); };
     document.getElementById('modal-confirm').onclick = () => { cleanup(); resolve(true); };
     document.getElementById('modal-cancel').onclick = () => { cleanup(); resolve(false); };
-    overlay.onkeydown = (e) => { if (e.key === 'Escape') { cleanup(); resolve(false); } };
+    overlay.onkeydown = (e) => { if (e.key === 'Escape') { e.stopPropagation(); cleanup(); resolve(false); } };
   });
 }
 
@@ -1431,7 +1431,7 @@ async function showUploadWarning() {
       cleanup(); resolve(true);
     };
     document.getElementById('modal-cancel').onclick = () => { cleanup(); resolve(false); };
-    overlay.onkeydown = (e) => { if (e.key === 'Escape') { cleanup(); resolve(false); } };
+    overlay.onkeydown = (e) => { if (e.key === 'Escape') { e.stopPropagation(); cleanup(); resolve(false); } };
   });
 }
 
@@ -2013,7 +2013,7 @@ document.getElementById('cb-name').addEventListener('keydown', (e) => {
       cbCloseDropdown();
     }
   }
-  if (e.key === 'Escape') cbCloseDropdown();
+  if (e.key === 'Escape') { e.stopPropagation(); cbCloseDropdown(); }
 });
 
 let cbSearchTimer;

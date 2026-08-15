@@ -625,7 +625,7 @@ async function showUploadWarning() {
       cleanup(); resolve(true);
     };
     document.getElementById('supload-modal-cancel').onclick = () => { cleanup(); resolve(false); };
-    overlay.onkeydown = (e) => { if (e.key === 'Escape') { cleanup(); resolve(false); } };
+    overlay.onkeydown = (e) => { if (e.key === 'Escape') { e.stopPropagation(); cleanup(); resolve(false); } };
   });
 }
 
@@ -1514,7 +1514,26 @@ document.addEventListener('mouseup', () => { dragState = null; });
 
 /* Keyboard shortcuts */
 document.addEventListener('keydown', (e) => {
-  if (e.key === 'Escape') closeSettings();
+  if (e.key === 'Escape') {
+    const dangerOverlay = document.getElementById('danger-overlay');
+    if (dangerOverlay && dangerOverlay.style.display === 'flex') {
+      dangerCancel();
+      return;
+    }
+    const dyOverlay = document.getElementById('dy-import-overlay');
+    const tgOverlay = document.getElementById('tg-import-overlay');
+    const wechatOverlay = document.getElementById('wechat-import-overlay');
+    const importOverlay = document.getElementById('qq-import-overlay');
+    if (
+      (dyOverlay && dyOverlay.style.display === 'flex') ||
+      (tgOverlay && tgOverlay.style.display === 'flex') ||
+      (wechatOverlay && wechatOverlay.style.display === 'flex') ||
+      (importOverlay && importOverlay.style.display === 'flex')
+    ) {
+      return;
+    }
+    closeSettings();
+  }
   if (e.key === 'Enter' && e.ctrlKey) saveSettings();
 });
 
@@ -1661,11 +1680,7 @@ async function dangerExec() {
   }
 }
 
-document.addEventListener('keydown', (e) => {
-  if (e.key === 'Escape' && document.getElementById('danger-overlay').style.display === 'flex') {
-    dangerCancel();
-  }
-});
+
 
 /* Init */
 let initRetries = 0;
