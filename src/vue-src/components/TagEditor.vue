@@ -69,8 +69,7 @@ function onBoxKeydown(e: KeyboardEvent) {
 }
 
 function confirm() {
-  const v = query.value.trim()
-  if (v && !selected.value.includes(v)) selected.value.push(v)
+  // 只保存明确添加的标签（回车/点击）；输入框残留文字不自动提交
   close(selected.value.slice())
 }
 
