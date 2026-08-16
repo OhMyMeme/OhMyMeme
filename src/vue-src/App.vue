@@ -11,12 +11,24 @@ import ImportMenu from './components/ImportMenu.vue'
 import Pager from './components/Pager.vue'
 import SyncOverlay from './components/SyncOverlay.vue'
 import TagEditor from './components/TagEditor.vue'
+import UpdateDialog from './components/UpdateDialog.vue'
 import type { Meme } from './types'
 
 const { state, setMemes, search, goToPage, setSearch, toggleTag, setActiveCollection, refreshTags, refreshCollections, copyMeme, reorderMemes, canReorder, startNativeDrag, loadInitData } = useMemes()
 const ctx = useContextMenu()
 const cb = useCollectionBuilder()
 const tagEditor = ref<InstanceType<typeof TagEditor> | null>(null)
+const updateDialog = ref<InstanceType<typeof UpdateDialog> | null>(null)
+
+// 检查更新并弹窗（与原始实现一致）
+async function checkUpdateAndPrompt() {
+  try {
+    const upd = await window.pywebview?.api?.check_update()
+    if (upd && upd.has_update) {
+      updateDialog.value?.show(upd.current, upd.latest, upd.download_url, upd.notes)
+    }
+  } catch (_) {}
+}
 
 const sortEnabled = ref(false)
 const drag = useDragSort(
@@ -572,15 +584,9 @@ onUnmounted(() => {
     await refreshTags()
     await refreshCollections()
   }, 300)
-  // 每日更新检测（静默，发现新版本时提示去设置页更新）
-  try {
-    const upd = await window.pywebview?.api?.check_update()
-    if (upd && upd.has_update) {
-      setTimeout(() => {
-        if (confirm(`发现新版本 ${upd.latest}，是否前往设置页更新？`)) openSettings()
-      }, 2000)
-    }
-  } catch (_) {}
+  // 每日更新检测（完整弹窗 + 下载安装，与原始实现一致）
+  await checkUpdateAndPrompt()
+  setInterval(checkUpdateAndPrompt, 24 * 60 * 60 * 1000)
 })()
 </script>
 
@@ -714,6 +720,7 @@ onUnmounted(() => {
   <ImportMenu ref="importMenu" @imported="onImportDone" />
   <SyncOverlay ref="syncOverlay" @synced="onSyncDone" />
   <TagEditor ref="tagEditor" />
+  <UpdateDialog ref="updateDialog" />
   <ContextMenu
     :visible="ctx.visible.value" :x="ctx.x.value" :y="ctx.y.value"
     :items="ctx.items.value" :trigger="ctx.trigger.value"
