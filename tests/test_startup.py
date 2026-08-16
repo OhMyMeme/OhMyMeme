@@ -168,7 +168,9 @@ def test_tagbar_collapse_static_contract():
 
     assert '"tagbar_collapsed": False' in config_py
     assert "def set_tagbar_collapsed" in webui_py
-    assert '"tagbar_collapsed": bool(self._cfg.get("tagbar_collapsed", False))' in webui_py
+    assert (
+        '"tagbar_collapsed": bool(self._cfg.get("tagbar_collapsed", False))' in webui_py
+    )
     assert 'id="tagbar-panel"' in index_html
     assert 'id="tagbar-toggle"' in index_html
     assert "function toggleTagbar()" in index_js
@@ -635,6 +637,7 @@ def test_sorting_visual_feedback_static_contract():
     )
     assert re.search(
         r"return\s+activeCollection\s*===\s*null\s*\|\|\s*"
+        r"activeCollection\s*===\s*-4\s*\|\|\s*"
         r"activeCollection\s*>\s*0\s*;",
         can_reorder_body,
     )
@@ -846,7 +849,7 @@ def test_sorting_visual_feedback_static_contract():
 def test_grid_slot_hit_testing_stays_aligned_when_layout_moves_and_scrolls():
     root = Path(__file__).resolve().parent.parent
     result = subprocess.run(
-        ["node", root / "tests" / "fixtures" / "grid_slot_probe.js"],
+        ["node", root / "tests" / "fixtures" / "grid_slot_probe.cjs"],
         cwd=root,
         capture_output=True,
         text=True,

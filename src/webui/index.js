@@ -385,7 +385,7 @@ function canReorderMemes() {
   if (q || activeTags.size > 0) return false;
   if (batchMode) return false;
   if (!dragSortEnabled) return false;
-  return activeCollection === null || activeCollection > 0;
+  return activeCollection === null || activeCollection === -4 || activeCollection > 0;
 }
 
 function memeCardsInGrid() {

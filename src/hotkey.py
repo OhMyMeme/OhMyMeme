@@ -1,6 +1,7 @@
 """全局快捷键 - 跨平台热键注册，自动降级容错"""
 
 import logging
+import sys
 import threading
 import time
 
@@ -38,6 +39,9 @@ class GlobalHotkey:
         return True
 
     def _try_keyboard(self, hotkey: str, callback) -> bool:
+        # macOS: keyboard 库 darwin 后端需 root 权限，改用 pynput（CGEventTap）
+        if sys.platform == "darwin":
+            return False
         try:
             import keyboard
 

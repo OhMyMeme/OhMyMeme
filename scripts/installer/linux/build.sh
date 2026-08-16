@@ -9,6 +9,8 @@ PROJECT_DIR="$(cd "$SCRIPT_DIR/../../../" && pwd)"
 DIST_DIR="$PROJECT_DIR/dist"
 APP_NAME="OhMyMeme"
 APP_VERSION="$(python3 -c "import re; print(re.search(r'__version__\s*=\s*\"([^\"]+)\"', open('$PROJECT_DIR/src/__init__.py').read())[1])")"
+# deb/rpm 的 Version 字段要求数字开头；nightly 时用构建脚本传入的基础版本号
+PKG_VERSION="${OHMYMEME_PKG_VERSION:-$APP_VERSION}"
 
 clean() {
     rm -rf "$DIST_DIR/OhMyMeme.AppDir" "$DIST_DIR/*.AppImage" \
@@ -107,12 +109,13 @@ Section: utils
 Priority: optional
 Architecture: amd64
 Maintainer: OhMyMeme Team
+Depends: python3-gi, gir1.2-webkit2-4.1 | gir1.2-webkit2-4.0
 Description: 轻量化跨平台表情包管理系统
  轻量化表情包管理器，支持快捷键呼出、搜索、一键复制到剪贴板。
 CTRL
 
-    # 替换版本号
-    sed -i "s/Version: 0.1.0/Version: $APP_VERSION/" "$deb_root/DEBIAN/control"
+    # 替换版本号（deb 要求数字开头，nightly 用 PKG_VERSION）
+    sed -i "s/Version: 0.1.0/Version: $PKG_VERSION/" "$deb_root/DEBIAN/control"
 
     dpkg-deb --build "$deb_root"
     mv "$DIST_DIR/ohmymeme_${APP_VERSION}_amd64.deb" \
@@ -126,7 +129,7 @@ build_rpm() {
     mkdir -p "$rpm_root/BUILD" "$rpm_root/RPMS" "$rpm_root/SOURCES" \
              "$rpm_root/SPECS" "$rpm_root/SRPMS"
 
-    local src_tar="$rpm_root/SOURCES/ohmymeme-${APP_VERSION}.tar.gz"
+    local src_tar="$rpm_root/SOURCES/ohmymeme-${PKG_VERSION}.tar.gz"
     cd "$DIST_DIR"
     tar czf "$src_tar" OhMyMeme/
 
@@ -168,8 +171,8 @@ Categories=Utility;Graphics;
 EOF
 SPEC
 
-    sed -i "s/Version: 0.1.0/Version: $APP_VERSION/" "$rpm_root/SPECS/ohmymeme.spec"
-    sed -i "s/Source0: ohmymeme-0.1.0.tar.gz/Source0: ohmymeme-${APP_VERSION}.tar.gz/" "$rpm_root/SPECS/ohmymeme.spec"
+    sed -i "s/Version: 0.1.0/Version: $PKG_VERSION/" "$rpm_root/SPECS/ohmymeme.spec"
+    sed -i "s/Source0: ohmymeme-0.1.0.tar.gz/Source0: ohmymeme-${PKG_VERSION}.tar.gz/" "$rpm_root/SPECS/ohmymeme.spec"
 
     rpmbuild --define "_topdir $rpm_root" -bb "$rpm_root/SPECS/ohmymeme.spec"
     cp "$rpm_root/RPMS/x86_64/"*.rpm "$DIST_DIR/"

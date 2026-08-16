@@ -18,7 +18,7 @@ JsApi / SettingsApi → SQLite (WAL) + 本地缓存 + 远端同步
 - **PIL/Pillow** (缩略图, 剪贴板图像)
 - **pystray** (托盘, 惰性导入避免 headless CI 崩溃)
 - **InnoSetup** (Windows 安装包) / **PyInstaller** (打包)
-- **GitHub Actions** (lint+test on Ubuntu, build+installer on Windows)
+- **GitHub Actions** (lint+test on Ubuntu, build+installer on Windows/Linux/macOS)
 
 ## 核心原则
 - **不得重构该项目** — 仅做最小必要修改，不改变现有架构、设计模式、代码组织
@@ -61,24 +61,41 @@ src/              # 主代码
   adb_util.py      # ADB 自动检测/下载 + QQ 表情包缓存导入（ADB 拉取 + 魔数识别扩展名 + ZIP 打包）
   qqnt_extract.py  # QQNT 本地收藏表情提取（GPL-3.0 衍生模块，纯函数 + 回调接口，无 UI 依赖）
   tg_stickers.py   # Telegram Desktop 缓存表情包提取（tdata 解密 + webm 转 webp + 入库）
+  douyin.py        # 抖音表情包下载导入（ABogus 签名 + curl_cffi TLS 指纹 + WebP 原格式入库）
+  abogus.py        # ABogus 签名算法（纯 Python，GPL-3.0，源自 TikTokDownloader）
+  douyin_dl.py     # 抖音下载 CLI 测试入口（独立运行，不依赖 GUI）
   wechat_probe.py  # 微信收藏表情导入（helper 二进制提取密钥 + AES-CBC 解密 DB + CDN 下载，仅 Windows）
   wechat_keyfinder/ # 微信密钥提取 C++ 辅助二进制源码（CMake 构建）
-  webui/          # 前端静态文件（HTML 与 CSS/JS 分离，经典脚本供内联 onclick 调用全局函数）
-    index.html    # 主窗口 HTML 骨架，引用 index.css + index.js
-    index.css     # 主窗口样式
-    index.js      # 主窗口逻辑（渲染/搜索/拖拽排序/同步/导入/更新）
-    settings.html # 设置窗口 HTML 骨架，引用 settings.css + settings.js
+  vue-src/       # Vue 3 前端源码（Vite 构建，产物到 webui/dist/ohmymeme.js）
+    App.vue      # 根组件：标题栏/搜索/侧边栏/面包屑/标签栏/网格/分页
+    main.ts      # 入口：挂载 + window.focusSearch 全局（快捷键呼出聚焦搜索）
+    style.css    # 主窗口样式（CSS 变量主题，蓝色 #3b82f6）
+    types/       # TS 类型定义 (Meme/Collection/Tag)
+    utils/       # api 桥接 + esc + renderMarkdown
+    composables/ # useMemes 状态 / useDragSort 拖拽 / useContextMenu / useCollectionBuilder
+    components/  # Pager/TagEditor/ImportMenu/SyncOverlay/ContextMenu/CollectionBuilder/
+                 # CollectionTreeNode/UpdateDialog
+  webui/          # 前端静态文件
+    vue.html      # 主窗口入口（Vue），Bottle 优先加载
+    dist/ohmymeme.js # Vite 构建产物（gitignored）
+    settings.html # 设置窗口 HTML（vanilla，两列布局：左导航+右内容）
     settings.css  # 设置窗口样式
-    settings.js   # 设置窗口逻辑（设置项/同步/QQ 导入向导）
+    settings.js   # 设置窗口逻辑（设置项/同步/导入向导）
+    index.html/index.css/index.js  # 旧主窗口（已备份至 webui-backup/，不再使用）
 config/
   offsets.json    # wechat_keyfinder 易变参数（版本号等，微信升级时只改此文件）
 scripts/
   build.py        # PyInstaller + InnoSetup 构建脚本 (i18n zh/en)
   launcher.py     # PyInstaller 入口
+  hooks/          # 自定义 PyInstaller hooks（Linux GTK: WebKit2/Soup typelib 收集，内置无对应 hook）
+    hook-gi.repository.WebKit2.py
+    hook-gi.repository.Soup.py
 tests/
   test_core.py    # unittest 风格: Version/Config/Crypto/Database
+  test_abogus.py  # unittest 风格: ABogus 签名算法 SM3/RC4/签名
+  test_douyin_dl.py # unittest 风格: 抖音下载 CLI (签名URL/verifyFp)
   test_startup.py # pytest 风格: 全生命周期集成测试
-  fixtures/grid_slot_probe.js # Node 网格拖拽槽位回归探针
+  fixtures/grid_slot_probe.cjs # Node 网格拖拽槽位回归探针
 ```
 
 ## js_api 桥接规范
@@ -94,9 +111,11 @@ tests/
 - `TrayManager` 在 daemon 线程运行
 - 惰性导入: `_pystray_ok()` 避免 headless CI (X11 `DisplayNameError`)
 - WSL 自动跳过托盘
+- macOS 跳过托盘：pystray 在 macOS 需在主线程抢占 NSApplication runloop，与 pywebview 主循环冲突（会导致窗口无法启动或段错误），与 Linux GTK 冲突同理
 
 ### 全局快捷键
 - 三级降级: `keyboard` → `pynput` → 200ms 轮询 (`keyboard.is_pressed`)
+- macOS 跳过 `keyboard` 库（darwin 后端需 root 权限，报 `Error 13` 且 root 下会段错误），直接走 `pynput`（CGEventTap，需辅助功能权限）
 - WSL 无法捕获全局快捷键
 - 配置 `hotkey_show_at_mouse` 默认 `false`；仅 Windows 生效。开启后仅在全局热键将隐藏主面板显示时，按鼠标所在显示器工作区依次尝试 `(cursor_x, cursor_y)`、`(right-width, cursor_y)`、`(cursor_x, bottom-height)`、`(right-width, bottom-height)`，仅使用首个完整容纳窗口的候选位置；出错或没有可用位置时不移动。托盘保持普通切换，热键回调仍为零参数。
 - WebUI 维护非持久的快捷键显示会话状态：仅隐藏主窗口被全局快捷键显示后，成功复制才会自动隐藏；成功原生向外文件拖拽后主窗口保持显示。任意 hide、普通/托盘显示、LAN/其他 show、内部排序拖拽及失败交互均不会触发该自动隐藏。
@@ -109,6 +128,7 @@ tests/
 - 增量回退（Windows/macOS）用 `screenX/screenY`（**勿改 `clientX/clientY`** — clientX 是相对窗口坐标，窗口自身滞后位移会被下一次 mousemove 当作反向增量回传，形成反馈振荡导致高频抖动）；Linux 走合成器原生拖动不经过此路径
 - **Linux 拖拽必须走合成器**：`w.move()` 在 Wayland 下无效（合成器不允许客户端自定位），mousedown 时 JS 调 `start_window_drag()` → 后端 `GLib.idle_add(native.begin_move_drag, ...)` 交给合成器交互式拖动；时间戳用 `Gdk.CURRENT_TIME`（GDK 文档允许未知时间时用它，X11 回填最近输入事件时间、Wayland 不参与）
 - `#titlebar` 上可拖拽 (排除 `.title-btn` 按钮区域)
+- 侧边栏折叠按钮 `.sidebar-toggle` 位于搜索框左侧（`#search-wrap` 内），点击折叠/展开 `#sidebar`；搜索框 `flex:1` 随侧边栏 180px↔48px 动态伸缩
 
 ### 数据库
 - 7 表: `memes`, `tags`, `meme_tags`, `collections`, `meme_collections`, `favorites`, `recent_uses`
@@ -148,10 +168,12 @@ tests/
 
 ### 更新
 - GitHub API 查询: `/releases/latest` → `/releases?per_page=5` 回退
+- **仅检查稳定版**：`_parse_release` 跳过 prerelease 与含 `nightly` 的 tag（保证软件更新绝不指向非正式版）；`_parse_version` 跳过非数字段（如 `0.6.0-nightly`）
 - 镜像并发: `_urlopen_mirror` / `_urlretrieve_mirror` 用 `ThreadPoolExecutor` + `as_completed`
 - 镜像列表: `github.dpik.top` → `gh.dpik.top` → `gh-proxy.org` → 自建镜像（仅用于版本查询）→ 直连 GitHub
 - 下载进度: `start_download()` → 后台线程 → JS 每 500ms 轮询 `get_download_progress()`
 - Linux 更新: `_pick_asset_url` 选取 `.AppImage` 资产；`run_installer` Linux 分支 chmod +x 后直接 `Popen`（AppImage 是 ELF 非 shell 脚本），无 `/dev/fuse` 时追加 `--appimage-extract-and-run` 回退（`_needs_appimage_fallback`）；下载默认文件名走 `_default_asset_name()`（Linux 为 `OhMyMeme-v{version}-x86_64.AppImage`）
+- macOS 更新: `_pick_asset_url` 按当前架构选取 `.dmg` 资产（arm64/x86_64）；`run_installer` 走 `_install_dmg_macos`（`hdiutil attach` → `ditto` 复制 `.app` 到 `/Applications` → 打开应用程序目录）；`_default_asset_name()` 为 `OhMyMeme-v{version}-{arch}.dmg`
 
 ### 局域网互联 (lan.py)
 - **入口**: `lan.start(port, secret)` / `lan.stop()`，`get_status()` 供设置页轮询；`set_allow_secret_config()` 控制是否允许密钥传输（仅内存生效），`set_confirm_callback()` 注入设备确认回调（WebUI 提供）
@@ -168,7 +190,7 @@ tests/
 - Bottle 只绑 `127.0.0.1` 随机端口；`before_request` 校验 `Host` 必须为本机回环（`_host_allowed`），POST 额外校验 `Origin` 同源且 `Sec-Fetch-Site` 非 `cross-site`，拒绝则 403（阻断 DNS rebinding / 跨站注入）
 - `after_request` 统一加 `X-Content-Type-Options: nosniff` / `Referrer-Policy: no-referrer` / `X-Frame-Options: DENY`，`/api/` 路由 `Cache-Control: no-store`
 - 文件名安全：`_safe_serve_filename`（webui）与 `_safe_remote_fname`（sync）拒绝含 `/` `\`、以 `.` `/` `\` `~` `..` 开头的名字；`_find_meme_file` 入口校验，远端 manifest 文件名在 `_fetch_remote_memes` 过滤 + `_pull_worker` 写盘前再防御
-- 前端 XSS：`index.js`/`settings.js` 的 `esc()` 转义所有拼入 innerHTML 的外部/动态数据（远端文件夹名、GitHub 版本号、QQ 昵称、输出目录、弹窗标题/正文等）
+- 前端 XSS：Vue 主窗口通过模板绑定渲染动态内容；`utils/api.ts` 的 `esc()`/`renderMarkdown()` 与设置窗口 `settings.js` 的 `esc()` 必须转义所有拼入 innerHTML 的外部/动态数据（远端文件夹名、GitHub 版本号、QQ 昵称、输出目录、弹窗标题/正文等）
 
 ### 环境检测
 - WSL 检测: `/proc/version` 包含 "microsoft"
@@ -176,9 +198,9 @@ tests/
 
 ### 启动流程 (关键时序)
 - Windows 入口在创建 `OhMyMemeApp` 前取得 `Local\\OhMyMeme.Singleton` 命名互斥体；已有实例时安静退出，不得初始化第二个 WebView、托盘、全局快捷键或 ADB 线程。
-- `index.html` `DOMContentLoaded` 分两阶段执行:
-  1. 立即: `get_init_data()` 加载数据库数据 → 渲染网格/标签/文件夹（秒开）
-  2. 延迟 300ms 后: `rescan_cache()` → 重新渲染 → `run_auto_sync()` → 重新渲染 → `check_update()`（静默捕获异常）
+- **源码运行自动编译前端**：`main.py` 启动时 `_ensure_vue_frontend()` 检查 `src/webui/dist/ohmymeme.js`，缺失（打包 `frozen` 或已有产物时跳过）则用 `npx.cmd`(Windows)/`npx`(其他) 跑 `vite build` 一次，失败仅告警不阻断启动。
+- **启动动画**：`App.vue` 挂载时播放 `src/resources/OhMyMeme.mp4`（通过 Bottle 路由 `/resources/<filepath:path>` 提供，`webui.py` 的 `RESOURCES_DIR`，basename 校验防路径穿越，路由须在兜底 `/` 之前注册；PyInstaller 以 `--add-data src/resources` 打包）；`onMounted` 设置 6s 兜底定时器 + `<video>` `@ended` 移除遮罩，`#startup-anim` 全屏遮罩 z-index 2000，`.startup-fade` 0.4s 淡出。仅启动时播放，快捷键/托盘显隐不重载页面。设置页「显示启动动画」开关（配置键 `show_startup_animation`）控制是否播放。
+- Vue `App.vue` 挂载后：立即 `loadInitData()` 加载初始数据，并执行更新检查；动画开启时视频播放期间并行 `rescan_cache()` → `run_auto_sync()` → 重新搜索/标签/文件夹，关闭动画时以 300ms 延迟执行；每 24 小时再检查一次更新。
 - **300ms 延时不可移除** — 给 Bottle + pywebview 桥接稳定时间
 - **必须先 rescan_cache 再 run_auto_sync** — 确保本地文件与 DB 一致后再对比远端，否则同步产生错误 diff
 - **check_update 必须静默** — GitHub API 失败不阻塞启动
@@ -227,27 +249,22 @@ tests/
 - 读取和同步仍兼容旧版嵌套 `children` 格式，但会将其平铺到当前文件夹模型
 
 ### 自定义排序与拖入文件夹
-- `memes.sort_order` 字段存储全局展示顺序；前端可拖拽排序仅在正 ID 文件夹内进行，成员顺序存 `meme_collections.sort_order`
-- **无限滚动分页**：`search_memes` 支持 `offset`/`limit`（`MEME_PAGE=200`），前端滚动 `#grid-wrap` 接近底部时 `loadMoreMemes()` 增量拉取追加（`renderMemeCard` 复用）；`memeOffset`/`memeHasMore` 维护分页状态，返回不足一页即到底；`memes` 数组是已加载子集
+- `memes.sort_order` 字段存储全局展示顺序；前端可拖拽排序仅在正 ID 文件夹内进行，成员顺序存 `meme_collections.sort_order`。
+- **分页展示**：`search_memes` 支持 `offset`/`limit`（`MEME_PAGE=200`）；`count_memes` 统计总数供 Vue `Pager` 渲染页码，`search()` 重置为第 1 页，`goToPage(p)` 以 `offset=(p-1)*MEME_PAGE` 拉取。
 - **模型驱动**：`memes` 数组为唯一真源，拖拽跨槽时先 `moveInArray` 同步模型、再挪 DOM 节点（不再以 DOM 顺序回读重建数组）；`initDragReorder()` 在 `#meme-grid` 上绑定一次
 - **Pointer Events + 指针捕获**：`pointerdown/pointermove/pointerup`，拖拽达到 8px 阈值后处理；鼠标移到侧栏 `.folder-row` 时优先高亮目标文件夹，松开后由用户选择复制或移动。无 `PointerEvent` 的旧 WebView 自动回退 mouse 事件（`mousemove/mouseup` 挂 document）；`pointercancel`/`blur` 取消并回滚模型 + 重渲染
 - **网格感知插入点**：`gridMetrics()` 按首卡片实测宽/高 + `columnGap` 推算 `cols`，`gridSlotIndex(x,y)` 映射表情卡数组索引并 clamp
 - **FLIP 让位动画**：跨槽时对被挤开卡片记录 First/Last rect，invert 后靠 `#meme-grid.drag-active .meme-card` 的 `transition: transform 200ms` 归位，实时显示空位跟随指针
-- 落点持久化：前端可拖拽排序仅在正 ID 文件夹内调用 `reorder_collection_members(collection_id, id[])` 更新 `meme_collections.sort_order`；`reorder_memes(id[])` 仍用于维护全局 `sort_order`；API 失败回滚 `originalOrder` 并重渲染 + toast
-- `canReorderMemes()`: 搜索或标签筛选时禁用；**全局开关 `dragSortEnabled`（标题栏「拖拽排序」图标按钮，位于上传/下载左侧，图标蓝色高亮=开，灰色=关）关闭时禁用排序**；仅正 ID 文件夹视图可排序，全部（null）、收藏夹/最近使用等特殊项（-2/-3）不可排
-- **排序视觉反馈**：`renderGrid()` 按 `canReorderMemes()` 切换 `sort-enabled`；启用时表情卡（排除 `.dragging`）最终显示 `scale(0.95)`、3px `var(--border-light)` 描边及 3px 偏移。稳定卡使用独立 `rotate` 属性作轻微快速晃动，且必须排除 `.drag-active`、`.sort-enter` 和 `.dragging`；`prefers-reduced-motion: reduce` 时禁用晃动。不得用 `transform` 实现晃动，避免覆盖拖拽和 FLIP 的变换。正在拖拽的卡内联变换固定为最终 `translate(...) scale(0.90)`，与现有透明度、阴影和 FLIP 效果并存，CSS 与内联变换不得叠加；开启工具栏排序开关时沿用现有入场反馈，只有明确关闭该开关才保留当前卡片播放退场动画。搜索、标签、文件夹或虚拟项导致的资格变化均按普通刷新处理，不播放退场动画
-- **拖拽到外部应用**：关闭拖拽排序后 meme 卡**不用 HTML5 拖拽**（WebView2 http 源的 `text/uri-list`/`DownloadURL` 不生成 CF_HDROP，QQ/微信会报"图片拖拽失败"或资源管理器无反应）；改用 **WinForms 原生文件拖拽**（`native_drag.py`）：`pointerdown` 记录起点 → `pointermove` 位移 >8px 时 `JsApi.start_native_drag(id)` → 后端用 `webview.windows[0].native`（主 Form）`Invoke` 在 UI 线程执行 `DoDragDrop`（`DataObject` + `DataFormats.FileDrop` → CF_HDROP）→ 拖到 QQ/微信/桌面是真实本地文件；`native_drag.py` 懒加载 pythonnet/WinForms，非 Windows 或无 .NET 时返回 False，JS 端 toast 提示；`memes` 数组不因原生拖拽改变（`d.natDrag` 跳过排序持久化与 cancel 重置）
-- 排序拖拽与原生拖拽共用 `initDragReorder` 的 pointer 事件：`onDown` 按 `canReorderMemes()` 决定 `d.natDrag`（排序关=true），`onMove` 按 natDrag 分支走原生拖拽或排序，`onUp`/`cancelMemeDrag` 对 `d.natDrag` 跳过排序回滚
-- `search()` 带 `collection_id` 时按 `meme_collections.sort_order ASC, m.updated_at DESC` 排序（子查询取该表情在目标文件夹内的 sort_order）
-- 拖拽后通过 `ignoreClick` 抑制误触发的 `click`（防止误复制），下一次 `pointerdown` 时重置
+- 落点持久化：Vue 前端在正 ID 文件夹视图调用 `reorder_collection_members(collection_id, id[])` 更新 `meme_collections.sort_order`；全部视图调用 `reorder_memes(id[])` 更新全局 `sort_order`；API 失败回滚并提示。
+- 排序开关仅在没有搜索关键词、没有标签筛选且当前视图可排序时生效；收藏夹和最近使用不可排序。
+- **拖拽到外部应用**：关闭排序后使用 WinForms 原生文件拖拽（`native_drag.py`）生成 CF_HDROP，保证 QQ/微信可接收真实本地文件；`nativeDragActive` 必须抑制拖回窗口时的导入处理。
+- 拖拽后通过 `ignoreClick` 抑制误复制；拖动悬浮窗必须使用绝对屏幕坐标避免反馈抖动。
 
 ### 单层文件夹与未归档
-- 前端主网格首页展示 Wallpaper Engine 风格的单层文件夹卡片；侧栏仅保留收藏夹、最近使用、未归档等系统项。`collections.parent_id`、`get_child_collections()` 和旧层级记录仅作为数据库兼容层保留，旧层级记录会被平铺显示
-- 文件夹可从标题栏新建、通过右键重命名或删除；删除文件夹只解除归属，不删除表情文件、表情记录或同名标签
-- **`collection_id = -4`** 标识「未归档」虚拟项：展示未加入任何文件夹的表情（`meme_collections` 无记录），**不写入 DB/manifest，动态生成**
-- `MemeDB.search()/count()` 的 `uncategorized_only` 参数保留为兼容命名（`NOT EXISTS` 于 `meme_collections`），`search_memes` 中 `collection_id == -4` 路由到该参数，同时过滤隐写载体
-- `get_init_data`/`get_collections` 按配置 `show_uncategorized`（默认开）决定是否追加 `-4` 条目；设置页显示为「文件夹显示 → 显示未归档」，配置键保留兼容命名
-- 前端走通用文件夹渲染路径；不可排序（`canReorderMemes` 对负 id 返回 false）；无特殊右键菜单
+- 数据库继续使用 `collections` / `meme_collections` 兼容历史数据；前端按单层文件夹展示，主网格根视图显示 Wallpaper Engine 风格文件夹卡片。
+- 文件夹可创建、重命名、删除；删除只解除归属，不删除表情文件、表情记录或同名标签。
+- 表情放入文件夹支持复制或移动；两种方式都会添加目标文件夹同名标签。
+- **`collection_id = -4`** 标识「未归档」虚拟项：展示没有任何文件夹归属的表情，不写入 DB/manifest；`show_uncategorized` 控制其显示。
 
 ### 最近使用
 - `recent_uses` 表：`meme_id` + `used_at`
@@ -303,6 +320,22 @@ tests/
 - **多账号**: Telegram Desktop 多账号共享 `user_data/cache`，无法区分来源账号，统一提取
 - **透明动画（已解决）**: Telegram 视频贴纸 webm 内含有效 VP9+alpha（`yuva420p`）数据，但 ffmpeg **原生 VP9 解码器会静默丢弃 alpha 平面**（解码结果全不透明），导致转换出的动画 webp 背景不透明。修复：`convert_webm_to_webp` 在 `-i` 前加 `-c:v libvpx-vp9` 强制使用 libvpx 解码器保留 alpha。实测 48 个 webm 中 47 个恢复透明，透明像素分布与同表情静态 webp 完全一致
 
+### 抖音表情包导入 (douyin.py + abogus.py)
+- **架构**: 纯协议驱动（无浏览器自动化），`src/abogus.py` 提供 ABogus 签名算法绕过抖音 WAF，`curl_cffi` 模拟 Chrome 124 TLS 指纹绕过 JA3/JA4 检测
+- **入口**: `start_douyin_import(webui, cookie)` — 后台线程执行完整流程，下载全部表情包
+- **签名算法** (`abogus.py`): 纯 Python 实现，源自 GPL-3.0 项目 TikTokDownloader。流程：参数 SM3 哈希 → 与 UA 指纹/浏览器指纹/时间戳拼接 → RC4 加密 → 自定义 Base64 编码表输出。`gmssl.sm3` 做国密哈希
+- **TLS 指纹绕过**: `curl_cffi.requests.Session(impersonate="chrome124")` 模拟 Chrome 124 的 JA3/JA4/H2 指纹，WAF 视为合法浏览器
+- **Cookie 认证**: 用户从浏览器复制完整 Cookie 字符串 → 解析 key=value 注入 Session。额外自动预置基础 Cookie（ttwid、verifyFp、s_v_web_id、msToken）无需登录也可获取部分接口数据
+- **API**: `GET /aweme/v1/web/im/resource/list/aggregation` 分页拉取自定义表情列表，参数 `scenes=CUSTOM_STICKER_PAGE`，每页 100 个
+- **URL 签名**: 每个请求需附加 `a_bogus` 参数，由 ABogus 算法对 URL 参数 + HTTP 方法 + 浏览器指纹计算得出
+- **下载**: 优先取 `animate_url.url_list`（动图），回退 `static_url`，`curl_cffi` 保持 `impersonate="chrome124"` 下载
+- **入库**: 下载为临时文件 → 调 `webui._do_import()` 哈希去重入库 → 原始 WebP 格式保存（不转 GIF，保留最佳画质和最小体积）
+- **进度状态** (`_DOUYIN_STATE`): `idle` → `running`（含 message/progress/done/total）→ `done`/`error`/`cancelled`，前端 300ms 轮询 `get_douyin_import_progress()`
+- **取消**: `cancel_douyin_import()` 设置标志位，工作线程检查后中止
+- **错误码**: `login_failed`（Cookie 无效）、`sign_failed`（403 签名失败）、`no_stickers`（无表情数据）
+- **前端 UI**: 设置页「从抖音导入」section（Cookie 输入框 + 下载按钮 + 进度覆盖层），下载全部表情
+- **GPL-3.0 合规**: `abogus.py` 按 GPL-3.0 分发（头部含原作者署名与协议链接），整体作品再分发需按 GPL-3.0 处理
+
 ### 微信导入 (wechat_probe.py + wechat_keyfinder)
 - **架构**: 独立 C++ 二进制 `wechat_keyfinder` 处理 Windows 进程内存取证（读取微信进程内存提取密钥），Python 侧通过 subprocess + JSON 协议协调完成 DB 解密/SQLite 查询/CDN 下载/入库；仅 Windows
 - **目录层级**: 微信文件目录（root，默认 `%USERPROFILE%\Documents\xwechat_files` 或 `\WeChat Files`）→ 账号目录（root 下 `wxid_*` 文件夹，每个微信账号一个）→ `db_storage/emoticon/emoticon.db`（表情库，加密）+ `db_storage/favorite/favorite.db`（收藏库）
@@ -318,6 +351,8 @@ tests/
 ## 构建 & 测试
 ```bash
 pip install -r requirements.txt
+npm install                 # Vue 前端依赖（开发时）
+npx vite build              # 构建 Vue 前端 → webui/dist/ohmymeme.js
 python -m src     # 开发运行
 python -m pytest tests/ -v  # 运行测试
 ruff check src/   # lint 检查
@@ -325,14 +360,21 @@ black src/        # 格式化
 python scripts/build.py  # PyInstaller + InnoSetup 完整构建
 python scripts/build.py --lang en  # 指定语言构建
 ```
+- **Linux 打包（GTK）**: `--linux` 时 `build.py` 自动传 `--additional-hooks-dir scripts/hooks`（收集 WebKit2/Soup typelib）并 `--collect-all gi`，把 PyGObject/GTK 打进产物，脱离系统 python3-gi 运行；构建机需装 `python3-gi gir1.2-webkit2-4.1 libgirepository1.0-dev libgirepository-2.0-dev gobject-introspection` 并 `pip install PyGObject`（对应 `build.yml`/`nightly.yml` build-linux job）；**PyGObject ≥3.52 硬依赖 girepository-2.0**（Ubuntu 24.04 对应 `libgirepository-2.0-dev`），只装 1.0-dev 会在 meson 元数据阶段报 `Dependency 'girepository-2.0' is required but not found`；deb `Depends: python3-gi, gir1.2-webkit2-4.1 | gir1.2-webkit2-4.0`
+
+**前端架构**：主窗口为 Vue 3（`vue-src/`，Vite 构建 IIFE 单文件），设置窗口仍为 vanilla（`webui/settings.*`，独立 webview）。修改主窗口前端后需 `npx vite build` 再运行。
 
 `make` 命令仅供参考（`make run`/`make test`/`make lint`/`make format`/`make build`），macOS/Linux 下可能不可用，优先使用原生 Python 命令。
 
-## CI (GitHub Actions) — 两个独立 workflow
+## CI (GitHub Actions) — 三个独立 workflow
 - **check.yml**: Ubuntu, lint + test, push 和 PR 到任意分支均触发
-- **build.yml**: Windows, 仅在 `check` 通过 main 分支后自动触发，也支持 `workflow_dispatch` 手动触发
-- 上传 `dist/OhMyMeme-*-setup.exe` 作为 artifact
+- **build.yml**: Windows + Linux + macOS 三平台，仅在 `check` 通过 main 分支后自动触发，也支持 `workflow_dispatch` 手动触发
+  - `build-windows`: InnoSetup 安装包 `dist/OhMyMeme-*-setup.exe`
+  - `build-linux`: AppImage/deb/rpm（`--linux`）
+  - `build-macos`: `.app` + `.dmg`（`--macos`，PyInstaller `--windowed` + iconutil 生成 icns）；矩阵双架构 `arm64`（macos-latest）+ `x86_64`（macos-15-intel），产物 `OhMyMeme-v*-{arch}.dmg`
+- **nightly.yml**: Windows + Linux + macOS 三平台每日定时（UTC 20:00）+ `workflow_dispatch`，从 `dev` 分支构建非正式版（`--nightly`，版本号为 `nightly`）并发布为 `nightly` prerelease；`updater.py` 的 `_parse_release` 跳过 prerelease 与含 `nightly` 的 tag，**软件更新绝不会指向 nightly**
+- 上传 `dist/OhMyMeme-*-setup.exe` / `dist/OhMyMeme-v*-x86_64.AppImage` 等作为 artifact
 
 ## 版本管理
 - 版本号唯一来源: `src/__init__.py` → `__version__ = "*.*.*"`
-- `scripts/build.py` 用正则从该文件提取版本
+- `scripts/build.py` 用正则从该文件提取版本；`--version`/`--nightly` 会临时改写 `__init__.py` 构建，完成后恢复

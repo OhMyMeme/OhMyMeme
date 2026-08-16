@@ -236,6 +236,8 @@ async function getSettings() {
   const gridScale = document.getElementById('s-grid-scale');
   if (gridScale) gridScale.value = String(s.grid_scale || 72);
   updateGridScaleLabel();
+  const ssa = document.getElementById('s-show-startup-anim');
+  if (ssa) ssa.checked = s.show_startup_animation !== false;
   toggleSilentStart();
   const ff = document.getElementById('s-sync-fetch');
   const sa = document.getElementById('s-sync-auto');
@@ -488,6 +490,7 @@ async function saveSettings(showFeedback = true) {
   const show_uncategorized = document.getElementById('s-show-uncategorized')?.checked !== false;
   const record_recent_use = document.getElementById('s-record-recent')?.checked !== false;
   const grid_scale = parseInt(document.getElementById('s-grid-scale')?.value || '72', 10);
+  const show_startup_animation = document.getElementById('s-show-startup-anim')?.checked !== false;
   const sync = collectSyncSettings();
   const lan_port = parseInt(document.getElementById('s-lan-port')?.value) || 17852;
   const lan_secret = document.getElementById('s-lan-secret')?.value || '';
@@ -497,6 +500,7 @@ async function saveSettings(showFeedback = true) {
     try_original_image: try_original,  // DeepSeek V4 Flash
     copy_resize_mode: copy_mode, chat_client_mode,
     auto_start, silent_start, show_uncategorized, record_recent_use, grid_scale,
+    show_startup_animation,
     lan_port, lan_secret,
     ai_chat_base_url: document.getElementById('s-ai-chat-base-url')?.value || '',
     ai_chat_api_key: document.getElementById('s-ai-chat-api-key')?.value || '',
@@ -589,6 +593,10 @@ async function resetSettings() {
     if (ud) ud.checked = true;
     if (dp) dp.checked = true;
     if (dd) dd.checked = true;
+    const rec = document.getElementById('s-record-recent');
+    if (rec) rec.checked = true;
+    const ssa = document.getElementById('s-show-startup-anim');
+    if (ssa) ssa.checked = true;
     const lport = document.getElementById('s-lan-port');
     if (lport) lport.value = '17852';
     const lsec = document.getElementById('s-lan-secret');
@@ -710,7 +718,7 @@ async function showUploadWarning() {
       cleanup(); resolve(true);
     };
     document.getElementById('supload-modal-cancel').onclick = () => { cleanup(); resolve(false); };
-    overlay.onkeydown = (e) => { if (e.key === 'Escape') { cleanup(); resolve(false); } };
+    overlay.onkeydown = (e) => { if (e.key === 'Escape') { e.stopPropagation(); cleanup(); resolve(false); } };
   });
 }
 
@@ -947,6 +955,116 @@ async function startImportFromZip() {
     closeQQOverlay();
     showToast(r.rejected ? '导入完成，跳过 ' + r.rejected + ' 个超限文件' : '导入完成');
   }
+}
+
+/* 抖音表情包下载导入 */
+let dyPollTimer = null;
+
+function showDYOverlay() {
+  document.getElementById('dy-import-overlay').style.display = 'flex';
+  document.getElementById('dy-import-error').style.display = 'none';
+  document.getElementById('dy-import-title').textContent = '正在下载...';
+  document.getElementById('dy-import-msg').textContent = '准备中';
+  document.getElementById('dy-import-bar').style.width = '0%';
+  document.getElementById('dy-import-pct').textContent = '0%';
+}
+
+function closeDYOverlay() {
+  document.getElementById('dy-import-overlay').style.display = 'none';
+  if (dyPollTimer) { clearInterval(dyPollTimer); dyPollTimer = null; }
+  api('cancel_douyin_import');
+}
+
+async function startDYImport() {
+  const btn = document.getElementById('btn-dy-start');
+  const status = document.getElementById('dy-status');
+  if (!btn || !status) return;
+  btn.disabled = true; status.textContent = ''; status.className = '';
+
+  const cookieEl = document.getElementById('s-dy-cookie');
+  const cookie = cookieEl ? cookieEl.value.trim() : '';
+
+  if (!cookie) {
+    btn.disabled = false;
+    status.textContent = '请先填写抖音 Cookie';
+    status.className = 'error';
+    return;
+  }
+
+  let r;
+  try {
+    r = await api('start_douyin_import', cookie);
+  } catch (e) {
+    btn.disabled = false;
+    status.textContent = '启动失败: ' + (e.message || e);
+    status.className = 'error';
+    return;
+  }
+  if (!r || !r.ok) {
+    btn.disabled = false;
+    status.textContent = '启动失败';
+    status.className = 'error';
+    return;
+  }
+
+  showDYOverlay();
+
+  let nullCount = 0;
+  let pollInFlight = false;
+  dyPollTimer = setInterval(async () => {
+    if (pollInFlight) return;
+    pollInFlight = true;
+    try {
+      const s = await api('get_douyin_import_progress');
+      if (!s) {
+        nullCount++;
+        if (nullCount > 20) {
+          if (dyPollTimer) { clearInterval(dyPollTimer); dyPollTimer = null; }
+          document.getElementById('dy-import-title').textContent = '导入失败';
+          document.getElementById('dy-import-error').style.display = '';
+          document.getElementById('dy-import-error').textContent = '连接中断';
+          btn.disabled = false;
+        }
+        return;
+      }
+      nullCount = 0;
+
+      document.getElementById('dy-import-bar').style.width = (s.progress || 0) + '%';
+      document.getElementById('dy-import-pct').textContent = (s.progress || 0) + '%';
+      document.getElementById('dy-import-msg').textContent = s.message || '';
+
+      if (s.status === 'done') {
+        document.getElementById('dy-import-title').textContent = '导入完成';
+        if (dyPollTimer) { clearInterval(dyPollTimer); dyPollTimer = null; }
+        const el = document.getElementById('dy-status');
+        el.textContent = s.message || '导入完成';
+        el.className = '';
+        if (cookieEl) cookieEl.value = '';
+        btn.disabled = false;
+      } else if (s.status === 'error') {
+        document.getElementById('dy-import-title').textContent = '导入失败';
+        if (dyPollTimer) { clearInterval(dyPollTimer); dyPollTimer = null; }
+        const el = document.getElementById('dy-status');
+        el.textContent = '导入失败: ' + (s.error || '');
+        el.className = 'error';
+        document.getElementById('dy-import-error').style.display = '';
+        document.getElementById('dy-import-error').textContent = s.error || '未知错误';
+        btn.disabled = false;
+      } else if (s.status === 'cancelled') {
+        document.getElementById('dy-import-title').textContent = '已取消';
+        if (dyPollTimer) { clearInterval(dyPollTimer); dyPollTimer = null; }
+        btn.disabled = false;
+      }
+    } catch (e) {
+      if (dyPollTimer) { clearInterval(dyPollTimer); dyPollTimer = null; }
+      document.getElementById('dy-import-title').textContent = '导入失败';
+      document.getElementById('dy-import-error').style.display = '';
+      document.getElementById('dy-import-error').textContent = e.message || '连接异常';
+      btn.disabled = false;
+    } finally {
+      pollInFlight = false;
+    }
+  }, 300);
 }
 
 /* Telegram 缓存导入 */
@@ -1489,7 +1607,49 @@ document.addEventListener('mouseup', () => { dragState = null; });
 
 /* Keyboard shortcuts */
 document.addEventListener('keydown', (e) => {
-  if (e.key === 'Escape') closeSettings();
+  if (e.key === 'Escape') {
+    const dangerOverlay = document.getElementById('danger-overlay');
+    if (dangerOverlay && dangerOverlay.style.display === 'flex') {
+      dangerCancel();
+      return;
+    }
+    const dyOverlay = document.getElementById('dy-import-overlay');
+    if (dyOverlay && dyOverlay.style.display === 'flex') {
+      closeDYOverlay();
+      return;
+    }
+    const tgOverlay = document.getElementById('tg-import-overlay');
+    if (tgOverlay && tgOverlay.style.display === 'flex') {
+      closeTGOverlay();
+      return;
+    }
+    const wechatOverlay = document.getElementById('wechat-import-overlay');
+    if (wechatOverlay && wechatOverlay.style.display === 'flex') {
+      closeWechatOverlay();
+      return;
+    }
+    const qqOverlay = document.getElementById('qq-import-overlay');
+    if (qqOverlay && qqOverlay.style.display === 'flex') {
+      closeQQOverlay();
+      return;
+    }
+    const qqntOverlay = document.getElementById('qqnt-overlay');
+    if (qqntOverlay && qqntOverlay.style.display === 'flex') {
+      qqntOverlay.style.display = 'none';
+      return;
+    }
+    const syncOverlay = document.getElementById('sync-progress-overlay');
+    if (syncOverlay && syncOverlay.style.display === 'flex') {
+      hideSyncProgress();
+      return;
+    }
+    const syncDoneOverlay = document.getElementById('sync-done-overlay');
+    if (syncDoneOverlay && syncDoneOverlay.style.display === 'flex') {
+      syncDoneOverlay.style.display = 'none';
+      return;
+    }
+    closeSettings();
+  }
   if (e.key === 'Enter' && e.ctrlKey) saveSettings();
 });
 
@@ -1636,11 +1796,7 @@ async function dangerExec() {
   }
 }
 
-document.addEventListener('keydown', (e) => {
-  if (e.key === 'Escape' && document.getElementById('danger-overlay').style.display === 'flex') {
-    dangerCancel();
-  }
-});
+
 
 /* Init */
 let initRetries = 0;
@@ -1648,6 +1804,9 @@ async function initSettings() {
   const s = await getSettings();
   if (s) {
     document.getElementById('s-hotkey')?.focus();
+    // 若用户已手动切换分组，则不覆盖；否则默认基础设置
+    const active = document.querySelector('#settings-nav .nav-item.active');
+    if (!active) switchSettingsGroup('base');
     return;
   }
   // pywebview bridge not ready yet, retry
@@ -1655,6 +1814,18 @@ async function initSettings() {
   if (initRetries < 20) {
     setTimeout(initSettings, 200);
   }
+}
+
+/* 左栏分组导航：显示对应分组的 section，隐藏其余 */
+function switchSettingsGroup(group) {
+  document.querySelectorAll('#settings-nav .nav-item').forEach(btn => {
+    btn.classList.toggle('active', btn.dataset.group === group);
+  });
+  document.querySelectorAll('#settings-content .section').forEach(sec => {
+    sec.style.display = (sec.dataset.group === group) ? 'block' : 'none';
+  });
+  const content = document.getElementById('settings-content');
+  if (content) content.scrollTop = 0;
 }
 
 async function initVersion() {

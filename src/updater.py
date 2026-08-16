@@ -29,8 +29,14 @@ _GH_MIRRORS = [
 
 
 def _parse_version(v: str):
-    parts = v.strip("vV").split(".")
-    return tuple(int(x) for x in parts) if parts else (0, 0, 0)
+    """解析版本号，跳过非数字段（如 nightly 版本）"""
+    parts = v.strip("vV").split("-")[0].split(".")
+    nums = []
+    for x in parts:
+        if not x.isdigit():
+            break
+        nums.append(int(x))
+    return tuple(nums) if nums else (0, 0, 0)
 
 
 def _pick_asset_url(assets: list) -> str:
@@ -44,6 +50,11 @@ def _pick_asset_url(assets: list) -> str:
         for a in assets:
             name = a.get("name", "")
             if name.endswith(".AppImage"):
+                return a.get("browser_download_url", "")
+    elif platform.system() == "Darwin":
+        for a in assets:
+            name = a.get("name", "")
+            if name.endswith(".dmg") and ("-" + _macos_arch() + ".dmg") in name:
                 return a.get("browser_download_url", "")
     return ""
 
@@ -146,6 +157,9 @@ def _parse_release(rel: dict):
     tag = (rel.get("tag_name") or "").lstrip("v")
     if not tag or rel.get("prerelease") or "nightly" in tag.lower():
         return None
+    # 跳过预发布与非正式版（nightly 等），避免更新到非正式版本
+    if rel.get("prerelease") or "nightly" in tag.lower():
+        return None
     url = _pick_asset_url(rel.get("assets", []))
     if not url:
         return None
@@ -218,10 +232,20 @@ def check_latest() -> dict:
     }
 
 
+def _macos_arch() -> str:
+    """当前 macOS 机器架构（arm64 / x86_64）"""
+    machine = platform.machine().lower()
+    if machine in ("arm64", "aarch64"):
+        return "arm64"
+    return "x86_64"
+
+
 def _default_asset_name() -> str:
     """URL 无文件名时的平台默认资产名"""
     if platform.system() == "Linux":
         return f"OhMyMeme-v{__version__}-x86_64.AppImage"
+    if platform.system() == "Darwin":
+        return f"OhMyMeme-v{__version__}-{_macos_arch()}.dmg"
     return "OhMyMeme-setup.exe"
 
 
@@ -319,9 +343,66 @@ def run_installer(path: str) -> bool:
                 cmd.append("--appimage-extract-and-run")
             subprocess.Popen(cmd, shell=False, start_new_session=True)
             return True
+        elif platform.system() == "Darwin":
+            # dmg：挂载后把 .app 复制到 /Applications，然后弹出安装窗口引导用户
+            return _install_dmg_macos(path)
         return False
     except Exception as e:
         logger.error("run installer failed: %s", e)
+        return False
+
+
+def _install_dmg_macos(path: str) -> bool:
+    """macOS：挂载 dmg，复制 .app 到 /Applications"""
+    try:
+        result = subprocess.run(
+            ["hdiutil", "attach", path, "-nobrowse"],
+            capture_output=True,
+            text=True,
+            timeout=120,
+        )
+        if result.returncode != 0:
+            logger.error("hdiutil attach failed: %s", result.stderr)
+            return False
+        # 输出形如: /dev/disk4 ... /Volumes/OhMyMeme
+        mount_point = ""
+        for line in result.stdout.splitlines():
+            line = line.strip()
+            if "/Volumes/" in line:
+                mount_point = line.split("/Volumes/", 1)[1]
+                mount_point = "/Volumes/" + mount_point.strip()
+                break
+        if not mount_point or not os.path.isdir(mount_point):
+            logger.error("dmg mount point not found: %s", result.stdout)
+            return False
+
+        app_names = [n for n in os.listdir(mount_point) if n.endswith(".app")]
+        if not app_names:
+            logger.error("no .app found in dmg")
+            return False
+
+        src_app = os.path.join(mount_point, app_names[0])
+        dst_app = os.path.join("/Applications", app_names[0])
+        try:
+            subprocess.run(
+                ["ditto", src_app, dst_app],
+                check=True,
+                timeout=300,
+            )
+        except subprocess.CalledProcessError as e:
+            logger.error("copy .app to /Applications failed: %s", e)
+            return False
+        finally:
+            subprocess.run(
+                ["hdiutil", "detach", mount_point],
+                capture_output=True,
+                text=True,
+            )
+        # 打开应用程序目录便于用户启动
+        subprocess.Popen(["open", "/Applications"], start_new_session=True)
+        return True
+    except Exception as e:
+        logger.error("macos install failed: %s", e)
         return False
 
 

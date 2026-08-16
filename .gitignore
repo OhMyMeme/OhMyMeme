@@ -34,3 +34,7 @@ Thumbs.db
 *.rpm
 *.dmg
 nuitka-crash-report.xml
+cookie.txt
+uv.lock
+node_modules/
+src/webui/dist/

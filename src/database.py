@@ -554,6 +554,7 @@ class MemeDB:
     def count(
         self,
         keyword: str = "",
+        tags: List[str] = None,
         collection_id: int = None,
         favorite_only: bool = False,
         uncategorized_only: bool = False,
@@ -572,6 +573,16 @@ class MemeDB:
             )""")
             kw = f"%{keyword}%"
             params.extend([kw, kw, kw, kw, kw])
+        if tags:
+            placeholders = ",".join("?" for _ in tags)
+            where.append(f"""id IN (
+                SELECT mt.meme_id FROM meme_tags mt
+                JOIN tags t ON t.id = mt.tag_id
+                WHERE t.name IN ({placeholders})
+                GROUP BY mt.meme_id HAVING COUNT(DISTINCT t.id) = ?
+            )""")
+            params.extend(tags)
+            params.append(len(tags))
         if collection_id is not None:
             if isinstance(collection_id, list):
                 placeholders = ",".join("?" for _ in collection_id)
@@ -691,6 +702,16 @@ class MemeDB:
             (limit, offset),
         ).fetchall()
         return [dict(r) for r in rows]
+
+    def count_recent(self) -> int:
+        """统计最近使用表情总数"""
+        conn = self._get_conn()
+        row = conn.execute(
+            "SELECT COUNT(*) FROM memes m "
+            "JOIN recent_uses r ON r.meme_id = m.id "
+            "WHERE (m.stego_of_hash IS NULL OR m.stego_of_hash = '')"
+        ).fetchone()
+        return row[0] if row else 0
 
 
 # 全局单例

@@ -295,23 +295,17 @@ class _S3Backend(_SyncBackend):
         pass
 
     def upload_file(self, local_path, remote_path):
+        # V2 签名下 boto3 put_object 不走 chunked 编码，直接用 SDK 上传
+        # （presigned URL + urllib 会因多出的 Content-Type 与签名不匹配，OSS 拒绝）
         try:
             with open(local_path, "rb") as f:
                 data = f.read()
-            key = self._key(remote_path)
-            url = self.client.generate_presigned_url(
-                ClientMethod="put_object",
-                Params={"Bucket": self.bucket, "Key": key},
-                ExpiresIn=3600,
+            self.client.put_object(
+                Bucket=self.bucket,
+                Key=self._key(remote_path),
+                Body=data,
+                ContentType="application/octet-stream",
             )
-            req = urllib.request.Request(url, data=data, method="PUT")
-            req.add_header("Content-Type", "application/octet-stream")
-            with urllib.request.urlopen(req) as resp:
-                if resp.status != 200:
-                    logger.warning(
-                        "upload failed %s: HTTP %d", remote_path, resp.status
-                    )
-                    return False
             return True
         except Exception as e:
             logger.warning("upload failed %s: %s", remote_path, e)

@@ -140,6 +140,7 @@ class Config:
         "ai_search_source": "bing",  # 找图来源标识
         # 聊天客户端适配
         "chat_client_mode": "manual",  # manual | qq | wechat
+        "show_startup_animation": True,  # 启动时播放启动动画
     }
 
     def __init__(self, path: Path = None):

@@ -15,6 +15,10 @@ cryptography>=41.0.0
 # Telegram 缓存解密
 tgcrypto>=1.2.5
 
+# 抖音表情导入（ABogus 签名）
+gmssl>=3.2.2
+curl_cffi>=0.7.4
+
 # S3 兼容存储
 boto3>=1.28.0
 

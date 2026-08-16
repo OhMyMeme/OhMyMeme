@@ -8,6 +8,8 @@ Usage:
     python scripts/build.py                  # build + installer (auto-detect)
     python scripts/build.py --windows        # Windows target
     python scripts/build.py --linux          # Linux target
+    python scripts/build.py --macos          # macOS target (.app + .dmg, arch auto-detect)
+    python scripts/build.py --macos --arch x86_64  # macOS Intel build
     python scripts/build.py --installer-only # installer only (assumes already built)
     python scripts/build.py --build-only     # build only, skip installer
     python scripts/build.py --package deb    # Linux package type: all|appimage|deb|rpm
@@ -50,6 +52,8 @@ _MSGS = {
     "linux_sh_not_found": {"zh": "警告: 未找到 %s，跳过 Linux 打包", "en": "WARNING: %s not found, skipping Linux packaging"},
     "building_linux": {"zh": "制作 Linux 包...", "en": "Building Linux packages..."},
     "linux_failed": {"zh": "Linux 打包失败 (code=%d)", "en": "Linux packaging failed (code=%d)"},
+    "building_macos": {"zh": "制作 macOS 包（.app/.dmg）...", "en": "Building macOS packages (.app/.dmg)..."},
+    "macos_failed": {"zh": "macOS 打包失败 (code=%d)", "en": "macOS packaging failed (code=%d)"},
     "installer_only_unsupported": {
         "zh": "错误: --installer-only 不支持当前目标 %s",
         "en": "ERROR: --installer-only not supported for target %s",
@@ -80,6 +84,19 @@ def get_version():
     init_py = SRC_DIR / "__init__.py"
     m = re.search(r'__version__\s*=\s*"([^"]+)"', init_py.read_text(encoding="utf-8"))
     return m.group(1) if m else "0.1.0"
+
+
+def set_version(v: str):
+    """临时改写 src/__init__.py 的 __version__（nightly 构建用，构建后恢复）"""
+    init_py = SRC_DIR / "__init__.py"
+    content = init_py.read_text(encoding="utf-8")
+    new_content = re.sub(
+        r'__version__\s*=\s*"[^"]*"',
+        '__version__ = "%s"' % v,
+        content,
+        count=1,
+    )
+    init_py.write_text(new_content, encoding="utf-8")
 
 
 def find_iscc():
@@ -133,6 +150,7 @@ def build_pyinstaller(target=None):
         "--noconfirm",
         "--clean",
         "--add-data", str(SRC_DIR / "webui") + sep + "src/webui",
+        "--add-data", str(SRC_DIR / "resources") + sep + "src/resources",
         "--add-data", str(SRC_DIR / "adb-help.txt") + sep + "src/adb-help.txt",
         "--hidden-import", "src.main",
         str(PROJECT_ROOT / "scripts" / "launcher.py"),
@@ -154,6 +172,12 @@ def build_pyinstaller(target=None):
         icon_png = SRC_DIR / "resources" / "icon.png"
         if icon_png.exists():
             cmd += ["--icon=" + str(icon_png)]
+        _add_linux_gi_flags(cmd, sep)
+    elif target == "Darwin":
+        icon_icns = _ensure_icns()
+        cmd += ["--windowed"]
+        if icon_icns:
+            cmd += ["--icon=" + str(icon_icns)]
 
     print(L("running"), " ".join(cmd))
     result = subprocess.run(cmd, cwd=str(PROJECT_ROOT))
@@ -166,6 +190,26 @@ def build_pyinstaller(target=None):
 
 
 _LANG_URL = "https://raw.githubusercontent.com/jrsoftware/issrc/refs/heads/main/Files/Languages/ChineseSimplified.isl"
+
+
+def _add_linux_gi_flags(cmd, sep):
+    """Linux 目标追加 PyGObject/GTK 收集参数（issue #58：打包 gi + WebKit2/Soup typelib）"""
+    hooks_dir = PROJECT_ROOT / "scripts" / "hooks"
+    if hooks_dir.is_dir():
+        cmd += ["--additional-hooks-dir", str(hooks_dir)]
+    cmd += ["--collect-all", "gi"]
+    cmd += ["--hidden-import", "gi.repository.WebKit2"]
+    cmd += ["--hidden-import", "gi.repository.Soup"]
+    # 系统 typelib 目录（构建环境装有 python3-gi / gir1.2-webkit2 时整体收集，作为 hooks 之外的安全网）
+    for typelib_dir in (
+        "/usr/lib/x86_64-linux-gnu/girepository-1.0",
+        "/usr/lib/girepository-1.0",
+        "/usr/lib64/girepository-1.0",
+        "/usr/local/lib/girepository-1.0",
+        "/usr/lib/aarch64-linux-gnu/girepository-1.0",
+    ):
+        if os.path.isdir(typelib_dir):
+            cmd += ["--add-data", typelib_dir + sep + "gi_typelibs"]
 
 
 def _ensure_lang_file(iscc_exe):
@@ -184,7 +228,8 @@ def _ensure_lang_file(iscc_exe):
         print("WARNING: failed to download language file:", e)
 
 
-def build_installer(version, target=None):
+def build_installer(version, target=None, filename_version=None):
+    """生成 InnoSetup 安装包；filename_version 仅用于输出文件名（nightly 版本）"""
     if target is None:
         target = platform.system()
     if target != "Windows":
@@ -209,10 +254,18 @@ def build_installer(version, target=None):
         print(L("iss_not_found"), iss_template)
         return
 
+    filename_version = filename_version or version
+    # InnoSetup 要求 AppVersion 为纯数字版本；nightly 时文件名可含 -nightly 后缀
+    numeric_version = re.match(r"^\d+(\.\d+)*", filename_version)
+    app_version = numeric_version.group(0) if numeric_version else version
     iss_content = iss_template.read_text(encoding="utf-8")
     iss_content = iss_content.replace(
         '#define MyAppVersion "0.1.0"',
-        '#define MyAppVersion "%s"' % version,
+        '#define MyAppVersion "%s"' % app_version,
+    )
+    iss_content = iss_content.replace(
+        "OutputBaseFilename=OhMyMeme-{#MyAppVersion}-setup",
+        "OutputBaseFilename=OhMyMeme-%s-setup" % filename_version,
     )
     source_dir_abs = str(dist_dir.resolve())
     iss_content = iss_content.replace(
@@ -238,7 +291,7 @@ def build_installer(version, target=None):
     if iss_temp.exists():
         iss_temp.unlink()
 
-    output_name = "%s-%s-setup.exe" % (APP_NAME, version)
+    output_name = "%s-%s-setup.exe" % (APP_NAME, filename_version)
     installer = BUILD_DIR / output_name
     if installer.exists():
         print(L("installer_done"), installer)
@@ -246,7 +299,7 @@ def build_installer(version, target=None):
         print(L("installer_not_found"), installer)
 
 
-def build_linux_packages(version, package="all"):
+def build_linux_packages(version, package="all", pkg_version=None):
     build_sh = PROJECT_ROOT / "scripts" / "installer" / "linux" / "build.sh"
     if not build_sh.exists():
         print(L("linux_sh_not_found", build_sh))
@@ -254,6 +307,9 @@ def build_linux_packages(version, package="all"):
 
     env = os.environ.copy()
     env["SKIP_PYINSTALLER"] = "1"
+    # deb/rpm 的 Version 字段必须是数字开头；nightly 时回退到基础版本号
+    if pkg_version:
+        env["OHMYMEME_PKG_VERSION"] = pkg_version
     print(L("building_linux"))
     result = subprocess.run(
         ["bash", str(build_sh), package],
@@ -265,23 +321,149 @@ def build_linux_packages(version, package="all"):
         sys.exit(result.returncode)
 
 
+def _ensure_icns():
+    """将 icon.png 转为 macOS .icns（PyInstaller 需要）；成功返回路径，失败返回 None"""
+    png = SRC_DIR / "resources" / "icon.png"
+    icns = BUILD_DIR / "OhMyMeme.icns"
+    if not png.exists():
+        return None
+    # icon.png 存在但 icns 未生成或已过期时重新生成
+    if icns.exists() and icns.stat().st_mtime >= png.stat().st_mtime:
+        return icns
+    BUILD_DIR.mkdir(parents=True, exist_ok=True)
+    try:
+        from PIL import Image
+        import tempfile
+
+        tmp = tempfile.mkdtemp()
+        iconset = Path(tmp) / "icon.iconset"
+        iconset.mkdir(parents=True, exist_ok=True)
+        img = Image.open(png).convert("RGBA")
+        # iconset 各尺寸（标准 macOS 图标集），按规范名导出
+        for px, name in [
+            (16, "icon_16x16.png"),
+            (32, "icon_16x16@2x.png"),
+            (32, "icon_32x32.png"),
+            (64, "icon_32x32@2x.png"),
+            (128, "icon_128x128.png"),
+            (256, "icon_128x128@2x.png"),
+            (256, "icon_256x256.png"),
+            (512, "icon_256x256@2x.png"),
+            (512, "icon_512x512.png"),
+            (1024, "icon_512x512@2x.png"),
+        ]:
+            resized = img.resize((px, px), Image.LANCZOS)
+            resized.save(iconset / name)
+        # 用 iconutil 生成 .icns（macOS 自带）
+        result = subprocess.run(
+            ["iconutil", "-c", "icns", str(iconset), "-o", str(icns)],
+            capture_output=True,
+            text=True,
+        )
+        if result.returncode != 0:
+            print("WARNING: iconutil failed:", result.stderr or result.stdout)
+            return None
+        shutil.rmtree(tmp, ignore_errors=True)
+        return icns
+    except Exception as e:
+        print("WARNING: failed to generate .icns:", e)
+        return None
+
+
+def get_macos_arch(arch=None):
+    """返回 macOS 架构名（arm64 / x86_64）；未指定时按当前机器检测"""
+    if arch:
+        return arch
+    machine = platform.machine().lower()
+    if machine in ("arm64", "aarch64"):
+        return "arm64"
+    return "x86_64"
+
+
+def build_macos_packages(version, filename_version=None, arch=None):
+    """制作 macOS .dmg（内含 .app）；version 用于 dmg 文件名版本段，arch 追加架构后缀"""
+    filename_version = filename_version or version
+    arch = get_macos_arch(arch)
+    app_dir = BUILD_DIR / (APP_NAME + ".app")
+    if not app_dir.is_dir():
+        print(L("outdir_not_found"), app_dir)
+        print(L("run_build_first"))
+        return
+
+    print(L("building_macos"))
+    dmg_name = "%s-v%s-%s.dmg" % (APP_NAME, filename_version, arch)
+    dmg_path = BUILD_DIR / dmg_name
+    if dmg_path.exists():
+        dmg_path.unlink()
+
+    staging = BUILD_DIR / "dmg-staging"
+    if staging.exists():
+        shutil.rmtree(staging, ignore_errors=True)
+    staging.mkdir(parents=True, exist_ok=True)
+    # 复制 .app 到暂存目录，并添加 /Applications 软链
+    shutil.copytree(app_dir, staging / (APP_NAME + ".app"))
+    try:
+        os.symlink("/Applications", staging / "Applications")
+    except OSError:
+        pass
+
+    result = subprocess.run(
+        [
+            "hdiutil",
+            "create",
+            "-volname",
+            APP_NAME,
+            "-srcfolder",
+            str(staging),
+            "-ov",
+            "-format",
+            "UDZO",
+            str(dmg_path),
+        ],
+        cwd=str(PROJECT_ROOT),
+    )
+    shutil.rmtree(staging, ignore_errors=True)
+    if result.returncode != 0:
+        print(L("macos_failed", result.returncode))
+        sys.exit(result.returncode)
+    if dmg_path.exists():
+        print(L("installer_done"), dmg_path)
+    else:
+        print(L("installer_not_found"), dmg_path)
+
+
 if __name__ == "__main__":
     import argparse
     parser = argparse.ArgumentParser(description="OhMyMeme build script (PyInstaller)")
     parser.add_argument("--lang", choices=["zh", "en"], default=None,
                         help="Output language (auto-detect: zh locally, en on GitHub Actions)")
+    parser.add_argument(
+        "--version",
+        default=None,
+        help="Override version string "
+        "(default: read from src/__init__.py)",
+    )
+    parser.add_argument(
+        "--nightly",
+        action="store_true",
+        help="Build a nightly (non-stable) release: version is 'nightly'",
+    )
     parser.add_argument("--installer-only", action="store_true",
                         help="Only build installer (assumes PyInstaller already ran)")
     parser.add_argument("--build-only", action="store_true",
                         help="Only run PyInstaller, skip installer")
     parser.add_argument("--package", choices=["all", "appimage", "deb", "rpm"], default="all",
                         help="Linux package type to build (default: all)")
+    parser.add_argument("--arch", choices=["arm64", "x86_64"], default=None,
+                        help="macOS architecture (default: auto-detect from machine)")
     target_group = parser.add_mutually_exclusive_group()
     target_group.add_argument("--windows", action="store_true", dest="target_windows",
                               help="Build for Windows")
     target_group.add_argument("--linux", action="store_true", dest="target_linux",
                               help="Build for Linux")
-    parser.set_defaults(target_windows=False, target_linux=False)
+    target_group.add_argument("--macos", action="store_true", dest="target_macos",
+                              help="Build for macOS (.app + .dmg)")
+    parser.set_defaults(target_windows=False, target_linux=False, target_macos=False)
     args = parser.parse_args()
 
     # --- language detection ---
@@ -299,22 +481,49 @@ if __name__ == "__main__":
         target = "Windows"
     elif args.target_linux:
         target = "Linux"
+    elif args.target_macos:
+        target = "Darwin"
     else:
         target = platform.system()
 
-    if args.installer_only:
-        if target == "Windows":
-            build_installer(get_version(), target=target)
-        elif target == "Linux":
-            build_linux_packages(get_version(), args.package)
+    # --- version override / nightly ---
+    base_version = get_version()
+    build_version = base_version
+    if args.nightly:
+        build_version = "nightly"
+    if args.version:
+        build_version = args.version
+
+    # InnoSetup 要求 AppVersion 为纯数字；nightly 时回退到基础版本号
+    m = re.match(r"^\d+(\.\d+)*", build_version)
+    app_version = m.group(0) if m else base_version
+
+    # nightly / 指定版本时临时改写 __init__.py，构建后恢复
+    patched = build_version != base_version
+    if patched:
+        set_version(build_version)
+
+    try:
+        if args.installer_only:
+            if target == "Windows":
+                build_installer(app_version, target=target, filename_version=build_version)
+            elif target == "Linux":
+                build_linux_packages(build_version, args.package, pkg_version=app_version)
+            elif target == "Darwin":
+                build_macos_packages(build_version, filename_version=build_version, arch=args.arch)
+            else:
+                print(L("installer_only_unsupported", target))
+                sys.exit(1)
         else:
-            print(L("installer_only_unsupported", target))
-            sys.exit(1)
-    else:
-        version = build_pyinstaller(target=target)
-        if args.build_only:
-            pass
-        elif target == "Windows":
-            build_installer(version, target=target)
-        elif target == "Linux":
-            build_linux_packages(version, args.package)
+            version = build_pyinstaller(target=target)
+            if args.build_only:
+                pass
+            elif target == "Windows":
+                build_installer(app_version, target=target, filename_version=build_version)
+            elif target == "Linux":
+                build_linux_packages(version, args.package, pkg_version=app_version)
+            elif target == "Darwin":
+                build_macos_packages(version, filename_version=build_version, arch=args.arch)
+    finally:
+        if patched:
+            set_version(base_version)

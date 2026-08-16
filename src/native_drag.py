@@ -58,7 +58,10 @@ def start_native_drag(path):
 
     def _run():
         try:
-            result["val"] = str(form.DoDragDrop(data, WinForms.DragDropEffects.Copy))
+            effect = form.DoDragDrop(data, WinForms.DragDropEffects.Copy)
+            result["val"] = str(effect)
+            # pythonnet 中 DragDropEffects.None 与 Python None 冲突，用字符串判断取消
+            result["cancelled"] = str(effect).lower() == "none"
         except Exception as e:
             result["err"] = repr(e)
 
@@ -67,4 +70,6 @@ def start_native_drag(path):
             form.Invoke(Action(_run))
     except Exception:
         return False
-    return "err" not in result
+    if "err" in result:
+        return False
+    return not result.get("cancelled", False)

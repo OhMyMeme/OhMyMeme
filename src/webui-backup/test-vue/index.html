@@ -1,0 +1,142 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <title>OhMyMeme Vue Test</title>
+  <style>
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+    body { background: #1a1a2e; color: #e2e8f0; font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; height: 100vh; overflow: hidden; }
+    #app { display: flex; height: 100vh; }
+    .main { flex: 1; display: flex; flex-direction: column; overflow: hidden; }
+    .titlebar { height: 40px; background: #16213e; border-bottom: 1px solid #334155; display: flex; align-items: center; padding: 0 12px; gap: 8px; -webkit-app-region: drag; }
+    .titlebar__btn { width: 12px; height: 12px; border-radius: 50%; border: none; cursor: pointer; }
+    .titlebar__btn--close { background: #ef4444; }
+    .titlebar__btn--min { background: #eab308; }
+    .titlebar__btn--max { background: #22c55e; }
+    .titlebar__title { margin-left: 8px; font-size: 13px; color: #94a3b8; }
+    .content { flex: 1; overflow-y: auto; padding: 16px; }
+    .toolbar { display: flex; gap: 8px; margin-bottom: 12px; align-items: center; }
+    .toolbar__search { flex: 1; padding: 8px 12px; border-radius: 8px; border: 1px solid #334155; background: #16213e; color: #e2e8f0; font-size: 13px; outline: none; }
+    .toolbar__search:focus { border-color: #6366f1; }
+    .toolbar__btn { padding: 8px 12px; border-radius: 8px; border: 1px solid #334155; background: #16213e; color: #e2e8f0; cursor: pointer; font-size: 12px; }
+    .toolbar__btn:hover { background: #0f3460; }
+    .toolbar__btn--active { background: #6366f1; border-color: #6366f1; }
+  </style>
+</head>
+<body>
+  <div id="app">
+    <aside id="sidebar"></aside>
+    <main class="main">
+      <div class="titlebar">
+        <button class="titlebar__btn titlebar__btn--close"></button>
+        <button class="titlebar__btn titlebar__btn--min"></button>
+        <button class="titlebar__btn titlebar__btn--max"></button>
+        <span class="titlebar__title">OhMyMeme</span>
+      </div>
+      <div class="content">
+        <div class="toolbar">
+          <input type="text" class="toolbar__search" placeholder="搜索表情包..." id="search-input">
+          <button class="toolbar__btn" id="sort-toggle">拖拽排序</button>
+          <button class="toolbar__btn" id="import-btn">导入</button>
+        </div>
+        <div id="grid"></div>
+      </div>
+    </main>
+  </div>
+
+  <script src="/ohmymeme-ui.js"></script>
+  <script>
+    const { MemeGrid, AppSidebar } = OhMyMemeUI
+    const { createApp, h, ref, reactive } = Vue
+
+    const testImages = [
+      { id: '1', name: '红色', group: 'solid', url: '/test-vue/test-images/red.jpg' },
+      { id: '2', name: '蓝色', group: 'solid', url: '/test-vue/test-images/blue.jpg' },
+      { id: '3', name: '绿色', group: 'solid', url: '/test-vue/test-images/green.jpg' },
+      { id: '4', name: '黄色', group: 'warm', url: '/test-vue/test-images/yellow.jpg' },
+      { id: '5', name: '紫色', group: 'warm', url: '/test-vue/test-images/purple.jpg' },
+      { id: '6', name: '粉色', group: 'warm', url: '/test-vue/test-images/pink.jpg' },
+      { id: '7', name: '橙色', group: 'bright', url: '/test-vue/test-images/orange.jpg' },
+      { id: '8', name: '青色', group: 'bright', url: '/test-vue/test-images/cyan.jpg' },
+      { id: '9', name: '灰色', group: 'bright', url: '/test-vue/test-images/gray.jpg' },
+    ]
+
+    const groups = [
+      { id: 'all', name: '全部', count: 9 },
+      { id: 'solid', name: '纯色', count: 3 },
+      { id: 'warm', name: '暖色', count: 3 },
+      { id: 'bright', name: '亮色', count: 3 },
+    ]
+
+    const state = reactive({
+      activeGroup: 'all',
+      collapsed: false,
+      sortEnabled: false,
+      memes: testImages,
+    })
+
+    function filterMemes() {
+      if (state.activeGroup === 'all') return state.memes
+      return state.memes.filter(m => m.group === state.activeGroup)
+    }
+
+    function handleSelectGroup(groupId) {
+      state.activeGroup = groupId
+    }
+
+    function handleToggleCollapse() {
+      state.collapsed = !state.collapsed
+    }
+
+    function handleCopy(meme) {
+      console.log('复制:', meme.name)
+    }
+
+    const sidebarApp = createApp({
+      render() {
+        return h(AppSidebar, {
+          groups,
+          activeGroup: state.activeGroup,
+          collapsed: state.collapsed,
+          onSelectGroup: handleSelectGroup,
+          onToggleCollapse: handleToggleCollapse,
+        })
+      },
+    })
+    sidebarApp.mount('#sidebar')
+
+    function handleReorder(newMemes) {
+      state.memes = newMemes
+    }
+
+    const gridApp = createApp({
+      render() {
+        return h(MemeGrid, {
+          memes: filterMemes(),
+          columns: state.collapsed ? 5 : 4,
+          sortable: state.sortEnabled,
+          onCopy: handleCopy,
+          onReorder: handleReorder,
+        })
+      },
+    })
+    gridApp.mount('#grid')
+
+    // Search
+    document.getElementById('search-input').addEventListener('input', (e) => {
+      const q = e.target.value.trim().toLowerCase()
+      if (!q) {
+        state.memes = testImages
+      } else {
+        state.memes = testImages.filter(m => m.name.includes(q))
+      }
+    })
+
+    // Sort toggle
+    document.getElementById('sort-toggle').addEventListener('click', () => {
+      state.sortEnabled = !state.sortEnabled
+      document.getElementById('sort-toggle').classList.toggle('toolbar__btn--active', state.sortEnabled)
+    })
+  </script>
+</body>
+</html>

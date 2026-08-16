@@ -184,7 +184,10 @@ def test_pktinfo_extract_windows_zero_ifindex(monkeypatch):
     assert srv._extract_pktinfo_src(anc) is None
 
 
-@pytest.mark.skipif(not hasattr(socket, "IP_PKTINFO"), reason="平台不支持 IP_PKTINFO")
+@pytest.mark.skipif(
+    not hasattr(socket, "IP_PKTINFO") or not hasattr(socket.socket, "recvmsg"),
+    reason="平台不支持 IP_PKTINFO 或 recvmsg（pktinfo 源地址钉定依赖 recvmsg）",
+)
 def test_udp_reply_pins_source_interface(lan_env):
     """支持 pktinfo 时回包源 IP 钉在广播到达接口上"""
     cfg, db, tmp = lan_env

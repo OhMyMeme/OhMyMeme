@@ -81,6 +81,9 @@ _LOG_BUFFER = []
 _LOG_LOCK = threading.Lock()
 _LOG_MAX = 5000
 
+# 分页：主窗口单页展示的表情包数量（与前端 index.js MEME_PAGE 保持一致）
+MEME_PAGE = 200
+
 
 class _LogBufferHandler(logging.Handler):
     """把 DEBUG 级日志缓存在内存中（限量 5000 条）"""
@@ -110,6 +113,64 @@ def install_log_buffer():
 install_log_buffer()
 
 HTML_DIR = Path(__file__).resolve().parent / "webui"
+RESOURCES_DIR = Path(__file__).resolve().parent / "resources"
+
+# 启动动画视频边缘主色缓存（采样一次复用），供启动遮罩背景贴合视频边框
+_STARTUP_BG_CACHE = None
+_STARTUP_BG_DEFAULT = "#0d0d0f"
+
+
+def startup_bg_color():
+    """采样启动视频边缘主色作窗口背景，使遮罩贴合视频边框；无 ffmpeg 时回退默认"""
+    global _STARTUP_BG_CACHE
+    if _STARTUP_BG_CACHE is not None:
+        return _STARTUP_BG_CACHE
+    color = _STARTUP_BG_DEFAULT
+    mp4 = RESOURCES_DIR / "OhMyMeme.mp4"
+    try:
+        import shutil
+        import subprocess
+        import tempfile
+        from collections import Counter
+
+        ffmpeg = shutil.which("ffmpeg")
+        if ffmpeg and mp4.exists() and HAS_PIL:
+            with tempfile.TemporaryDirectory() as td:
+                frame = os.path.join(td, "frame.png")
+                subprocess.run(
+                    [
+                        ffmpeg,
+                        "-y",
+                        "-v",
+                        "error",
+                        "-i",
+                        str(mp4),
+                        "-frames:v",
+                        "1",
+                        frame,
+                    ],
+                    check=True,
+                    timeout=30,
+                    stdout=subprocess.DEVNULL,
+                    stderr=subprocess.DEVNULL,
+                )
+                img = PILImage.open(frame).convert("RGB")
+                w, h = img.size
+                px = img.load()
+                cnt = Counter()
+                for x in range(w):
+                    cnt[px[x, 0]] += 1
+                    cnt[px[x, h - 1]] += 1
+                for y in range(h):
+                    cnt[px[0, y]] += 1
+                    cnt[px[w - 1, y]] += 1
+                r, g, b = cnt.most_common(1)[0][0]
+                color = "#%02x%02x%02x" % (r, g, b)
+    except Exception:
+        pass
+    _STARTUP_BG_CACHE = color
+    return color
+
 
 # 静态资源扩展名 → 强制 Content-Type：本机 mimetypes/注册表 .js 映射可能为
 # text/plain，叠加 nosniff 会被 Chromium 拒执行脚本
@@ -321,7 +382,7 @@ class JsApi:
             if is_gif:
                 is_animated = True
             elif fname.endswith(".webp"):
-                path = self._find_meme_file(r["filename"])
+                path = self._webui._find_meme_file(r["filename"])
                 is_animated = _is_animated(path) if path else False
             else:
                 is_animated = False
@@ -346,6 +407,26 @@ class JsApi:
                 }
             )
         return result
+
+    def count_memes(self, keyword="", tags=None, collection_id=None) -> int:
+        """统计符合搜索条件（关键字/标签/分组/收藏/最近使用）的表情总数，供分页"""
+        if tags is not None and len(tags) == 0:
+            tags = None
+        fav_only = collection_id == -2
+        recent_only = collection_id == -3
+        uncategorized = collection_id == -4
+        if recent_only:
+            return self._db.count_recent()
+        cid = None if (fav_only or recent_only or uncategorized) else collection_id
+        if cid is not None and cid > 0:
+            cid = self._get_collection_ids_recursive(cid)
+        return self._db.count(
+            keyword=keyword,
+            tags=tags,
+            collection_id=cid,
+            favorite_only=fav_only,
+            uncategorized_only=uncategorized,
+        )
 
     def get_tags(self) -> list:
         return self._db.get_all_tags()
@@ -388,7 +469,7 @@ class JsApi:
             tags=tags,
             collection_id=collection_id,
             favorite_only=fav_only,
-            limit=200,
+            limit=MEME_PAGE,
         )
         favorited_ids = set()
         try:
@@ -406,7 +487,7 @@ class JsApi:
             if is_gif:
                 is_animated = True
             elif fname.endswith(".webp"):
-                path = self._find_meme_file(r["filename"])
+                path = self._webui._find_meme_file(r["filename"])
                 is_animated = _is_animated(path) if path else False
             else:
                 is_animated = False
@@ -448,6 +529,9 @@ class JsApi:
             "tags": self._db.get_all_tags(),
             "collections": collections,
             "tagbar_collapsed": bool(self._cfg.get("tagbar_collapsed", False)),
+            "grid_scale": int(self._cfg.get("grid_scale", 72) or 72),
+            "show_startup_animation": self._cfg.get("show_startup_animation", True),
+            "startup_bg_color": startup_bg_color(),
         }
 
     def floating_search_memes(self, keyword: str = "", limit: int = 48) -> list:
@@ -1487,6 +1571,8 @@ class JsApi:
             "show_download_progress": d.get("show_download_progress", True),
             "show_download_done": d.get("show_download_done", True),
             "show_uncategorized": d.get("show_uncategorized", True),
+            "record_recent_use": d.get("record_recent_use", True),
+            "show_startup_animation": d.get("show_startup_animation", True),
         }
 
     def save_settings(self, settings: dict):
@@ -1550,6 +1636,9 @@ class JsApi:
             "show_upload_done": True,
             "show_download_progress": True,
             "show_download_done": True,
+            "grid_scale": 72,
+            "tagbar_collapsed": False,
+            "show_startup_animation": True,
         }
 
     def move_window(self, dx: int, dy: int):
@@ -2314,6 +2403,7 @@ class SettingsApi:
             "show_download_done": d.get("show_download_done", True),
             "show_uncategorized": d.get("show_uncategorized", True),
             "record_recent_use": d.get("record_recent_use", True),
+            "show_startup_animation": d.get("show_startup_animation", True),
             "tg_tdata_path": d.get("tg_tdata_path", ""),
             "hover_to_play": d.get("hover_to_play", False),
             "grid_scale": int(d.get("grid_scale", 72) or 72),
@@ -2407,6 +2497,7 @@ class SettingsApi:
             "show_download_progress": True,
             "show_download_done": True,
             "record_recent_use": self._cfg.get("record_recent_use", True),
+            "show_startup_animation": True,
             "tg_tdata_path": self._cfg.get("tg_tdata_path", ""),
             "hover_to_play": self._cfg.get("hover_to_play", False),
             "grid_scale": self._cfg.get("grid_scale", 72),
@@ -2572,6 +2663,28 @@ class SettingsApi:
 
     def cancel_tg_import(self):
         tg_stickers.cancel_tg_import()
+
+    def start_douyin_import(self, cookie: str) -> dict:
+        """启动抖音表情包下载导入（全部下载）"""
+        try:
+            from . import douyin
+        except ImportError as e:
+            return {"ok": False, "error": f"缺少依赖: {e}"}
+
+        started = douyin.start_douyin_import(self._webui, cookie)
+        if not started:
+            return {"ok": False, "error": "已有导入任务正在进行"}
+        return {"ok": True}
+
+    def get_douyin_import_progress(self) -> dict:
+        from . import douyin
+
+        return douyin.get_douyin_progress()
+
+    def cancel_douyin_import(self):
+        from . import douyin
+
+        douyin.cancel_douyin_import()
 
     def pick_wechat_root(self):
         """手动选择微信文件根目录"""
@@ -3499,6 +3612,10 @@ class WebUI:
 
         @app.route("/")
         def index():
+            vue_html = HTML_DIR / "vue.html"
+            # 仅当 vue.html 与构建产物都存在时才走 Vue 前端，否则回退旧 index.html
+            if vue_html.exists() and (HTML_DIR / "dist" / "ohmymeme.js").exists():
+                return bottle.static_file("vue.html", root=str(HTML_DIR))
             html_path = HTML_DIR / "index.html"
             if html_path.exists():
                 return bottle.static_file("index.html", root=str(HTML_DIR))
@@ -3585,6 +3702,14 @@ class WebUI:
                 logger.error(f"upload error: {e}")
                 bottle.response.status = 500
                 return {"ok": False, "error": str(e)}
+
+        @app.route("/resources/<filepath:path>")
+        def serve_resources(filepath):
+            # 启动动画等内置资源（src/resources），防止路径穿越
+            name = os.path.basename(filepath)
+            if not name or name != filepath.replace("\\", "/").split("/")[-1]:
+                bottle.abort(404, "Not Found")
+            return bottle.static_file(name, root=str(RESOURCES_DIR))
 
         @app.route("/<filepath:path>")
         def static_files(filepath):
@@ -3719,7 +3844,7 @@ class WebUI:
                 "设置 - OhMyMeme",
                 settings_url,
                 js_api=self._settings_api,
-                width=460,
+                width=720,
                 height=560,
                 resizable=False,
                 frameless=True,

@@ -15,7 +15,15 @@
   </div>
 
   <div id="body">
-    <div class="section">
+    <nav id="settings-nav">
+      <button class="nav-item active" data-group="base" onclick="switchSettingsGroup('base')">基础设置</button>
+      <button class="nav-item" data-group="import" onclick="switchSettingsGroup('import')">导入</button>
+      <button class="nav-item" data-group="network" onclick="switchSettingsGroup('network')">联网</button>
+      <button class="nav-item danger" data-group="danger" onclick="switchSettingsGroup('danger')">危险操作</button>
+      <button class="nav-item" data-group="logs" onclick="switchSettingsGroup('logs')">日志</button>
+    </nav>
+    <div id="settings-content">
+    <div class="section" data-group="base">
       <div class="form-group">
         <label>全局快捷键</label>
         <input id="s-hotkey" readonly onclick="startHotkeyCapture(this)">
@@ -25,7 +33,7 @@
       </label>
     </div>
 
-    <div class="section">
+    <div class="section" data-group="base">
       <div class="section-title">版本更新</div>
       <div style="display:flex;align-items:center;gap:10px;margin-bottom:6px">
         <span style="font-size:12.5px;color:var(--fg-secondary)" id="s-ver-current">当前版本: --</span>
@@ -34,7 +42,7 @@
       <div id="s-update-status" style="font-size:11.5px;color:var(--muted)"></div>
     </div>
 
-    <div class="section">
+    <div class="section" data-group="base">
       <div class="section-title">启动与开机自启</div>
       <label class="check-row">
         <input id="s-auto-start" type="checkbox" onchange="toggleSilentStart()">开机自启
@@ -42,9 +50,12 @@
       <label class="check-row" id="s-silent-row" style="display:none">
         <input id="s-silent-start" type="checkbox">开机自启时静默启动（直接托盘运行）
       </label>
+      <label class="check-row">
+        <input id="s-show-startup-anim" type="checkbox">显示启动动画
+      </label>
     </div>
 
-    <div class="section">
+    <div class="section" data-group="base">
       <div class="section-title">文件夹显示</div>
       <label class="check-row">
         <input id="s-show-uncategorized" type="checkbox">显示「未归档」
@@ -59,7 +70,7 @@
       <p style="font-size:11.5px;color:var(--muted);margin-top:4px;line-height:1.6">同时调整主界面的表情和文件夹卡片大小；设置会自动保存。</p>
     </div>
 
-    <div class="section">
+    <div class="section" data-group="base">
       <div class="section-title">动图</div>
       <label class="check-row">
         <input id="s-gif" type="checkbox">动图自动播放
@@ -69,16 +80,17 @@
       </label>
     </div>
 
-    <div class="section">
+    <div class="section" data-group="base">
       <!-- DeepSeek V4 Flash -->
       <div class="section-title">图片来源</div>
+
       <label class="check-row">
         <input id="s-try-original" type="checkbox" onchange="checkConnectivity()">浏览器来源尝试获取原图
       </label>
       <div id="s-net-status" style="font-size:12px;margin-top:4px;padding-left:4px;color:var(--muted)"></div>
     </div>
 
-    <div class="section">
+    <div class="section" data-group="base">
       <div class="section-title">复制处理</div>
       <label class="check-row" style="gap:8px">
         复制超限静态图时
@@ -92,7 +104,7 @@
       <p style="font-size:11.5px;color:var(--muted);margin-top:4px;line-height:1.6">复制超过尺寸上限的静态图时按此处模式处理；动图不受影响。隐写模式会把原图信息随 GIF 隐藏，接收方可运行解码工具还原，但会显著增大文件体积。</p>
     </div>
 
-    <div class="section">
+    <div class="section" data-group="base">
       <div class="section-title">聊天客户端适配</div>
       <div class="form-group">
         <label>复制并粘贴目标</label>
@@ -105,7 +117,7 @@
       <p style="font-size:11.5px;color:var(--muted);margin-top:4px;line-height:1.6">普通点击表情始终只复制。选择 QQ 或微信后，请在目标聊天窗口前台按全局快捷键呼出本程序；只有右键明确选择「复制并粘贴」时才会尝试 Ctrl+V。不会读取聊天记录、监听剪贴板、按 Enter 或点击发送按钮。</p>
     </div>
 
-    <div class="section">
+    <div class="section" data-group="base">
       <div class="section-title">存储位置</div>
       <p style="font-size:11.5px;color:var(--muted);margin-bottom:10px;line-height:1.6">表情包图片文件存放目录；数据库与缩略图仍保留在系统数据目录</p>
       <div class="form-group">
@@ -131,7 +143,7 @@
       <div id="s-storage-status" style="font-size:11.5px;color:var(--muted);margin-top:6px;line-height:1.6"></div>
     </div>
 
-    <div class="section">
+    <div class="section" data-group="import">
       <div class="section-title">从手机导入</div>
       <p style="font-size:11.5px;color:var(--muted);margin-bottom:10px;line-height:1.6">通过 ADB 从连接的 Android 手机拉取 QQ 表情包缓存并打包 ZIP</p>
       <div style="display:flex;gap:8px">
@@ -140,7 +152,7 @@
       <div id="qq-status"></div>
     </div>
 
-    <div class="section">
+    <div class="section" data-group="import">
       <div class="section-title">从电脑导入</div>
       <p style="font-size:11.5px;color:var(--muted);margin-bottom:10px;line-height:1.6">从 PC 版 QQ（QQNT）本地缓存批量提取收藏表情</p>
       <div style="display:flex;gap:8px">
@@ -149,7 +161,7 @@
       <div id="qqnt-status"></div>
     </div>
 
-    <div class="section">
+    <div class="section" data-group="import">
       <div class="section-title">从 Telegram 导入</div>
       <p style="font-size:11.5px;color:var(--muted);margin-bottom:10px;line-height:1.6">从 Telegram Desktop 本地缓存解密提取表情包（WebP 直取，WebM 无损转 WebP 并保留透明通道）</p>
       <div class="form-group">
@@ -172,7 +184,20 @@
       <div id="tg-status"></div>
     </div>
 
-    <div class="section">
+    <div class="section" data-group="import">
+      <div class="section-title">从抖音导入</div>
+      <p style="font-size:11.5px;color:var(--muted);margin-bottom:10px;line-height:1.6">通过抖音网页版 API 下载自定义表情包（WebP 原格式保存，需登录 Cookie）</p>
+      <div class="form-group">
+        <label>抖音 Cookie</label>
+        <input id="s-dy-cookie" type="password" placeholder="粘贴抖音网页版 Cookie（sessionid=xxx; ...）" autocomplete="off">
+      </div>
+      <div style="display:flex;gap:8px">
+        <button id="btn-dy-start" class="btn btn-primary btn-sm btn-flex" onclick="startDYImport()">从抖音下载全部表情</button>
+      </div>
+      <div id="dy-status"></div>
+    </div>
+
+    <div class="section" data-group="import">
       <div class="section-title">从微信导入</div>
       <p style="font-size:11.5px;color:var(--muted);margin-bottom:10px;line-height:1.6">从微信电脑版本地缓存提取收藏表情（需微信正在运行，仅 Windows 支持）。微信文件目录是存放所有账号数据的根目录（xwechat_files），其下的 wxid_* 文件夹为各账号目录</p>
       <div class="form-group">
@@ -195,7 +220,7 @@
       <div id="wechat-status"></div>
     </div>
 
-    <div class="section">
+    <div class="section" data-group="network">
       <div class="section-title">局域网互联</div>
       <p style="font-size:11.5px;color:var(--muted);margin-bottom:10px;line-height:1.6">与手机版 OhMyMeme 在同一局域网内配对，互相同步表情包与配置</p>
       <div class="form-group">
@@ -218,7 +243,7 @@
       <div id="lan-status" style="font-size:11.5px;color:var(--muted);margin-top:6px;line-height:1.8"></div>
     </div>
 
-    <div class="section">
+    <div class="section" data-group="network">
       <div class="section-title">云端同步</div>
 
       <label class="check-row">
@@ -385,7 +410,7 @@
       </div>
     </div>
 
-    <div class="section" style="border-color:var(--accent-muted)">
+    <div class="section" data-group="danger" style="border-color:var(--accent-muted)">
       <div class="section-title" style="color:#ef4444">危险操作</div>
       <p style="font-size:11.5px;color:var(--muted);margin-bottom:12px;line-height:1.6">以下操作不可撤销，请谨慎使用</p>
       <div style="display:flex;gap:8px">
@@ -394,7 +419,7 @@
       </div>
     </div>
 
-    <div class="section">
+    <div class="section" data-group="base">
       <div class="section-title">AI 设置</div>
       <p style="font-size:11.5px;color:var(--muted);margin-bottom:12px;line-height:1.6">整理和生图使用两套独立的 OpenAI 兼容接口，可分别配置不同服务商和模型。</p>
       <div style="padding:10px 12px;border:1px solid var(--border);border-radius:var(--radius-sm);margin-bottom:12px">
@@ -444,13 +469,14 @@
       </div>
     </div>
 
-    <div class="section">
+    <div class="section" data-group="logs">
       <div class="section-title">日志</div>
       <p style="font-size:11.5px;color:var(--muted);margin-bottom:10px;line-height:1.6">导出本次运行至今的 Debug 级日志，便于排查问题</p>
       <div style="display:flex;gap:8px">
         <button class="btn btn-secondary btn-sm btn-flex" onclick="exportLogs()">导出日志</button>
       </div>
       <div id="log-export-status" style="font-size:11.5px;color:var(--muted);margin-top:6px"></div>
+    </div>
     </div>
   </div>
 
@@ -580,6 +606,21 @@
     <button id="btn-tg-retry" class="btn btn-secondary btn-sm" onclick="tgRetryPick()" style="display:none">手动选择 tdata 目录</button>
     <button id="btn-tg-close" class="btn btn-secondary btn-sm" onclick="closeTGOverlay()">关闭</button>
     <div id="tg-import-error" style="display:none;font-size:12px;color:#ef4444;margin-top:8px;word-break:break-all"></div>
+  </div>
+</div>
+
+<div id="dy-import-overlay" style="display:none;position:fixed;inset:0;background:rgba(0,0,0,.6);align-items:center;justify-content:center;z-index:400;animation:fadeIn .15s">
+  <div style="background:var(--surface);border-radius:var(--radius-lg);padding:24px 28px;width:420px;border:1px solid var(--border);box-shadow:var(--shadow-lg);text-align:center">
+    <div style="font-size:14px;font-weight:600;color:var(--fg);margin-bottom:4px" id="dy-import-title">正在导入...</div>
+    <div style="font-size:12px;color:var(--fg-secondary);margin-bottom:12px;word-break:break-all" id="dy-import-msg">准备中</div>
+    <div style="width:100%;height:8px;background:var(--bg);border-radius:4px;overflow:hidden;margin-bottom:6px">
+      <div id="dy-import-bar" style="width:0%;height:100%;background:var(--accent);border-radius:4px;transition:width .3s"></div>
+    </div>
+    <div style="font-size:11.5px;color:var(--muted);margin-bottom:16px">
+      <span id="dy-import-pct">0%</span>
+    </div>
+    <button id="btn-dy-close" class="btn btn-secondary btn-sm" onclick="closeDYOverlay()">关闭</button>
+    <div id="dy-import-error" style="display:none;font-size:12px;color:#ef4444;margin-top:8px;word-break:break-all"></div>
   </div>
 </div>
 
