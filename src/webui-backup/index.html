@@ -1,0 +1,150 @@
+<!DOCTYPE html>
+<html lang="zh-CN" style="background:#0d0d0f">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>OhMyMeme</title>
+<link rel="stylesheet" href="/index.css">
+</head>
+<body>
+<div id="app">
+  <div id="titlebar">
+    <div class="logo">OhMy<span>Meme</span></div>
+    <span class="spacer"></span>
+    <button id="drag-sort-toggle" class="icon-btn sort-off" title="拖拽排序（开启=网格内排序，关闭=可拖拽表情到聊天窗口）">
+      <svg viewBox="0 0 1024 1024" xmlns="http://www.w3.org/2000/svg"><path d="M338.133333 725.333333l-82.133333 82.133334V648.533333a42.666667 42.666667 0 0 0-85.333333 0v204.8A42.666667 42.666667 0 0 0 213.333333 896h204.8a42.666667 42.666667 0 0 0 0-85.333333H298.666667l82.133333-82.133334a42.666667 42.666667 0 0 0-42.666667-3.2zM853.333333 170.666667H648.533333a42.666667 42.666667 0 0 0 0 85.333333h120.32l-82.133333 82.133333a42.666667 42.666667 0 0 0 3.2 63.573334A42.666667 42.666667 0 0 0 725.333333 426.666667l0 0a42.666667 42.666667 0 0 0 29.866667-12.8l130.986667-130.986667V413.866667a42.666667 42.666667 0 0 0 85.333333 0V213.333333a42.666667 42.666667 0 0 0-118.186667-42.666666zM307.2 298.666667a42.666667 42.666667 0 0 0-12.8 3.2L163.413333 432.853333V341.333333a42.666667 42.666667 0 0 0-85.333333 0v204.8a42.666667 42.666667 0 0 0 42.666667 42.666667h204.8a42.666667 42.666667 0 0 0 0-85.333333H217.6l82.133333-82.133334a42.666667 42.666667 0 0 0 3.2-63.573333A42.666667 42.666667 0 0 0 307.2 298.666667zM896 610.133333a42.666667 42.666667 0 0 0-85.333333 0v120.32l-82.133334-82.133333a42.666667 42.666667 0 0 0-63.573333-3.2 42.666667 42.666667 0 0 0 0 66.773333l130.986667 130.986667H682.666667a42.666667 42.666667 0 0 0 0 85.333333h213.333333a42.666667 42.666667 0 0 0 42.666667-42.666667V610.133333z"/></svg>
+    </button>
+    <button class="icon-btn" onclick="syncUpload()" title="上传到远端">
+      <svg viewBox="0 0 1024 1024" xmlns="http://www.w3.org/2000/svg"><path d="M481.749333 353.792c16.682667-16.64 43.690667-16.64 60.373334 0l120.917333 120.832 3.541333 4.010667a42.666667 42.666667 0 0 1-63.872 56.32L554.666667 486.954667V896a42.666667 42.666667 0 0 1-85.333334 0v-409.173333l-48.170666 48.128a42.666667 42.666667 0 0 1-60.330667 0l-3.541333-4.010667a42.666667 42.666667 0 0 1 3.541333-56.32zM512 85.333333c122.538667 0 227.84 73.813333 273.92 179.370667A213.333333 213.333333 0 0 1 725.333333 682.666667a42.666667 42.666667 0 0 1-4.992-85.034667L725.333333 597.333333a128 128 0 0 0 36.394667-250.794666l-38.144-11.264-15.914667-36.437334a213.376 213.376 0 0 0-407.296 58.026667l-7.381333 58.368-57.173333 13.824A85.418667 85.418667 0 0 0 256 597.333333h42.666667a42.666667 42.666667 0 0 1 0 85.333334H256a170.666667 170.666667 0 0 1-40.277333-336.554667A298.709333 298.709333 0 0 1 512 85.333333z"/></svg>
+    </button>
+    <button class="icon-btn" onclick="syncDownload()" title="从远端下载">
+      <svg viewBox="0 0 1024 1024" xmlns="http://www.w3.org/2000/svg">
+        <path d="M512 85.333333c122.538667 0 227.84 73.813333 273.92 179.370667A213.333333 213.333333 0 0 1 725.333333 682.666667a42.666667 42.666667 0 0 1-4.992-85.034667L725.333333 597.333333a128 128 0 0 0 36.394667-250.794666l-38.144-11.264-15.914667-36.437334a213.376 213.376 0 0 0-407.296 58.026667l-7.381333 58.368-57.173333 13.824A85.418667 85.418667 0 0 0 256 597.333333h42.666667a42.666667 42.666667 0 0 1 0 85.333334H256a170.666667 170.666667 0 0 1-40.277333-336.554667A298.709333 298.709333 0 0 1 512 85.333333z"/>
+        <path transform="translate(0 1280) scale(1 -1)" d="M481.749333 353.792c16.682667-16.64 43.690667-16.64 60.373334 0l120.917333 120.832 3.541333 4.010667a42.666667 42.666667 0 0 1-63.872 56.32L554.666667 486.954667V896a42.666667 42.666667 0 0 1-85.333334 0v-409.173333l-48.170666 48.128a42.666667 42.666667 0 0 1-60.330667 0l-3.541333-4.010667a42.666667 42.666667 0 0 1 3.541333-56.32z"/>
+      </svg>
+    </button>
+    <button class="title-btn" onclick="showCollectionBuilder()">添加分组</button>
+    <button class="title-btn" onclick="showImportMenu()">导入</button>
+    <button class="title-btn" onclick="rescanCache()">刷新</button>
+    <button class="title-btn" onclick="openSettings()">设置</button>
+    <button class="title-btn" onclick="hide()" style="font-size: 15px; padding: 5px 10px; color: var(--muted);">x</button>
+  </div>
+  <div id="search-wrap">
+    <input id="search" type="text" placeholder="搜索表情包..." oninput="onSearch()" autofocus spellcheck="false">
+  </div>
+  <div id="content">
+    <div id="sidebar" class="collapsed">
+      <div id="sidebar-header">
+        <span>分组</span>
+      </div>
+      <div id="tree"></div>
+    </div>
+    <button id="sidebar-toggle" class="collapsed" title="折叠/展开侧边栏">▶</button>
+    <div id="main">
+      <div id="tagbar"></div>
+      <div id="grid-wrap">
+        <div id="meme-grid"></div>
+        <div id="empty" style="display:none">
+          <div class="icon">_(:3 」∠)_</div>
+          <div class="text">还没有表情包，点击「导入」添加</div>
+        </div>
+      </div>
+      <div id="pager" style="display:none"></div>
+    </div>
+  </div>
+</div>
+<div id="toast"></div>
+<div id="loading"><div class="spinner"></div></div>
+<div id="drop-overlay">
+  <div class="drop-content">拖放图片到此处导入</div>
+</div>
+<div id="ctx-menu">
+  <button class="ctx-item" data-action="rename">重命名</button>
+  <button class="ctx-item" data-action="favorite">收藏</button>
+  <button class="ctx-item" data-action="tag">打标签</button>
+  <button class="ctx-item" data-action="collection">添加分组</button>
+  <button class="ctx-item" data-action="add-to-subgroup" style="display:none">加入小分组</button>
+  <button class="ctx-item" data-action="remove-collection" style="display:none">移至上级分组</button>
+  <button class="ctx-item danger" data-action="delete-folder" style="display:none">删除小分组</button>
+  <button class="ctx-item danger" data-action="remove-recent" style="display:none">从最近使用中删除</button>
+  <button class="ctx-item" data-action="rename-collection" style="display:none">重命名分组</button>
+  <button class="ctx-item danger" data-action="delete-collection" style="display:none">删除分组</button>
+  <button class="ctx-item danger" data-action="clear-recent" style="display:none">清空最近使用</button>
+  <div class="ctx-divider"></div>
+  <button class="ctx-item danger" data-action="delete">删除</button>
+</div>
+<div id="ctx-subgroup-menu" class="ctx-submenu"></div>
+
+<script src="/index.js" defer></script>
+
+<!-- Sync progress overlay -->
+<div id="sync-progress-overlay" style="display:none;position:fixed;inset:0;background:rgba(0,0,0,.6);align-items:center;justify-content:center;z-index:500;animation:fadeIn .15s">
+  <div style="background:var(--surface);border-radius:var(--radius-lg);padding:24px 28px;width:420px;border:1px solid var(--border);box-shadow:var(--shadow-lg);text-align:center">
+    <div style="font-size:14px;font-weight:600;color:var(--fg);margin-bottom:4px" id="sync-progress-title">同步中...</div>
+    <div style="font-size:12px;color:var(--fg-secondary);margin-bottom:12px;word-break:break-all" id="sync-progress-file">准备中</div>
+    <div style="width:100%;height:8px;background:var(--bg);border-radius:4px;overflow:hidden;margin-bottom:6px">
+      <div id="sync-progress-bar" style="width:0%;height:100%;background:var(--accent);border-radius:4px;transition:width .3s"></div>
+    </div>
+    <div style="font-size:11.5px;color:var(--muted);margin-bottom:16px">
+      <span id="sync-progress-pct">0%</span>
+      <span id="sync-progress-speed" style="margin-left:12px">0 KB/s</span>
+    </div>
+    <button class="btn btn-secondary btn-sm" onclick="hideSyncProgress()">后台运行</button>
+  </div>
+</div>
+
+<div id="sync-done-overlay" style="display:none;position:fixed;inset:0;background:rgba(0,0,0,.6);align-items:center;justify-content:center;z-index:501;animation:fadeIn .15s">
+  <div style="background:var(--surface);border-radius:var(--radius-lg);padding:24px 28px;width:380px;border:1px solid var(--border);box-shadow:var(--shadow-lg);text-align:center">
+    <div style="font-size:14px;font-weight:600;color:var(--fg);margin-bottom:8px" id="sync-done-title">同步完成</div>
+    <div style="font-size:13px;color:var(--fg-secondary);line-height:1.6;margin-bottom:18px" id="sync-done-detail"></div>
+    <button class="btn btn-primary" onclick="hideSyncDone()">关闭</button>
+  </div>
+</div>
+
+<div id="import-overlay" style="display:none;position:fixed;inset:0;background:rgba(0,0,0,.4);align-items:center;justify-content:center;z-index:400;animation:fadeIn .15s" onclick="if(event.target===this)closeImportMenu()">
+  <div style="background:var(--surface);border-radius:var(--radius-lg);padding:20px 24px;width:280px;border:1px solid var(--border);box-shadow:var(--shadow-lg)">
+    <div style="font-size:14px;font-weight:600;color:var(--fg);margin-bottom:14px">选择导入方式</div>
+    <button class="btn btn-primary" style="width:100%;margin-bottom:8px" onclick="importLocal()">本地导入</button>
+    <button class="btn btn-primary" style="width:100%;margin-bottom:8px" onclick="importFolder()">导入文件夹</button>
+    <button class="btn btn-primary" style="width:100%;margin-bottom:8px" onclick="importClipboard()">从剪贴板导入</button>
+    <button class="btn btn-secondary" style="width:100%" onclick="importQQ()">从手机版 QQ 缓存获取</button>
+    <label style="display:flex;align-items:center;gap:8px;justify-content:center;margin-top:12px;font-size:12px;color:var(--fg-secondary);cursor:pointer;user-select:none">
+      <input id="import-folder-group" type="checkbox" checked style="width:14px;height:14px;accent-color:var(--accent);cursor:pointer">导入文件夹时自动创建分组
+    </label>
+    <div style="margin-top:12px;text-align:center">
+      <button class="btn btn-ghost btn-sm" onclick="closeImportMenu()">取消</button>
+    </div>
+  </div>
+</div>
+
+<!-- 添加分组弹窗 -->
+<div id="cb-overlay" style="display:none;position:fixed;inset:0;background:rgba(0,0,0,.55);align-items:center;justify-content:center;z-index:450;animation:fadeIn .15s">
+  <div id="cb-box" style="background:var(--surface);border-radius:var(--radius-lg);border:1px solid var(--border);box-shadow:var(--shadow-lg);width:640px;height:min(92vh,680px);display:flex;flex-direction:column;overflow:hidden">
+    <div style="padding:16px 20px;border-bottom:1px solid var(--border)">
+      <div style="font-size:14px;font-weight:600;color:var(--fg);margin-bottom:10px">添加分组</div>
+      <div style="position:relative">
+        <input id="cb-name" type="text" placeholder="输入分组名或选择已有分组..." autocomplete="off" spellcheck="false">
+        <div id="cb-dropdown" class="cb-dropdown"></div>
+      </div>
+    </div>
+    <div style="padding:12px 20px;border-bottom:1px solid var(--border)">
+      <input id="cb-search" type="text" placeholder="搜索表情包添加到分组..." autocomplete="off" spellcheck="false">
+    </div>
+    <div id="cb-cols">
+      <div class="cb-col" id="cb-col-left">
+        <div class="cb-col-title">表情库</div>
+        <div class="cb-col-list" id="cb-left-list"></div>
+      </div>
+      <div class="cb-col cb-col-right" id="cb-col-right">
+        <div class="cb-col-title">已添加 (<span id="cb-right-count">0</span>)</div>
+        <div class="cb-col-list" id="cb-right-list"></div>
+      </div>
+    </div>
+    <div style="padding:12px 20px;border-top:1px solid var(--border);display:flex;justify-content:flex-end;gap:8px">
+      <button id="cb-cancel" class="btn cb-cancel">取消</button>
+      <button id="cb-confirm" class="btn cb-confirm">确定</button>
+    </div>
+  </div>
+</div>
+</body>
+</html>

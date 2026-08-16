@@ -15,15 +15,7 @@
   </div>
 
   <div id="body">
-    <nav id="settings-nav">
-      <button class="nav-item active" data-group="base" onclick="switchSettingsGroup('base')">基础设置</button>
-      <button class="nav-item" data-group="import" onclick="switchSettingsGroup('import')">导入</button>
-      <button class="nav-item" data-group="network" onclick="switchSettingsGroup('network')">联网</button>
-      <button class="nav-item danger" data-group="danger" onclick="switchSettingsGroup('danger')">危险操作</button>
-      <button class="nav-item" data-group="logs" onclick="switchSettingsGroup('logs')">日志</button>
-    </nav>
-    <div id="settings-content">
-    <div class="section" data-group="base">
+    <div class="section">
       <div class="form-group">
         <label>全局快捷键</label>
         <input id="s-hotkey" readonly onclick="startHotkeyCapture(this)">
@@ -33,7 +25,7 @@
       </label>
     </div>
 
-    <div class="section" data-group="base">
+    <div class="section">
       <div class="section-title">版本更新</div>
       <div style="display:flex;align-items:center;gap:10px;margin-bottom:6px">
         <span style="font-size:12.5px;color:var(--fg-secondary)" id="s-ver-current">当前版本: --</span>
@@ -42,7 +34,7 @@
       <div id="s-update-status" style="font-size:11.5px;color:var(--muted)"></div>
     </div>
 
-    <div class="section" data-group="base">
+    <div class="section">
       <div class="section-title">启动与开机自启</div>
       <label class="check-row">
         <input id="s-auto-start" type="checkbox" onchange="toggleSilentStart()">开机自启
@@ -52,7 +44,7 @@
       </label>
     </div>
 
-    <div class="section" data-group="base">
+    <div class="section">
       <div class="section-title">分组显示</div>
       <label class="check-row">
         <input id="s-show-uncategorized" type="checkbox">显示「未分类」分组
@@ -62,7 +54,7 @@
       </label>
     </div>
 
-    <div class="section" data-group="base">
+    <div class="section">
       <div class="section-title">动图</div>
       <label class="check-row">
         <input id="s-gif" type="checkbox">动图自动播放
@@ -72,17 +64,16 @@
       </label>
     </div>
 
-    <div class="section" data-group="base">
+    <div class="section">
       <!-- DeepSeek V4 Flash -->
       <div class="section-title">图片来源</div>
-
       <label class="check-row">
         <input id="s-try-original" type="checkbox" onchange="checkConnectivity()">浏览器来源尝试获取原图
       </label>
       <div id="s-net-status" style="font-size:12px;margin-top:4px;padding-left:4px;color:var(--muted)"></div>
     </div>
 
-    <div class="section" data-group="base">
+    <div class="section">
       <div class="section-title">复制处理</div>
       <label class="check-row" style="gap:8px">
         复制超限静态图时
@@ -96,7 +87,7 @@
       <p style="font-size:11.5px;color:var(--muted);margin-top:4px;line-height:1.6">复制超过尺寸上限的静态图时按此处模式处理；动图不受影响。隐写模式会把原图信息随 GIF 隐藏，接收方可运行解码工具还原，但会显著增大文件体积。</p>
     </div>
 
-    <div class="section" data-group="base">
+    <div class="section">
       <div class="section-title">存储位置</div>
       <p style="font-size:11.5px;color:var(--muted);margin-bottom:10px;line-height:1.6">表情包图片文件存放目录；数据库与缩略图仍保留在系统数据目录</p>
       <div class="form-group">
@@ -122,7 +113,7 @@
       <div id="s-storage-status" style="font-size:11.5px;color:var(--muted);margin-top:6px;line-height:1.6"></div>
     </div>
 
-    <div class="section" data-group="import">
+    <div class="section">
       <div class="section-title">从手机导入</div>
       <p style="font-size:11.5px;color:var(--muted);margin-bottom:10px;line-height:1.6">通过 ADB 从连接的 Android 手机拉取 QQ 表情包缓存并打包 ZIP</p>
       <div style="display:flex;gap:8px">
@@ -131,7 +122,7 @@
       <div id="qq-status"></div>
     </div>
 
-    <div class="section" data-group="import">
+    <div class="section">
       <div class="section-title">从电脑导入</div>
       <p style="font-size:11.5px;color:var(--muted);margin-bottom:10px;line-height:1.6">从 PC 版 QQ（QQNT）本地缓存批量提取收藏表情</p>
       <div style="display:flex;gap:8px">
@@ -140,7 +131,7 @@
       <div id="qqnt-status"></div>
     </div>
 
-    <div class="section" data-group="import">
+    <div class="section">
       <div class="section-title">从 Telegram 导入</div>
       <p style="font-size:11.5px;color:var(--muted);margin-bottom:10px;line-height:1.6">从 Telegram Desktop 本地缓存解密提取表情包（WebP 直取，WebM 无损转 WebP 并保留透明通道）</p>
       <div class="form-group">
@@ -163,7 +154,7 @@
       <div id="tg-status"></div>
     </div>
 
-    <div class="section" data-group="import">
+    <div class="section">
       <div class="section-title">从抖音导入</div>
       <p style="font-size:11.5px;color:var(--muted);margin-bottom:10px;line-height:1.6">通过抖音网页版 API 下载自定义表情包（WebP 原格式保存，需登录 Cookie）</p>
       <div class="form-group">
@@ -176,7 +167,7 @@
       <div id="dy-status"></div>
     </div>
 
-    <div class="section" data-group="import">
+    <div class="section">
       <div class="section-title">从微信导入</div>
       <p style="font-size:11.5px;color:var(--muted);margin-bottom:10px;line-height:1.6">从微信电脑版本地缓存提取收藏表情（需微信正在运行，仅 Windows 支持）。微信文件目录是存放所有账号数据的根目录（xwechat_files），其下的 wxid_* 文件夹为各账号目录</p>
       <div class="form-group">
@@ -199,7 +190,7 @@
       <div id="wechat-status"></div>
     </div>
 
-    <div class="section" data-group="network">
+    <div class="section">
       <div class="section-title">局域网互联</div>
       <p style="font-size:11.5px;color:var(--muted);margin-bottom:10px;line-height:1.6">与手机版 OhMyMeme 在同一局域网内配对，互相同步表情包与配置</p>
       <div class="form-group">
@@ -222,7 +213,7 @@
       <div id="lan-status" style="font-size:11.5px;color:var(--muted);margin-top:6px;line-height:1.8"></div>
     </div>
 
-    <div class="section" data-group="network">
+    <div class="section">
       <div class="section-title">云端同步</div>
 
       <label class="check-row">
@@ -389,7 +380,7 @@
       </div>
     </div>
 
-    <div class="section" data-group="danger" style="border-color:var(--accent-muted)">
+    <div class="section" style="border-color:var(--accent-muted)">
       <div class="section-title" style="color:#ef4444">危险操作</div>
       <p style="font-size:11.5px;color:var(--muted);margin-bottom:12px;line-height:1.6">以下操作不可撤销，请谨慎使用</p>
       <div style="display:flex;gap:8px">
@@ -398,14 +389,13 @@
       </div>
     </div>
 
-    <div class="section" data-group="logs">
+    <div class="section">
       <div class="section-title">日志</div>
       <p style="font-size:11.5px;color:var(--muted);margin-bottom:10px;line-height:1.6">导出本次运行至今的 Debug 级日志，便于排查问题</p>
       <div style="display:flex;gap:8px">
         <button class="btn btn-secondary btn-sm btn-flex" onclick="exportLogs()">导出日志</button>
       </div>
       <div id="log-export-status" style="font-size:11.5px;color:var(--muted);margin-top:6px"></div>
-    </div>
     </div>
   </div>
 

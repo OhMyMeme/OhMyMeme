@@ -743,7 +743,7 @@ def test_sorting_visual_feedback_static_contract():
 def test_grid_slot_hit_testing_stays_aligned_when_layout_moves_and_scrolls():
     root = Path(__file__).resolve().parent.parent
     result = subprocess.run(
-        ["node", root / "tests" / "fixtures" / "grid_slot_probe.js"],
+        ["node", root / "tests" / "fixtures" / "grid_slot_probe.cjs"],
         cwd=root,
         capture_output=True,
         text=True,
