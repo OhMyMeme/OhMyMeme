@@ -102,7 +102,8 @@ export function useMemes() {
   function canReorder(): boolean {
     const q = state.searchQuery.trim()
     if (q || state.activeTags.size > 0) return false
-    return state.activeCollection === null || state.activeCollection > 0
+    // 全部/未分类/正 ID 分组可排序；收藏夹/最近使用（-2/-3）不可排
+    return state.activeCollection === null || state.activeCollection === -4 || state.activeCollection > 0
   }
 
   async function startNativeDrag(memeId: number): Promise<boolean> {

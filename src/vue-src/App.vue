@@ -254,10 +254,17 @@ function onFolderRightClick(e: MouseEvent, folderId: number, folderName: string)
 
 // 右键「加入小分组」子菜单：加载已有分组
 async function onShowSubmenu(_items: any[], x: number, y: number) {
-  const all = (await window.pywebview?.api?.search_collections()) || []
-  const sub = [{ action: '__new-subgroup__', label: '新建分组' }]
-  for (const c of all) {
-    sub.push({ action: 'subgroup-' + c.id, label: '　'.repeat(c.depth || 0) + c.name })
+  // 只显示当前分组（正 ID）下的子分组；不在分组内时无子分组
+  const targetCol = state.activeCollection && state.activeCollection > 0 ? state.activeCollection : null
+  const children = targetCol ? ((await window.pywebview?.api?.get_child_collections(targetCol)) || []) : []
+  const sub: { action: string; label: string }[] = []
+  if (!targetCol) {
+    sub.push({ action: '__new-subgroup__', label: '新建分组' })
+  } else {
+    sub.push({ action: '__new-subgroup__', label: '新建小分组' })
+    for (const ch of children) {
+      sub.push({ action: 'subgroup-' + ch.id, label: ch.name })
+    }
   }
   ctx.showSubmenu(sub, x, y)
 }
@@ -295,10 +302,17 @@ async function onCtxAction(action: string) {
     case 'collection': { showCollectionBuilder(); break }
     case 'add-to-subgroup': { /* 子菜单在 hover 时加载，点击走 subgroup-N / __new-subgroup__ */ break }
     case '__new-subgroup__': {
-      const name = prompt('新建分组', '')
+      const name = prompt(state.activeCollection && state.activeCollection > 0 ? '新建小分组' : '新建分组', '')
       if (!name) break
-      const ok = await window.pywebview?.api?.add_to_collection(t.memeId, name)
-      if (ok) { showToast('已添加到分组：' + name); refreshCollections(); search() }
+      const targetCol = state.activeCollection && state.activeCollection > 0 ? state.activeCollection : null
+      let ok: any
+      if (targetCol) {
+        const r = await window.pywebview?.api?.create_subcollection(name, targetCol)
+        if (r && r.ok) ok = await window.pywebview?.api?.add_to_existing_collection(t.memeId, r.id)
+      } else {
+        ok = await window.pywebview?.api?.add_to_collection(t.memeId, name)
+      }
+      if (ok) { showToast('已添加'); refreshCollections(); search() }
       else showToast('添加分组失败')
       break
     }
