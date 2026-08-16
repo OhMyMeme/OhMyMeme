@@ -24,8 +24,8 @@ function close(v: boolean) {
 }
 
 function onKeydown(e: KeyboardEvent) {
-  if (e.key === 'Enter') { e.preventDefault(); close(true) }
-  else if (e.key === 'Escape') { e.stopPropagation(); close(false) }
+  // 危险操作不响应 Enter 自动确认，避免误触；Escape 取消
+  if (e.key === 'Escape') { e.stopPropagation(); close(false) }
 }
 
 defineExpose({ open })
@@ -33,9 +33,9 @@ defineExpose({ open })
 
 <template>
   <div v-if="visible" class="confirm-dialog-overlay" @click.self="close(false)">
-    <div class="confirm-dialog-box" @keydown="onKeydown">
-      <div class="confirm-dialog-title">{{ title }}</div>
-      <div class="confirm-dialog-message">{{ message }}</div>
+    <div class="confirm-dialog-box" role="dialog" aria-modal="true" aria-labelledby="confirm-dialog-title" aria-describedby="confirm-dialog-message" @keydown="onKeydown">
+      <div id="confirm-dialog-title" class="confirm-dialog-title">{{ title }}</div>
+      <div id="confirm-dialog-message" class="confirm-dialog-message">{{ message }}</div>
       <div class="confirm-dialog-actions">
         <button ref="confirmEl" class="btn btn-danger" @click="close(true)">确定</button>
         <button class="btn btn-secondary" @click="close(false)">取消</button>

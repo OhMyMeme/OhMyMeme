@@ -33,8 +33,11 @@ const selectedId = ref<number | null>(null)
 const selectedName = ref('')
 // 打开时预选的表情（右键「添加分组」带入），切换新建/已有分组时保留
 const preselectIds = ref<number[]>([])
+// 已有分组成员加载中：期间禁用确认，避免以不完整的成员集提交
+const memberLoading = ref(false)
 
 let onConfirmCallback: ((result: CollectionConfirm) => void) | null = null
+let memberReqGen = 0
 
 export function useCollectionBuilder() {
   async function open(onConfirm: (result: CollectionConfirm) => void, preselect: number[] = []) {
@@ -80,13 +83,19 @@ export function useCollectionBuilder() {
     collectionName.value = opt.name
     showDropdown.value = false
     // 已有分组：加载其现有成员，并保留预选的表情（右键带入的新增项）
+    const gen = ++memberReqGen
+    memberLoading.value = true
     api('get_collection_members', opt.id).then((members: any) => {
+      if (gen !== memberReqGen) return
+      memberLoading.value = false
       const ids = new Set((members || []).map((m: any) => m.id))
       preselectIds.value.forEach(id => ids.add(id))
       selectedIds.value = ids
     })
   }
   function createNew() {
+    memberReqGen++
+    memberLoading.value = false
     selectedId.value = null
     selectedName.value = ''
     collectionName.value = ''
@@ -103,7 +112,7 @@ export function useCollectionBuilder() {
 
   function confirm() {
     const name = collectionName.value.trim()
-    if (!name) return
+    if (!name || memberLoading.value) return
     const memeIds = Array.from(selectedIds.value)
     if (onConfirmCallback) {
       onConfirmCallback({ name, memeIds, existingId: selectedId.value })
@@ -139,6 +148,7 @@ export function useCollectionBuilder() {
   return {
     visible,
     loading,
+    memberLoading,
     searchQuery,
     selectedIds,
     selectedId,

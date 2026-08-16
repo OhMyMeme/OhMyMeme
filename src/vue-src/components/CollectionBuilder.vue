@@ -88,7 +88,7 @@ const cb = useCollectionBuilder()
 
       <div class="cb-footer">
         <button class="btn btn-secondary" @click="cb.close()">取消</button>
-        <button class="btn btn-primary" :disabled="!cb.collectionName.value.trim()" @click="cb.confirm()">{{ cb.selectedId.value ? '保存到该分组' : '创建分组' }}</button>
+        <button class="btn btn-primary" :disabled="cb.memberLoading.value || !cb.collectionName.value.trim()" @click="cb.confirm()">{{ cb.selectedId.value != null ? '保存到该分组' : '创建分组' }}</button>
       </div>
     </div>
   </div>

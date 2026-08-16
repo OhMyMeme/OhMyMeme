@@ -1390,32 +1390,26 @@ class SettingsApi:
             "hover_to_play": d.get("hover_to_play", False),
         }
 
-    def refresh_memes(self) -> dict:
+    def _safe_refresh(self, js_function: str) -> dict:
+        """执行前端刷新函数，并在异常时记录日志"""
+        try:
+            if len(webview.windows) > 0:
+                webview.windows[0].evaluate_js(f"{js_function}();")
+        except Exception:
+            logger.exception("前端刷新函数 %s 执行失败", js_function)
+        return {"ok": True}
+
+    def refresh_memes(self):
         """设置窗口同步完成后刷新主窗口表情列表"""
-        try:
-            if len(webview.windows) > 0:
-                webview.windows[0].evaluate_js("refreshMemes();")
-        except Exception:
-            pass
-        return {"ok": True}
+        return self._safe_refresh("refreshMemes")
 
-    def refresh_tags(self) -> dict:
+    def refresh_tags(self):
         """设置窗口同步完成后刷新主窗口标签栏"""
-        try:
-            if len(webview.windows) > 0:
-                webview.windows[0].evaluate_js("refreshTags();")
-        except Exception:
-            pass
-        return {"ok": True}
+        return self._safe_refresh("refreshTags")
 
-    def refresh_collections(self) -> dict:
+    def refresh_collections(self):
         """设置窗口同步完成后刷新主窗口分组树"""
-        try:
-            if len(webview.windows) > 0:
-                webview.windows[0].evaluate_js("refreshCollections();")
-        except Exception:
-            pass
-        return {"ok": True}
+        return self._safe_refresh("refreshCollections")
 
     def save_settings(self, settings: dict):
         if isinstance(settings, dict):

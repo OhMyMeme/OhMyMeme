@@ -33,6 +33,8 @@ function showLanDeviceConfirm(device: any) {
   overlay.style.cssText =
     'position:fixed;inset:0;background:rgba(0,0,0,.55);display:flex;align-items:center;justify-content:center;z-index:500;animation:fadeIn .15s'
   const box = document.createElement('div')
+  box.setAttribute('role', 'dialog')
+  box.setAttribute('aria-modal', 'true')
   box.style.cssText =
     'background:var(--surface);border-radius:var(--radius-lg);padding:24px 28px;width:400px;border:1px solid var(--border);box-shadow:var(--shadow-lg)'
   box.innerHTML =
