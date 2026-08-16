@@ -19,9 +19,4 @@ export default defineConfig({
     minify: 'esbuild',
     sourcemap: false,
   },
-  resolve: {
-    alias: {
-      '@': resolve(__dirname),
-    },
-  },
 })

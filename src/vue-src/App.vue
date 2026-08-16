@@ -2,7 +2,7 @@
 import { ref, onMounted, onUnmounted, computed } from 'vue'
 import { useMemes } from './composables/useMemes'
 import { useDragSort } from './composables/useDragSort'
-import { useContextMenu } from './composables/useContextMenu'
+import { useContextMenu, type MenuItem } from './composables/useContextMenu'
 import { useCollectionBuilder } from './composables/useCollectionBuilder'
 import ContextMenu from './components/ContextMenu.vue'
 import CollectionBuilder from './components/CollectionBuilder.vue'
@@ -47,6 +47,7 @@ const dragOver = ref(false)
 let dragCounter = 0
 let nativeDragActive = false
 let dragState: { sx: number; sy: number } | null = null
+let updateInterval: ReturnType<typeof setInterval> | null = null
 
 // 网格列数随侧边栏即时切换（实时感）；性能由卡片 content-visibility 保证
 const gridCols = computed(() => sidebarCollapsed.value ? 5 : 4)
@@ -122,7 +123,7 @@ function onFolderCardContext(e: MouseEvent, childId: number, childName: string) 
 
 async function handleCopy(meme: Meme) {
   if (ignoreClick) { ignoreClick = false; return }
-  const ok = await copyMeme(meme.id, meme.filename)
+  const ok = await copyMeme(meme.id)
   if (ok) showToast(`${meme.name} 已复制`)
   else showToast('复制失败')
 }
@@ -224,7 +225,7 @@ function onWindowMouseUp() { dragState = null }
 function onMemeRightClick(e: MouseEvent, meme: Meme) {
   e.preventDefault()
   e.stopPropagation()
-  const items = [
+  const items: MenuItem[] = [
     { action: 'rename', label: '重命名' },
     { action: 'favorite', label: meme.favorited ? '取消收藏' : '收藏' },
     { action: 'tag', label: '打标签' },
@@ -244,7 +245,7 @@ function onMemeRightClick(e: MouseEvent, meme: Meme) {
 function onFolderRightClick(e: MouseEvent, folderId: number, folderName: string) {
   e.preventDefault()
   e.stopPropagation()
-  const items = [{ action: 'rename-collection', label: '重命名' }]
+  const items: MenuItem[] = [{ action: 'rename-collection', label: '重命名' }]
   if (folderId === -3) {
     items.push({ action: 'clear-recent', label: '清空最近使用', danger: true })
   } else if (folderId > 0) {
@@ -327,7 +328,8 @@ async function onCtxAction(action: string) {
         const parent = findParentCollection(state.collections, removedFrom)
         if (parent) await window.pywebview?.api?.add_to_existing_collection(t.memeId, parent.id)
         await refreshCollections()
-        const c = state.collections.find((x: any) => x.id === removedFrom)
+        // 递归查找分组节点（子分组不在顶层），据此判断是否清空后再删
+        const c = findCollectionNode(state.collections, removedFrom)
         if (!c || c.count === 0) {
           if (removedFrom > 0) await window.pywebview?.api?.delete_collection(removedFrom)
           setActiveCollection(parent ? parent.id : -4)
@@ -404,6 +406,18 @@ function findParentCollection(items: any[], target: number): any | null {
         if (ch.id === target) return c
       }
       const r = findParentCollection(c.children, target)
+      if (r) return r
+    }
+  }
+  return null
+}
+
+// 递归查找分组节点（含子分组）
+function findCollectionNode(items: any[], target: number): any | null {
+  for (const c of items) {
+    if (c.id === target) return c
+    if (c.children && c.children.length) {
+      const r = findCollectionNode(c.children, target)
       if (r) return r
     }
   }
@@ -598,6 +612,9 @@ onUnmounted(() => {
   document.removeEventListener('pointercancel', onDocPointerCancel)
   document.removeEventListener('keydown', onDocKeydown)
   window.removeEventListener('blur', onDocPointerCancel)
+  if (updateInterval) { clearInterval(updateInterval); updateInterval = null }
+  hoverTimers.forEach(t => clearTimeout(t))
+  hoverTimers.clear()
 })
 
 ;(async () => {
@@ -611,7 +628,7 @@ onUnmounted(() => {
   }, 300)
   // 每日更新检测（完整弹窗 + 下载安装，与原始实现一致）
   await checkUpdateAndPrompt()
-  setInterval(checkUpdateAndPrompt, 24 * 60 * 60 * 1000)
+  updateInterval = setInterval(checkUpdateAndPrompt, 24 * 60 * 60 * 1000)
 })()
 </script>
 
@@ -741,7 +758,7 @@ onUnmounted(() => {
     </div>
   </div>
 
-  <CollectionBuilder @confirm="showCollectionBuilder" />
+  <CollectionBuilder />
   <ImportMenu ref="importMenu" @imported="onImportDone" />
   <SyncOverlay ref="syncOverlay" @synced="onSyncDone" />
   <TagEditor ref="tagEditor" />

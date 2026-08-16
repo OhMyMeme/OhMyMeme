@@ -2495,7 +2495,8 @@ class WebUI:
         @app.route("/")
         def index():
             vue_html = HTML_DIR / "vue.html"
-            if vue_html.exists():
+            # 仅当 vue.html 与构建产物都存在时才走 Vue 前端，否则回退旧 index.html
+            if vue_html.exists() and (HTML_DIR / "dist" / "ohmymeme.js").exists():
                 return bottle.static_file("vue.html", root=str(HTML_DIR))
             html_path = HTML_DIR / "index.html"
             if html_path.exists():

@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { ref } from 'vue'
+import { ref, computed } from 'vue'
 import type { Collection } from '../types'
 
 const props = defineProps<{
@@ -15,7 +15,7 @@ const emit = defineEmits<{
 }>()
 
 const expanded = ref(props.depth < 2)
-const hasChildren = !!(props.node.children && props.node.children.length > 0)
+const hasChildren = computed(() => !!(props.node.children && props.node.children.length > 0))
 
 function toggleExpand(e: MouseEvent) {
   e.stopPropagation()

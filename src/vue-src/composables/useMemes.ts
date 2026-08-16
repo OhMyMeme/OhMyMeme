@@ -86,7 +86,7 @@ export function useMemes() {
   }
   async function refreshTags() { try { state.allTags = (await api('get_tags')) || [] } catch { state.allTags = [] } }
   async function refreshCollections() { try { state.collections = (await api('get_collections')) || [] } catch { state.collections = [] } }
-  async function copyMeme(id: number, filename: string): Promise<boolean> {
+  async function copyMeme(id: number): Promise<boolean> {
     const result = await api('copy_meme', id)
     return !!result?.ok
   }

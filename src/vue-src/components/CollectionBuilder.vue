@@ -2,10 +2,6 @@
 import { useCollectionBuilder } from '../composables/useCollectionBuilder'
 
 const cb = useCollectionBuilder()
-
-function handleConfirm(name: string, ids: number[]) {
-  console.log('Create collection:', name, 'with', ids.length, 'memes')
-}
 </script>
 
 <template>

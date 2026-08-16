@@ -5,17 +5,20 @@ const visible = ref(false)
 const title = ref('')
 const value = ref('')
 const placeholder = ref('')
+const inputEl = ref<HTMLInputElement>()
 
 let resolveFn: ((v: string | null) => void) | null = null
 
 async function open(t: string, initial: string = '', ph: string = ''): Promise<string | null> {
+  // 若上一个对话框尚未关闭，先结算其 Promise，避免旧调用方永久阻塞
+  if (resolveFn) { resolveFn(null); resolveFn = null }
   title.value = t
   value.value = initial
   placeholder.value = ph
   visible.value = true
   await nextTick()
-  document.getElementById('input-dialog-input')?.focus()
-  document.getElementById('input-dialog-input')?.select()
+  inputEl.value?.focus()
+  inputEl.value?.select()
   return new Promise(resolve => { resolveFn = resolve })
 }
 
@@ -42,6 +45,7 @@ defineExpose({ open })
       <div class="input-dialog-title">{{ title }}</div>
       <input
         id="input-dialog-input"
+        ref="inputEl"
         v-model="value"
         class="input-dialog-input"
         type="text"

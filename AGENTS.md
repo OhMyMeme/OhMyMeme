@@ -95,7 +95,7 @@ tests/
   test_abogus.py  # unittest 风格: ABogus 签名算法 SM3/RC4/签名
   test_douyin_dl.py # unittest 风格: 抖音下载 CLI (签名URL/verifyFp)
   test_startup.py # pytest 风格: 全生命周期集成测试
-  fixtures/grid_slot_probe.js # Node 网格拖拽槽位回归探针
+  fixtures/grid_slot_probe.cjs # Node 网格拖拽槽位回归探针
 ```
 
 ## js_api 桥接规范
@@ -194,9 +194,11 @@ tests/
 - WSL 时设置 `MESA_LOADER_DRIVER_OVERRIDE=llvmpipe`, `LIBGL_ALWAYS_SOFTWARE=1` 等软渲染环境变量
 
 ### 启动流程 (关键时序)
-- Vue `App.vue` 挂载后分两阶段:
+- Vue `App.vue` 挂载后:
   1. 立即: `loadInitData()` → `get_init_data()` 加载数据库数据 → 秒开
-  2. 延迟 300ms 后: `rescan_cache()` → `run_auto_sync()` → 重新搜索/标签/分组 → `check_update()`（有新版弹更新对话框）
+  2. `checkUpdateAndPrompt()` 立即执行（与 rescan/同步并行）
+  3. 延迟 300ms 后: `rescan_cache()` → `run_auto_sync()` → 重新搜索/标签/分组
+  4. `setInterval` 每 24h 再跑一次更新检测
 - **300ms 延时不可移除** — 给 Bottle + pywebview 桥接稳定时间
 - **必须先 rescan_cache 再 run_auto_sync** — 确保本地文件与 DB 一致后再对比远端，否则同步产生错误 diff
 - **check_update 必须静默** — GitHub API 失败不阻塞启动

@@ -17,7 +17,7 @@ body {
   background: var(--bg); color: var(--fg);
   height: 100vh; overflow: hidden;
   -webkit-font-smoothing: antialiased;
-  text-rendering: optimizeLegibility;
+  text-rendering: optimizelegibility;
 }
 #app { display: flex; flex-direction: column; height: 100vh; }
 #titlebar {

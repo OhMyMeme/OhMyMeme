@@ -30,7 +30,7 @@ body {
   height: 100vh;
   user-select: none;
   -webkit-font-smoothing: antialiased;
-  text-rendering: optimizeLegibility;
+  text-rendering: optimizelegibility;
 }
 
 #app {
@@ -719,7 +719,7 @@ body {
   to { transform: rotate(360deg); }
 }
 
-@keyframes fadeIn {
+@keyframes fade-in {
   from { opacity: 0; }
   to { opacity: 1; }
 }

@@ -1711,7 +1711,9 @@ async function initSettings() {
   const s = await getSettings();
   if (s) {
     document.getElementById('s-hotkey')?.focus();
-    switchSettingsGroup('base');
+    // 若用户已手动切换分组，则不覆盖；否则默认基础设置
+    const active = document.querySelector('#settings-nav .nav-item.active');
+    if (!active) switchSettingsGroup('base');
     return;
   }
   // pywebview bridge not ready yet, retry
