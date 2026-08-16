@@ -459,14 +459,14 @@ function onDocPointerMove(e: PointerEvent) {
     drag.onPointerMove(e)
     return
   }
-  if (!nativeDragStart || sortEnabled.value) return
-  const dist = Math.hypot(e.clientX - nativeDragStart.x, e.clientY - nativeDragStart.y)
-  if (dist <= 8 && !internalDrag.value) return
-  if (!internalDrag.value) {
+  if ((!nativeDragStart && !internalDrag.value) || sortEnabled.value) return
+  if (!internalDrag.value && nativeDragStart) {
+    const dist = Math.hypot(e.clientX - nativeDragStart.x, e.clientY - nativeDragStart.y)
+    if (dist <= 8) return
     internalDrag.value = { meme: nativeDragStart.meme, x: e.clientX, y: e.clientY }
     nativeDraggingMemeId.value = nativeDragStart.meme.id
     nativeDragStart = null
-  } else {
+  } else if (internalDrag.value) {
     internalDrag.value = { ...internalDrag.value, x: e.clientX, y: e.clientY }
   }
   updateFolderDropTarget(e.clientX, e.clientY)
