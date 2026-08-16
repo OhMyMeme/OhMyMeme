@@ -88,7 +88,10 @@ export function useMemes() {
     search()
   }
   function setActiveCollection(id: number | null) {
-    if (state.activeCollection === id) state.activeCollection = null
+    // 文件系统式导航：显式传入 null 时必须回到根目录；
+    // 只有点击当前同一个侧栏项目时才作为“取消筛选”。
+    if (id === null) state.activeCollection = null
+    else if (state.activeCollection === id) state.activeCollection = null
     else state.activeCollection = id
     search()
   }

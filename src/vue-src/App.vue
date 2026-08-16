@@ -43,6 +43,8 @@ const drag = useDragSort(
 
 const sidebarCollapsed = ref(false)
 const dragOver = ref(false)
+const folderDropTargetId = ref<number | null>(null)
+const nativeDraggingMemeId = ref<number | null>(null)
 let dragCounter = 0
 let nativeDragActive = false
 let dragState: { sx: number; sy: number } | null = null
@@ -77,8 +79,12 @@ const breadcrumb = computed(() => {
   return current ? [{ id: null, name: '全部' }, current] : []
 })
 
+function goToAllMemes() {
+  if (state.activeCollection !== null) setActiveCollection(null)
+}
+
 function onBreadcrumbClick(id: number | null) {
-  if (id === null && state.activeCollection !== null) setActiveCollection(null)
+  if (id === null) goToAllMemes()
 }
 
 function onFolderCardClick(folderId: number) {
@@ -145,6 +151,13 @@ function toggleSidebar() { sidebarCollapsed.value = !sidebarCollapsed.value }
 
 function toggleTagbar() {
   setTagbarCollapsed(!state.tagbarCollapsed)
+}
+
+async function setGridScale(value: number) {
+  state.gridScale = Math.max(48, Math.min(120, Math.round(value / 4) * 4))
+  try {
+    await window.pywebview?.api?.save_settings({ grid_scale: state.gridScale })
+  } catch (_) {}
 }
 
 function toggleSort() {
@@ -441,11 +454,16 @@ function onDocPointerMove(e: PointerEvent) {
     nativeDragStart = null
     // 原生拖拽进行中置标志，回拖到窗口视为取消（不触发 drop 导入）
     nativeDragActive = true
+    nativeDraggingMemeId.value = id
     startNativeDrag(id).then((ok) => {
       nativeDragActive = false
+      nativeDraggingMemeId.value = null
       ignoreClick = true
       if (!ok) showToast('拖拽失败：本地文件不存在')
-    }).catch(() => { nativeDragActive = false })
+    }).catch(() => {
+      nativeDragActive = false
+      nativeDraggingMemeId.value = null
+    })
   }
 }
 
@@ -456,6 +474,31 @@ async function onDocPointerUp(e: PointerEvent) {
     return
   }
   nativeDragStart = null
+}
+
+function onFolderDragOver(e: DragEvent, folderId: number) {
+  if (!e.dataTransfer?.types.includes('Files')) return
+  e.preventDefault()
+  e.stopPropagation()
+  e.dataTransfer.dropEffect = 'copy'
+  folderDropTargetId.value = folderId
+}
+
+function onFolderDragLeave(e: DragEvent, folderId: number) {
+  const next = e.relatedTarget as Node | null
+  if (!next || !(e.currentTarget as HTMLElement).contains(next)) {
+    if (folderDropTargetId.value === folderId) folderDropTargetId.value = null
+  }
+}
+
+async function onFolderDrop(e: DragEvent, folderId: number) {
+  e.preventDefault()
+  e.stopPropagation()
+  folderDropTargetId.value = null
+  const files = Array.from(e.dataTransfer?.files || [])
+  if (!files.length) return
+  // 文件从系统拖入文件夹时按原有导入链路处理；导入成功后会刷新文件夹列表。
+  await onDrop(e)
 }
 
 function onDocPointerCancel() {
@@ -610,6 +653,20 @@ onUnmounted(() => {
       </div>
       <span class="spacer"></span>
       <div class="titlebar__actions">
+        <details class="toolbar-menu" @mousedown.stop>
+          <summary class="icon-btn" title="界面布局与显示选项">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M4 7h16M4 12h16M4 17h16"/><circle cx="9" cy="7" r="1.5" fill="currentColor"/><circle cx="15" cy="12" r="1.5" fill="currentColor"/><circle cx="11" cy="17" r="1.5" fill="currentColor"/></svg>
+          </summary>
+          <div class="toolbar-popover">
+            <div class="toolbar-popover__row">
+              <label for="grid-scale">图标大小 <strong>{{ state.gridScale }}px</strong></label>
+              <input id="grid-scale" type="range" min="48" max="120" step="4" :value="state.gridScale" @input="setGridScale(Number(($event.target as HTMLInputElement).value))">
+            </div>
+            <button class="toolbar-popover__button" @click="toggleTagbar">
+              {{ state.tagbarCollapsed ? '展开标签栏' : '折叠标签栏' }}
+            </button>
+          </div>
+        </details>
         <button class="icon-btn" :class="{ 'sort-on': sortEnabled }" title="拖拽排序" @click="toggleSort">
           <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 6h18M3 12h18M3 18h18"/></svg>
         </button>
@@ -671,16 +728,11 @@ onUnmounted(() => {
           </template>
         </div>
 
-        <div v-if="breadcrumb.length > 1" id="breadcrumb">
-          <template v-for="(crumb, idx) in breadcrumb" :key="idx">
-            <span v-if="idx > 0" class="crumb-sep">›</span>
-            <button
-              class="crumb"
-              :class="{ current: idx === breadcrumb.length - 1 }"
-              @click="onBreadcrumbClick(crumb.id)"
-            >{{ crumb.name }}</button>
-          </template>
-        </div>
+        <nav v-if="state.activeCollection !== null" id="breadcrumb" aria-label="文件夹路径">
+          <button class="crumb crumb-home" @click="goToAllMemes">← 所有表情</button>
+          <span class="crumb-sep">›</span>
+          <span class="crumb-path">文件夹 / {{ breadcrumb[breadcrumb.length - 1]?.name || '当前文件夹' }}</span>
+        </nav>
 
         <Pager
           v-if="state.pageCount > 1"
@@ -695,9 +747,13 @@ onUnmounted(() => {
               v-for="child in folderCards"
               :key="'folder-' + child.id"
               class="meme-card folder-card"
+              :class="{ 'drop-target': folderDropTargetId === child.id }"
               :data-folder-id="child.id"
               @click="onFolderCardClick(child.id)"
               @contextmenu="onFolderCardContext($event, child.id, child.name)"
+              @dragover="onFolderDragOver($event, child.id)"
+              @dragleave="onFolderDragLeave($event, child.id)"
+              @drop="onFolderDrop($event, child.id)"
             >
               <div class="folder-preview">
                 <svg viewBox="0 0 24 24" width="32" height="32" fill="none" stroke="var(--accent)" stroke-width="1.5"><path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"/></svg>
@@ -720,6 +776,7 @@ onUnmounted(() => {
               class="meme-card"
               :class="{
                 'dragging': drag.dragState.active && drag.dragState.memeId === meme.id,
+                'native-dragging': nativeDraggingMemeId === meme.id,
                 'selected': batchMode && selectedMemeIds.has(meme.id),
               }"
               :data-meme-id="meme.id"
