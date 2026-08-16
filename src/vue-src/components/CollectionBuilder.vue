@@ -248,13 +248,13 @@ function handleConfirm(name: string, ids: number[]) {
   padding: 8px;
   display: grid;
   grid-template-columns: repeat(auto-fill, minmax(70px, 1fr));
+  grid-auto-rows: 70px;
   gap: 6px;
   align-content: start;
 }
 
 .cb-meme {
   position: relative;
-  aspect-ratio: 1;
   border-radius: var(--radius-sm);
   overflow: hidden;
   border: 2px solid var(--border);
