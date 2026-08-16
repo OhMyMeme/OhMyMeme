@@ -199,7 +199,7 @@ body {
   flex-direction: column;
   flex-shrink: 0;
   overflow: hidden;
-  transition: width 0.25s cubic-bezier(0.4, 0, 0.2, 1), opacity 0.2s ease;
+  transition: width 0.18s cubic-bezier(0.2, 0.8, 0.2, 1), opacity 0.15s ease;
 }
 
 #sidebar.collapsed {
@@ -416,9 +416,17 @@ body {
   background: var(--surface);
   cursor: pointer;
   transition: border-color 0.2s, transform 0.1s;
-  /* 离屏卡片跳过布局：侧边栏动画时每帧只重排可见卡片 */
+  /* 性能：离屏卡跳过渲染/布局，卡片内部布局独立，图片缩放走合成器 */
   content-visibility: auto;
   contain-intrinsic-size: auto 140px;
+  contain: layout paint;
+}
+
+/* 拖拽中/排序时取消 contain，避免影响拖拽测量与 FLIP 动画 */
+#meme-grid.drag-active .meme-card.dragging,
+#meme-grid.sort-enabled .meme-card.dragging {
+  content-visibility: visible;
+  contain: none;
 }
 
 .meme-card:hover {
