@@ -416,6 +416,9 @@ body {
   background: var(--surface);
   cursor: pointer;
   transition: border-color 0.2s, transform 0.1s;
+  /* 离屏卡片跳过布局：侧边栏动画时每帧只重排可见卡片 */
+  content-visibility: auto;
+  contain-intrinsic-size: auto 140px;
 }
 
 .meme-card:hover {

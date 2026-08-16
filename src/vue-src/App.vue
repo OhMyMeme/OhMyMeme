@@ -34,10 +34,8 @@ let dragCounter = 0
 let nativeDragActive = false
 let dragState: { sx: number; sy: number } | null = null
 
-// 网格列数：与侧边栏宽度过渡解耦。侧边栏宽度动画期间保持列数不变，
-// 动画结束后再更新，避免 200+ 卡片在每一帧都重新布局（layout thrashing）
-const gridCols = ref(4)
-let gridColsTimer: ReturnType<typeof setTimeout> | null = null
+// 网格列数随侧边栏即时切换（实时感）；性能由卡片 content-visibility 保证
+const gridCols = computed(() => sidebarCollapsed.value ? 5 : 4)
 
 // 当前分组（正 ID）下的子分组列表，用于网格顶部显示文件夹卡片
 const folderCards = computed(() => {
@@ -140,14 +138,7 @@ function openSettings() {
     window.pywebview?.api?.open_settings()
   } catch (_) {}
 }
-function toggleSidebar() {
-  sidebarCollapsed.value = !sidebarCollapsed.value
-  // 侧边栏宽度动画（0.25s）结束后再切换网格列数，避免动画期间持续重排
-  if (gridColsTimer) clearTimeout(gridColsTimer)
-  gridColsTimer = setTimeout(() => {
-    gridCols.value = sidebarCollapsed.value ? 5 : 4
-  }, 260)
-}
+function toggleSidebar() { sidebarCollapsed.value = !sidebarCollapsed.value }
 
 function toggleSort() {
   sortEnabled.value = !sortEnabled.value
