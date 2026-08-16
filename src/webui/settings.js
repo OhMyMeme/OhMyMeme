@@ -766,19 +766,18 @@ function closeQQOverlay() {
 }
 
 async function startQQImport() {
-  const btn = document.getElementById('btn-qq-import');
-  const status = document.getElementById('qq-status');
-  btn.disabled = true; status.textContent = ''; status.className = '';
+  showQQOverlay();
+  document.getElementById('qq-status').style.display = 'none';
+  document.getElementById('qq-import-error').style.display = 'none';
+  document.getElementById('qq-import-title').textContent = '正在导入...';
 
   const r = await api('start_qq_import');
   if (!r || !r.ok) {
-    btn.disabled = false;
-    status.textContent = '启动失败';
-    status.className = 'error';
+    document.getElementById('qq-import-title').textContent = '启动失败';
+    document.getElementById('qq-import-error').style.display = '';
+    document.getElementById('qq-import-error').textContent = (r && r.error) || '未知错误';
     return;
   }
-
-  showQQOverlay();
 
   qqPollTimer = setInterval(async () => {
     const s = await api('get_qq_import_progress');
@@ -819,13 +818,8 @@ async function startQQImport() {
       document.getElementById('qq-import-title').textContent = '导入失败';
       document.getElementById('qq-import-error').style.display = '';
       document.getElementById('qq-import-error').textContent = s.error || '未知错误';
-      const el = document.getElementById('qq-status');
-      el.textContent = '导入失败: ' + (s.error || '');
-      el.className = 'error';
     }
   }, 300);
-
-  btn.disabled = false;
 }
 
 function openADBHelp() {
@@ -848,9 +842,6 @@ async function saveQQZip() {
     document.getElementById('qq-import-pct').textContent = '';
     document.getElementById('qq-import-bar').style.display = 'none';
     document.getElementById('qq-after-save').style.display = '';
-    const el = document.getElementById('qq-status');
-    el.textContent = '已保存到: ' + (r.path || '');
-    el.className = '';
   } else {
     errDiv.style.display = '';
     errDiv.textContent = (r && r.error) || '保存失败';
@@ -873,7 +864,20 @@ async function startImportFromZip() {
 /* 抖音表情包下载导入 */
 let dyPollTimer = null;
 
+function openDYImportDialog() {
+  document.getElementById('dy-import-overlay').style.display = 'flex';
+  document.getElementById('dy-config').style.display = 'block';
+  document.getElementById('dy-progress').style.display = 'none';
+  document.getElementById('dy-import-error').style.display = 'none';
+  const status = document.getElementById('dy-status');
+  if (status) { status.textContent = ''; status.className = ''; }
+  const btn = document.getElementById('btn-dy-start');
+  if (btn) btn.disabled = false;
+}
+
 function showDYOverlay() {
+  document.getElementById('dy-config').style.display = 'none';
+  document.getElementById('dy-progress').style.display = 'block';
   document.getElementById('dy-import-overlay').style.display = 'flex';
   document.getElementById('dy-import-error').style.display = 'none';
   document.getElementById('dy-import-title').textContent = '正在下载...';
@@ -983,7 +987,20 @@ async function startDYImport() {
 /* Telegram 缓存导入 */
 let tgPollTimer = null;
 
+function openTGImportDialog() {
+  document.getElementById('tg-import-overlay').style.display = 'flex';
+  document.getElementById('tg-config').style.display = 'block';
+  document.getElementById('tg-progress').style.display = 'none';
+  document.getElementById('tg-import-error').style.display = 'none';
+  const status = document.getElementById('tg-status');
+  if (status) { status.textContent = ''; status.className = ''; }
+  const btn = document.getElementById('btn-tg-start');
+  if (btn) btn.disabled = false;
+}
+
 function showTGOverlay() {
+  document.getElementById('tg-config').style.display = 'none';
+  document.getElementById('tg-progress').style.display = 'block';
   document.getElementById('tg-import-overlay').style.display = 'flex';
   document.getElementById('tg-import-error').style.display = 'none';
   document.getElementById('btn-tg-retry').style.display = 'none';
@@ -1014,6 +1031,7 @@ async function pickTGTdata() {
 function tgRetryPick() {
   closeTGOverlay();
   pickTGTdata();
+  openTGImportDialog();
 }
 
 async function startTGImport() {
@@ -1125,7 +1143,21 @@ function wechatSetCloseLabel(label) {
   if (el) el.textContent = label;
 }
 
+function openWechatImportDialog() {
+  document.getElementById('wechat-import-overlay').style.display = 'flex';
+  document.getElementById('wechat-config').style.display = 'block';
+  document.getElementById('wechat-progress').style.display = 'none';
+  document.getElementById('wechat-import-error').style.display = 'none';
+  const status = document.getElementById('wechat-status');
+  if (status) { status.textContent = ''; status.className = ''; }
+  const btn = document.getElementById('btn-wechat-start');
+  if (btn) btn.disabled = false;
+  wechatSetCloseLabel('取消导入');
+}
+
 function showWechatOverlay() {
+  document.getElementById('wechat-config').style.display = 'none';
+  document.getElementById('wechat-progress').style.display = 'block';
   document.getElementById('wechat-import-overlay').style.display = 'flex';
   document.getElementById('wechat-import-error').style.display = 'none';
   document.getElementById('wechat-import-title').textContent = '正在导入...';
@@ -1348,12 +1380,9 @@ async function qqntNext() {
 }
 
 async function startQQNTWizard() {
-  const btn = document.getElementById('btn-qqnt-start');
-  btn.disabled = true;
   qqntShow();
   qqntGo(1);
   const st = await api('qqnt_check_env');
-  btn.disabled = false;
   qqntRenderEnv(st);
 }
 

@@ -126,80 +126,43 @@
     </div>
 
     <div class="section" data-group="import">
-      <div class="section-title">从手机导入</div>
-      <p style="font-size:11.5px;color:var(--muted);margin-bottom:10px;line-height:1.6">通过 ADB 从连接的 Android 手机拉取 QQ 表情包缓存并打包 ZIP</p>
-      <div style="display:flex;gap:8px">
-        <button id="btn-qq-import" class="btn btn-primary btn-sm btn-flex" onclick="startQQImport()">从手机版 QQ 缓存导入</button>
-      </div>
-      <div id="qq-status"></div>
-    </div>
+      <div class="section-title">导入表情包</div>
+      <p style="font-size:11.5px;color:var(--muted);margin-bottom:10px;line-height:1.6">从其他软件导入表情包，点击对应来源开始</p>
 
-    <div class="section" data-group="import">
-      <div class="section-title">从电脑导入</div>
-      <p style="font-size:11.5px;color:var(--muted);margin-bottom:10px;line-height:1.6">从 PC 版 QQ（QQNT）本地缓存批量提取收藏表情</p>
-      <div style="display:flex;gap:8px">
-        <button id="btn-qqnt-start" class="btn btn-primary btn-sm btn-flex" onclick="startQQNTWizard()">从电脑版 QQ 提取</button>
-      </div>
-      <div id="qqnt-status"></div>
-    </div>
+      <button class="import-row" onclick="startQQImport()">
+        <span class="import-ico">
+          <svg viewBox="0 0 1024 1024" fill="currentColor"><path d="M824.8 613.2c-16-51.4-34.4-94.6-62.7-165.3C766.5 262.2 689.3 112 511.5 112 331.7 112 256.2 265.2 261 447.9c-28.4 70.8-46.7 113.7-62.7 165.3-34 109.5-23 154.8-14.6 155.8 18 2.2 70.1-82.4 70.1-82.4 0 49 25.2 112.9 79.8 159-26.4 8.1-85.7 29.9-71.6 53.8 11.4 19.3 196.2 12.3 249.5 6.3 53.3 6 238.1 13 249.5-6.3 14.1-23.8-45.3-45.7-71.6-53.8 54.6-46.2 79.8-110.1 79.8-159 0 0 52.1 84.6 70.1 82.4 8.5-1.1 19.5-46.4-14.5-155.8z"/></svg>
+        </span>
+        <span class="import-name">手机版 QQ（ADB 拉取）</span>
+      </button>
 
-    <div class="section" data-group="import">
-      <div class="section-title">从 Telegram 导入</div>
-      <p style="font-size:11.5px;color:var(--muted);margin-bottom:10px;line-height:1.6">从 Telegram Desktop 本地缓存解密提取表情包（WebP 直取，WebM 无损转 WebP 并保留透明通道）</p>
-      <div class="form-group">
-        <label>tdata 目录</label>
-        <input id="s-tg-tdata" readonly placeholder="未设置，将自动检测">
-      </div>
-      <div style="display:flex;gap:8px;margin-bottom:10px">
-        <button id="btn-tg-pick" class="btn btn-secondary btn-sm btn-flex" onclick="pickTGTdata()">手动指定 tdata 目录</button>
-      </div>
-      <div class="form-group" style="margin-bottom:10px">
-        <label>本地密码（可选）</label>
-        <input id="s-tg-passcode" type="password" placeholder="Telegram Desktop 设置了本地密码时填写" autocomplete="off">
-      </div>
-      <label class="check-row" style="margin-bottom:10px">
-        <input id="s-tg-convert" type="checkbox" checked>WebM 转 WebP（保留透明动画，需 ffmpeg）
-      </label>
-      <div style="display:flex;gap:8px">
-        <button id="btn-tg-start" class="btn btn-primary btn-sm btn-flex" onclick="startTGImport()">从 Telegram 缓存提取</button>
-      </div>
-      <div id="tg-status"></div>
-    </div>
+      <button class="import-row" onclick="startQQNTWizard()">
+        <span class="import-ico">
+          <svg viewBox="0 0 1024 1024" fill="currentColor"><path d="M824.8 613.2c-16-51.4-34.4-94.6-62.7-165.3C766.5 262.2 689.3 112 511.5 112 331.7 112 256.2 265.2 261 447.9c-28.4 70.8-46.7 113.7-62.7 165.3-34 109.5-23 154.8-14.6 155.8 18 2.2 70.1-82.4 70.1-82.4 0 49 25.2 112.9 79.8 159-26.4 8.1-85.7 29.9-71.6 53.8 11.4 19.3 196.2 12.3 249.5 6.3 53.3 6 238.1 13 249.5-6.3 14.1-23.8-45.3-45.7-71.6-53.8 54.6-46.2 79.8-110.1 79.8-159 0 0 52.1 84.6 70.1 82.4 8.5-1.1 19.5-46.4-14.5-155.8z"/></svg>
+        </span>
+        <span class="import-name">电脑版 QQ（QQNT 本地缓存）</span>
+      </button>
 
-    <div class="section" data-group="import">
-      <div class="section-title">从抖音导入</div>
-      <p style="font-size:11.5px;color:var(--muted);margin-bottom:10px;line-height:1.6">通过抖音网页版 API 下载自定义表情包（WebP 原格式保存，需登录 Cookie）</p>
-      <div class="form-group">
-        <label>抖音 Cookie</label>
-        <input id="s-dy-cookie" type="password" placeholder="粘贴抖音网页版 Cookie（sessionid=xxx; ...）" autocomplete="off">
-      </div>
-      <div style="display:flex;gap:8px">
-        <button id="btn-dy-start" class="btn btn-primary btn-sm btn-flex" onclick="startDYImport()">从抖音下载全部表情</button>
-      </div>
-      <div id="dy-status"></div>
-    </div>
+      <button class="import-row" onclick="openTGImportDialog()">
+        <span class="import-ico">
+          <svg viewBox="0 0 24 24" fill="currentColor"><path d="M21.7 3.3L2.9 10.6c-.8.3-.7 1.5.1 1.7l4.6 1.5 1.7 5.1c.2.7 1.1.9 1.6.4l2.4-2.4 4.4 3.2c.6.4 1.4.1 1.6-.6l3.5-15.1c.2-.9-.7-1.6-1.5-1.3zm-12.2 9.3l7.7-5.8c.3-.2.6.2.3.5l-6.2 6.3-.3 3.2-1.5-4.2z"/></svg>
+        </span>
+        <span class="import-name">Telegram Desktop</span>
+      </button>
 
-    <div class="section" data-group="import">
-      <div class="section-title">从微信导入</div>
-      <p style="font-size:11.5px;color:var(--muted);margin-bottom:10px;line-height:1.6">从微信电脑版本地缓存提取收藏表情（需微信正在运行，仅 Windows 支持）。微信文件目录是存放所有账号数据的根目录（xwechat_files），其下的 wxid_* 文件夹为各账号目录</p>
-      <div class="form-group">
-        <label>微信文件目录（根目录）</label>
-        <input id="s-wechat-root" readonly placeholder="未设置，将自动检测">
-      </div>
-      <div style="display:flex;gap:8px;margin-bottom:10px">
-        <button id="btn-wechat-pick" class="btn btn-secondary btn-sm btn-flex" onclick="pickWechatRoot()">手动指定微信目录</button>
-      </div>
-      <div class="form-group" style="margin-bottom:10px" id="s-wechat-account-group" hidden>
-        <label>账号（wxid_* 目录）</label>
-        <select id="s-wechat-account">
-          <option value="">自动选择（仅一个账号时）</option>
-        </select>
-      </div>
-      <div style="display:flex;gap:8px">
-        <button id="btn-wechat-inspect" class="btn btn-secondary btn-sm btn-flex" onclick="inspectWechat()">检测环境</button>
-        <button id="btn-wechat-start" class="btn btn-primary btn-sm btn-flex" onclick="startWechatImport()">从微信缓存提取</button>
-      </div>
-      <div id="wechat-status"></div>
+      <button class="import-row" onclick="openDYImportDialog()">
+        <span class="import-ico">
+          <svg viewBox="0 0 1024 1024" fill="currentColor"><path d="M937.4 423.9c-84 0-165.7-27.3-232.9-77.8v352.3c0 179.9-138.6 325.6-309.6 325.6S85.3 878.3 85.3 698.4c0-179.9 138.6-325.6 309.6-325.6 17.1 0 33.7 1.5 49.9 4.3v186.6c-15.5-6.1-32-9.2-48.6-9.2-76.3 0-138.2 65-138.2 145.3 0 80.2 61.9 145.3 138.2 145.3 76.2 0 138.1-65.1 138.1-145.3V0H707c0 134.5 103.7 243.5 231.6 243.5v180.3l-1.2 0.1"/></svg>
+        </span>
+        <span class="import-name">抖音</span>
+      </button>
+
+      <button class="import-row" onclick="openWechatImportDialog()">
+        <span class="import-ico">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M15.5 9.2c0-3-2.9-5.2-6.5-5.2S2.5 6.2 2.5 9.2c0 1.6.9 3 2.4 4l-.8 2.8 3.2-1.8c.8.2 1.6.4 2.5.4"/><path d="M21.5 14.6c0-2.5-2.4-4.4-5.4-4.4s-5.4 1.9-5.4 4.4 2.4 4.4 5.4 4.4c.7 0 1.4-.1 2-.3l2.8 1.6-.7-2.5c1.4-1 1.3-1.9 1.3-3.2z"/></svg>
+        </span>
+        <span class="import-name">微信</span>
+      </button>
     </div>
 
     <div class="section" data-group="network">
@@ -464,6 +427,7 @@
     <button id="btn-qq-help" class="btn btn-ghost btn-sm" onclick="openADBHelp()" style="display:none">不知道怎么办？</button>
     <button id="btn-qq-close" class="btn btn-secondary btn-sm" onclick="closeQQOverlay()">关闭</button>
     <div id="qq-import-error" style="display:none;font-size:12px;color:#ef4444;margin-top:8px"></div>
+    <div id="qq-status" style="display:none"></div>
   </div>
 </div>
 
@@ -526,48 +490,112 @@
 </div>
 
 <div id="tg-import-overlay" style="display:none;position:fixed;inset:0;background:rgba(0,0,0,.6);align-items:center;justify-content:center;z-index:400;animation:fadeIn .15s">
-  <div style="background:var(--surface);border-radius:var(--radius-lg);padding:24px 28px;width:420px;border:1px solid var(--border);box-shadow:var(--shadow-lg);text-align:center">
-    <div style="font-size:14px;font-weight:600;color:var(--fg);margin-bottom:4px" id="tg-import-title">正在导入...</div>
-    <div style="font-size:12px;color:var(--fg-secondary);margin-bottom:12px;word-break:break-all" id="tg-import-msg">准备中</div>
-    <div style="width:100%;height:8px;background:var(--bg);border-radius:4px;overflow:hidden;margin-bottom:6px">
-      <div id="tg-import-bar" style="width:0%;height:100%;background:var(--accent);border-radius:4px;transition:width .3s"></div>
+  <div style="background:var(--surface);border-radius:var(--radius-lg);padding:24px 28px;width:440px;border:1px solid var(--border);box-shadow:var(--shadow-lg)">
+    <div id="tg-config" style="display:block">
+      <div style="font-size:14px;font-weight:600;color:var(--fg);margin-bottom:4px">从 Telegram Desktop 导入</div>
+      <div style="font-size:12px;color:var(--muted);margin-bottom:12px;line-height:1.6">从 Telegram Desktop 本地缓存解密提取表情包（WebP 直取，WebM 无损转 WebP 并保留透明通道）</div>
+      <div class="form-group">
+        <label>tdata 目录</label>
+        <input id="s-tg-tdata" readonly placeholder="未设置，将自动检测">
+      </div>
+      <div style="display:flex;gap:8px;margin-bottom:10px">
+        <button id="btn-tg-pick" class="btn btn-secondary btn-sm btn-flex" onclick="pickTGTdata()">手动指定 tdata 目录</button>
+      </div>
+      <div class="form-group" style="margin-bottom:10px">
+        <label>本地密码（可选）</label>
+        <input id="s-tg-passcode" type="password" placeholder="Telegram Desktop 设置了本地密码时填写" autocomplete="off">
+      </div>
+      <label class="check-row" style="margin-bottom:12px">
+        <input id="s-tg-convert" type="checkbox" checked>WebM 转 WebP（保留透明动画，需 ffmpeg）
+      </label>
+      <div id="tg-status" style="font-size:11.5px;color:var(--muted);margin-bottom:10px;word-break:break-all;line-height:1.6"></div>
+      <div style="display:flex;gap:8px">
+        <button id="btn-tg-start" class="btn btn-primary btn-sm btn-flex" onclick="startTGImport()">开始导入</button>
+        <button class="btn btn-secondary btn-sm" onclick="closeTGOverlay()">取消</button>
+      </div>
     </div>
-    <div style="font-size:11.5px;color:var(--muted);margin-bottom:16px">
-      <span id="tg-import-pct">0%</span>
+    <div id="tg-progress" style="display:none;text-align:center">
+      <div style="font-size:14px;font-weight:600;color:var(--fg);margin-bottom:4px" id="tg-import-title">正在导入...</div>
+      <div style="font-size:12px;color:var(--fg-secondary);margin-bottom:12px;word-break:break-all" id="tg-import-msg">准备中</div>
+      <div style="width:100%;height:8px;background:var(--bg);border-radius:4px;overflow:hidden;margin-bottom:6px">
+        <div id="tg-import-bar" style="width:0%;height:100%;background:var(--accent);border-radius:4px;transition:width .3s"></div>
+      </div>
+      <div style="font-size:11.5px;color:var(--muted);margin-bottom:16px">
+        <span id="tg-import-pct">0%</span>
+      </div>
+      <button id="btn-tg-retry" class="btn btn-secondary btn-sm" onclick="tgRetryPick()" style="display:none">手动选择 tdata 目录</button>
+      <button id="btn-tg-close" class="btn btn-secondary btn-sm" onclick="closeTGOverlay()">关闭</button>
+      <div id="tg-import-error" style="display:none;font-size:12px;color:#ef4444;margin-top:8px;word-break:break-all"></div>
     </div>
-    <button id="btn-tg-retry" class="btn btn-secondary btn-sm" onclick="tgRetryPick()" style="display:none">手动选择 tdata 目录</button>
-    <button id="btn-tg-close" class="btn btn-secondary btn-sm" onclick="closeTGOverlay()">关闭</button>
-    <div id="tg-import-error" style="display:none;font-size:12px;color:#ef4444;margin-top:8px;word-break:break-all"></div>
   </div>
 </div>
 
 <div id="dy-import-overlay" style="display:none;position:fixed;inset:0;background:rgba(0,0,0,.6);align-items:center;justify-content:center;z-index:400;animation:fadeIn .15s">
-  <div style="background:var(--surface);border-radius:var(--radius-lg);padding:24px 28px;width:420px;border:1px solid var(--border);box-shadow:var(--shadow-lg);text-align:center">
-    <div style="font-size:14px;font-weight:600;color:var(--fg);margin-bottom:4px" id="dy-import-title">正在导入...</div>
-    <div style="font-size:12px;color:var(--fg-secondary);margin-bottom:12px;word-break:break-all" id="dy-import-msg">准备中</div>
-    <div style="width:100%;height:8px;background:var(--bg);border-radius:4px;overflow:hidden;margin-bottom:6px">
-      <div id="dy-import-bar" style="width:0%;height:100%;background:var(--accent);border-radius:4px;transition:width .3s"></div>
+  <div style="background:var(--surface);border-radius:var(--radius-lg);padding:24px 28px;width:440px;border:1px solid var(--border);box-shadow:var(--shadow-lg)">
+    <div id="dy-config" style="display:block">
+      <div style="font-size:14px;font-weight:600;color:var(--fg);margin-bottom:4px">从抖音导入</div>
+      <div style="font-size:12px;color:var(--muted);margin-bottom:12px;line-height:1.6">通过抖音网页版 API 下载自定义表情包（WebP 原格式保存，需登录 Cookie）</div>
+      <div class="form-group">
+        <label>抖音 Cookie</label>
+        <input id="s-dy-cookie" type="password" placeholder="粘贴抖音网页版 Cookie（sessionid=xxx; ...）" autocomplete="off">
+      </div>
+      <div id="dy-status" style="font-size:11.5px;color:var(--muted);margin-bottom:10px;word-break:break-all;line-height:1.6"></div>
+      <div style="display:flex;gap:8px">
+        <button id="btn-dy-start" class="btn btn-primary btn-sm btn-flex" onclick="startDYImport()">开始下载</button>
+        <button class="btn btn-secondary btn-sm" onclick="closeDYOverlay()">取消</button>
+      </div>
     </div>
-    <div style="font-size:11.5px;color:var(--muted);margin-bottom:16px">
-      <span id="dy-import-pct">0%</span>
+    <div id="dy-progress" style="display:none;text-align:center">
+      <div style="font-size:14px;font-weight:600;color:var(--fg);margin-bottom:4px" id="dy-import-title">正在导入...</div>
+      <div style="font-size:12px;color:var(--fg-secondary);margin-bottom:12px;word-break:break-all" id="dy-import-msg">准备中</div>
+      <div style="width:100%;height:8px;background:var(--bg);border-radius:4px;overflow:hidden;margin-bottom:6px">
+        <div id="dy-import-bar" style="width:0%;height:100%;background:var(--accent);border-radius:4px;transition:width .3s"></div>
+      </div>
+      <div style="font-size:11.5px;color:var(--muted);margin-bottom:16px">
+        <span id="dy-import-pct">0%</span>
+      </div>
+      <button id="btn-dy-close" class="btn btn-secondary btn-sm" onclick="closeDYOverlay()">关闭</button>
+      <div id="dy-import-error" style="display:none;font-size:12px;color:#ef4444;margin-top:8px;word-break:break-all"></div>
     </div>
-    <button id="btn-dy-close" class="btn btn-secondary btn-sm" onclick="closeDYOverlay()">关闭</button>
-    <div id="dy-import-error" style="display:none;font-size:12px;color:#ef4444;margin-top:8px;word-break:break-all"></div>
   </div>
 </div>
 
 <div id="wechat-import-overlay" style="display:none;position:fixed;inset:0;background:rgba(0,0,0,.6);align-items:center;justify-content:center;z-index:400;animation:fadeIn .15s">
-  <div style="background:var(--surface);border-radius:var(--radius-lg);padding:24px 28px;width:420px;border:1px solid var(--border);box-shadow:var(--shadow-lg);text-align:center">
-    <div style="font-size:14px;font-weight:600;color:var(--fg);margin-bottom:4px" id="wechat-import-title">正在导入...</div>
-    <div style="font-size:12px;color:var(--fg-secondary);margin-bottom:12px;word-break:break-all" id="wechat-import-msg">准备中</div>
-    <div style="width:100%;height:8px;background:var(--bg);border-radius:4px;overflow:hidden;margin-bottom:6px">
-      <div id="wechat-import-bar" style="width:0%;height:100%;background:var(--accent);border-radius:4px;transition:width .3s"></div>
+  <div style="background:var(--surface);border-radius:var(--radius-lg);padding:24px 28px;width:440px;border:1px solid var(--border);box-shadow:var(--shadow-lg)">
+    <div id="wechat-config" style="display:block">
+      <div style="font-size:14px;font-weight:600;color:var(--fg);margin-bottom:4px">从微信导入</div>
+      <div style="font-size:12px;color:var(--muted);margin-bottom:12px;line-height:1.6">从微信电脑版本地缓存提取收藏表情（需微信正在运行，仅 Windows 支持）。微信文件目录是存放所有账号数据的根目录（xwechat_files），其下的 wxid_* 文件夹为各账号目录</div>
+      <div class="form-group">
+        <label>微信文件目录（根目录）</label>
+        <input id="s-wechat-root" readonly placeholder="未设置，将自动检测">
+      </div>
+      <div style="display:flex;gap:8px;margin-bottom:10px">
+        <button id="btn-wechat-pick" class="btn btn-secondary btn-sm btn-flex" onclick="pickWechatRoot()">手动指定微信目录</button>
+      </div>
+      <div class="form-group" style="margin-bottom:10px" id="s-wechat-account-group" hidden>
+        <label>账号（wxid_* 目录）</label>
+        <select id="s-wechat-account">
+          <option value="">自动选择（仅一个账号时）</option>
+        </select>
+      </div>
+      <div id="wechat-status" style="font-size:11.5px;color:var(--muted);margin-bottom:10px;word-break:break-all;line-height:1.6"></div>
+      <div style="display:flex;gap:8px">
+        <button id="btn-wechat-inspect" class="btn btn-secondary btn-sm btn-flex" onclick="inspectWechat()">检测环境</button>
+        <button id="btn-wechat-start" class="btn btn-primary btn-sm btn-flex" onclick="startWechatImport()">开始导入</button>
+      </div>
     </div>
-    <div style="font-size:11.5px;color:var(--muted);margin-bottom:16px">
-      <span id="wechat-import-pct">0%</span>
+    <div id="wechat-progress" style="display:none;text-align:center">
+      <div style="font-size:14px;font-weight:600;color:var(--fg);margin-bottom:4px" id="wechat-import-title">正在导入...</div>
+      <div style="font-size:12px;color:var(--fg-secondary);margin-bottom:12px;word-break:break-all" id="wechat-import-msg">准备中</div>
+      <div style="width:100%;height:8px;background:var(--bg);border-radius:4px;overflow:hidden;margin-bottom:6px">
+        <div id="wechat-import-bar" style="width:0%;height:100%;background:var(--accent);border-radius:4px;transition:width .3s"></div>
+      </div>
+      <div style="font-size:11.5px;color:var(--muted);margin-bottom:16px">
+        <span id="wechat-import-pct">0%</span>
+      </div>
+      <button id="btn-wechat-close" class="btn btn-secondary btn-sm" onclick="closeWechatOverlay()">取消导入</button>
+      <div id="wechat-import-error" style="display:none;font-size:12px;color:#ef4444;margin-top:8px;word-break:break-all"></div>
     </div>
-    <button id="btn-wechat-close" class="btn btn-secondary btn-sm" onclick="closeWechatOverlay()">关闭</button>
-    <div id="wechat-import-error" style="display:none;font-size:12px;color:#ef4444;margin-top:8px;word-break:break-all"></div>
   </div>
 </div>
 
