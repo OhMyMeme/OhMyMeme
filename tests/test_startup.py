@@ -534,6 +534,7 @@ def test_sorting_visual_feedback_static_contract():
     )
     assert re.search(
         r"return\s+activeCollection\s*===\s*null\s*\|\|\s*"
+        r"activeCollection\s*===\s*-4\s*\|\|\s*"
         r"activeCollection\s*>\s*0\s*;",
         can_reorder_body,
     )

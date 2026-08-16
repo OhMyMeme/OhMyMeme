@@ -434,7 +434,7 @@ function canReorderMemes() {
   const q = document.getElementById('search').value.trim();
   if (q || activeTags.size > 0) return false;
   if (!dragSortEnabled) return false;
-  return activeCollection === null || activeCollection > 0;
+  return activeCollection === null || activeCollection === -4 || activeCollection > 0;
 }
 
 function memeCardsInGrid() {
@@ -1091,22 +1091,35 @@ document.getElementById('ctx-menu').addEventListener('click', async (e) => {
       break;
     }
     case 'add-to-subgroup': {
-      const all = await api('search_collections') || [];
-      const els = [['新建分组', '__new__']];
-      all.forEach(c => {
-        const indent = '　'.repeat(c.depth);
-        els.push([indent + c.name, c.id]);
-      });
+      const targetCol = activeCollection && activeCollection > 0 ? activeCollection : null;
+      const children = targetCol ? (await api('get_child_collections', targetCol) || []) : [];
+      const els = [['新建小分组', '__new__']];
+      children.forEach(ch => els.push([ch.name, ch.id]));
+      if (els.length === 0) {
+        const name = await showPrompt('新建小分组', '');
+        if (!name) break;
+        if (targetCol) {
+          const r = await api('create_subcollection', name, targetCol);
+          if (r.ok) await api('add_to_existing_collection', m.id, r.id);
+        } else {
+          await api('add_to_collection', m.id, name);
+        }
+        showToast('已添加'); refreshCollections(); refreshMemes(); break;
+      }
       const picked = await showSubgroupPicker(els);
       if (picked === '__new__') {
-        const name = await showPrompt('新建分组', '');
+        const name = await showPrompt('新建小分组', '');
         if (!name) break;
-        const ok = await api('add_to_collection', m.id, name);
-        if (ok) { showToast('已添加到分组：' + name); refreshCollections(); }
-        else showToast('添加分组失败');
+        if (targetCol) {
+          const r = await api('create_subcollection', name, targetCol);
+          if (r.ok) await api('add_to_existing_collection', m.id, r.id);
+        } else {
+          await api('add_to_collection', m.id, name);
+        }
+        showToast('已添加'); refreshCollections(); refreshMemes();
       } else if (picked && picked > 0) {
         const ok = await api('add_to_existing_collection', m.id, picked);
-        if (ok) { showToast('已添加到分组'); refreshCollections(); refreshMemes(); }
+        if (ok) { showToast('已添加到小分组'); refreshCollections(); refreshMemes(); }
         else showToast('添加失败');
       }
       break;

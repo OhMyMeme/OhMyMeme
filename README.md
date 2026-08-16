@@ -58,6 +58,16 @@ sudo pacman -S python-gobject
 yay -S webkit2gtk  # 依赖 libsoup，通过 yay 安装
 ```
 
+> **说明（GTK 后端）**: 本项目 Linux 使用 pywebview 的 GTK 后端（`WebKit2`）。
+> - **deb / rpm 安装包**已内置 `gi` 与 WebKit2/Soup typelib，无需额外安装 python3-gi；但依赖系统的
+>   `gir1.2-webkit2-4.1`（或 4.0）包提供的 WebKitGTK 运行库，`apt install gir1.2-webkit2-4.1` 或安装
+>   `libwebkit2gtk-4.1-0` 即可（deb 安装时自动处理依赖）。
+> - **源码 / conda / venv 运行**必须让当前 Python 能导入 `gi`：先按上面命令在系统层安装 `python3-gi`
+>   （含 `gir1.2-webkit2-*`），再让 venv/conda 环境能看到系统 dist-packages，两种方式任选其一：
+>   - 创建 venv 时加 `--system-site-packages`：`python -m venv --system-site-packages .venv`
+>   - 运行前设置 `PYTHONPATH=/usr/lib/python3/dist-packages`（Arch 为 `/usr/lib/python3.12/site-packages`）
+>   - conda 中可执行 `conda install -c conda-forge pygobject` 直接在环境内装 PyGObject
+
 ```bash
 git clone https://github.com/OhMyMeme/OhMyMeme.git
 cd ohmymeme

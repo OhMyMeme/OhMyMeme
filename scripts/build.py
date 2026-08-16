@@ -171,6 +171,7 @@ def build_pyinstaller(target=None):
         icon_png = SRC_DIR / "resources" / "icon.png"
         if icon_png.exists():
             cmd += ["--icon=" + str(icon_png)]
+        _add_linux_gi_flags(cmd, sep)
     elif target == "Darwin":
         icon_icns = _ensure_icns()
         cmd += ["--windowed"]
@@ -188,6 +189,26 @@ def build_pyinstaller(target=None):
 
 
 _LANG_URL = "https://raw.githubusercontent.com/jrsoftware/issrc/refs/heads/main/Files/Languages/ChineseSimplified.isl"
+
+
+def _add_linux_gi_flags(cmd, sep):
+    """Linux 目标追加 PyGObject/GTK 收集参数（issue #58：打包 gi + WebKit2/Soup typelib）"""
+    hooks_dir = PROJECT_ROOT / "scripts" / "hooks"
+    if hooks_dir.is_dir():
+        cmd += ["--additional-hooks-dir", str(hooks_dir)]
+    cmd += ["--collect-all", "gi"]
+    cmd += ["--hidden-import", "gi.repository.WebKit2"]
+    cmd += ["--hidden-import", "gi.repository.Soup"]
+    # 系统 typelib 目录（构建环境装有 python3-gi / gir1.2-webkit2 时整体收集，作为 hooks 之外的安全网）
+    for typelib_dir in (
+        "/usr/lib/x86_64-linux-gnu/girepository-1.0",
+        "/usr/lib/girepository-1.0",
+        "/usr/lib64/girepository-1.0",
+        "/usr/local/lib/girepository-1.0",
+        "/usr/lib/aarch64-linux-gnu/girepository-1.0",
+    ):
+        if os.path.isdir(typelib_dir):
+            cmd += ["--add-data", typelib_dir + sep + "gi_typelibs"]
 
 
 def _ensure_lang_file(iscc_exe):
