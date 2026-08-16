@@ -527,10 +527,10 @@ body {
 }
 
 .folder-card {
+  aspect-ratio: 1;
   display: flex;
   align-items: center;
   justify-content: center;
-  min-height: 120px;
 }
 
 .folder-card:hover {
@@ -539,12 +539,14 @@ body {
 }
 
 .folder-preview {
+  width: 100%;
+  height: 100%;
   display: flex;
   align-items: center;
   justify-content: center;
   flex-direction: column;
-  gap: 4px;
-  padding: 16px;
+  gap: 8px;
+  padding: 12px;
 }
 
 .folder-name {
