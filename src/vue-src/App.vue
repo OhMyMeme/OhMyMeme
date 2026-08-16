@@ -433,7 +433,9 @@ function onCardMouseLeave(meme: Meme) {
   if (img && img.dataset.thumb) img.src = img.dataset.thumb
 }
 
-let nativeDragStart: { x: number; y: number; memeId: number } | null = null
+let nativeDragStart: { x: number; y: number; meme: Meme } | null = null
+const internalDrag = ref<{ meme: Meme; x: number; y: number } | null>(null)
+const folderDropChoice = ref<{ meme: Meme; folderId: number; folderName: string } | null>(null)
 let ignoreClick = false
 
 function onCardPointerDown(e: PointerEvent, meme: Meme, card: HTMLElement) {
@@ -444,7 +446,12 @@ function onCardPointerDown(e: PointerEvent, meme: Meme, card: HTMLElement) {
     return
   }
   if (e.button !== 0) return
-  nativeDragStart = { x: e.clientX, y: e.clientY, memeId: meme.id }
+  nativeDragStart = { x: e.clientX, y: e.clientY, meme }
+}
+
+function updateFolderDropTarget(x: number, y: number) {
+  const target = document.elementFromPoint(x, y)?.closest('[data-folder-id]') as HTMLElement | null
+  folderDropTargetId.value = target ? Number(target.dataset.folderId) : null
 }
 
 function onDocPointerMove(e: PointerEvent) {
@@ -454,22 +461,15 @@ function onDocPointerMove(e: PointerEvent) {
   }
   if (!nativeDragStart || sortEnabled.value) return
   const dist = Math.hypot(e.clientX - nativeDragStart.x, e.clientY - nativeDragStart.y)
-  if (dist > 8) {
-    const id = nativeDragStart.memeId
+  if (dist <= 8 && !internalDrag.value) return
+  if (!internalDrag.value) {
+    internalDrag.value = { meme: nativeDragStart.meme, x: e.clientX, y: e.clientY }
+    nativeDraggingMemeId.value = nativeDragStart.meme.id
     nativeDragStart = null
-    // 原生拖拽进行中置标志，回拖到窗口视为取消（不触发 drop 导入）
-    nativeDragActive = true
-    nativeDraggingMemeId.value = id
-    startNativeDrag(id).then((ok) => {
-      nativeDragActive = false
-      nativeDraggingMemeId.value = null
-      ignoreClick = true
-      if (!ok) showToast('拖拽失败：本地文件不存在')
-    }).catch(() => {
-      nativeDragActive = false
-      nativeDraggingMemeId.value = null
-    })
+  } else {
+    internalDrag.value = { ...internalDrag.value, x: e.clientX, y: e.clientY }
   }
+  updateFolderDropTarget(e.clientX, e.clientY)
 }
 
 async function onDocPointerUp(e: PointerEvent) {
@@ -478,7 +478,37 @@ async function onDocPointerUp(e: PointerEvent) {
     if (wasActive) ignoreClick = true
     return
   }
+  const activeDrag = internalDrag.value
+  if (activeDrag) {
+    const folderId = folderDropTargetId.value
+    const folder = state.collections.find((item: any) => item.id === folderId)
+    if (folderId && folder) {
+      folderDropChoice.value = { meme: activeDrag.meme, folderId, folderName: folder.name }
+    }
+    internalDrag.value = null
+    folderDropTargetId.value = null
+    nativeDraggingMemeId.value = null
+    ignoreClick = true
+  }
   nativeDragStart = null
+}
+
+async function finishFolderDrop(mode: 'copy' | 'move') {
+  const choice = folderDropChoice.value
+  if (!choice) return
+  folderDropChoice.value = null
+  const result = await addToFolder(choice.meme.id, choice.folderId, mode)
+  if (result?.ok) {
+    await refreshCollections()
+    await search()
+    showToast(mode === 'copy' ? `已复制到「${choice.folderName}」` : `已移动到「${choice.folderName}」`)
+  } else {
+    showToast(result?.error || '放入文件夹失败')
+  }
+}
+
+function cancelFolderDrop() {
+  folderDropChoice.value = null
 }
 
 function onFolderDragOver(e: DragEvent, folderId: number) {
@@ -509,6 +539,9 @@ async function onFolderDrop(e: DragEvent, folderId: number) {
 function onDocPointerCancel() {
   if (drag.dragState.memeId) drag.cancel()
   nativeDragStart = null
+  internalDrag.value = null
+  folderDropTargetId.value = null
+  nativeDraggingMemeId.value = null
 }
 
 function onDragEnter(e: DragEvent) {
@@ -821,6 +854,27 @@ onUnmounted(() => {
     @action="onCtxAction" @close="ctx.hide"
     @show-submenu="onShowSubmenu"
   />
+
+  <div
+    v-if="internalDrag"
+    id="meme-drag-preview"
+    :style="{ left: internalDrag.x + 'px', top: internalDrag.y + 'px' }"
+  >
+    <img :src="memeSrc(internalDrag.meme)" :alt="internalDrag.meme.name">
+    <span>{{ internalDrag.meme.name }}</span>
+  </div>
+
+  <div v-if="folderDropChoice" class="folder-drop-dialog-overlay" @click.self="cancelFolderDrop">
+    <div class="folder-drop-dialog">
+      <div class="folder-drop-dialog__title">放入「{{ folderDropChoice.folderName }}」</div>
+      <p>选择处理方式，表情会自动附加同名标签。</p>
+      <div class="folder-drop-dialog__actions">
+        <button class="btn btn-secondary" @click="cancelFolderDrop">取消</button>
+        <button class="btn btn-secondary" @click="finishFolderDrop('copy')">复制进去</button>
+        <button class="btn btn-primary" @click="finishFolderDrop('move')">移动进去</button>
+      </div>
+    </div>
+  </div>
 
   <div id="drop-overlay" :class="{ 'drag-over': dragOver }">
     <div class="drop-content">

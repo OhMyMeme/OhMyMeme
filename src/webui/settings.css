@@ -47,6 +47,8 @@ body {
 /* 左栏分组导航 */
 #settings-nav {
   width: 140px; flex-shrink: 0;
+  position: relative; z-index: 2;
+  -webkit-app-region: no-drag;
   background: var(--surface);
   border-right: 1px solid var(--border);
   padding: 10px 8px;
@@ -60,6 +62,9 @@ body {
 }
 .nav-item {
   display: flex; align-items: center; width: 100%;
+  position: relative; z-index: 3;
+  -webkit-app-region: no-drag;
+  touch-action: manipulation;
   padding: 8px 10px; border: none; border-radius: var(--radius-sm);
   background: transparent; color: var(--fg-secondary);
   font-size: 13px; font-family: inherit; text-align: left;

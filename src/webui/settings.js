@@ -1838,12 +1838,16 @@ document.addEventListener('DOMContentLoaded', () => {
   // 使用事件委托保证左侧各分组始终可点击切换。
   const nav = document.getElementById('settings-nav');
   if (nav) {
-    nav.addEventListener('click', (event) => {
+    const switchFromEvent = (event) => {
       const item = event.target.closest('.nav-item[data-group]');
       if (!item) return;
       event.preventDefault();
+      event.stopPropagation();
       switchSettingsGroup(item.dataset.group);
-    });
+    };
+    // 捕获阶段优先处理，避免 pywebview 窗口拖动或其他监听器吞掉点击。
+    nav.addEventListener('pointerup', switchFromEvent, true);
+    nav.addEventListener('click', switchFromEvent, true);
   }
   switchSettingsGroup('base');
   initSettings();

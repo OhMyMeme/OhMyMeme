@@ -487,18 +487,16 @@ body {
 #tagbar {
   padding: 8px 12px;
   display: flex;
-  flex-wrap: nowrap;
-  align-items: center;
+  flex-wrap: wrap;
+  align-items: flex-start;
   gap: 6px;
   flex-shrink: 0;
   border-bottom: 1px solid var(--border);
-  overflow-x: auto;
-  overflow-y: hidden;
-  scrollbar-width: thin;
-  scrollbar-color: var(--border) transparent;
+  max-height: 140px;
+  overflow-y: auto;
 }
 
-#tagbar::-webkit-scrollbar { height: 5px; }
+#tagbar::-webkit-scrollbar { width: 5px; }
 #tagbar::-webkit-scrollbar-thumb { background: var(--border); border-radius: 20px; }
 
 #tagbar.collapsed {
@@ -730,6 +728,68 @@ body {
   transform: scale(0.94);
   filter: saturate(0.72);
 }
+
+#meme-drag-preview {
+  position: fixed;
+  z-index: 500;
+  width: 112px;
+  padding: 5px;
+  border: 2px solid var(--primary);
+  border-radius: var(--radius);
+  background: var(--surface);
+  box-shadow: var(--shadow-lg);
+  pointer-events: none;
+  transform: translate(14px, 14px) rotate(3deg) scale(1.04);
+  animation: meme-drag-lift 160ms ease-out;
+}
+
+#meme-drag-preview img {
+  display: block;
+  width: 100%;
+  aspect-ratio: 1;
+  object-fit: contain;
+  border-radius: 4px;
+  background: var(--bg);
+}
+
+#meme-drag-preview span {
+  display: block;
+  margin-top: 4px;
+  overflow: hidden;
+  color: var(--fg);
+  font-size: 10px;
+  text-align: center;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+@keyframes meme-drag-lift {
+  from { opacity: 0; transform: translate(14px, 20px) rotate(0) scale(0.86); }
+  to { opacity: 1; transform: translate(14px, 14px) rotate(3deg) scale(1.04); }
+}
+
+.folder-drop-dialog-overlay {
+  position: fixed;
+  z-index: 550;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: rgba(0, 0, 0, 0.56);
+}
+
+.folder-drop-dialog {
+  width: 360px;
+  padding: 22px 24px;
+  border: 1px solid var(--border-light);
+  border-radius: var(--radius-lg);
+  background: var(--surface);
+  box-shadow: var(--shadow-lg);
+}
+
+.folder-drop-dialog__title { color: var(--fg); font-size: 16px; font-weight: 700; }
+.folder-drop-dialog p { margin: 10px 0 18px; color: var(--fg-secondary); font-size: 12px; line-height: 1.6; }
+.folder-drop-dialog__actions { display: flex; justify-content: flex-end; gap: 8px; }
 
 @media (prefers-reduced-motion: reduce) {
   .folder-card, .folder-card:hover, .folder-card.drop-target, .meme-card.native-dragging { transform: none; }
