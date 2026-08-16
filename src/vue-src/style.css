@@ -445,7 +445,8 @@ body {
   cursor: grabbing;
 }
 
-#meme-grid {
+#meme-grid,
+.meme-grid {
   display: grid;
   gap: 10px;
   align-content: start;
