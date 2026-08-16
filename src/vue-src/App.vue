@@ -8,6 +8,7 @@ import ContextMenu from './components/ContextMenu.vue'
 import CollectionBuilder from './components/CollectionBuilder.vue'
 import CollectionTreeNode from './components/CollectionTreeNode.vue'
 import ImportMenu from './components/ImportMenu.vue'
+import InputDialog from './components/InputDialog.vue'
 import Pager from './components/Pager.vue'
 import SyncOverlay from './components/SyncOverlay.vue'
 import TagEditor from './components/TagEditor.vue'
@@ -19,6 +20,7 @@ const ctx = useContextMenu()
 const cb = useCollectionBuilder()
 const tagEditor = ref<InstanceType<typeof TagEditor> | null>(null)
 const updateDialog = ref<InstanceType<typeof UpdateDialog> | null>(null)
+const inputDialog = ref<InstanceType<typeof InputDialog> | null>(null)
 
 // 检查更新并弹窗（与原始实现一致）
 async function checkUpdateAndPrompt() {
@@ -274,7 +276,7 @@ async function onCtxAction(action: string) {
   const t = ctx.trigger.value
   switch (action) {
     case 'rename': {
-      const name = prompt('重命名', t.memeName || '')
+      const name = await inputDialog.value?.open('重命名', t.memeName || '')
       if (name && name !== t.memeName) { await window.pywebview?.api?.rename_meme(t.memeId, name); search() }
       break
     }
@@ -302,7 +304,8 @@ async function onCtxAction(action: string) {
     case 'collection': { showCollectionBuilder(); break }
     case 'add-to-subgroup': { /* 子菜单在 hover 时加载，点击走 subgroup-N / __new-subgroup__ */ break }
     case '__new-subgroup__': {
-      const name = prompt(state.activeCollection && state.activeCollection > 0 ? '新建小分组' : '新建分组', '')
+      const isSub = state.activeCollection && state.activeCollection > 0
+      const name = await inputDialog.value?.open(isSub ? '新建小分组' : '新建分组', '', isSub ? '输入小分组名称' : '输入分组名称')
       if (!name) break
       const targetCol = state.activeCollection && state.activeCollection > 0 ? state.activeCollection : null
       let ok: any
@@ -343,7 +346,7 @@ async function onCtxAction(action: string) {
       break
     }
     case 'rename-collection': {
-      const name = prompt('重命名分组', t.folderName || '')
+      const name = await inputDialog.value?.open('重命名分组', t.folderName || '')
       if (name && name !== t.folderName) { await window.pywebview?.api?.rename_collection(t.folderId, name); refreshCollections() }
       break
     }
@@ -743,6 +746,7 @@ onUnmounted(() => {
   <SyncOverlay ref="syncOverlay" @synced="onSyncDone" />
   <TagEditor ref="tagEditor" />
   <UpdateDialog ref="updateDialog" />
+  <InputDialog ref="inputDialog" />
   <ContextMenu
     :visible="ctx.visible.value" :x="ctx.x.value" :y="ctx.y.value"
     :items="ctx.items.value" :trigger="ctx.trigger.value"
