@@ -66,13 +66,22 @@ src/              # 主代码
   douyin_dl.py     # 抖音下载 CLI 测试入口（独立运行，不依赖 GUI）
   wechat_probe.py  # 微信收藏表情导入（helper 二进制提取密钥 + AES-CBC 解密 DB + CDN 下载，仅 Windows）
   wechat_keyfinder/ # 微信密钥提取 C++ 辅助二进制源码（CMake 构建）
-  webui/          # 前端静态文件（HTML 与 CSS/JS 分离，经典脚本供内联 onclick 调用全局函数）
-    index.html    # 主窗口 HTML 骨架，引用 index.css + index.js
-    index.css     # 主窗口样式
-    index.js      # 主窗口逻辑（渲染/搜索/拖拽排序/同步/导入/更新）
-    settings.html # 设置窗口 HTML 骨架，引用 settings.css + settings.js
+  vue-src/       # Vue 3 前端源码（Vite 构建，产物到 webui/dist/ohmymeme.js）
+    App.vue      # 根组件：标题栏/搜索/侧边栏/面包屑/标签栏/网格/分页
+    main.ts      # 入口：挂载 + window.focusSearch 全局（快捷键呼出聚焦搜索）
+    style.css    # 主窗口样式（CSS 变量主题，蓝色 #3b82f6）
+    types/       # TS 类型定义 (Meme/Collection/Tag)
+    utils/       # api 桥接 + esc + renderMarkdown
+    composables/ # useMemes 状态 / useDragSort 拖拽 / useContextMenu / useCollectionBuilder
+    components/  # Pager/TagEditor/ImportMenu/SyncOverlay/ContextMenu/CollectionBuilder/
+                 # CollectionTreeNode/UpdateDialog
+  webui/          # 前端静态文件
+    vue.html      # 主窗口入口（Vue），Bottle 优先加载
+    dist/ohmymeme.js # Vite 构建产物（gitignored）
+    settings.html # 设置窗口 HTML（vanilla，两列布局：左导航+右内容）
     settings.css  # 设置窗口样式
-    settings.js   # 设置窗口逻辑（设置项/同步/QQ 导入向导）
+    settings.js   # 设置窗口逻辑（设置项/同步/导入向导）
+    index.html/index.css/index.js  # 旧主窗口（已备份至 webui-backup/，不再使用）
 config/
   offsets.json    # wechat_keyfinder 易变参数（版本号等，微信升级时只改此文件）
 scripts/
@@ -175,16 +184,16 @@ tests/
 - Bottle 只绑 `127.0.0.1` 随机端口；`before_request` 校验 `Host` 必须为本机回环（`_host_allowed`），POST 额外校验 `Origin` 同源且 `Sec-Fetch-Site` 非 `cross-site`，拒绝则 403（阻断 DNS rebinding / 跨站注入）
 - `after_request` 统一加 `X-Content-Type-Options: nosniff` / `Referrer-Policy: no-referrer` / `X-Frame-Options: DENY`，`/api/` 路由 `Cache-Control: no-store`
 - 文件名安全：`_safe_serve_filename`（webui）与 `_safe_remote_fname`（sync）拒绝含 `/` `\`、以 `.` `/` `\` `~` `..` 开头的名字；`_find_meme_file` 入口校验，远端 manifest 文件名在 `_fetch_remote_memes` 过滤 + `_pull_worker` 写盘前再防御
-- 前端 XSS：`index.js`/`settings.js` 的 `esc()` 转义所有拼入 innerHTML 的外部/动态数据（远端分组名、GitHub 版本号、QQ 昵称、输出目录、弹窗标题/正文等）
+- 前端 XSS：`utils/api.ts` 的 `esc()`/`renderMarkdown()` 转义所有拼入 innerHTML 的外部/动态数据（远端分组名、GitHub 版本号、QQ 昵称、输出目录、弹窗标题/正文等）；设置窗口 `settings.js` 同理
 
 ### 环境检测
 - WSL 检测: `/proc/version` 包含 "microsoft"
 - WSL 时设置 `MESA_LOADER_DRIVER_OVERRIDE=llvmpipe`, `LIBGL_ALWAYS_SOFTWARE=1` 等软渲染环境变量
 
 ### 启动流程 (关键时序)
-- `index.html` `DOMContentLoaded` 分两阶段执行:
-  1. 立即: `get_init_data()` 加载数据库数据 → 渲染网格/标签/分组（秒开）
-  2. 延迟 300ms 后: `rescan_cache()` → 重新渲染 → `run_auto_sync()` → 重新渲染 → `check_update()`（静默捕获异常）
+- Vue `App.vue` 挂载后分两阶段:
+  1. 立即: `loadInitData()` → `get_init_data()` 加载数据库数据 → 秒开
+  2. 延迟 300ms 后: `rescan_cache()` → `run_auto_sync()` → 重新搜索/标签/分组 → `check_update()`（有新版弹更新对话框）
 - **300ms 延时不可移除** — 给 Bottle + pywebview 桥接稳定时间
 - **必须先 rescan_cache 再 run_auto_sync** — 确保本地文件与 DB 一致后再对比远端，否则同步产生错误 diff
 - **check_update 必须静默** — GitHub API 失败不阻塞启动
@@ -337,6 +346,8 @@ tests/
 ## 构建 & 测试
 ```bash
 pip install -r requirements.txt
+npm install                 # Vue 前端依赖（开发时）
+npx vite build              # 构建 Vue 前端 → webui/dist/ohmymeme.js
 python -m src     # 开发运行
 python -m pytest tests/ -v  # 运行测试
 ruff check src/   # lint 检查
@@ -344,6 +355,8 @@ black src/        # 格式化
 python scripts/build.py  # PyInstaller + InnoSetup 完整构建
 python scripts/build.py --lang en  # 指定语言构建
 ```
+
+**前端架构**：主窗口为 Vue 3（`vue-src/`，Vite 构建 IIFE 单文件），设置窗口仍为 vanilla（`webui/settings.*`，独立 webview）。修改主窗口前端后需 `npx vite build` 再运行。
 
 `make` 命令仅供参考（`make run`/`make test`/`make lint`/`make format`/`make build`），macOS/Linux 下可能不可用，优先使用原生 Python 命令。
 

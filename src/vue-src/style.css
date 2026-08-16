@@ -615,94 +615,6 @@ body {
   font-size: 13px;
 }
 
-/* Settings Overlay */
-#settings-overlay {
-  position: fixed;
-  inset: 0;
-  background: rgba(0, 0, 0, 0.6);
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  z-index: 500;
-  animation: fadeIn 0.15s ease;
-}
-
-.settings-panel {
-  background: var(--surface);
-  border: 1px solid var(--border);
-  border-radius: var(--radius-lg);
-  width: 420px;
-  max-height: 80vh;
-  overflow: hidden;
-  box-shadow: var(--shadow-lg);
-  animation: slideUp 0.2s ease;
-}
-
-.settings-header {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  padding: 16px 20px;
-  border-bottom: 1px solid var(--border);
-}
-
-.settings-header h2 {
-  font-size: 16px;
-  font-weight: 600;
-}
-
-.settings-header .icon-btn {
-  font-size: 18px;
-  width: 28px;
-  height: 28px;
-}
-
-.settings-body {
-  padding: 20px;
-  overflow-y: auto;
-  max-height: calc(80vh - 60px);
-}
-
-.settings-section {
-  margin-bottom: 24px;
-}
-
-.settings-section h3 {
-  font-size: 13px;
-  font-weight: 600;
-  color: var(--fg-secondary);
-  margin-bottom: 12px;
-  text-transform: uppercase;
-  letter-spacing: 0.3px;
-}
-
-.settings-row {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  margin-bottom: 10px;
-}
-
-.settings-row label {
-  font-size: 13px;
-  color: var(--fg-secondary);
-}
-
-.settings-row input[type="text"],
-.settings-row select {
-  padding: 6px 10px;
-  border-radius: var(--radius-sm);
-  border: 1px solid var(--border);
-  background: var(--bg);
-  color: var(--fg);
-  font-size: 13px;
-  min-width: 160px;
-}
-
-.settings-row input[readonly] {
-  opacity: 0.6;
-}
-
 /* Drop Overlay */
 #drop-overlay {
   position: fixed;
@@ -807,11 +719,6 @@ body {
 @keyframes fadeIn {
   from { opacity: 0; }
   to { opacity: 1; }
-}
-
-@keyframes slideUp {
-  from { opacity: 0; transform: translateY(12px); }
-  to { opacity: 1; transform: translateY(0); }
 }
 
 /* Buttons */
