@@ -7,6 +7,7 @@ import { useCollectionBuilder } from './composables/useCollectionBuilder'
 import ContextMenu from './components/ContextMenu.vue'
 import CollectionBuilder from './components/CollectionBuilder.vue'
 import CollectionTreeNode from './components/CollectionTreeNode.vue'
+import ConfirmDialog from './components/ConfirmDialog.vue'
 import ImportMenu from './components/ImportMenu.vue'
 import InputDialog from './components/InputDialog.vue'
 import Pager from './components/Pager.vue'
@@ -21,6 +22,12 @@ const cb = useCollectionBuilder()
 const tagEditor = ref<InstanceType<typeof TagEditor> | null>(null)
 const updateDialog = ref<InstanceType<typeof UpdateDialog> | null>(null)
 const inputDialog = ref<InstanceType<typeof InputDialog> | null>(null)
+const confirmDialog = ref<InstanceType<typeof ConfirmDialog> | null>(null)
+
+// 统一确认对话框（替代原生 confirm，风格与重构主题一致）
+async function confirmAsk(title: string, message: string): Promise<boolean> {
+  return !!(await confirmDialog.value?.open(title, message))
+}
 
 // 检查更新并弹窗（与原始实现一致）
 async function checkUpdateAndPrompt() {
@@ -61,6 +68,10 @@ function dismissStartupAnim() {
 onMounted(() => {
   // 兜底：视频加载失败或未触发 ended 时最多 6s 后移除遮罩，避免卡死界面
   startupAnimTimer = setTimeout(dismissStartupAnim, 6000)
+  // 后端 evaluate_js 刷新入口（设置保存/同步后由 webui.py 调用）
+  window.refreshMemes = () => { search() }
+  window.refreshTags = refreshTags
+  window.refreshCollections = refreshCollections
 })
 // 网格列数随侧边栏即时切换（实时感）；性能由卡片 content-visibility 保证
 const gridCols = computed(() => sidebarCollapsed.value ? 5 : 4)
@@ -315,7 +326,7 @@ async function onCtxAction(action: string) {
       search()
       break
     }
-    case 'collection': { showCollectionBuilder(); break }
+    case 'collection': { showCollectionBuilder(t.memeId); break }
     case 'add-to-subgroup': { /* 子菜单在 hover 时加载，点击走 subgroup-N / __new-subgroup__ */ break }
     case '__new-subgroup__': {
       const isSub = state.activeCollection && state.activeCollection > 0
@@ -357,7 +368,7 @@ async function onCtxAction(action: string) {
       break
     }
     case 'delete': {
-      if (confirm('确定删除这个表情包吗？')) { await window.pywebview?.api?.delete_meme(t.memeId); search(); refreshCollections() }
+      if (await confirmAsk('删除表情包', '确定删除这个表情包吗？')) { await window.pywebview?.api?.delete_meme(t.memeId); search(); refreshCollections() }
       break
     }
     case 'rename-collection': {
@@ -366,7 +377,7 @@ async function onCtxAction(action: string) {
       break
     }
     case 'delete-collection': {
-      if (confirm('确定删除这个分组吗？')) {
+      if (await confirmAsk('删除分组', '确定删除这个分组吗？')) {
         // 先移除组内表情到上层，再删组
         const parent = findParentCollection(state.collections, t.folderId)
         const members = (await window.pywebview?.api?.search_memes('', [], t.folderId, 0, 9999)) || []
@@ -380,7 +391,7 @@ async function onCtxAction(action: string) {
       break
     }
     case 'delete-folder': {
-      if (confirm('确定删除小分组「' + t.folderName + '」？分组内表情包将移回上层分组。')) {
+      if (await confirmAsk('删除小分组', '确定删除小分组「' + t.folderName + '」？分组内表情包将移回上层分组。')) {
         const parent = findParentCollection(state.collections, t.folderId)
         const members = (await window.pywebview?.api?.search_memes('', [], t.folderId, 0, 9999)) || []
         for (const mm of members) {
@@ -393,7 +404,7 @@ async function onCtxAction(action: string) {
       break
     }
     case 'clear-recent': {
-      if (confirm('确定清空最近使用记录吗？')) {
+      if (await confirmAsk('清空最近使用', '确定清空最近使用记录吗？')) {
         await window.pywebview?.api?.clear_recent()
         search()
       }
@@ -437,7 +448,7 @@ function findCollectionNode(items: any[], target: number): any | null {
   return null
 }
 
-async function showCollectionBuilder() {
+async function showCollectionBuilder(memeId?: number) {
   cb.open(async (confirm) => {
     const { name, memeIds, existingId } = confirm
     // 已选已有分组 → 更新其成员；否则新建分组
@@ -450,7 +461,7 @@ async function showCollectionBuilder() {
     } else {
       showToast(result?.error || '保存失败')
     }
-  })
+  }, memeId ? [memeId] : [])
 }
 
 const hoverTimers = new Map<number, ReturnType<typeof setTimeout>>()
@@ -799,6 +810,7 @@ onUnmounted(() => {
   <TagEditor ref="tagEditor" />
   <UpdateDialog ref="updateDialog" />
   <InputDialog ref="inputDialog" />
+  <ConfirmDialog ref="confirmDialog" />
   <ContextMenu
     :visible="ctx.visible.value" :x="ctx.x.value" :y="ctx.y.value"
     :items="ctx.items.value" :trigger="ctx.trigger.value"
