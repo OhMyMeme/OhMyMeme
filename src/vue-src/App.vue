@@ -49,6 +49,19 @@ let nativeDragActive = false
 let dragState: { sx: number; sy: number } | null = null
 let updateInterval: ReturnType<typeof setInterval> | null = null
 
+// 启动动画：仅页面首次加载（启动）时播放一次，快捷键呼出不重载页面故不重复播放
+const startupAnim = ref(true)
+const startupVideoReady = ref(false)
+const startupVideoSrc = '/resources/OhMyMeme.mp4'
+let startupAnimTimer: ReturnType<typeof setTimeout> | null = null
+function dismissStartupAnim() {
+  startupAnim.value = false
+  if (startupAnimTimer) { clearTimeout(startupAnimTimer); startupAnimTimer = null }
+}
+onMounted(() => {
+  // 兜底：视频加载失败或未触发 ended 时最多 6s 后移除遮罩，避免卡死界面
+  startupAnimTimer = setTimeout(dismissStartupAnim, 6000)
+})
 // 网格列数随侧边栏即时切换（实时感）；性能由卡片 content-visibility 保证
 const gridCols = computed(() => sidebarCollapsed.value ? 5 : 4)
 
@@ -488,7 +501,17 @@ function onDocPointerMove(e: PointerEvent) {
   }
   if (!nativeDragStart || sortEnabled.value) return
   const dist = Math.hypot(e.clientX - nativeDragStart.x, e.clientY - nativeDragStart.y)
-  if (dist > 8) { const id = nativeDragStart.memeId; nativeDragStart = null; startNativeDrag(id) }
+  if (dist > 8) {
+    const id = nativeDragStart.memeId
+    nativeDragStart = null
+    // 原生拖拽进行中置标志，回拖到窗口视为取消（不触发 drop 导入）
+    nativeDragActive = true
+    startNativeDrag(id).then((ok) => {
+      nativeDragActive = false
+      ignoreClick = true
+      if (!ok) showToast('拖拽失败：本地文件不存在')
+    }).catch(() => { nativeDragActive = false })
+  }
 }
 
 async function onDocPointerUp(e: PointerEvent) {
@@ -619,13 +642,25 @@ onUnmounted(() => {
 
 ;(async () => {
   await loadInitData()
-  setTimeout(async () => {
+  // 动画开启时：播放期间即加载后续内容（动画天然覆盖桥接稳定时间），去除 300ms 延时；
+  // 动画关闭时：不播放动画，降级为 300ms 延时
+  const runBackground = async () => {
     await window.pywebview?.api?.rescan_cache()
     await window.pywebview?.api?.run_auto_sync()
     await search()
     await refreshTags()
     await refreshCollections()
-  }, 300)
+  }
+  if (state.showStartupAnimation) {
+    // 启动遮罩背景贴合视频边缘色（含 html/body 首次渲染）
+    document.documentElement.style.background = state.startupBgColor
+    document.body.style.background = state.startupBgColor
+    startupVideoReady.value = true
+    runBackground()
+  } else {
+    dismissStartupAnim()
+    setTimeout(runBackground, 300)
+  }
   // 每日更新检测（完整弹窗 + 下载安装，与原始实现一致）
   await checkUpdateAndPrompt()
   updateInterval = setInterval(checkUpdateAndPrompt, 24 * 60 * 60 * 1000)
@@ -636,11 +671,6 @@ onUnmounted(() => {
   <div id="app">
     <header id="titlebar" @mousedown="onTitlebarMouseDown">
       <div class="titlebar__left">
-        <button class="sidebar-toggle" :class="{ collapsed: sidebarCollapsed }" @click="toggleSidebar" title="折叠/展开侧边栏">
-          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-            <line x1="3" y1="6" x2="21" y2="6"/><line x1="3" y1="12" x2="21" y2="12"/><line x1="3" y1="18" x2="21" y2="18"/>
-          </svg>
-        </button>
         <div class="logo">OhMy<span>Meme</span></div>
       </div>
       <span class="spacer"></span>
@@ -661,10 +691,6 @@ onUnmounted(() => {
       </div>
     </header>
 
-    <div id="search-wrap">
-      <input id="search" type="text" placeholder="搜索表情包..." :value="state.searchQuery" @input="onSearchInput" autofocus spellcheck="false">
-    </div>
-
     <div id="content">
       <aside id="sidebar" :class="{ collapsed: sidebarCollapsed }">
         <div id="sidebar-header"><span v-if="!sidebarCollapsed">分组</span></div>
@@ -683,6 +709,15 @@ onUnmounted(() => {
       </aside>
 
       <div id="main">
+        <div id="search-wrap">
+          <button class="sidebar-toggle" :class="{ collapsed: sidebarCollapsed }" @click="toggleSidebar" title="折叠/展开侧边栏">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+              <line x1="3" y1="6" x2="21" y2="6"/><line x1="3" y1="12" x2="21" y2="12"/><line x1="3" y1="18" x2="21" y2="18"/>
+            </svg>
+          </button>
+          <input id="search" type="text" placeholder="搜索表情包..." :value="state.searchQuery" @input="onSearchInput" autofocus spellcheck="false">
+        </div>
+
         <div id="tagbar">
           <span v-for="tag in state.allTags" :key="tag" class="tag" :class="{ active: state.activeTags.has(tag) }" @click="toggleTag(tag)">{{ tag }}</span>
         </div>
@@ -784,4 +819,10 @@ onUnmounted(() => {
 
   <div id="toast"></div>
   <div id="loading"><div class="spinner"></div></div>
+
+  <Transition name="startup-fade">
+    <div v-if="startupAnim" id="startup-anim" :style="{ background: state.startupBgColor }">
+      <video v-if="startupVideoReady" :src="startupVideoSrc" autoplay muted playsinline @ended="dismissStartupAnim"></video>
+    </div>
+  </Transition>
 </template>

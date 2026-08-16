@@ -107,6 +107,64 @@ def install_log_buffer():
 install_log_buffer()
 
 HTML_DIR = Path(__file__).resolve().parent / "webui"
+RESOURCES_DIR = Path(__file__).resolve().parent / "resources"
+
+# 启动动画视频边缘主色缓存（采样一次复用），供启动遮罩背景贴合视频边框
+_STARTUP_BG_CACHE = None
+_STARTUP_BG_DEFAULT = "#0d0d0f"
+
+
+def startup_bg_color():
+    """采样启动视频边缘主色作窗口背景，使遮罩贴合视频边框；无 ffmpeg 时回退默认"""
+    global _STARTUP_BG_CACHE
+    if _STARTUP_BG_CACHE is not None:
+        return _STARTUP_BG_CACHE
+    color = _STARTUP_BG_DEFAULT
+    mp4 = RESOURCES_DIR / "OhMyMeme.mp4"
+    try:
+        import shutil
+        import subprocess
+        import tempfile
+        from collections import Counter
+
+        ffmpeg = shutil.which("ffmpeg")
+        if ffmpeg and mp4.exists() and HAS_PIL:
+            with tempfile.TemporaryDirectory() as td:
+                frame = os.path.join(td, "frame.png")
+                subprocess.run(
+                    [
+                        ffmpeg,
+                        "-y",
+                        "-v",
+                        "error",
+                        "-i",
+                        str(mp4),
+                        "-frames:v",
+                        "1",
+                        frame,
+                    ],
+                    check=True,
+                    timeout=30,
+                    stdout=subprocess.DEVNULL,
+                    stderr=subprocess.DEVNULL,
+                )
+                img = PILImage.open(frame).convert("RGB")
+                w, h = img.size
+                px = img.load()
+                cnt = Counter()
+                for x in range(w):
+                    cnt[px[x, 0]] += 1
+                    cnt[px[x, h - 1]] += 1
+                for y in range(h):
+                    cnt[px[0, y]] += 1
+                    cnt[px[w - 1, y]] += 1
+                r, g, b = cnt.most_common(1)[0][0]
+                color = "#%02x%02x%02x" % (r, g, b)
+    except Exception:
+        pass
+    _STARTUP_BG_CACHE = color
+    return color
+
 
 # 静态资源扩展名 → 强制 Content-Type：本机 mimetypes/注册表 .js 映射可能为
 # text/plain，叠加 nosniff 会被 Chromium 拒执行脚本
@@ -413,6 +471,8 @@ class JsApi:
             "memes": memes,
             "tags": self._db.get_all_tags(),
             "collections": collections,
+            "show_startup_animation": self._cfg.get("show_startup_animation", True),
+            "startup_bg_color": startup_bg_color(),
         }
 
     def get_meme_path(self, meme_id: int) -> str:
@@ -1086,6 +1146,7 @@ class JsApi:
             "show_download_done": d.get("show_download_done", True),
             "show_uncategorized": d.get("show_uncategorized", True),
             "record_recent_use": d.get("record_recent_use", True),
+            "show_startup_animation": d.get("show_startup_animation", True),
         }
 
     def save_settings(self, settings: dict):
@@ -1147,6 +1208,7 @@ class JsApi:
             "show_upload_done": True,
             "show_download_progress": True,
             "show_download_done": True,
+            "show_startup_animation": True,
         }
 
     def move_window(self, dx: int, dy: int):
@@ -1376,6 +1438,7 @@ class SettingsApi:
             "show_download_done": d.get("show_download_done", True),
             "show_uncategorized": d.get("show_uncategorized", True),
             "record_recent_use": d.get("record_recent_use", True),
+            "show_startup_animation": d.get("show_startup_animation", True),
             "tg_tdata_path": d.get("tg_tdata_path", ""),
             "hover_to_play": d.get("hover_to_play", False),
         }
@@ -1450,6 +1513,7 @@ class SettingsApi:
             "show_download_progress": True,
             "show_download_done": True,
             "record_recent_use": True,
+            "show_startup_animation": True,
             "tg_tdata_path": self._cfg.get("tg_tdata_path", ""),
             "hover_to_play": self._cfg.get("hover_to_play", False),
         }
@@ -2577,6 +2641,14 @@ class WebUI:
                 logger.error(f"upload error: {e}")
                 bottle.response.status = 500
                 return {"ok": False, "error": str(e)}
+
+        @app.route("/resources/<filepath:path>")
+        def serve_resources(filepath):
+            # 启动动画等内置资源（src/resources），防止路径穿越
+            name = os.path.basename(filepath)
+            if not name or name != filepath.replace("\\", "/").split("/")[-1]:
+                bottle.abort(404, "Not Found")
+            return bottle.static_file(name, root=str(RESOURCES_DIR))
 
         @app.route("/<filepath:path>")
         def static_files(filepath):

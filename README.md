@@ -75,6 +75,17 @@ pip install -r requirements.txt
 python -m src
 ```
 
+主窗口前端为 **Vue 3**（`src/vue-src/`，Vite 构建 IIFE 单文件 `src/webui/dist/ohmymeme.js`）。**源码运行**时若产物缺失会自动执行一次 `npx vite build`；手动构建方式：
+
+```bash
+npm install        # 首次构建前安装依赖
+npx vite build     # 构建 Vue 前端 → src/webui/dist/ohmymeme.js
+```
+
+设置窗口仍为 vanilla 前端（`src/webui/settings.*`，独立 webview，无需构建）。旧主窗口（`src/webui/index.*`）已备份至 `src/webui-backup/`，不再使用。
+
+主窗口启动时播放 `src/resources/OhMyMeme.mp4` 启动动画（全屏遮罩，视频结束或 6s 兜底后淡出），仅启动时播放一次，快捷键/托盘呼出不重播。设置页「显示启动动画」开关（配置 `show_startup_animation`，默认开）可关闭动画：关闭时不播放视频，降级为 300ms 延时后加载后续内容；开启时动画播放期间即并行加载（无 300ms 延时，动画天然覆盖桥接稳定时间）。
+
 可用调试参数：
 
 | 参数 | 说明 |
@@ -184,7 +195,7 @@ python -m src
 
 ## 构建
 
-依赖 PyInstaller 6.0+。
+依赖 PyInstaller 6.0+。构建前请确认前端产物已生成：`src/webui/dist/ohmymeme.js`（Vue 构建产物已随仓库提交，改过前端后需 `npx vite build` 重新生成，见[从源码运行](#从源码运行)）。
 
 > **⚠️ 注意**: PyInstaller **不支持交叉编译**。`--windows` 参数只能在 Windows 系统上使用，`--linux` 参数只能在 Linux 系统上使用，`--macos` 参数只能在 macOS 上使用。
 > 如需在本地构建其他平台安装包，请使用 [GitHub Actions](#ci-github-actions)（推送到 `main` 分支自动触发，或手动运行 workflow）。
@@ -247,7 +258,7 @@ python -m pytest tests/ -v  # 测试
 
 CI 会自动运行 lint+test。
 
-网格拖拽槽位回归探针位于 `tests/fixtures/grid_slot_probe.js`。
+网格拖拽槽位回归探针位于 `tests/fixtures/grid_slot_probe.cjs`。
 
 ## 贡献者
 
@@ -267,7 +278,7 @@ CI 会自动运行 lint+test。
        │ 呼出
 ┌──────▼──────┐     ┌──────────────────┐
 │  WebView    │────►│   Bottle API     │
-│  HTML/CSS   │     │   (localhost)    │
+│  Vue 3      │     │   (localhost)    │
 └──────┬──────┘     └──────────────────┘
        │ API 调用
 ┌──────▼──────┐     ┌──────────────────┐
@@ -276,10 +287,12 @@ CI 会自动运行 lint+test。
 └─────────────┘     └──────────────────┘
 ```
 
+主窗口前端基于 **Vue 3**（`src/vue-src/`，Vite 构建为 IIFE 单文件 `src/webui/dist/ohmymeme.js`），通过 `pywebview.api.*` 桥接调用后端 `JsApi`；设置窗口仍为 vanilla（`src/webui/settings.*`）。
+
 ## 实现要点
 
 ### 启动时序
-启动分两阶段：首先 `get_init_data()` 秒开渲染数据库数据，300ms 后依次执行 `rescan_cache()` → `run_auto_sync()` → `check_update()`。**300ms 延迟不可移除**（桥接稳定需要），**先 rescan 再 sync**（文件与 DB 一致后再对比远端）。
+启动分两阶段：首先 `get_init_data()` 秒开渲染数据库数据，随后执行 `rescan_cache()` → `run_auto_sync()` → `check_update()`。**动画开启时动画播放期间即并行加载**（动画天然覆盖桥接稳定时间，无 300ms 延时）；**动画关闭时降级 300ms 延时**（桥接稳定需要）。**先 rescan 再 sync**（文件与 DB 一致后再对比远端）。
 
 ### 缓存去重
 扫描缓存目录时**双重去重**：按文件名查 DB 防止每次启动重复注册，按 SHA-256 哈希查 DB 防止同图不同名重复。导入（拖入/对话框）同样有哈希去重。
@@ -306,7 +319,7 @@ Windows 上 GIF 复制同时写入三个剪贴板格式：`CF_DIB`（首帧 BMP�
 
 | 模块 | 技术 | 理由 |
 |------|------|------|
-| UI | PyWebView (v6) + Bottle | 原生 WebView 渲染，HTML/CSS/JS 前端 |
+| UI | PyWebView (v6) + Bottle + Vue 3 | 原生 WebView 渲染，Vue 3 组件化前端（Vite 构建） |
 | 托盘 | pystray | 最轻跨平台托盘库 |
 | 热键 | keyboard → pynput → 轮询回退 | 三级降级保障 |
 | 图片 | Pillow | 业界标准 |

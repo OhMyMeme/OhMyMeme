@@ -1,3 +1,23 @@
+# v0.6.1 — Vue 3 主窗口重构 / 启动动画 / 源码自动编译前端
+
+## 新增
+
+- **主窗口重构为 Vue 3 组件化架构** — `src/vue-src/`（Vite 构建 IIFE 单文件 `src/webui/dist/ohmymeme.js`）：网格/标签栏/分组树/标题栏/拖拽排序/右键菜单等组件化，`useMemes` 集中状态管理，`useDragSort`/`useContextMenu`/`useCollectionBuilder` composables，Pager/TagEditor/ImportMenu/SyncOverlay 等组件（#60）
+- **启动动画** — 主窗口启动时全屏播放 `src/resources/OhMyMeme.mp4`（视频结束或 6s 兜底后 0.4s 淡出），仅启动时播放一次，快捷键/托盘呼出不重播；Bottle 新增 `/resources/<filepath:path>` 路由提供内置资源
+- **显示启动动画开关** — 设置页「显示启动动画」开关（配置键 `show_startup_animation`，默认开）：开启时动画播放期间即并行加载后续内容（无 300ms 延时，动画天然覆盖桥接稳定时间）；关闭时不播放视频，降级为 300ms 延时后加载
+- **动画背景自动贴合视频边框** — `webui.py` 的 `startup_bg_color()` 用 ffmpeg 抽视频首帧 + PIL 采样四边众数色（缓存一次，无 ffmpeg/失败回退 `#0d0d0f`），经 `get_init_data` 传给前端应用到启动遮罩与 html/body 背景，消除动画边缘与窗口背景色差
+- **源码运行自动编译前端** — `main.py` 启动时 `_ensure_vue_frontend()` 检查构建产物，缺失（源码运行且未打包）则用 `npx vite build` 自动编译一次，失败仅告警不阻断启动
+- **侧边栏折叠按钮移到搜索框内** — `.sidebar-toggle` 位于 `#search-wrap` 左侧，搜索框 `flex:1` 随侧边栏 180px↔48px 动态伸缩
+
+## 变更
+
+- **PyInstaller 打包内置资源** — `build.py` 新增 `--add-data src/resources`，启动动画 mp4 随安装包分发
+
+## 修复
+
+- **原生拖拽拖回误触发导入** — Vue 重构后 `nativeDragActive` 从未置 true，原生拖拽进行中回拖到窗口被 drop 处理器误判为导入；现于 `pointermove` 位移 >8px 触发原生拖拽前置 true、Promise `.then/.catch` 中重置，拖拽期间回拖视为取消
+- **拖拽失败 toast** — 原生拖拽返回 False（文件缺失/取消）时提示「拖拽失败：本地文件不存在」
+
 # v0.6.0 — 标签系统 / 侧边栏分组树 / 翻页浏览 / Nightly 构建
 
 ## 新增

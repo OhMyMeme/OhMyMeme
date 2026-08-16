@@ -15,6 +15,8 @@ const state = reactive({
   page: 1,
   pageCount: 1,
   loading: false,
+  showStartupAnimation: true,
+  startupBgColor: '#0d0d0f',
 })
 
 let searchGen = 0
@@ -36,6 +38,8 @@ export function useMemes() {
       state.page = 1
       state.total = await api('count_memes', '', [], state.activeCollection) || state.memes.length
       state.pageCount = Math.max(1, Math.ceil(state.total / MEME_PAGE))
+      state.showStartupAnimation = data.show_startup_animation !== false
+      state.startupBgColor = data.startup_bg_color || '#0d0d0f'
     }
   }
 

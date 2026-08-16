@@ -7,6 +7,7 @@ import signal
 import subprocess
 import sys
 import threading
+from pathlib import Path
 
 from . import __app_name__, __version__
 from .config import get_config
@@ -23,6 +24,39 @@ from .webui import WebUI
 logger = logging.getLogger(__name__)
 
 
+def _ensure_vue_frontend():
+    """源码运行且 Vue 构建产物缺失时自动编译一次前端（打包环境跳过）"""
+    if getattr(sys, "frozen", False):
+        return
+    root = Path(__file__).resolve().parent.parent
+    dist_js = root / "src" / "webui" / "dist" / "ohmymeme.js"
+    if dist_js.exists():
+        return
+    if not (root / "package.json").exists():
+        return
+    logger.info("Vue 构建产物缺失，自动编译前端（npx vite build）...")
+    try:
+        npx = "npx.cmd" if os.name == "nt" else "npx"
+        result = subprocess.run(
+            [npx, "vite", "build"],
+            cwd=str(root),
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            timeout=600,
+        )
+        if result.returncode == 0:
+            logger.info("Vue 前端编译完成 -> %s", dist_js)
+        else:
+            logger.warning(
+                "Vue 自动编译失败: %s",
+                (result.stderr or result.stdout).strip()[-500:],
+            )
+    except Exception as e:
+        logger.warning("Vue 自动编译失败: %s", e)
+
+
 class OhMyMemeApp:
     def __init__(self):
         self._cfg = get_config()
@@ -36,7 +70,10 @@ class OhMyMemeApp:
     def run(self):
         self._running = True
 
-        # 0. 清理中断遗留的临时文件（.remote-* / *.tmp）
+        # 0. 源码运行且 Vue 产物缺失时自动编译一次前端
+        _ensure_vue_frontend()
+
+        # 1. 清理中断遗留的临时文件（.remote-* / *.tmp）
         try:
             from .sync import cleanup_stale_temp_files
 
