@@ -121,7 +121,13 @@ class GlobalHotkey:
         main_key = parts[-1] if parts else ""
         mod_keys = set(parts[:-1])
 
-        import keyboard as kb_module
+        try:
+            import keyboard as kb_module
+        except ImportError:
+            logger.warning("轮询热键不可用：缺少 keyboard 库")
+            self._active = False
+            self._polling = False
+            return
 
         def poll():
             while self._polling:

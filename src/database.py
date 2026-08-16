@@ -3,7 +3,7 @@
 import sqlite3
 import threading
 from pathlib import Path
-from typing import List, Optional, Tuple
+from typing import Dict, List, Optional, Tuple
 
 from .config import get_config
 
@@ -45,6 +45,8 @@ class MemeDB:
                 sort_order  INTEGER DEFAULT 0,
                 stego_of_hash TEXT DEFAULT NULL,
                 from_stego  INTEGER DEFAULT 0,
+                ai_description TEXT NOT NULL DEFAULT '',
+                ai_ocr_text TEXT    NOT NULL DEFAULT '',
                 created_at  TEXT    NOT NULL DEFAULT (datetime('now','localtime')),
                 updated_at  TEXT    NOT NULL DEFAULT (datetime('now','localtime'))
             );
@@ -96,6 +98,8 @@ class MemeDB:
             ("memes", "sort_order", "INTEGER DEFAULT 0"),
             ("memes", "stego_of_hash", "TEXT DEFAULT NULL"),
             ("memes", "from_stego", "INTEGER DEFAULT 0"),
+            ("memes", "ai_description", "TEXT NOT NULL DEFAULT ''"),
+            ("memes", "ai_ocr_text", "TEXT NOT NULL DEFAULT ''"),
             (
                 "collections",
                 "parent_id",
@@ -135,14 +139,17 @@ class MemeDB:
         tags: List[str] = None,
         stego_of_hash: str = None,
         from_stego: int = 0,
+        ai_description: str = "",
+        ai_ocr_text: str = "",
     ) -> int:
         with self._lock:
             conn = self._get_conn()
             cur = conn.execute(
                 """INSERT INTO memes
-                   (filename, file_hash, width, height,
-                    file_size, mime_type, original_name, stego_of_hash, from_stego)
-                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                   (filename, file_hash, width, height, file_size, mime_type,
+                    original_name, stego_of_hash, from_stego, ai_description,
+                    ai_ocr_text)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
                 (
                     filename,
                     file_hash,
@@ -153,6 +160,8 @@ class MemeDB:
                     original_name,
                     stego_of_hash,
                     from_stego,
+                    ai_description or "",
+                    ai_ocr_text or "",
                 ),
             )
             meme_id = cur.lastrowid
@@ -180,6 +189,8 @@ class MemeDB:
             "original_name",
             "stego_of_hash",
             "from_stego",
+            "ai_description",
+            "ai_ocr_text",
         }
         sets = []
         vals = []
@@ -194,6 +205,29 @@ class MemeDB:
             conn = self._get_conn()
             conn.execute(
                 f"UPDATE memes SET {', '.join(sets)} WHERE id=?", (*vals, meme_id)
+            )
+            conn.commit()
+
+    def set_meme_ai_text(self, meme_id: int, description: str = "", ocr_text: str = ""):
+        """更新单个表情的 AI 描述和 OCR 文本"""
+        self.update_meme(
+            meme_id, ai_description=description or "", ai_ocr_text=ocr_text or ""
+        )
+
+    def update_ai_descriptions(self, descriptions: Dict[int, str]):
+        """批量更新表情 AI 描述"""
+        values = [
+            (description or "", meme_id)
+            for meme_id, description in (descriptions or {}).items()
+        ]
+        if not values:
+            return
+        with self._lock:
+            conn = self._get_conn()
+            conn.executemany(
+                "UPDATE memes SET ai_description=?, "
+                "updated_at=datetime('now','localtime') WHERE id=?",
+                values,
             )
             conn.commit()
 
@@ -288,9 +322,16 @@ class MemeDB:
                     "INSERT OR IGNORE INTO collections (name) VALUES (?)", (name,)
                 )
             conn.commit()
-            row = conn.execute(
-                "SELECT id FROM collections WHERE name=?", (name,)
-            ).fetchone()
+            if parent_id is None:
+                row = conn.execute(
+                    "SELECT id FROM collections WHERE name=? AND parent_id IS NULL",
+                    (name,),
+                ).fetchone()
+            else:
+                row = conn.execute(
+                    "SELECT id FROM collections WHERE name=? AND parent_id=?",
+                    (name, parent_id),
+                ).fetchone()
             return row[0] if row else -1
 
     def add_to_collection(self, meme_id: int, collection_id: int):
@@ -299,6 +340,18 @@ class MemeDB:
             conn.execute(
                 "INSERT OR IGNORE INTO meme_collections "
                 "(meme_id, collection_id) VALUES (?, ?)",
+                (meme_id, collection_id),
+            )
+            conn.commit()
+
+    def move_to_collection(self, meme_id: int, collection_id: int):
+        """将表情移动到唯一的文件夹归属"""
+        with self._lock:
+            conn = self._get_conn()
+            conn.execute("DELETE FROM meme_collections WHERE meme_id=?", (meme_id,))
+            conn.execute(
+                "INSERT INTO meme_collections (meme_id, collection_id, sort_order) "
+                "VALUES (?, ?, 0)",
                 (meme_id, collection_id),
             )
             conn.commit()
@@ -413,6 +466,7 @@ class MemeDB:
         collection_id: int = None,
         favorite_only: bool = False,
         uncategorized_only: bool = False,
+        ai_pending_only: bool = False,
         offset: int = 0,
         limit: int = 100,
     ) -> List[dict]:
@@ -421,9 +475,16 @@ class MemeDB:
         params = []
 
         if keyword:
-            where.append("(m.filename LIKE ? OR m.original_name LIKE ?)")
+            where.append("""(
+                m.filename LIKE ? OR m.original_name LIKE ?
+                OR m.ai_description LIKE ? OR m.ai_ocr_text LIKE ? OR EXISTS (
+                    SELECT 1 FROM meme_tags mt
+                    JOIN tags t ON t.id = mt.tag_id
+                    WHERE mt.meme_id = m.id AND t.name LIKE ?
+                )
+            )""")
             kw = f"%{keyword}%"
-            params.extend([kw, kw])
+            params.extend([kw, kw, kw, kw, kw])
 
         if tags:
             placeholders = ",".join("?" for _ in tags)
@@ -460,6 +521,15 @@ class MemeDB:
                 SELECT 1 FROM meme_collections mc WHERE mc.meme_id = m.id
             )""")
 
+        if ai_pending_only:
+            where.append("""(
+                COALESCE(m.ai_description, '') = ''
+                OR COALESCE(m.ai_ocr_text, '') = ''
+                OR NOT EXISTS (
+                    SELECT 1 FROM meme_tags mt WHERE mt.meme_id = m.id
+                )
+            )""")
+
         sql = "SELECT m.* FROM memes m"
         if where:
             sql += " WHERE " + " AND ".join(where)
@@ -492,9 +562,16 @@ class MemeDB:
         where = ["(stego_of_hash IS NULL OR stego_of_hash = '')"]
         params = []
         if keyword:
-            where.append("(filename LIKE ? OR original_name LIKE ?)")
+            where.append("""(
+                filename LIKE ? OR original_name LIKE ? OR ai_description LIKE ?
+                OR ai_ocr_text LIKE ? OR EXISTS (
+                    SELECT 1 FROM meme_tags mt
+                    JOIN tags t ON t.id = mt.tag_id
+                    WHERE mt.meme_id = memes.id AND t.name LIKE ?
+                )
+            )""")
             kw = f"%{keyword}%"
-            params.extend([kw, kw])
+            params.extend([kw, kw, kw, kw, kw])
         if collection_id is not None:
             if isinstance(collection_id, list):
                 placeholders = ",".join("?" for _ in collection_id)

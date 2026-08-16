@@ -23,9 +23,12 @@
         <path transform="translate(0 1280) scale(1 -1)" d="M481.749333 353.792c16.682667-16.64 43.690667-16.64 60.373334 0l120.917333 120.832 3.541333 4.010667a42.666667 42.666667 0 0 1-63.872 56.32L554.666667 486.954667V896a42.666667 42.666667 0 0 1-85.333334 0v-409.173333l-48.170666 48.128a42.666667 42.666667 0 0 1-60.330667 0l-3.541333-4.010667a42.666667 42.666667 0 0 1 3.541333-56.32z"/>
       </svg>
     </button>
-    <button class="title-btn" onclick="showCollectionBuilder()">添加分组</button>
+    <button id="batch-toggle" class="title-btn" onclick="toggleBatchMode()">批量管理</button>
+    <button class="title-btn" onclick="createFolder()">新建文件夹</button>
     <button class="title-btn" onclick="showImportMenu()">导入</button>
     <button class="title-btn" onclick="rescanCache()">刷新</button>
+    <button class="title-btn" onclick="toggleFloatingWindow()" title="打开独立搜索悬浮窗">悬浮搜索</button>
+    <button class="title-btn" onclick="showAiPanel()">AI</button>
     <button class="title-btn" onclick="openSettings()">设置</button>
     <button class="title-btn" onclick="hide()" style="font-size: 15px; padding: 5px 10px; color: var(--muted);">x</button>
   </div>
@@ -35,13 +38,20 @@
   <div id="content">
     <div id="sidebar" class="collapsed">
       <div id="sidebar-header">
-        <span>分组</span>
+        <span>文件夹</span>
       </div>
       <div id="tree"></div>
     </div>
     <button id="sidebar-toggle" class="collapsed" title="折叠/展开侧边栏">▶</button>
     <div id="main">
-      <div id="tagbar"></div>
+      <div id="tagbar-panel">
+        <button id="tagbar-toggle" type="button" aria-expanded="true" title="收起标签">标签 <span aria-hidden="true">⌃</span></button>
+        <div id="tagbar"></div>
+      </div>
+      <div id="view-context" style="display:none">
+        <button class="btn btn-ghost btn-sm" onclick="openAllMemes()">← 所有表情</button>
+        <span id="view-context-name"></span>
+      </div>
       <div id="grid-wrap">
         <div id="meme-grid"></div>
         <div id="empty" style="display:none">
@@ -53,6 +63,16 @@
   </div>
 </div>
 <div id="toast"></div>
+<div id="batch-bar" style="display:none;position:fixed;left:12px;right:12px;bottom:12px;z-index:250;background:var(--surface);border:1px solid var(--border);border-radius:var(--radius-lg);box-shadow:var(--shadow-lg);padding:10px;align-items:center;gap:8px">
+  <span id="batch-count" style="font-size:12px;color:var(--fg-secondary);margin-right:auto">已选 0 项</span>
+  <button class="btn btn-secondary btn-sm" onclick="batchSelectAll()">全选当前页</button>
+  <button class="btn btn-secondary btn-sm" onclick="batchClearSelection()">取消全选</button>
+  <button class="btn btn-secondary btn-sm" onclick="batchTags()">标签</button>
+  <button class="btn btn-secondary btn-sm" onclick="batchFolder('copy')">复制到文件夹</button>
+  <button class="btn btn-secondary btn-sm" onclick="batchFolder('move')">移动到文件夹</button>
+  <button class="btn btn-secondary btn-sm" onclick="exportPack()">导出分享包</button>
+  <button class="btn btn-danger btn-sm" onclick="batchDelete()">删除</button>
+</div>
 <div id="loading"><div class="spinner"></div></div>
 <div id="drop-overlay">
   <div class="drop-content">拖放图片到此处导入</div>
@@ -61,18 +81,18 @@
   <button class="ctx-item" data-action="rename">重命名</button>
   <button class="ctx-item" data-action="favorite">收藏</button>
   <button class="ctx-item" data-action="tag">打标签</button>
-  <button class="ctx-item" data-action="collection">添加分组</button>
-  <button class="ctx-item" data-action="add-to-subgroup" style="display:none">加入小分组</button>
-  <button class="ctx-item" data-action="remove-collection" style="display:none">移至上级分组</button>
-  <button class="ctx-item danger" data-action="delete-folder" style="display:none">删除小分组</button>
+  <button class="ctx-item" data-action="paste-chat">复制并粘贴（不会发送）</button>
+  <button class="ctx-item" data-action="ai-edit">AI 编辑副本</button>
+  <button class="ctx-item" data-action="put-in-folder">放入文件夹</button>
+  <button class="ctx-item" data-action="remove-from-folder" style="display:none">从当前文件夹移出</button>
   <button class="ctx-item danger" data-action="remove-recent" style="display:none">从最近使用中删除</button>
-  <button class="ctx-item" data-action="rename-collection" style="display:none">重命名分组</button>
-  <button class="ctx-item danger" data-action="delete-collection" style="display:none">删除分组</button>
+  <button class="ctx-item" data-action="rename-folder" style="display:none">重命名文件夹</button>
+  <button class="ctx-item danger" data-action="delete-folder" style="display:none">删除文件夹</button>
   <button class="ctx-item danger" data-action="clear-recent" style="display:none">清空最近使用</button>
   <div class="ctx-divider"></div>
   <button class="ctx-item danger" data-action="delete">删除</button>
 </div>
-<div id="ctx-subgroup-menu" class="ctx-submenu"></div>
+<div id="ctx-folder-menu" class="ctx-submenu"></div>
 
 <script src="/index.js" defer></script>
 
@@ -106,9 +126,10 @@
     <button class="btn btn-primary" style="width:100%;margin-bottom:8px" onclick="importLocal()">本地导入</button>
     <button class="btn btn-primary" style="width:100%;margin-bottom:8px" onclick="importFolder()">导入文件夹</button>
     <button class="btn btn-primary" style="width:100%;margin-bottom:8px" onclick="importClipboard()">从剪贴板导入</button>
+    <button class="btn btn-primary" style="width:100%;margin-bottom:8px" onclick="importPack()">导入分享包</button>
     <button class="btn btn-secondary" style="width:100%" onclick="importQQ()">从手机版 QQ 缓存获取</button>
     <label style="display:flex;align-items:center;gap:8px;justify-content:center;margin-top:12px;font-size:12px;color:var(--fg-secondary);cursor:pointer;user-select:none">
-      <input id="import-folder-group" type="checkbox" checked style="width:14px;height:14px;accent-color:var(--accent);cursor:pointer">导入文件夹时自动创建分组
+      <input id="import-folder-group" type="checkbox" checked style="width:14px;height:14px;accent-color:var(--accent);cursor:pointer">导入文件夹时创建同名文件夹并自动加标签
     </label>
     <div style="margin-top:12px;text-align:center">
       <button class="btn btn-ghost btn-sm" onclick="closeImportMenu()">取消</button>
@@ -116,34 +137,5 @@
   </div>
 </div>
 
-<!-- 添加分组弹窗 -->
-<div id="cb-overlay" style="display:none;position:fixed;inset:0;background:rgba(0,0,0,.55);align-items:center;justify-content:center;z-index:450;animation:fadeIn .15s">
-  <div id="cb-box" style="background:var(--surface);border-radius:var(--radius-lg);border:1px solid var(--border);box-shadow:var(--shadow-lg);width:640px;height:min(92vh,680px);display:flex;flex-direction:column;overflow:hidden">
-    <div style="padding:16px 20px;border-bottom:1px solid var(--border)">
-      <div style="font-size:14px;font-weight:600;color:var(--fg);margin-bottom:10px">添加分组</div>
-      <div style="position:relative">
-        <input id="cb-name" type="text" placeholder="输入分组名或选择已有分组..." autocomplete="off" spellcheck="false">
-        <div id="cb-dropdown" class="cb-dropdown"></div>
-      </div>
-    </div>
-    <div style="padding:12px 20px;border-bottom:1px solid var(--border)">
-      <input id="cb-search" type="text" placeholder="搜索表情包添加到分组..." autocomplete="off" spellcheck="false">
-    </div>
-    <div id="cb-cols">
-      <div class="cb-col" id="cb-col-left">
-        <div class="cb-col-title">表情库</div>
-        <div class="cb-col-list" id="cb-left-list"></div>
-      </div>
-      <div class="cb-col cb-col-right" id="cb-col-right">
-        <div class="cb-col-title">已添加 (<span id="cb-right-count">0</span>)</div>
-        <div class="cb-col-list" id="cb-right-list"></div>
-      </div>
-    </div>
-    <div style="padding:12px 20px;border-top:1px solid var(--border);display:flex;justify-content:flex-end;gap:8px">
-      <button id="cb-cancel" class="btn cb-cancel">取消</button>
-      <button id="cb-confirm" class="btn cb-confirm">确定</button>
-    </div>
-  </div>
-</div>
 </body>
 </html>

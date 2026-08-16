@@ -186,10 +186,12 @@ def test_pktinfo_extract_windows_zero_ifindex(monkeypatch):
 
 @pytest.mark.skipif(not hasattr(socket, "IP_PKTINFO"), reason="平台不支持 IP_PKTINFO")
 def test_udp_reply_pins_source_interface(lan_env):
-    """回包源 IP 钉在广播到达的接口上（虚拟网卡环境发现可达）"""
+    """支持 pktinfo 时回包源 IP 钉在广播到达接口上"""
     cfg, db, tmp = lan_env
     srv = lan._server
-    assert srv is not None and srv._udp_pktinfo
+    assert srv is not None
+    if not srv._udp_pktinfo:
+        pytest.skip("当前网络栈声明 IP_PKTINFO 但不允许为 UDP socket 启用")
     cli = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
     cli.settimeout(5)
     cli.sendto(b'{"t":"discover"}', ("127.0.0.1", TEST_PORT))

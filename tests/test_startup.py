@@ -103,6 +103,79 @@ def test_database_operations(tmp_path):
     db.close()
 
 
+def test_folder_grid_view_and_selection_click_contract():
+    root = Path(__file__).resolve().parent.parent
+    index_js = (root / "src" / "webui" / "index.js").read_text(encoding="utf-8")
+    index_css = (root / "src" / "webui" / "index.css").read_text(encoding="utf-8")
+
+    assert "function renderFolderCard(folder)" in index_js
+    assert "card.className = 'folder-card'" in index_js
+    assert "card.onclick = () => openCollection(folder.id)" in index_js
+    assert "function openAllMemes()" in index_js
+    assert "findFolderDropTarget" in index_js
+    assert ".folder-card.drop-target" in index_css
+    assert ".folder-icon" in index_css
+
+    on_down = re.search(
+        r"const onDown = \(e\) => \{(?P<body>.*?)\n  \};",
+        index_js,
+        re.DOTALL,
+    )
+    assert on_down
+    assert "if (!card || batchMode) return;" in on_down.group("body")
+    assert "setPointerCapture" not in on_down.group("body")
+
+
+def test_single_instance_and_grid_scale_static_contract():
+    root = Path(__file__).resolve().parent.parent
+    main_py = (root / "src" / "main.py").read_text(encoding="utf-8")
+    index_js = (root / "src" / "webui" / "index.js").read_text(encoding="utf-8")
+    index_css = (root / "src" / "webui" / "index.css").read_text(encoding="utf-8")
+    settings_html = (root / "src" / "webui" / "settings.html").read_text(
+        encoding="utf-8"
+    )
+    settings_js = (root / "src" / "webui" / "settings.js").read_text(encoding="utf-8")
+
+    assert "def _acquire_single_instance()" in main_py
+    assert '"Local\\\\OhMyMeme.Singleton"' in main_py
+    assert "if not _acquire_single_instance():" in main_py
+    assert "app = OhMyMemeApp()" in main_py
+    assert main_py.index("if not _acquire_single_instance():") < main_py.index(
+        "app = OhMyMemeApp()"
+    )
+
+    assert 'id="s-grid-scale"' in settings_html
+    assert "function updateGridScaleLabel()" in settings_js
+    assert "grid_scale," in settings_js
+    assert "applyGridScale" in index_js
+    assert "loadGridScale" in index_js
+    assert "--grid-card-size" in index_css
+    assert "repeat(auto-fill, var(--grid-card-size))" in index_css
+    assert "min-height: 124px" not in index_css
+    assert "overflow-x: auto" not in re.search(
+        r"#tagbar\s*\{(?P<body>.*?)\n\}", index_css, re.DOTALL
+    ).group("body")
+    assert "initHScroll" not in index_js
+
+
+def test_tagbar_collapse_static_contract():
+    root = Path(__file__).resolve().parent.parent
+    config_py = (root / "src" / "config.py").read_text(encoding="utf-8")
+    webui_py = (root / "src" / "webui.py").read_text(encoding="utf-8")
+    index_html = (root / "src" / "webui" / "index.html").read_text(encoding="utf-8")
+    index_css = (root / "src" / "webui" / "index.css").read_text(encoding="utf-8")
+    index_js = (root / "src" / "webui" / "index.js").read_text(encoding="utf-8")
+
+    assert '"tagbar_collapsed": False' in config_py
+    assert "def set_tagbar_collapsed" in webui_py
+    assert '"tagbar_collapsed": bool(self._cfg.get("tagbar_collapsed", False))' in webui_py
+    assert 'id="tagbar-panel"' in index_html
+    assert 'id="tagbar-toggle"' in index_html
+    assert "function toggleTagbar()" in index_js
+    assert "tagbarCollapsed = !!data.tagbar_collapsed" in index_js
+    assert "#tagbar-panel.collapsed #tagbar" in index_css
+
+
 def test_hotkey_init():
     hk = GlobalHotkey()
     result = hk.register("Ctrl+Alt+N", lambda: None)
@@ -278,7 +351,7 @@ def test_toggle_hotkey_safe_placement_exception_still_shows(monkeypatch):
     assert ui._visible
 
 
-def test_successful_native_drag_requests_hide_only_for_hotkey_session(monkeypatch):
+def test_successful_native_drag_keeps_window_visible(monkeypatch):
     import src.native_drag as native_drag
     from src.webui import JsApi
 
@@ -296,7 +369,7 @@ def test_successful_native_drag_requests_hide_only_for_hotkey_session(monkeypatc
     ui.hide()
     ui.toggle_hotkey_safe()
     assert ui._api.start_native_drag(1)
-    assert ui._visible is False
+    assert ui._visible is True
 
 
 def test_successful_copy_requests_hide_only_for_hotkey_session(monkeypatch):
@@ -411,6 +484,31 @@ def test_app_routes_hotkey_and_tray_to_separate_zero_argument_methods():
     assert len(inspect.signature(app._on_tray_show).parameters) == 0
 
 
+def test_floating_window_search_is_manual_and_copy_does_not_hide(monkeypatch):
+    import src.webui as webui_module
+    from src.webui import JsApi
+
+    ui = _fake_webui(True)
+    ui._api = JsApi(ui)
+    ui._api._db = _FakeMemeDB()
+    monkeypatch.setattr(ui._api, "_find_meme_file", lambda filename: filename)
+    monkeypatch.setattr(webui_module, "copy_image_to_clipboard", lambda path: True)
+
+    result = ui._api.copy_meme_from_floating(1)
+
+    assert result == {"ok": True, "status": "copied"}
+    assert ui._visible is False
+    source = Path(webui_module.__file__).read_text(encoding="utf-8")
+    floating_js = (Path(webui_module.HTML_DIR) / "floating.js").read_text(
+        encoding="utf-8"
+    )
+    assert "floating_search_memes" in source
+    assert "move_floating_window" in source
+    assert "pointermove" in floating_js
+    assert "requestAnimationFrame" in floating_js
+    assert "window.screenX" in floating_js
+
+
 def test_webui_html_exists():
     from src.webui import HTML_DIR
 
@@ -425,6 +523,9 @@ def test_webui_html_exists():
     assert (HTML_DIR / "settings.html").exists()
     assert (HTML_DIR / "settings.css").exists()
     assert (HTML_DIR / "settings.js").exists()
+    assert (HTML_DIR / "floating.html").exists()
+    assert (HTML_DIR / "floating.css").exists()
+    assert (HTML_DIR / "floating.js").exists()
     assert 'src="/index.js"' in html
     assert 'href="/index.css"' in html
     settings_html = (HTML_DIR / "settings.html").read_text(encoding="utf-8")
@@ -540,7 +641,10 @@ def test_sorting_visual_feedback_static_contract():
     assert re.search(
         r"activeCollection\s*>\s*0[\s\S]*?api\(\s*['\"]reorder_collection_members['\"]\s*,\s*activeCollection",
         index_js,
-    ), "sortable collections must persist their member order through the active collection"
+    ), (
+        "sortable collections must persist their member order through "
+        "the active collection"
+    )
     assert re.search(
         r"api\(\s*['\"]reorder_memes['\"]\s*,\s*memes\.map\([^)]*\.id\s*\)",
         index_js,

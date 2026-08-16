@@ -181,6 +181,11 @@ class _FakeDb:
         id_to_name = {i + 1: r["filename"] for i, r in enumerate(self.rows)}
         self.order = [id_to_name.get(i) for i in meme_ids]
 
+    def set_meme_ai_text(self, meme_id, description="", ocr_text=""):
+        if 0 < meme_id <= len(self.rows):
+            self.rows[meme_id - 1]["ai_description"] = description
+            self.rows[meme_id - 1]["ai_ocr_text"] = ocr_text
+
     def add_meme(
         self,
         filename,
@@ -191,6 +196,8 @@ class _FakeDb:
         mime_type="image/png",
         original_name="",
         tags=None,
+        ai_description="",
+        ai_ocr_text="",
     ):
         self.rows.append(
             {
@@ -198,6 +205,8 @@ class _FakeDb:
                 "original_name": original_name,
                 "file_hash": file_hash,
                 "file_size": file_size,
+                "ai_description": ai_description,
+                "ai_ocr_text": ai_ocr_text,
             }
         )
         return len(self.rows)
@@ -414,6 +423,20 @@ class TestSyncPush(unittest.TestCase):
         self.assertEqual(result["downloaded"], 1)
         self.assertEqual(result["errors"], 0)
         self.assertTrue((self.data_dir / "cache" / "test.png").exists())
+
+    def test_pull_applies_remote_ai_text(self):
+        """pull 把远端 AI 描述与 OCR 文本写入对应本地表情。"""
+        self._set_local_memes([{"filename": "test.png", "sha256": "abc"}])
+        self.fake_backend.remote_memes = {
+            "test.png": {
+                **_entry("test.png", "abc"),
+                "ai_description": "一只开心的猫",
+                "ai_ocr_text": "今天也要加油",
+            }
+        }
+        sync.pull()
+        assert self.fake_db.rows[0]["ai_description"] == "一只开心的猫"
+        assert self.fake_db.rows[0]["ai_ocr_text"] == "今天也要加油"
 
     def test_pull_applies_remote_manifest_order(self):
         """pull 按远端 manifest 顺序重排本地 sort_order，保留云端排序"""

@@ -42,7 +42,10 @@ function renderMarkdown(md) {
 }
 
 /* Close settings window */
-function closeSettings() {
+let settingsSaveInFlight = null;
+
+async function closeSettings() {
+  try { await saveSettings(false); } catch(e) {}
   try { pywebview.api.close_settings(); } catch(e) {}
 }
 
@@ -82,6 +85,13 @@ function toggleSilentStart() {
   if (row) row.style.display = autoStart ? '' : 'none';
 }
 
+function updateGridScaleLabel() {
+  const input = document.getElementById('s-grid-scale');
+  const label = document.getElementById('s-grid-scale-value');
+  if (!input || !label) return;
+  label.textContent = input.value + 'px';
+}
+
 async function exportLogs() {
   const status = document.getElementById('log-export-status');
   status.textContent = '正在导出...';
@@ -92,6 +102,21 @@ async function exportLogs() {
   }
   status.textContent = '已导出 ' + r.count + ' 条日志：' + r.path;
   showToast('日志已导出');
+}
+
+async function testAIConnectivity(service) {
+  const status = document.getElementById('s-ai-' + service + '-status');
+  if (!status) return;
+  status.textContent = '测试中...';
+  status.style.color = 'var(--muted)';
+  const r = await api('test_ai_connectivity', service);
+  if (r && r.ok) {
+    status.textContent = r.message || '连接成功';
+    status.style.color = '#4caf50';
+  } else {
+    status.textContent = (r && r.error) || '连接失败';
+    status.style.color = '#f44336';
+  }
 }
 
 async function checkConnectivity() {  // DeepSeek V4 Flash
@@ -200,10 +225,17 @@ async function getSettings() {
   if (to) to.checked = s.try_original_image === true;  // DeepSeek V4 Flash
   const cm = document.getElementById('s-copy-mode');
   if (cm) cm.value = String(s.copy_resize_mode ?? 1);
+  const chatMode = document.getElementById('s-chat-client-mode');
+  if (chatMode) chatMode.value = s.chat_client_mode || 'manual';
   if (as) as.checked = s.auto_start === true;
   if (ss) ss.checked = s.silent_start === true;
   const unc = document.getElementById('s-show-uncategorized');
   if (unc) unc.checked = s.show_uncategorized !== false;
+  const rec = document.getElementById('s-record-recent');
+  if (rec) rec.checked = s.record_recent_use !== false;
+  const gridScale = document.getElementById('s-grid-scale');
+  if (gridScale) gridScale.value = String(s.grid_scale || 72);
+  updateGridScaleLabel();
   toggleSilentStart();
   const ff = document.getElementById('s-sync-fetch');
   const sa = document.getElementById('s-sync-auto');
@@ -255,6 +287,22 @@ async function getSettings() {
   if (lsec) lsec.value = s.lan_secret || '';
   const tgtd = document.getElementById('s-tg-tdata');
   if (tgtd && s.tg_tdata_path) tgtd.value = s.tg_tdata_path;
+  const aicbu = document.getElementById('s-ai-chat-base-url');
+  if (aicbu) aicbu.value = s.ai_chat_base_url || '';
+  const aick = document.getElementById('s-ai-chat-api-key');
+  if (aick) aick.value = s.ai_chat_api_key || '';
+  const aiibu = document.getElementById('s-ai-image-base-url');
+  if (aiibu) aiibu.value = s.ai_image_base_url || '';
+  const aiik = document.getElementById('s-ai-image-api-key');
+  if (aiik) aiik.value = s.ai_image_api_key || '';
+  const aicm = document.getElementById('s-ai-chat-model');
+  if (aicm) aicm.value = s.ai_chat_model || '';
+  const aios = document.getElementById('s-ai-organize-style');
+  if (aios) aios.value = s.ai_organize_style || 'general';
+  const aiim = document.getElementById('s-ai-image-model');
+  if (aiim) aiim.value = s.ai_image_model || '';
+  const aiss = document.getElementById('s-ai-search-source');
+  if (aiss) aiss.value = s.ai_search_source || 'bing';
   checkConnectivity();  // DeepSeek V4 Flash
   loadStorageInfo();
   refreshLanStatus();
@@ -427,29 +475,48 @@ function validateSync(sync) {
   return true;
 }
 
-async function saveSettings() {
+async function saveSettings(showFeedback = true) {
+  if (settingsSaveInFlight) return settingsSaveInFlight;
   const hotkey = document.getElementById('s-hotkey')?.value || 'Ctrl+Alt+N';
   const gif = document.getElementById('s-gif')?.checked !== false;
   const try_original = document.getElementById('s-try-original')?.checked === true;  // DeepSeek V4 Flash
   const copy_mode = parseInt(document.getElementById('s-copy-mode')?.value || '1', 10);
+  const chat_client_mode = document.getElementById('s-chat-client-mode')?.value || 'manual';
   const hotkey_show_at_mouse = document.getElementById('s-hotkey-show-at-mouse')?.checked === true;
   const auto_start = document.getElementById('s-auto-start')?.checked === true;
   const silent_start = document.getElementById('s-silent-start')?.checked === true;
   const show_uncategorized = document.getElementById('s-show-uncategorized')?.checked !== false;
+  const record_recent_use = document.getElementById('s-record-recent')?.checked !== false;
+  const grid_scale = parseInt(document.getElementById('s-grid-scale')?.value || '72', 10);
   const sync = collectSyncSettings();
-  if (!validateSync(sync)) return;
   const lan_port = parseInt(document.getElementById('s-lan-port')?.value) || 17852;
   const lan_secret = document.getElementById('s-lan-secret')?.value || '';
   const hover_play = document.getElementById('s-hover-play')?.checked === true;
-  await api('save_settings', {
+  const settings = {
     hotkey, hotkey_show_at_mouse, auto_play_gif: gif, hover_to_play: hover_play,
     try_original_image: try_original,  // DeepSeek V4 Flash
-    copy_resize_mode: copy_mode,
-    auto_start, silent_start, show_uncategorized,
+    copy_resize_mode: copy_mode, chat_client_mode,
+    auto_start, silent_start, show_uncategorized, record_recent_use, grid_scale,
     lan_port, lan_secret,
+    ai_chat_base_url: document.getElementById('s-ai-chat-base-url')?.value || '',
+    ai_chat_api_key: document.getElementById('s-ai-chat-api-key')?.value || '',
+    ai_chat_model: document.getElementById('s-ai-chat-model')?.value || '',
+    ai_organize_style: document.getElementById('s-ai-organize-style')?.value || 'general',
+    ai_image_base_url: document.getElementById('s-ai-image-base-url')?.value || '',
+    ai_image_api_key: document.getElementById('s-ai-image-api-key')?.value || '',
+    ai_image_model: document.getElementById('s-ai-image-model')?.value || '',
+    ai_search_source: document.getElementById('s-ai-search-source')?.value || 'bing',
     ...sync
-  });
-  showToast('设置已保存');
+  };
+  if (!validateSync(sync) && showFeedback) return null;
+  settingsSaveInFlight = api('save_settings', settings);
+  try {
+    const result = await settingsSaveInFlight;
+    if (showFeedback) showToast(result === null ? '设置保存失败' : '设置已保存');
+    return result;
+  } finally {
+    settingsSaveInFlight = null;
+  }
 }
 
 async function resetSettings() {
@@ -462,6 +529,8 @@ async function resetSettings() {
     if (hk) hk.value = s.hotkey;
     const hsam = document.getElementById('s-hotkey-show-at-mouse');
     if (hsam) hsam.checked = s.hotkey_show_at_mouse === true;
+    const chatMode = document.getElementById('s-chat-client-mode');
+    if (chatMode) chatMode.value = s.chat_client_mode || 'manual';
     if (gif) gif.checked = s.auto_play_gif !== false;
     const hp = document.getElementById('s-hover-play');
     if (hp) hp.checked = s.hover_to_play === true;
@@ -473,6 +542,11 @@ async function resetSettings() {
     if (cm) cm.value = String(s.copy_resize_mode ?? 1);
     if (as) as.checked = s.auto_start === true;
     if (ss) ss.checked = s.silent_start === true;
+    const rec = document.getElementById('s-record-recent');
+    if (rec) rec.checked = s.record_recent_use !== false;
+    const gridScale = document.getElementById('s-grid-scale');
+    if (gridScale) gridScale.value = String(s.grid_scale || 72);
+    updateGridScaleLabel();
     toggleSilentStart();
     checkConnectivity();  // DeepSeek V4 Flash
     const ff = document.getElementById('s-sync-fetch');
@@ -523,6 +597,22 @@ async function resetSettings() {
     if (le) le.checked = false;
     const lcc = document.getElementById('s-lan-secret-config');
     if (lcc) lcc.checked = false;
+    const aicbu = document.getElementById('s-ai-chat-base-url');
+    if (aicbu) aicbu.value = '';
+    const aick = document.getElementById('s-ai-chat-api-key');
+    if (aick) aick.value = '';
+    const aicm = document.getElementById('s-ai-chat-model');
+    if (aicm) aicm.value = '';
+    const aios = document.getElementById('s-ai-organize-style');
+    if (aios) aios.value = s.ai_organize_style || 'general';
+    const aiibu = document.getElementById('s-ai-image-base-url');
+    if (aiibu) aiibu.value = '';
+    const aiik = document.getElementById('s-ai-image-api-key');
+    if (aiik) aiik.value = '';
+    const aiim = document.getElementById('s-ai-image-model');
+    if (aiim) aiim.value = '';
+    const aiss = document.getElementById('s-ai-search-source');
+    if (aiss) aiss.value = 'bing';
     await api('lan_stop');
     await api('lan_set_allow_secret_config', false);
     refreshLanStatus();

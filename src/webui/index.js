@@ -1,10 +1,23 @@
 let allTags = [], activeTags = new Set(), memes = [], pending = false, copyPending = false;
 let collections = [], activeCollection = null;
+let batchMode = false, selectedMemeIds = new Set();
 let dragSrcId = null;
 const MEME_PAGE = 200;
 let memeOffset = 0, memeHasMore = true, memeLoadingMore = false;
 let memeGen = 0, cbGen = 0;
 let gridRenderToken = 0;
+let tagbarCollapsed = false;
+
+function applyGridScale(value) {
+  const raw = Number(value);
+  const scale = Number.isFinite(raw) ? Math.min(120, Math.max(48, raw)) : 72;
+  document.documentElement.style.setProperty('--grid-card-size', scale + 'px');
+}
+
+async function loadGridScale() {
+  const settings = await api('get_settings');
+  applyGridScale(settings && settings.grid_scale);
+}
 
 async function api(method, ...args) {
   try {
@@ -118,7 +131,6 @@ async function refreshTags() {
 function renderTags() {
   const bar = document.getElementById('tagbar');
   bar.innerHTML = '';
-  if (allTags.length === 0) return;
   allTags.slice(0, 40).forEach(tag => {
     const el = document.createElement('span');
     el.className = 'tag' + (activeTags.has(tag) ? ' active' : '');
@@ -126,6 +138,23 @@ function renderTags() {
     el.onclick = () => { toggleTag(tag); };
     bar.appendChild(el);
   });
+  renderTagbarState();
+}
+
+function renderTagbarState() {
+  const panel = document.getElementById('tagbar-panel');
+  const button = document.getElementById('tagbar-toggle');
+  if (!panel || !button) return;
+  panel.classList.toggle('collapsed', tagbarCollapsed);
+  button.setAttribute('aria-expanded', String(!tagbarCollapsed));
+  button.title = tagbarCollapsed ? '展开标签' : '收起标签';
+  button.innerHTML = '标签 <span aria-hidden="true">⌃</span>';
+}
+
+async function toggleTagbar() {
+  tagbarCollapsed = !tagbarCollapsed;
+  renderTagbarState();
+  await api('set_tagbar_collapsed', tagbarCollapsed);
 }
 
 function toggleTag(tag) {
@@ -134,107 +163,70 @@ function toggleTag(tag) {
   refreshMemes();
 }
 
-let expandedNodes = new Set();
-let initialLoadDone = false;
-
 async function refreshCollections() {
-  let ok = true;
-  try { collections = await api('get_collections') || []; } catch(e) { collections = []; ok = false; }
-  if (!initialLoadDone && ok && collections.length > 0) {
-    /* 首次加载：展开所有有子分组的节点 */
-    (function expandAll(items) {
-      items.forEach(c => {
-        if (c.children && c.children.length > 0) {
-          expandedNodes.add(c.id);
-          expandAll(c.children);
-        }
-      });
-    })(collections);
-    initialLoadDone = true;
-  }
+  try { collections = await api('get_collections') || []; } catch(e) { collections = []; }
   renderTree();
+  updateViewContext();
+  renderGrid();
 }
 
 function renderTree() {
   const tree = document.getElementById('tree');
   tree.innerHTML = '';
-  collections.forEach(c => {
-    tree.appendChild(renderTreeNode(c));
+  collections.filter(folder => folder.id < 0).forEach(folder => {
+    const row = document.createElement('div');
+    row.className = 'tree-row' + (activeCollection === folder.id ? ' active' : '');
+    const label = document.createElement('span');
+    label.className = 'tree-label';
+    label.textContent = folder.name;
+    row.appendChild(label);
+    const count = document.createElement('span');
+    count.className = 'tree-count';
+    count.textContent = folder.count || 0;
+    row.appendChild(count);
+    row.onclick = () => openCollection(folder.id);
+    tree.appendChild(row);
   });
 }
 
-function renderTreeNode(c) {
-  const hasChildren = c.children && c.children.length > 0;
-  const isActive = activeCollection === c.id;
-  const isExpanded = expandedNodes.has(c.id);
-  const node = document.createElement('div');
-  node.className = 'tree-node';
-  node.dataset.id = c.id;
-
-  const row = document.createElement('div');
-  row.className = 'tree-row' + (isActive ? ' active' : '');
-
-  const toggle = document.createElement('span');
-  toggle.className = 'tree-toggle' + (hasChildren ? (isExpanded ? ' expanded' : '') : ' leaf');
-  toggle.textContent = hasChildren ? '▶' : '';
-  if (hasChildren) {
-    toggle.onclick = (e) => {
-      e.stopPropagation();
-      if (expandedNodes.has(c.id)) expandedNodes.delete(c.id);
-      else expandedNodes.add(c.id);
-      renderTree();
-    };
-  }
-  row.appendChild(toggle);
-
-  const label = document.createElement('span');
-  label.className = 'tree-label';
-  label.textContent = c.name;
-  row.appendChild(label);
-
-  const count = document.createElement('span');
-  count.className = 'tree-count';
-  count.textContent = c.count || 0;
-  row.appendChild(count);
-
-  row.onclick = () => { toggleCollection(c.id); };
-  row.oncontextmenu = (e) => { e.preventDefault(); e.stopPropagation(); showColTagMenu(e, c); };
-  node.appendChild(row);
-
-  if (hasChildren && isExpanded) {
-    const childrenWrap = document.createElement('div');
-    childrenWrap.className = 'tree-children';
-    c.children.forEach(child => {
-      childrenWrap.appendChild(renderTreeNode(child));
-    });
-    node.appendChild(childrenWrap);
-  }
-  return node;
+function updateViewContext() {
+  const bar = document.getElementById('view-context');
+  const name = document.getElementById('view-context-name');
+  const folder = collections.find(item => item.id === activeCollection);
+  const isFolder = activeCollection > 0 && folder;
+  bar.style.display = isFolder ? 'flex' : 'none';
+  name.textContent = isFolder ? folder.name : '';
 }
 
-function toggleCollection(cid) {
+function openCollection(cid) {
   activeCollection = cid;
   renderTree();
+  updateViewContext();
   refreshMemes();
 }
 
-document.getElementById('grid-wrap').addEventListener('contextmenu', async (e) => {
-  if (e.target.closest('.meme-card')) return;
-  const targetCol = activeCollection && activeCollection > 0 ? activeCollection : null;
-  if (!targetCol) return;
-  e.preventDefault();
-  const name = await showPrompt('新建子分组', '');
-  if (!name) return;
-  const r = await api('create_subcollection', name, targetCol);
-  if (r && r.ok) { showToast('已创建子分组'); refreshCollections(); refreshMemes(); }
-  else showToast('创建失败');
-});
+function openAllMemes() {
+  activeCollection = null;
+  renderTree();
+  updateViewContext();
+  refreshMemes();
+}
+
+async function createFolder() {
+  const name = await showPrompt('新建文件夹', '');
+  if (!name || !name.trim()) return;
+  const r = await api('create_folder', name.trim());
+  if (!r?.ok) return showToast((r && r.error) || '创建文件夹失败');
+  showToast('文件夹已创建');
+  await refreshCollections();
+  renderGrid();
+}
 
 /* Context Menu State */
 let ctxMeme = null;
 let ctxFolder = null;
 let lastCtxX = 0, lastCtxY = 0;
-let subgroupPickerResolve = null;
+let folderPickerResolve = null;
 
 function setupHoverPlay(card, img, memeId, filename) {
   const animUrl = '/api/original/' + memeId + '/' + encodeURIComponent(filename);
@@ -244,54 +236,29 @@ function setupHoverPlay(card, img, memeId, filename) {
   card.addEventListener('mouseleave', () => { clearTimeout(hoverTimer); img.src = thumbUrl; });
 }
 
-function findCollection(items, id) {
-  for (const c of items) {
-    if (c.id === id) return c;
-    if (c.children) {
-      const found = findCollection(c.children, id);
-      if (found) return found;
-    }
-  }
-  return null;
-}
-
 function renderGrid() {
   const grid = document.getElementById('meme-grid');
   const empty = document.getElementById('empty');
+  const folderHome = activeCollection === null && !batchMode &&
+    !document.getElementById('search').value.trim() && activeTags.size === 0;
   const sortEnabled = canReorderMemes();
   const renderToken = ++gridRenderToken;
   grid.classList.remove('sort-enabled');
   grid.innerHTML = '';
-  const curCol = activeCollection && activeCollection > 0 ? activeCollection : null;
-  let hasFolderCards = false;
-  if (curCol) {
-    const parentCol = findCollection(collections, curCol);
-    if (parentCol && parentCol.children) {
-      hasFolderCards = parentCol.children.length > 0;
-      parentCol.children.forEach(child => {
-        const card = document.createElement('div');
-        card.className = 'meme-card folder-card';
-        card.style.background = 'var(--surface)';
-        card.dataset.folderId = child.id;
-        const preview = document.createElement('div');
-        preview.style.cssText = 'width:100%;height:100%;display:flex;align-items:center;justify-content:center;font-size:24px;color:var(--muted);flex-direction:column;gap:4px';
-        preview.innerHTML = '<svg viewBox="0 0 24 24" width="32" height="32" fill="none" stroke="var(--accent)" stroke-width="1.5"><path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"/></svg><span style="font-size:11px;color:var(--fg-secondary)">' + esc(child.name) + '</span>';
-        card.appendChild(preview);
-        card.onclick = () => { activeCollection = child.id; refreshMemes(); renderTree(); };
-        card.oncontextmenu = (e) => { e.preventDefault(); showFolderMenu(e, child.id, child.name); };
-        grid.appendChild(card);
-      });
-    }
-  }
 
-  if (!memes || memes.length === 0) {
-    if (!hasFolderCards) {
-      grid.style.display = 'none'; empty.style.display = 'flex';
-    } else {
-      grid.style.display = 'grid'; empty.style.display = 'none';
-    }
+  if (folderHome) {
+    grid.style.display = 'grid';
+    empty.style.display = 'none';
+    collections.filter(folder => folder.id > 0).forEach(folder => {
+      grid.appendChild(renderFolderCard(folder));
+    });
+    memes.forEach(m => grid.appendChild(renderMemeCard(m)));
+  } else if (!memes || memes.length === 0) {
+    grid.style.display = 'none';
+    empty.style.display = 'flex';
   } else {
-    grid.style.display = 'grid'; empty.style.display = 'none';
+    grid.style.display = 'grid';
+    empty.style.display = 'none';
     memes.forEach(m => grid.appendChild(renderMemeCard(m)));
   }
 
@@ -300,7 +267,31 @@ function renderGrid() {
     if (renderToken !== gridRenderToken) return;
     grid.classList.toggle('sort-enabled', sortEnabled);
   });
+}
 
+function renderFolderCard(folder) {
+  const card = document.createElement('div');
+  card.className = 'folder-card';
+  card.dataset.folderId = folder.id;
+  card.title = '打开文件夹：' + folder.name;
+  const icon = document.createElement('div');
+  icon.className = 'folder-icon';
+  icon.innerHTML = '<span></span>';
+  card.appendChild(icon);
+  const name = document.createElement('div');
+  name.className = 'folder-name';
+  name.textContent = folder.name;
+  card.appendChild(name);
+  const count = document.createElement('div');
+  count.className = 'folder-count';
+  count.textContent = (folder.count || 0) + ' 个表情';
+  card.appendChild(count);
+  card.onclick = () => openCollection(folder.id);
+  card.oncontextmenu = (e) => {
+    e.preventDefault();
+    showColTagMenu(e, folder);
+  };
+  return card;
 }
 
 function renderMemeCard(m) {
@@ -342,7 +333,19 @@ function renderMemeCard(m) {
     card.appendChild(badge);
   }
 
-  card.onclick = () => copyMeme(m.id, m.name);
+  if (batchMode) {
+    const selected = selectedMemeIds.has(m.id);
+    card.classList.toggle('selected', selected);
+    card.setAttribute('aria-pressed', String(selected));
+    const selectionMark = document.createElement('span');
+    selectionMark.className = 'selection-mark';
+    selectionMark.setAttribute('aria-hidden', 'true');
+    selectionMark.textContent = selected ? '✓' : '';
+    card.appendChild(selectionMark);
+    card.onclick = () => toggleBatchSelection(m.id);
+  } else {
+    card.onclick = () => copyMeme(m.id, m.name);
+  }
   card.oncontextmenu = (e) => { e.preventDefault(); showCtxMenu(e, m); };
   card.draggable = false;
   return card;
@@ -380,6 +383,7 @@ function toggleDragSort() {
 function canReorderMemes() {
   const q = document.getElementById('search').value.trim();
   if (q || activeTags.size > 0) return false;
+  if (batchMode) return false;
   if (!dragSortEnabled) return false;
   return activeCollection === null || activeCollection > 0;
 }
@@ -421,14 +425,9 @@ function gridSlotIndex(x, y) {
   const { originX, originY, pitchX, pitchY, cols } = m;
   const col = Math.max(0, Math.min(Math.floor((x - originX) / pitchX), cols - 1));
   const row = Math.max(0, Math.floor((y - originY) / pitchY));
-  // 绝对格子索引（含 folder-card 占位），再映射到非 folder 的 meme 卡数组索引
-  const all = Array.from(document.querySelectorAll('#meme-grid .meme-card'));
-  const absSlot = Math.min(row * cols + col, all.length - 1);
-  let idx = -1;
-  for (let i = 0; i <= absSlot; i++) {
-    if (!all[i].classList.contains('folder-card')) idx++;
-  }
-  return Math.max(0, Math.min(idx, memeCardsInGrid().length - 1));
+  const all = memeCardsInGrid();
+  const slot = Math.min(row * cols + col, all.length - 1);
+  return Math.max(0, Math.min(slot, all.length - 1));
 }
 
 function moveInArray(arr, from, to) {
@@ -469,12 +468,12 @@ function initDragReorder() {
   const onDown = (e) => {
     ignoreClick = false;
     if ((e.pointerType || 'mouse') === 'mouse' && e.button !== 0) return;
-    const card = e.target.closest('.meme-card:not(.folder-card)');
-    if (!card) return;
+      const card = e.target.closest('.meme-card');
+    if (!card || batchMode) return;
     const q = document.getElementById('search').value.trim();
-    if (q || activeTags.size > 0) return; // 搜索/筛选时禁止拖拽
-    // 排序开启时仅可排序视图记录 memeDrag；排序关闭时允许原生拖出
-    if (dragSortEnabled && !canReorderMemes()) return;
+    const filtering = !!(q || activeTags.size > 0);
+    // 搜索/筛选时只允许原生拖出到外部应用，不参与内部排序。
+    if (!filtering && dragSortEnabled && !canReorderMemes()) return;
     const rect = card.getBoundingClientRect();
     memeDrag = {
       card,
@@ -483,10 +482,10 @@ function initDragReorder() {
       active: false,
       originalOrder: memes.slice(),
       base: rect,
-      // 排序关闭时用于原生拖拽（拖出到外部应用）的起点
+      // 搜索/筛选或关闭排序时用于原生拖拽（拖出到外部应用）的起点
       startX: e.clientX,
       startY: e.clientY,
-      natDrag: !dragSortEnabled,
+      natDrag: filtering || !dragSortEnabled,
     };
   };
 
@@ -499,25 +498,39 @@ function initDragReorder() {
     }
   }
 
+  function findFolderDropTarget(x, y) {
+    const elem = document.elementFromPoint(x, y);
+    return elem && elem.closest && elem.closest('.folder-card[data-folder-id]');
+  }
+
   const onMove = (e) => {
     const d = memeDrag;
     if (!d) return;
-    if (!d.natDrag) {
-      const elem = document.elementFromPoint(e.clientX, e.clientY);
-      const folderCard = elem && elem.closest && elem.closest('.folder-card');
-      if (folderCard) {
-        clearFolderHighlight();
-        dropTargetFolder = folderCard;
-        folderCard.classList.add('drop-target');
-        return;
+    const movedEnough = Math.hypot(e.clientX - d.startX, e.clientY - d.startY) > 8;
+    const folderCard = findFolderDropTarget(e.clientX, e.clientY);
+    if (folderCard && Number(folderCard.dataset.folderId) > 0 && movedEnough) {
+      clearFolderHighlight();
+      dropTargetFolder = folderCard;
+      folderCard.classList.add('drop-target');
+      d.active = true;
+      if (POINTER && pointerId(e) != null) {
+        try { grid.setPointerCapture(pointerId(e)); } catch (_) {}
       }
+      return;
     }
     clearFolderHighlight();
-    // 排序关闭：检测移动阈值后启动原生拖拽（QQ/微信真实文件）
-    if (d.natDrag && !d.active) {
-      const dist = Math.hypot(e.clientX - d.startX, e.clientY - d.startY);
-      if (dist <= 8) return;
-      d.active = true;
+    // 排序关闭时，窗口内拖动优先用于投放到文件夹；只有拖出窗口才启动原生文件拖拽。
+    if (d.natDrag) {
+      if (!movedEnough) return;
+      if (!d.active) {
+        d.active = true;
+        if (POINTER && pointerId(e) != null) {
+          try { grid.setPointerCapture(pointerId(e)); } catch (_) {}
+        }
+      }
+      const outsideWindow = e.clientX < 0 || e.clientY < 0 ||
+        e.clientX > window.innerWidth || e.clientY > window.innerHeight;
+      if (!outsideWindow) return;
       const id = Number(d.card.dataset.memeId);
       api('start_native_drag', id).then((ok) => {
         ignoreClick = true;
@@ -526,7 +539,6 @@ function initDragReorder() {
       }).catch(() => { if (memeDrag === d) cleanupMemeDrag(); });
       return;
     }
-    if (d.natDrag) return; // 原生拖拽进行中，跳过排序逻辑
     if (!d.active) {
       const rect = d.card.getBoundingClientRect();
       if (Math.hypot(e.clientX - d.offX - rect.left, e.clientY - d.offY - rect.top) <= 8) return;
@@ -578,11 +590,20 @@ function initDragReorder() {
     cleanupMemeDrag();
     clearFolderHighlight();
     if (folderDrop) {
+      ignoreClick = true;
       const fid = Number(folderDrop.dataset.folderId);
       const mid = Number(d.card.dataset.memeId);
-      const ok = await api('add_to_existing_collection', mid, fid);
-      if (ok) { showToast('已添加到子分组'); refreshCollections(); refreshMemes(); }
-      else showToast('添加失败');
+      const mode = await chooseFolderDropMode();
+      if (!mode) return;
+      const r = await api('add_to_folder', mid, fid, mode);
+      if (r?.ok) {
+        showToast(mode === 'move' ? '已移动到文件夹并自动加标签' : '已复制到文件夹并自动加标签');
+        refreshTags();
+        refreshCollections();
+        refreshMemes();
+      } else {
+        showToast((r && r.error) || '放入文件夹失败');
+      }
       return;
     }
     if (!wasActive) return;
@@ -635,6 +656,152 @@ async function copyMeme(id, filename) {
   else { showToast('复制失败'); }
 }
 
+async function pasteMemeToChat(meme) {
+  if (!meme || copyPending) return;
+  const confirmed = await showConfirm(
+    '复制并粘贴',
+    '将复制「' + meme.name + '」并尝试粘贴到你按全局快捷键前处于前台的 QQ 或微信窗口。不会按 Enter，也不会发送消息。'
+  );
+  if (!confirmed) return;
+  copyPending = true;
+  let result;
+  try {
+    result = await api('paste_meme_to_chat', meme.id);
+  } finally {
+    copyPending = false;
+  }
+  if (!result || !result.ok) {
+    showToast('复制失败');
+    return;
+  }
+  if (result.status === 'paste_attempted') {
+    showToast('已粘贴到聊天输入框，未发送');
+  } else {
+    showToast('表情已复制，请切回目标群聊后按 Ctrl+V');
+  }
+  if (activeCollection === -3) refreshMemes();
+  refreshCollections();
+}
+
+function toggleFloatingWindow() {
+  api('toggle_floating_window');
+}
+
+function updateBatchUi() {
+  const bar = document.getElementById('batch-bar');
+  const toggle = document.getElementById('batch-toggle');
+  const count = document.getElementById('batch-count');
+  if (bar) bar.style.display = batchMode ? 'flex' : 'none';
+  if (toggle) toggle.textContent = batchMode ? '退出批量' : '批量管理';
+  if (count) count.textContent = '已选 ' + selectedMemeIds.size + ' 项';
+}
+
+function toggleBatchMode() {
+  batchMode = !batchMode;
+  selectedMemeIds.clear();
+  updateBatchUi();
+  renderGrid();
+}
+
+function toggleBatchSelection(memeId) {
+  if (selectedMemeIds.has(memeId)) selectedMemeIds.delete(memeId);
+  else selectedMemeIds.add(memeId);
+  updateBatchUi();
+  renderGrid();
+}
+
+function batchSelectAll() {
+  memes.forEach(m => selectedMemeIds.add(m.id));
+  updateBatchUi();
+  renderGrid();
+}
+
+function batchClearSelection() {
+  selectedMemeIds.clear();
+  updateBatchUi();
+  renderGrid();
+}
+
+function selectedBatchIds() {
+  return [...selectedMemeIds];
+}
+
+async function batchTags() {
+  const ids = selectedBatchIds();
+  if (!ids.length) return showToast('请先选择表情');
+  const text = await showPrompt('批量标签（以逗号分隔）', '');
+  if (text === null) return;
+  const mode = await showConfirm('标签方式', '确定为“覆盖”标签；取消则追加标签。');
+  const tags = text.split(/[,，]/).map(x => x.trim()).filter(Boolean);
+  const r = await api('batch_set_tags', ids, tags, mode ? 'replace' : 'append');
+  if (r?.ok) { showToast('已更新 ' + r.count + ' 项标签'); refreshTags(); refreshMemes(); }
+  else showToast((r && r.error) || '标签保存失败');
+}
+
+async function chooseFolder() {
+  const options = (await api('search_collections') || []).map(c => [c.name, c.id]);
+  if (!options.length) {
+    showToast('请先新建文件夹');
+    return null;
+  }
+  return showFolderPicker(options);
+}
+
+async function batchFolder(mode) {
+  const ids = selectedBatchIds();
+  if (!ids.length) return showToast('请先选择表情');
+  const folderId = await chooseFolder();
+  if (!folderId || folderId <= 0) return;
+  let success = 0;
+  for (const memeId of ids) {
+    const r = await api('add_to_folder', memeId, folderId, mode);
+    if (r?.ok) success++;
+  }
+  if (!success) return showToast('放入文件夹失败');
+  selectedMemeIds.clear();
+  updateBatchUi();
+  showToast((mode === 'move' ? '已移动 ' : '已复制 ') + success + ' 项并自动加标签');
+  await refreshTags();
+  await refreshCollections();
+  refreshMemes();
+}
+
+async function batchDelete() {
+  const ids = selectedBatchIds();
+  if (!ids.length) return showToast('请先选择表情');
+  const preview = await api('batch_delete_preview', ids);
+  if (!preview?.ok) return showToast('无法获取删除预览');
+  const mb = (preview.total_size / 1048576).toFixed(2);
+  if (!await showConfirm('批量删除确认', '将删除 ' + preview.count + ' 项，约 ' + mb + ' MB。此操作不可恢复。')) return;
+  const r = await api('batch_delete_memes', ids);
+  if (r?.ok) {
+    selectedMemeIds.clear();
+    showToast('已删除 ' + r.count + ' 项');
+    updateBatchUi(); refreshMemes(); refreshTags(); refreshCollections();
+  } else showToast((r && r.error) || '删除失败');
+}
+
+async function exportPack() {
+  const ids = selectedBatchIds();
+  if (!ids.length) return showToast('请先选择表情');
+  const r = await api('export_pack', ids);
+  if (r?.ok) showToast('已导出 ' + r.count + ' 项分享包');
+  else if (!r?.cancelled) showToast((r && r.error) || '导出失败');
+}
+
+async function importPack() {
+  closeImportMenu();
+  if (pending) return;
+  pending = true;
+  const r = await api('import_pack');
+  pending = false;
+  if (!r || r.cancelled) return;
+  if (r.ok) {
+    showToast(appendRejectedMsg('已导入 ' + r.imported + ' 项分享包内容', r.rejected));
+    refreshMemes(); refreshTags(); refreshCollections();
+  } else showToast(r.error || '导入失败');
+}
+
 function showImportMenu() {
   document.getElementById('import-overlay').style.display = 'flex';
 }
@@ -672,7 +839,7 @@ async function importFolder() {
   let msg = r.imported > 0
     ? appendRejectedMsg('导入完成，共 ' + r.imported + ' 个表情', r.rejected)
     : appendRejectedMsg('未导入文件', r.rejected);
-  if (r.collection_name) msg += '，已加入分组「' + r.collection_name + '」';
+  if (r.folder_name) msg += '，已放入文件夹「' + r.folder_name + '」并自动加标签';
   showToast(msg);
   refreshMemes(); refreshTags(); refreshCollections();
 }
@@ -711,191 +878,108 @@ async function rescanCache() {
 }
 
 /* Context Menu */
-function showCtxMenu(e, meme) {
-  hideSubgroupMenu();
-  ctxMeme = meme;
-  lastCtxX = e.clientX; lastCtxY = e.clientY;
-  const menu = document.getElementById('ctx-menu');
-  // 恢复所有项目可见
-  menu.querySelectorAll('.ctx-item, .ctx-divider').forEach(el => {
-    el.style.display = '';
-  });
-  const dfBtn = menu.querySelector('[data-action="delete-folder"]');
-  if (dfBtn) dfBtn.style.display = 'none';
-  const rcBtn = menu.querySelector('[data-action="rename-collection"]');
-  if (rcBtn) rcBtn.style.display = 'none';
-  const dcBtn = menu.querySelector('[data-action="delete-collection"]');
-  if (dcBtn) dcBtn.style.display = 'none';
-  const crBtn = menu.querySelector('[data-action="clear-recent"]');
-  if (crBtn) crBtn.style.display = 'none';
-  const favBtn = menu.querySelector('[data-action="favorite"]');
-  if (meme.favorited) {
-    favBtn.textContent = '取消收藏';
-  } else {
-    favBtn.textContent = '收藏';
-  }
-  const rmBtn = menu.querySelector('[data-action="remove-collection"]');
-  if (activeCollection && activeCollection !== -1) {
-    rmBtn.style.display = 'flex';
-  } else {
-    rmBtn.style.display = 'none';
-  }
-  const sgBtn = menu.querySelector('[data-action="add-to-subgroup"]');
-  if (sgBtn) {
-    sgBtn.style.display = (activeCollection && activeCollection > 0) ? 'flex' : 'none';
-  }
-  const rrBtn = menu.querySelector('[data-action="remove-recent"]');
-  if (rrBtn) {
-    rrBtn.style.display = activeCollection === -3 ? 'flex' : 'none';
-  }
+function showMenuAt(menu, x, y) {
   menu.classList.add('show');
   const rect = menu.getBoundingClientRect();
-  let left = e.clientX;
-  let top = e.clientY;
-
-  if (left + rect.width > window.innerWidth) {
-    left = window.innerWidth - rect.width - 4;
-  }
-  if (top + rect.height > window.innerHeight) {
-    top = window.innerHeight - rect.height - 4;
-  }
-  if (left < 0) left = 4;
-  if (top < 0) top = 4;
-
+  const left = Math.max(4, Math.min(x, window.innerWidth - rect.width - 4));
+  const top = Math.max(4, Math.min(y, window.innerHeight - rect.height - 4));
   menu.style.left = left + 'px';
   menu.style.top = top + 'px';
 }
 
-function showFolderMenu(e, folderId, folderName) {
+function showCtxMenu(e, meme) {
+  hideFolderPicker();
+  ctxMeme = meme;
+  ctxFolder = null;
+  lastCtxX = e.clientX;
+  lastCtxY = e.clientY;
+  const menu = document.getElementById('ctx-menu');
+  menu.querySelectorAll('.ctx-item, .ctx-divider').forEach(el => {
+    el.style.display = '';
+  });
+  menu.querySelector('[data-action="rename-folder"]').style.display = 'none';
+  menu.querySelector('[data-action="delete-folder"]').style.display = 'none';
+  const favorite = menu.querySelector('[data-action="favorite"]');
+  favorite.textContent = meme.favorited ? '取消收藏' : '收藏';
+  menu.querySelector('[data-action="remove-from-folder"]').style.display =
+    activeCollection > 0 ? 'flex' : 'none';
+  menu.querySelector('[data-action="remove-recent"]').style.display =
+    activeCollection === -3 ? 'flex' : 'none';
+  showMenuAt(menu, e.clientX, e.clientY);
+}
+
+function showColTagMenu(e, folder) {
   hideCtxMenu();
-  ctxFolder = { id: folderId, name: folderName };
-  lastCtxX = e.clientX; lastCtxY = e.clientY;
+  lastCtxX = e.clientX;
+  lastCtxY = e.clientY;
   const menu = document.getElementById('ctx-menu');
   menu.querySelectorAll('.ctx-item, .ctx-divider').forEach(el => {
     el.style.display = 'none';
   });
-  const df = menu.querySelector('[data-action="delete-folder"]');
-  if (df) df.style.display = 'flex';
-  menu.classList.add('show');
-  const rect = menu.getBoundingClientRect();
-  let left = e.clientX, top = e.clientY;
-  if (left + rect.width > window.innerWidth) left = e.clientX - rect.width;
-  if (top + rect.height > window.innerHeight) top = window.innerHeight - rect.height - 4;
-  menu.style.left = left + 'px';
-  menu.style.top = top + 'px';
-}
-
-function showColTagMenu(e, col) {
-  if (col.id > 0) {
-    hideCtxMenu();
-    ctxFolder = { id: col.id, name: col.name };
-    lastCtxX = e.clientX; lastCtxY = e.clientY;
-    const menu = document.getElementById('ctx-menu');
-    menu.querySelectorAll('.ctx-item, .ctx-divider').forEach(el => {
-      el.style.display = 'none';
-    });
-    const rc = menu.querySelector('[data-action="rename-collection"]');
-    if (rc) rc.style.display = 'flex';
-    const dc = menu.querySelector('[data-action="delete-collection"]');
-    if (dc) dc.style.display = 'flex';
-    menu.classList.add('show');
-    const rect = menu.getBoundingClientRect();
-    let left = e.clientX, top = e.clientY;
-    if (left + rect.width > window.innerWidth) left = e.clientX - rect.width;
-    if (top + rect.height > window.innerHeight) top = window.innerHeight - rect.height - 4;
-    menu.style.left = left + 'px';
-    menu.style.top = top + 'px';
-    return;
-  }
-  if (col.id === -3) {
-    hideCtxMenu();
+  if (folder.id > 0) {
+    ctxFolder = { id: folder.id, name: folder.name };
+    menu.querySelector('[data-action="rename-folder"]').style.display = 'flex';
+    menu.querySelector('[data-action="delete-folder"]').style.display = 'flex';
+    showMenuAt(menu, e.clientX, e.clientY);
+  } else if (folder.id === -3) {
     ctxFolder = null;
-    lastCtxX = e.clientX; lastCtxY = e.clientY;
-    const menu = document.getElementById('ctx-menu');
-    menu.querySelectorAll('.ctx-item, .ctx-divider').forEach(el => {
-      el.style.display = 'none';
-    });
-    const cr = menu.querySelector('[data-action="clear-recent"]');
-    if (cr) cr.style.display = 'flex';
-    menu.classList.add('show');
-    const rect = menu.getBoundingClientRect();
-    let left = e.clientX, top = e.clientY;
-    if (left + rect.width > window.innerWidth) left = e.clientX - rect.width;
-    if (top + rect.height > window.innerHeight) top = window.innerHeight - rect.height - 4;
-    menu.style.left = left + 'px';
-    menu.style.top = top + 'px';
+    menu.querySelector('[data-action="clear-recent"]').style.display = 'flex';
+    showMenuAt(menu, e.clientX, e.clientY);
   }
-}
-
-function getColParentId(cols, cid) {
-  for (const c of cols) {
-    if (c.children && c.children.some(ch => ch.id === cid)) return c.id;
-    if (c.children) {
-      const r = getColParentId(c.children, cid);
-      if (r !== null) return r;
-    }
-  }
-  return null;
 }
 
 function hideCtxMenu() {
-  if (subgroupPickerResolve) {
-    const r = subgroupPickerResolve;
-    subgroupPickerResolve = null;
-    r(null);
+  if (folderPickerResolve) {
+    const resolve = folderPickerResolve;
+    folderPickerResolve = null;
+    resolve(null);
   }
   document.getElementById('ctx-menu').classList.remove('show');
-  document.getElementById('ctx-subgroup-menu').classList.remove('show');
+  document.getElementById('ctx-folder-menu').classList.remove('show');
   ctxMeme = null;
   ctxFolder = null;
 }
 
-async function showSubgroupPicker(items) {
+function showFolderPicker(items) {
   return new Promise(resolve => {
-    subgroupPickerResolve = resolve;
-    const menu = document.getElementById('ctx-subgroup-menu');
+    folderPickerResolve = resolve;
+    const menu = document.getElementById('ctx-folder-menu');
     menu.innerHTML = '';
-    items.forEach(([label, val]) => {
-      const btn = document.createElement('button');
-      btn.className = 'ctx-item';
-      btn.textContent = label;
-      btn.onclick = () => {
-        subgroupPickerResolve = null;
+    items.forEach(([label, value]) => {
+      const button = document.createElement('button');
+      button.className = 'ctx-item';
+      button.textContent = label;
+      button.onclick = () => {
+        folderPickerResolve = null;
         menu.classList.remove('show');
-        resolve(val);
+        resolve(value);
       };
-      menu.appendChild(btn);
+      menu.appendChild(button);
     });
-    menu.style.left = '';
-    menu.style.top = '';
     menu.classList.add('show');
-    const mr = menu.getBoundingClientRect();
-    let left = lastCtxX;
-    let top = lastCtxY;
-    if (left + mr.width > window.innerWidth) left = window.innerWidth - mr.width - 4;
-    if (top + mr.height > window.innerHeight) top = window.innerHeight - mr.height - 4;
-    menu.style.left = left + 'px';
-    menu.style.top = top + 'px';
+    const rect = menu.getBoundingClientRect();
+    menu.style.left = Math.max(4, Math.min(lastCtxX, window.innerWidth - rect.width - 4)) + 'px';
+    menu.style.top = Math.max(4, Math.min(lastCtxY, window.innerHeight - rect.height - 4)) + 'px';
   });
 }
 
-function hideSubgroupMenu() {
-  if (subgroupPickerResolve) {
-    const r = subgroupPickerResolve;
-    subgroupPickerResolve = null;
-    r(null);
+function hideFolderPicker() {
+  if (folderPickerResolve) {
+    const resolve = folderPickerResolve;
+    folderPickerResolve = null;
+    resolve(null);
   }
-  document.getElementById('ctx-subgroup-menu').classList.remove('show');
+  document.getElementById('ctx-folder-menu').classList.remove('show');
 }
 
 document.addEventListener('click', (e) => {
-  if (e.button === 0 && !e.target.closest('#ctx-menu') && !e.target.closest('#ctx-subgroup-menu')) hideCtxMenu();
+  if (e.button === 0 && !e.target.closest('#ctx-menu') && !e.target.closest('#ctx-folder-menu')) hideCtxMenu();
 });
 
 document.addEventListener('keydown', (e) => {
   if (e.key === 'Escape') {
     const menu = document.getElementById('ctx-menu');
-    const sub = document.getElementById('ctx-subgroup-menu');
+    const sub = document.getElementById('ctx-folder-menu');
     if ((menu && menu.classList.contains('show')) || (sub && sub.classList.contains('show'))) {
       hideCtxMenu();
     } else {
@@ -908,184 +992,133 @@ document.getElementById('ctx-menu').addEventListener('click', async (e) => {
   const item = e.target.closest('.ctx-item');
   if (!item || item.classList.contains('disabled')) return;
   const action = item.dataset.action;
-  const f = ctxFolder;
-  const m = ctxMeme;
-  if (!m && action !== 'delete-folder' && action !== 'rename-collection' && action !== 'delete-collection' && action !== 'clear-recent') return;
+  const folder = ctxFolder;
+  const meme = ctxMeme;
+  const folderAction = ['rename-folder', 'delete-folder', 'clear-recent'].includes(action);
+  if (!meme && !folderAction) return;
   hideCtxMenu();
 
-  if (action === 'delete-folder') {
-    if (!f) return;
-    const confirmed = await showConfirm('删除小分组', '确定删除小分组「' + f.name + '」？分组内表情包将移回上层分组。');
-    if (!confirmed) return;
-    // 将所有表情包移回上层
-    const parentCol = collections.find(c => c.children && c.children.some(ch => ch.id === f.id));
-    const parentId = parentCol ? parentCol.id : null;
-    const memesInFolder = await api('search_memes', '', [], f.id) || [];
-    for (const mm of memesInFolder) {
-      if (parentId) await api('add_to_existing_collection', mm.id, parentId);
-    }
-    await api('delete_collection', f.id);
-    showToast('小分组已删除');
-    if (activeCollection === f.id) activeCollection = parentId || -4;
-    refreshCollections(); refreshMemes(); return;
-  }
-
-  if (action === 'rename-collection') {
-    if (!f) return;
-    const newName = await showPrompt('重命名分组', f.name);
-    if (!newName || newName === f.name) return;
-    const ok = await api('rename_collection', f.id, newName);
-    if (ok) { showToast('已重命名'); refreshCollections(); }
-    else showToast('重命名失败');
+  if (action === 'rename-folder') {
+    if (!folder) return;
+    const name = await showPrompt('重命名文件夹', folder.name);
+    if (!name || name.trim() === folder.name) return;
+    const ok = await api('rename_folder', folder.id, name.trim());
+    showToast(ok ? '文件夹已重命名' : '重命名失败');
+    if (ok) await refreshCollections();
     return;
   }
 
-  if (action === 'delete-collection') {
-    if (!f) return;
-    const confirmed = await showConfirm('删除分组', '确定删除分组「' + f.name + '」？分组内表情包将退回到上级分组。');
-    if (!confirmed) return;
-    // 将所有表情包移回上级分组（顶层分组的上级为全部）
-    const parentId = getColParentId(collections, f.id);
-    const memesInFolder = await api('search_memes', '', [], f.id) || [];
-    for (const mm of memesInFolder) {
-      if (parentId) await api('add_to_existing_collection', mm.id, parentId);
-    }
-    await api('delete_collection', f.id);
-    showToast('分组已删除');
-    if (activeCollection === f.id) activeCollection = parentId || -4;
-    refreshCollections(); refreshMemes(); return;
+  if (action === 'delete-folder') {
+    if (!folder) return;
+    const ok = await showConfirm(
+      '删除文件夹',
+      '确定删除文件夹「' + folder.name + '」？表情文件和文件夹同名标签都会保留。'
+    );
+    if (!ok) return;
+    const deleted = await api('delete_folder', folder.id);
+    if (!deleted) return showToast('删除文件夹失败');
+    if (activeCollection === folder.id) activeCollection = null;
+    showToast('文件夹已删除，表情和标签已保留');
+    await refreshCollections();
+    refreshMemes();
+    return;
   }
 
   switch (action) {
     case 'rename': {
-      const newName = await showPrompt('重命名', m.name);
-      if (!newName || newName === m.name) return;
-      const ok = await api('rename_meme', m.id, newName);
-      if (ok) { showToast('重命名成功'); refreshMemes(); }
-      else { showToast('重命名失败'); }
+      const name = await showPrompt('重命名', meme.name);
+      if (!name || name === meme.name) return;
+      const ok = await api('rename_meme', meme.id, name);
+      showToast(ok ? '重命名成功' : '重命名失败');
+      if (ok) refreshMemes();
       break;
     }
     case 'favorite': {
-      const ok = await api('toggle_favorite', m.id);
-      if (ok !== null) {
-        await refreshCollections();
-        if (!ok && activeCollection === -2) {
-          const fav = collections.find(x => x.id === -2);
-          if (!fav || fav.count === 0) {
-            activeCollection = -4;
-          }
-        }
-        refreshMemes(); showToast(ok ? '已收藏' : '已取消收藏');
+      const ok = await api('toggle_favorite', meme.id);
+      if (ok === null) break;
+      await refreshCollections();
+      if (!ok && activeCollection === -2 && !(collections.find(x => x.id === -2)?.count)) {
+        activeCollection = null;
       }
+      refreshMemes();
+      showToast(ok ? '已收藏' : '已取消收藏');
       break;
     }
     case 'tag': {
-      const tags = await showTagEditor(m.id);
+      const tags = await showTagEditor(meme.id);
       if (tags === null) break;
-      const ok = await api('set_meme_tags', m.id, tags);
-      if (ok) {
-        showToast(tags.length ? '标签已更新' : '已清除标签');
-        const fresh = await api('get_tags') || [];
-        [...activeTags].forEach(t => { if (!fresh.includes(t)) activeTags.delete(t); });
-        refreshTags(); refreshMemes();
-      }
-      else { showToast('标签保存失败'); }
+      const ok = await api('set_meme_tags', meme.id, tags);
+      if (!ok) return showToast('标签保存失败');
+      showToast(tags.length ? '标签已更新' : '已清除标签');
+      const fresh = await api('get_tags') || [];
+      [...activeTags].forEach(tag => { if (!fresh.includes(tag)) activeTags.delete(tag); });
+      refreshTags();
+      refreshMemes();
       break;
     }
-    case 'collection': {
-      const topCols = (collections || []).filter(c => c.id > 0);
-      const els = [['新建分组', '__new__']];
-      topCols.forEach(c => els.push([c.name, c.id]));
-      const picked = await showSubgroupPicker(els);
-      if (picked === '__new__') {
-        const name = await showPrompt('添加分组', '');
-        if (!name) break;
-        const ok = await api('add_to_collection', m.id, name);
-        if (ok) { showToast('已添加到分组：' + name); refreshCollections(); }
-        else showToast('添加分组失败');
-      } else if (picked && picked > 0) {
-        const ok = await api('add_to_existing_collection', m.id, picked);
-        if (ok) { showToast('已添加到分组'); refreshCollections(); }
-        else showToast('添加分组失败');
-      }
+    case 'paste-chat':
+      await pasteMemeToChat(meme);
+      break;
+    case 'ai-edit': {
+      const prompt = await showPrompt('AI 编辑副本', '');
+      if (!prompt || !prompt.trim()) break;
+      const started = await api('ai_edit', meme.id, prompt.trim());
+      if (!started?.ok) return showToast((started && started.error) || '无法启动 AI 编辑');
+      showToast('AI 编辑已开始，原图会保留');
+      pollAiEditProgress();
       break;
     }
-    case 'add-to-subgroup': {
-      const all = await api('search_collections') || [];
-      const els = [['新建分组', '__new__']];
-      all.forEach(c => {
-        const indent = '　'.repeat(c.depth);
-        els.push([indent + c.name, c.id]);
-      });
-      const picked = await showSubgroupPicker(els);
-      if (picked === '__new__') {
-        const name = await showPrompt('新建分组', '');
-        if (!name) break;
-        const ok = await api('add_to_collection', m.id, name);
-        if (ok) { showToast('已添加到分组：' + name); refreshCollections(); }
-        else showToast('添加分组失败');
-      } else if (picked && picked > 0) {
-        const ok = await api('add_to_existing_collection', m.id, picked);
-        if (ok) { showToast('已添加到分组'); refreshCollections(); refreshMemes(); }
-        else showToast('添加失败');
-      }
+    case 'put-in-folder': {
+      const folderId = await chooseFolder();
+      if (!folderId) break;
+      const mode = await chooseFolderDropMode();
+      if (!mode) break;
+      const result = await api('add_to_folder', meme.id, folderId, mode);
+      if (!result?.ok) return showToast((result && result.error) || '放入文件夹失败');
+      showToast(mode === 'move' ? '已移动到文件夹并自动加标签' : '已复制到文件夹并自动加标签');
+      await refreshTags();
+      await refreshCollections();
+      refreshMemes();
       break;
     }
-    case 'remove-collection': {
-      const removedFrom = activeCollection;
-      const ok = await api('remove_from_collection', m.id, removedFrom);
-      if (ok) {
-        // 如果是从小分组移除，加回上层大分组
-        const allCols = collections;
-        let parentId = null;
-        for (const c of allCols) {
-          if (c.children) {
-            const found = c.children.find(ch => ch.id === removedFrom);
-            if (found) { parentId = c.id; break; }
-          }
-        }
-        if (parentId) await api('add_to_existing_collection', m.id, parentId);
-        showToast('已移回上层分组');
-        await refreshCollections();
-        const c = collections.find(x => x.id === removedFrom);
-        if (!c || c.count === 0) {
-          if (removedFrom > 0) await api('delete_collection', removedFrom);
-          activeCollection = parentId || -4;
-          renderTree();
-        }
-        refreshMemes();
-      } else showToast('移除失败');
+    case 'remove-from-folder': {
+      if (activeCollection <= 0) break;
+      const ok = await api('remove_from_folder', meme.id, activeCollection);
+      if (!ok) return showToast('移出文件夹失败');
+      showToast('已从当前文件夹移出，标签已保留');
+      await refreshCollections();
+      refreshMemes();
       break;
     }
     case 'delete': {
-      const confirmed = await showConfirm('删除确认', '确定删除「' + m.name + '」？');
+      const confirmed = await showConfirm('删除确认', '确定删除「' + meme.name + '」？');
       if (!confirmed) return;
-      const ok = await api('delete_meme', m.id);
-      if (ok) { showToast('已删除'); refreshMemes(); refreshTags(); refreshCollections(); }
-      else { showToast('删除失败'); }
+      const ok = await api('delete_meme', meme.id);
+      if (!ok) return showToast('删除失败');
+      showToast('已删除');
+      refreshMemes();
+      refreshTags();
+      refreshCollections();
       break;
     }
     case 'remove-recent': {
-      const ok = await api('remove_from_recent', m.id);
-      if (ok) {
-        showToast('已从最近使用中删除');
-        await refreshCollections();
-        const rc = collections.find(x => x.id === -3);
-        if (!rc || rc.count === 0) { activeCollection = -4; }
-        refreshMemes();
-      } else { showToast('操作失败'); }
+      const ok = await api('remove_from_recent', meme.id);
+      if (!ok) return showToast('操作失败');
+      showToast('已从最近使用中删除');
+      await refreshCollections();
+      if (!(collections.find(x => x.id === -3)?.count) && activeCollection === -3) activeCollection = null;
+      refreshMemes();
       break;
     }
     case 'clear-recent': {
       const confirmed = await showConfirm('清空最近使用', '确定清空最近使用列表？');
       if (!confirmed) return;
       const ok = await api('clear_recent');
-      if (ok) {
-        showToast('已清空最近使用');
-        await refreshCollections();
-        if (activeCollection === -3) activeCollection = -4;
-        refreshMemes();
-      } else { showToast('操作失败'); }
+      if (!ok) return showToast('操作失败');
+      showToast('已清空最近使用');
+      await refreshCollections();
+      if (activeCollection === -3) activeCollection = null;
+      refreshMemes();
       break;
     }
   }
@@ -1286,6 +1319,29 @@ function showUpdateDialogFromMain(current, latest, url, notes) {
   };
   document.getElementById('upd-later').onclick = () => { overlay.remove(); };
   overlay.onkeydown = (e) => { if (e.key === 'Escape') overlay.remove(); };
+}
+
+function chooseFolderDropMode() {
+  return new Promise(resolve => {
+    const overlay = document.createElement('div');
+    overlay.style.cssText = 'position:fixed;inset:0;background:rgba(0,0,0,.55);display:flex;align-items:center;justify-content:center;z-index:200;animation:fadeIn .15s';
+    const box = document.createElement('div');
+    box.style.cssText = 'background:var(--surface);border-radius:var(--radius-lg);padding:24px 28px;width:360px;border:1px solid var(--border);box-shadow:var(--shadow-lg)';
+    box.innerHTML = '<div style="margin-bottom:16px"><h2 style="font-size:15px;font-weight:600;color:var(--fg);margin-bottom:8px">放入文件夹</h2><p style="font-size:13px;color:var(--fg-secondary);line-height:1.6">复制会保留原文件夹归属；移动会从其他文件夹移出。两种方式都会自动添加目标文件夹同名标签。</p></div>'
+      + '<div style="display:flex;gap:8px;justify-content:flex-end">'
+      + '<button id="folder-drop-cancel" class="btn btn-secondary">取消</button>'
+      + '<button id="folder-drop-copy" class="btn btn-secondary">复制</button>'
+      + '<button id="folder-drop-move" class="btn btn-primary">移动</button>'
+      + '</div>';
+    overlay.appendChild(box);
+    document.body.appendChild(overlay);
+    const done = value => { overlay.remove(); resolve(value); };
+    overlay.onclick = e => { if (e.target === overlay) done(null); };
+    document.getElementById('folder-drop-cancel').onclick = () => done(null);
+    document.getElementById('folder-drop-copy').onclick = () => done('copy');
+    document.getElementById('folder-drop-move').onclick = () => done('move');
+    document.getElementById('folder-drop-move').focus();
+  });
 }
 
 function showConfirm(title, message) {
@@ -1598,28 +1654,11 @@ async function checkUpdateAndPrompt() {
   } catch(e) {}
 }
 
-/* 横向栏滚轮转横向滚动 */
-function initHScroll(barId) {
-  const bar = document.getElementById(barId);
-  if (!bar) return;
-  bar.addEventListener('wheel', (e) => {
-    if (bar.scrollWidth <= bar.clientWidth) return;
-    e.preventDefault();
-    let factor = 1;
-    if (e.deltaMode === 1) factor = 16;
-    else if (e.deltaMode === 2) factor = bar.clientWidth;
-    const dx = e.deltaX * factor;
-    const dy = e.deltaY * factor;
-    bar.scrollLeft += (dx !== 0 ? dx : dy);
-  }, { passive: false });
-}
-
 /* Init */
 document.addEventListener('DOMContentLoaded', async () => {
   renderDragSortToggle();
   renderSidebarState();
   initDragReorder();
-  initHScroll('tagbar');
   const dragSortBtn = document.getElementById('drag-sort-toggle');
   if (dragSortBtn) {
     dragSortBtn.addEventListener('click', toggleDragSort);
@@ -1627,6 +1666,8 @@ document.addEventListener('DOMContentLoaded', async () => {
   }
   const sidebarBtn = document.getElementById('sidebar-toggle');
   if (sidebarBtn) sidebarBtn.addEventListener('click', toggleSidebar);
+  const tagbarBtn = document.getElementById('tagbar-toggle');
+  if (tagbarBtn) tagbarBtn.addEventListener('click', toggleTagbar);
   const gridWrap = document.getElementById('grid-wrap');
   gridWrap.addEventListener('scroll', () => {
     if (gridWrap.scrollTop + gridWrap.clientHeight >= gridWrap.scrollHeight - 300) {
@@ -1638,16 +1679,19 @@ document.addEventListener('DOMContentLoaded', async () => {
   while (typeof pywebview === 'undefined' || !pywebview.api) {
     await new Promise(r => setTimeout(r, 100));
   }
+  await loadGridScale();
   const data = await api('get_init_data');
   if (data) {
     memes = data.memes || [];
     memeOffset = memes.length;
     memeHasMore = memes.length === MEME_PAGE;
-    renderGrid();
     allTags = data.tags || [];
+    tagbarCollapsed = !!data.tagbar_collapsed;
     renderTags();
     collections = data.collections || [];
     renderTree();
+    updateViewContext();
+    renderGrid();
   }
   document.getElementById('loading').classList.add('hidden');
   document.getElementById('search').focus();
@@ -1668,360 +1712,253 @@ document.addEventListener('DOMContentLoaded', async () => {
   setInterval(checkUpdateAndPrompt, 24 * 60 * 60 * 1000);
 });
 
-/* ─── 添加分组弹窗 ─── */
-let cbState = null;
-let cbDragSuppressClick = false;
-let cbSuppressInput = false;
-
-function cbMemeCard(m, side) {
-  const card = document.createElement('div');
-  card.className = 'cb-meme';
-  card.title = m.name;
-  card.dataset.memeId = m.id;
-  card.dataset.side = side;
-  const img = document.createElement('img');
-  img.loading = 'lazy';
-  img.draggable = false;
-  const animateInGrid = m.is_animated && m.auto_play_gif && !m.hover_to_play;
-  if (animateInGrid) {
-    img.src = '/api/original/' + m.id + '/' + encodeURIComponent(m.filename);
-  } else {
-    img.src = '/api/thumb/' + m.id + '/' + encodeURIComponent(m.filename);
-  }
-  if (m.is_animated && m.hover_to_play) {
-    setupHoverPlay(card, img, m.id, m.filename);
-  }
-  card.appendChild(img);
-  if (m.is_animated) {
-    const badge = document.createElement('span');
-    badge.className = 'cb-badge';
-    badge.textContent = m.is_gif ? 'GIF' : 'WebP';
-    card.appendChild(badge);
-  }
-  return card;
-}
-
-function cbRenderList() {
-  const s = cbState;
-  const left = document.getElementById('cb-left-list');
-  const right = document.getElementById('cb-right-list');
-  const rightIds = new Set(s.right.map(x => x.id));
-  left.innerHTML = '';
-  right.innerHTML = '';
-  if (s.left.length === 0) {
-    left.innerHTML = '<div id="cb-empty-left">没有表情包，先在主页导入</div>';
-  }
-  s.left.forEach(m => {
-    if (rightIds.has(m.id)) return;
-    const card = cbMemeCard(m, 'left');
-    card.onclick = () => cbMoveMeme(m, 'left');
-    left.appendChild(card);
-  });
-  if (s.right.length === 0) {
-    right.innerHTML = '<div id="cb-empty-right">点击左侧表情添加到分组</div>';
-  }
-  s.right.forEach(m => {
-    const card = cbMemeCard(m, 'right');
-    card.onclick = () => cbMoveMeme(m, 'right');
-    right.appendChild(card);
-  });
-  document.getElementById('cb-right-count').textContent = s.right.length;
-}
-
-function cbAppendLeftCards(items) {
-  const s = cbState;
-  if (!s) return;
-  const rightIds = new Set(s.right.map(x => x.id));
-  const left = document.getElementById('cb-left-list');
-  const empty = document.getElementById('cb-empty-left');
-  if (empty) empty.remove();
-  items.forEach(m => {
-    if (rightIds.has(m.id)) return;
-    const card = cbMemeCard(m, 'left');
-    card.onclick = () => cbMoveMeme(m, 'left');
-    left.appendChild(card);
-  });
-}
-
-async function cbLoadMoreLeft(query) {
-  if (!cbState || cbState.leftLoading || !cbState.leftHasMore) return;
-  cbState.leftLoading = true;
-  const gen = cbGen;
-  try {
-    const list = await api('search_memes', query || '', [], null, cbState.leftOffset, MEME_PAGE) || [];
-    if (!cbState || gen !== cbGen) return;   // 弹窗已关/搜索已变，丢弃过期响应
-    if (list.length === 0) {
-      cbState.leftHasMore = false;
-    } else {
-      cbState.left = cbState.left.concat(list);
-      cbState.leftOffset += list.length;
-      cbState.leftHasMore = list.length === MEME_PAGE;
-      cbAppendLeftCards(list);
+/* AI 面板 */
+function pollAiEditProgress() {
+  const timer = setInterval(async () => {
+    const state = await api('get_ai_progress');
+    if (!state || state.task_type !== 'edit') return;
+    if (state.status === 'done' || state.status === 'error' || state.status === 'cancelled') {
+      clearInterval(timer);
+      showToast(state.message || (state.status === 'done' ? '编辑完成' : '编辑失败'));
+      if (state.status === 'done') refreshMemes();
     }
-  } catch(e) {
-    if (cbState) cbState.leftHasMore = false;
-  } finally {
-    if (cbState) cbState.leftLoading = false;
-  }
+  }, 350);
 }
 
-function cbFly(el, fromRect, toRect) {
-  // 克隆卡片做 FLIP 动画后移除
-  const clone = el.cloneNode(true);
-  clone.classList.add('fly');
-  document.body.appendChild(clone);
-  clone.style.left = fromRect.left + 'px';
-  clone.style.top = fromRect.top + 'px';
-  clone.style.width = fromRect.width + 'px';
-  clone.style.height = fromRect.height + 'px';
-  clone.style.transition = 'none';
-  clone.getBoundingClientRect();
-  clone.style.transition = 'transform 260ms cubic-bezier(.2,.8,.2,1), opacity 260ms';
-  clone.style.transform = 'translate(' + (toRect.left - fromRect.left) + 'px,' + (toRect.top - fromRect.top) + 'px)';
-  clone.style.opacity = '0';
-  setTimeout(() => clone.remove(), 280);
-}
+function showAiPanel() {
+  let aiTimer = null;
 
-async function cbMoveMeme(m, from) {
-  const s = cbState;
-  if (cbDragSuppressClick) { cbDragSuppressClick = false; return; }
-  const el = document.querySelector('.cb-meme[data-side="' + from + '"][data-meme-id="' + m.id + '"]');
-  const fromRect = el ? el.getBoundingClientRect() : null;
-  const toSide = from === 'left' ? 'right' : 'left';
-  const toList = document.getElementById(toSide === 'left' ? 'cb-left-list' : 'cb-right-list');
-  const toRect = toList.getBoundingClientRect();
-  if (from === 'left') {
-    s.right.push(m);
-  } else {
-    s.right = s.right.filter(x => x.id !== m.id);
-  }
-  cbRenderList();
-  if (fromRect) {
-    const newEl = document.querySelector('.cb-meme[data-side="' + toSide + '"][data-meme-id="' + m.id + '"]');
-    const targetRect = newEl ? newEl.getBoundingClientRect() : toRect;
-    cbFly(el, fromRect, targetRect);
-  }
-}
+  const overlay = document.createElement('div');
+  overlay.style.cssText = 'position:fixed;inset:0;background:rgba(0,0,0,.55);display:flex;align-items:center;justify-content:center;z-index:200;animation:fadeIn .15s';
+  overlay.onclick = (e) => { if (e.target === overlay) { stopPoll(); overlay.remove(); } };
 
-function cbSelectCollection(item) {
-  const s = cbState;
-  cbSuppressInput = true;
-  document.getElementById('cb-name').value = item.name;
-  cbSuppressInput = false;
-  s.selId = item.id;
-  s.selIsNew = false;
-  s.right = [];
-  cbCloseDropdown();
-  cbRenderList();
-  if (item.id != null && item.id > 0) {
-    api('get_collection_members', item.id).then(members => {
-      if (cbState && cbState.selId === item.id && !cbState.selIsNew) {
-        cbState.right = members || [];
-        cbRenderList();
-      }
+  const box = document.createElement('div');
+  box.style.cssText = 'background:var(--surface);border-radius:var(--radius-lg);padding:20px 24px;width:520px;max-width:90vw;border:1px solid var(--border);box-shadow:var(--shadow-lg)';
+  box.innerHTML = ''
+    + '<div style="margin-bottom:14px;display:flex;align-items:center;justify-content:space-between">'
+    + '<h2 style="font-size:15px;font-weight:600;color:var(--fg)">AI 面板</h2>'
+    + '<button id="ai-close" class="btn btn-ghost btn-sm">×</button>'
+    + '</div>'
+    + '<div style="display:flex;gap:4px;margin-bottom:16px;border-bottom:1px solid var(--border)">'
+    + '<button class="ai-tab active" data-tab="organize">整理</button>'
+    + '<button class="ai-tab" data-tab="search">找图</button>'
+    + '<button class="ai-tab" data-tab="generate">生成</button>'
+    + '</div>'
+    + '<div id="ai-tab-organize" class="ai-tab-content">'
+    + '<p style="font-size:12px;color:var(--muted);margin-bottom:10px;line-height:1.6">AI 会优先整理尚未补全标签、描述或图片文字的表情；确认应用前不会修改你的表情库。</p>'
+    + '<div style="display:flex;gap:8px;margin-bottom:10px">'
+    + '<input id="ai-batch-size" type="number" value="50" min="1" max="200" style="width:80px;padding:6px 8px;border:1px solid var(--border);border-radius:var(--radius-sm);background:var(--card);color:var(--fg);font-size:13px">'
+    + '<button id="ai-organize-start" class="btn btn-primary">开始整理</button>'
+    + '<button id="ai-organize-cancel" class="btn btn-secondary" style="display:none">取消</button>'
+    + '</div>'
+    + '</div>'
+    + '<div id="ai-suggestions" style="display:none;margin-top:12px;max-height:300px;overflow-y:auto;border-top:1px solid var(--border);padding-top:10px"></div>'
+    + '<div id="ai-tab-search" class="ai-tab-content" style="display:none">'
+    + '<p style="font-size:12px;color:var(--muted);margin-bottom:10px;line-height:1.6">从网络搜索表情包图片并导入</p>'
+    + '<div style="display:flex;gap:8px;margin-bottom:10px">'
+    + '<input id="ai-search-keyword" placeholder="输入关键词" style="flex:1;padding:6px 10px;border:1px solid var(--border);border-radius:var(--radius-sm);background:var(--card);color:var(--fg);font-size:13px">'
+    + '<select id="ai-search-count" style="padding:6px 8px;border:1px solid var(--border);border-radius:var(--radius-sm);background:var(--card);color:var(--fg);font-size:13px">'
+    + '<option value="5">5张</option><option value="10" selected>10张</option><option value="20">20张</option><option value="30">30张</option>'
+    + '</select>'
+    + '<button id="ai-search-start" class="btn btn-primary">搜索</button>'
+    + '<button id="ai-search-cancel" class="btn btn-secondary" style="display:none">取消</button>'
+    + '</div>'
+    + '</div>'
+    + '<div id="ai-tab-generate" class="ai-tab-content" style="display:none">'
+    + '<p style="font-size:12px;color:var(--muted);margin-bottom:10px;line-height:1.6">用 AI 文生图生成表情包</p>'
+    + '<div style="display:flex;align-items:center;gap:8px;margin-bottom:8px">'
+    + '<span style="font-size:12px;color:var(--muted)">提示词模板</span>'
+    + '<select id="ai-gen-template" style="flex:1;padding:6px 8px;border:1px solid var(--border);border-radius:var(--radius-sm);background:var(--card);color:var(--fg);font-size:12px">'
+    + '<option value="">不使用模板</option>'
+    + '<option value="emoji">聊天表情</option>'
+    + '<option value="sticker">贴纸</option>'
+    + '<option value="reaction">反应图</option>'
+    + '<option value="minimal">极简图标</option>'
+    + '</select>'
+    + '</div>'
+    + '<div style="margin-bottom:10px">'
+    + '<textarea id="ai-gen-prompt" placeholder="描述你想要的表情包，如：一只猫吃面条的表情" style="width:100%;height:60px;padding:8px 10px;border:1px solid var(--border);border-radius:var(--radius-sm);background:var(--card);color:var(--fg);font-size:13px;resize:vertical;font-family:inherit;box-sizing:border-box"></textarea>'
+    + '</div>'
+    + '<div style="display:flex;gap:8px;margin-bottom:10px">'
+    + '<button id="ai-gen-start" class="btn btn-primary">生成</button>'
+    + '<button id="ai-gen-cancel" class="btn btn-secondary" style="display:none">取消</button>'
+    + '</div>'
+    + '</div>'
+    + '<div id="ai-progress-wrap" style="display:none;margin-top:6px">'
+    + '<div style="display:flex;justify-content:space-between;font-size:12px;color:var(--muted);margin-bottom:4px">'
+    + '<span id="ai-progress-text">准备中</span><span id="ai-progress-pct">0%</span>'
+    + '</div>'
+    + '<div style="height:6px;background:var(--card);border-radius:3px;overflow:hidden">'
+    + '<div id="ai-progress-bar" style="height:100%;width:0;background:var(--accent);transition:width .3s"></div>'
+    + '</div>'
+    + '<div id="ai-log" style="margin-top:8px;max-height:120px;overflow-y:auto;font-size:11px;color:var(--muted);line-height:1.5"></div>'
+    + '</div>';
+
+  overlay.appendChild(box);
+  document.body.appendChild(overlay);
+
+  function stopPoll() {
+    if (aiTimer) { clearInterval(aiTimer); aiTimer = null; }
+  }
+
+  function startPoll() {
+    stopPoll();
+    aiTimer = setInterval(async () => {
+      try {
+        const s = await api('get_ai_progress');
+        if (!s) return;
+        const wrap = document.getElementById('ai-progress-wrap');
+        if (wrap) wrap.style.display = '';
+        const bar = document.getElementById('ai-progress-bar');
+        const txt = document.getElementById('ai-progress-text');
+        const pct = document.getElementById('ai-progress-pct');
+        const log = document.getElementById('ai-log');
+        if (bar) bar.style.width = (s.progress || 0) + '%';
+        if (pct) pct.textContent = (s.progress || 0) + '%';
+        if (txt) txt.textContent = s.message || '';
+        if (log && s.log) log.innerHTML = s.log.map(l => '<div>' + esc(l) + '</div>').join('');
+        if (s.status === 'done' || s.status === 'error' || s.status === 'cancelled') {
+          stopPoll();
+          if (s.status === 'error') showToast(s.message || 'AI 操作失败');
+          else if (s.status === 'done') showToast(s.message || '完成');
+          resetButtons();
+          if (s.status === 'done' && s.task_type === 'organize') renderSuggestions(s.task_id);
+          if (s.status === 'done' && s.task_type !== 'organize') refreshMemes();
+        }
+      } catch(e) {}
+    }, 300);
+  }
+
+  async function renderSuggestions(taskId) {
+    const host = document.getElementById('ai-suggestions');
+    if (!host || !taskId) return;
+    const data = await api('get_ai_suggestions', taskId);
+    const items = Object.values(data || {});
+    if (!items.length) {
+      host.style.display = 'none';
+      host.innerHTML = '';
+      return;
+    }
+    host.style.display = '';
+    host.innerHTML = '<div style="font-size:13px;font-weight:600;margin-bottom:8px">待审核建议（' + items.length + '）</div>';
+    const list = document.createElement('div');
+    list.style.cssText = 'display:flex;flex-direction:column;gap:8px';
+    items.forEach(item => {
+      const row = document.createElement('div');
+      row.style.cssText = 'padding:9px;border:1px solid var(--border);border-radius:var(--radius-sm);background:var(--card)';
+      row.innerHTML = '<div style="font-size:11px;color:var(--muted);margin-bottom:6px">表情 #' + esc(item.id) + '</div>'
+        + '<input data-field="tags" value="' + esc((item.tags || []).join('、')) + '" placeholder="标签，以顿号或逗号分隔" style="width:100%;box-sizing:border-box;padding:5px 7px;border:1px solid var(--border);border-radius:var(--radius-sm);background:var(--surface);color:var(--fg);font-size:12px;margin-bottom:5px">'
+        + '<input data-field="collection" value="' + esc(item.collection || '') + '" placeholder="建议文件夹" style="width:100%;box-sizing:border-box;padding:5px 7px;border:1px solid var(--border);border-radius:var(--radius-sm);background:var(--surface);color:var(--fg);font-size:12px;margin-bottom:5px">'
+        + '<input data-field="description" value="' + esc(item.description || '') + '" placeholder="图片描述（用于搜索）" style="width:100%;box-sizing:border-box;padding:5px 7px;border:1px solid var(--border);border-radius:var(--radius-sm);background:var(--surface);color:var(--fg);font-size:12px;margin-bottom:5px">'
+        + '<input data-field="ocr_text" value="' + esc(item.ocr_text || '') + '" placeholder="图片文字（用于搜索）" style="width:100%;box-sizing:border-box;padding:5px 7px;border:1px solid var(--border);border-radius:var(--radius-sm);background:var(--surface);color:var(--fg);font-size:12px">';
+      row.querySelectorAll('input').forEach(input => {
+        input.addEventListener('change', async () => {
+          const tags = row.querySelector('[data-field="tags"]').value.split(/[、,，]/).map(x => x.trim()).filter(Boolean);
+          const result = await api('adjust_ai_suggestion', taskId, item.id, tags,
+            row.querySelector('[data-field="collection"]').value.trim(),
+            row.querySelector('[data-field="description"]').value.trim(),
+            row.querySelector('[data-field="ocr_text"]').value.trim());
+          if (!result || !result.ok) showToast((result && result.error) || '保存建议失败');
+        });
+      });
+      list.appendChild(row);
     });
-  }
-}
-
-function cbCloseDropdown() {
-  document.getElementById('cb-dropdown').classList.remove('show');
-}
-
-async function cbUpdateDropdown() {
-  const nameInput = document.getElementById('cb-name');
-  const dd = document.getElementById('cb-dropdown');
-  const val = nameInput.value.trim();
-  dd.innerHTML = '';
-  const mk = (label, val2, cls, depthLabel) => {
-    const item = document.createElement('div');
-    item.className = 'cb-dd-item';
-    item.innerHTML = '<span class="cb-dd-new">' + esc(label) + '</span>' + (depthLabel ? '<span class="cb-dd-depth">' + esc(depthLabel) + '</span>' : '');
-    item.onclick = () => {
-      if (cls === 'new') {
-        cbState.selId = null;
-        cbState.selIsNew = true;
-        cbState.right = [];
-        cbRenderList();
-        cbCloseDropdown();
-      } else {
-        cbSelectCollection(val2);
-      }
+    host.appendChild(list);
+    const actions = document.createElement('div');
+    actions.style.cssText = 'display:flex;justify-content:flex-end;gap:8px;margin-top:10px';
+    const discard = document.createElement('button');
+    discard.className = 'btn btn-secondary';
+    discard.textContent = '全部丢弃';
+    discard.onclick = async () => {
+      const ok = await showConfirm('丢弃 AI 建议', '确认丢弃当前 ' + items.length + ' 条建议？不会修改表情库。');
+      if (!ok) return;
+      const result = await api('discard_ai_suggestions', taskId);
+      if (result && result.ok) { showToast('已丢弃 ' + result.discarded + ' 条建议'); renderSuggestions(taskId); }
     };
-    dd.appendChild(item);
-  };
-  mk('新建「' + (val || '未命名') + '」分组', null, 'new');
-  if (val) {
-    const results = await api('search_collections', val) || [];
-    results.forEach(r => {
-      const depthLabel = r.depth > 0 ? ('子分组' + (r.depth > 1 ? '·' + r.depth : '')) : '';
-      mk(r.name, { id: r.id, name: r.name }, 'exist', depthLabel);
+    const apply = document.createElement('button');
+    apply.className = 'btn btn-primary';
+    apply.textContent = '确认应用';
+    apply.onclick = async () => {
+      const ok = await showConfirm('应用 AI 建议', '确认把当前 ' + items.length + ' 条建议写入标签、文件夹和搜索描述？');
+      if (!ok) return;
+      const result = await api('apply_ai_suggestions', taskId);
+      if (!result || !result.ok) { showToast((result && result.error) || '应用失败'); return; }
+      showToast('已应用 ' + result.applied + ' 条建议');
+      await refreshTags(); await refreshCollections(); await refreshMemes();
+      renderSuggestions(taskId);
+    };
+    actions.appendChild(discard);
+    actions.appendChild(apply);
+    host.appendChild(actions);
+  }
+
+  function resetButtons() {
+    ['organize','search','generate'].forEach(t => {
+      const start = document.getElementById('ai-' + t + '-start');
+      const cancel = document.getElementById('ai-' + t + '-cancel');
+      if (start) start.style.display = '';
+      if (cancel) cancel.style.display = 'none';
     });
-  } else {
-    const all = await api('search_collections', '') || [];
-    all.slice(0, 8).forEach(r => mk(r.name, { id: r.id, name: r.name }, 'exist'));
   }
-  dd.classList.add('show');
-}
 
-function cbClose() {
-  document.getElementById('cb-overlay').style.display = 'none';
-  cbState = null;
-}
+  document.getElementById('ai-close').onclick = () => { stopPoll(); overlay.remove(); };
 
-async function cbConfirm() {
-  const s = cbState;
-  if (!s) return;
-  const name = document.getElementById('cb-name').value.trim();
-  if (!name) { showToast('请输入分组名'); return; }
-  const ids = s.right.map(x => x.id);
-  let ok = false;
-  let errMsg = '';
-  if (s.selIsNew || !s.selId) {
-    const r = await api('set_collection_members_new', name, ids);
-    ok = !!(r && r.ok);
-    errMsg = r && r.error ? r.error : '';
-  } else {
-    ok = await api('set_collection_members', s.selId, ids);
-  }
-  if (ok) {
-    showToast(s.selIsNew ? '分组已创建' : '分组已更新');
-    cbClose();
-    refreshCollections();
-    refreshMemes();
-  } else {
-    showToast(errMsg || '保存失败');
-  }
-}
-
-function showCollectionBuilder() {
-  cbGen++;
-  cbState = { left: [], right: [], selId: null, selIsNew: true,
-              leftOffset: 0, leftHasMore: true, leftLoading: false };
-  document.getElementById('cb-overlay').style.display = 'flex';
-  document.getElementById('cb-name').value = '';
-  document.getElementById('cb-search').value = '';
-  cbCloseDropdown();
-  cbRenderList();
-  cbLoadMoreLeft('');
-  document.getElementById('cb-name').focus();
-  cbUpdateDropdown();
-}
-
-document.getElementById('cb-left-list').addEventListener('scroll', () => {
-  if (!cbState) return;
-  const el = document.getElementById('cb-left-list');
-  if (el.scrollTop + el.clientHeight >= el.scrollHeight - 200) {
-    cbLoadMoreLeft(document.getElementById('cb-search').value.trim());
-  }
-});
-
-document.getElementById('cb-overlay').addEventListener('click', (e) => {
-  if (e.target === document.getElementById('cb-overlay')) cbClose();
-});
-
-document.getElementById('cb-name').addEventListener('focus', () => {
-  if (cbState) cbUpdateDropdown();
-});
-
-document.getElementById('cb-name').addEventListener('input', () => {
-  if (!cbState || cbSuppressInput) return;
-  // 手动编辑视为新建模式，除非从下拉框明确选中已有分组
-  cbState.selIsNew = true;
-  cbState.selId = null;
-  cbUpdateDropdown();
-});
-
-document.getElementById('cb-name').addEventListener('blur', () => {
-  setTimeout(cbCloseDropdown, 150);
-});
-
-document.getElementById('cb-name').addEventListener('keydown', (e) => {
-  if (e.key === 'Enter' && cbState) {
-    // 回车选中第一个匹配项；无匹配则视为新建
-    const dd = document.getElementById('cb-dropdown');
-    const first = dd.querySelector('.cb-dd-item');
-    if (first) first.click();
-    else {
-      cbState.selId = null;
-      cbState.selIsNew = true;
-      cbCloseDropdown();
-    }
-  }
-  if (e.key === 'Escape') cbCloseDropdown();
-});
-
-let cbSearchTimer;
-document.getElementById('cb-search').addEventListener('input', () => {
-  if (!cbState) return;
-  clearTimeout(cbSearchTimer);
-  cbSearchTimer = setTimeout(async () => {
-    const q = document.getElementById('cb-search').value.trim();
-    const gen = ++cbGen;
-    cbState.leftOffset = 0; cbState.leftHasMore = true;
-    try {
-      const list = await api('search_memes', q, [], null, 0, MEME_PAGE) || [];
-      if (cbState && gen === cbGen) {
-        cbState.left = list;
-        cbState.leftOffset = list.length;
-        cbState.leftHasMore = list.length === MEME_PAGE;
-        cbRenderList();
-      }
-    } catch(e) {
-      if (cbState) cbState.leftHasMore = false;
-    }
-  }, 250);
-});
-
-document.getElementById('cb-cancel').addEventListener('click', cbClose);
-document.getElementById('cb-confirm').addEventListener('click', cbConfirm);
-
-// 右侧已添加列表拖拽排序（拖拽排序开启时生效）
-(function cbDragInit() {
-  const rightList = document.getElementById('cb-right-list');
-  let drag = null;
-  rightList.addEventListener('pointerdown', (e) => {
-    if (!cbState || !dragSortEnabled) return;
-    const card = e.target.closest('.cb-meme');
-    if (!card) return;
-    cbDragSuppressClick = false;
-    drag = { card, x: e.clientX, y: e.clientY, active: false };
+  document.querySelectorAll('.ai-tab').forEach(btn => {
+    btn.style.cssText = 'padding:6px 14px;border:none;background:none;color:var(--muted);font-size:13px;cursor:pointer;border-bottom:2px solid transparent';
+    btn.onclick = () => {
+      document.querySelectorAll('.ai-tab').forEach(b => { b.classList.remove('active'); b.style.color='var(--muted)'; b.style.borderBottomColor='transparent'; });
+      btn.classList.add('active');
+      btn.style.color='var(--accent)';
+      btn.style.borderBottomColor='var(--accent)';
+      document.querySelectorAll('.ai-tab-content').forEach(c => c.style.display='none');
+      const tab = document.getElementById('ai-tab-' + btn.dataset.tab);
+      if (tab) tab.style.display = '';
+    };
   });
-  rightList.addEventListener('pointermove', (e) => {
-    const d = drag;
-    if (!d) return;
-    if (!d.active) {
-      if (Math.hypot(e.clientX - d.x, e.clientY - d.y) <= 8) return;
-      d.active = true;
-      cbDragSuppressClick = true;
-      d.card.classList.add('ghost');
-    }
-    const items = Array.from(rightList.querySelectorAll('.cb-meme'));
-    const cur = items.indexOf(d.card);
-    const rect = rightList.getBoundingClientRect();
-    const n = items.length;
-    const pitch = 64 + 8; // 卡片宽 + gap
-    const cols = Math.max(1, Math.floor((rect.width) / pitch));
-    const x = e.clientX - rect.left;
-    const y = e.clientY - rect.top;
-    const col = Math.max(0, Math.min(Math.floor(x / pitch), cols - 1));
-    const row = Math.max(0, Math.floor(y / pitch));
-    const target = Math.max(0, Math.min(col + row * cols, n - 1));
-    if (target === cur) return;
-    const [item] = cbState.right.splice(cur, 1);
-    cbState.right.splice(target, 0, item);
-    cbRenderList();
-    drag.card = document.querySelector('.cb-meme[data-meme-id="' + item.id + '"]');
-    const it = Array.from(rightList.querySelectorAll('.cb-meme'));
-    const c2 = it.indexOf(drag.card);
-    if (c2 > cur) rightList.insertBefore(drag.card, it[c2 + 1] ? it[c2 + 1].nextSibling : null);
-    else rightList.insertBefore(drag.card, it[c2]);
-  });
-  rightList.addEventListener('pointerup', () => {
-    if (drag && drag.active && drag.card) drag.card.classList.remove('ghost');
-    drag = null;
-  });
-  rightList.addEventListener('pointercancel', () => {
-    if (drag && drag.active && drag.card) drag.card.classList.remove('ghost');
-    drag = null;
-  });
-})();
+  const firstTab = document.querySelector('.ai-tab.active');
+  if (firstTab) { firstTab.style.color='var(--accent)'; firstTab.style.borderBottomColor='var(--accent)'; }
+
+  document.getElementById('ai-organize-start').onclick = () => {
+    const bs = document.getElementById('ai-batch-size').value || 50;
+    document.getElementById('ai-organize-start').style.display='none';
+    document.getElementById('ai-organize-cancel').style.display='';
+    api('ai_organize', parseInt(bs));
+    startPoll();
+  };
+  document.getElementById('ai-organize-cancel').onclick = () => api('cancel_ai_task');
+
+  document.getElementById('ai-search-start').onclick = () => {
+    const kw = document.getElementById('ai-search-keyword').value.trim();
+    if (!kw) { showToast('请输入关键词'); return; }
+    const cnt = document.getElementById('ai-search-count').value || 10;
+    document.getElementById('ai-search-start').style.display='none';
+    document.getElementById('ai-search-cancel').style.display='';
+    api('ai_search_web', kw, parseInt(cnt));
+    startPoll();
+  };
+  document.getElementById('ai-search-cancel').onclick = () => api('cancel_ai_task');
+
+  const promptTemplates = {
+    emoji: '适合作为中文聊天表情包，角色表情夸张、主体居中、干净纯色背景、无文字：',
+    sticker: '可爱贴纸风格，轮廓清晰、背景透明或纯色、主体完整、无水印无文字：',
+    reaction: '反应图风格，突出强烈情绪、表情清晰、构图简单、无水印无文字：',
+    minimal: '极简扁平图标风格，主体居中、高对比、少细节、无文字：'
+  };
+  document.getElementById('ai-gen-template').onchange = () => {
+    const template = promptTemplates[document.getElementById('ai-gen-template').value];
+    const input = document.getElementById('ai-gen-prompt');
+    if (template && !input.value.trim()) input.value = template;
+  };
+  document.getElementById('ai-gen-start').onclick = () => {
+    const input = document.getElementById('ai-gen-prompt');
+    const template = promptTemplates[document.getElementById('ai-gen-template').value] || '';
+    let pr = input.value.trim();
+    if (!pr) { showToast('请输入描述'); return; }
+    if (template && !pr.startsWith(template)) pr = template + pr;
+    document.getElementById('ai-gen-start').style.display='none';
+    document.getElementById('ai-gen-cancel').style.display='';
+    api('ai_generate', pr, 1);
+    startPoll();
+  };
+  document.getElementById('ai-gen-cancel').onclick = () => api('cancel_ai_task');
+}

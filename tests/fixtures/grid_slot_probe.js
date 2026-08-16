@@ -10,14 +10,13 @@ const start = source.indexOf('function memeCardsInGrid()');
 const end = source.indexOf('function moveInArray(', start);
 if (start < 0 || end < 0) throw new Error('drag geometry helpers not found');
 
-const folder = { classList: { contains: name => name === 'folder-card' } };
 const meme = () => ({
   offsetWidth: 100,
   offsetHeight: 80,
   classList: { contains: () => false },
 });
 const memes = [meme(), meme(), meme(), meme(), meme()];
-const allCards = [folder, ...memes];
+const allCards = memes;
 const layout = { left: 200, top: 100 };
 const style = {
   paddingLeft: '10px',
@@ -32,16 +31,13 @@ const grid = {
   clientWidth: 340,
   getBoundingClientRect: () => ({ left: layout.left, top: layout.top }),
 };
-folder.offsetLeft = 218;
-folder.offsetTop = 110;
-
 const context = {
   document: {
     getElementById: id => {
       if (id !== 'meme-grid') throw new Error('unexpected element id: ' + id);
       return grid;
     },
-    querySelectorAll: selector => selector.includes(':not(.folder-card)') ? memes : allCards,
+    querySelectorAll: () => allCards,
   },
   getComputedStyle: () => style,
 };
@@ -58,8 +54,8 @@ function assertSlot(label, x, y, expected) {
 function assertVisibleSlots(label) {
   const originX = layout.left + 10;
   const originY = layout.top + 10;
-  assertSlot(label + ' first meme after folder', originX + 110 + 50, originY + 40, 0);
-  assertSlot(label + ' third meme on next row', originX + 50, originY + 100 + 40, 2);
+  assertSlot(label + ' second meme on first row', originX + 110 + 50, originY + 40, 1);
+  assertSlot(label + ' fourth meme on next row', originX + 50, originY + 100 + 40, 3);
 }
 
 assertVisibleSlots('expanded sidebar');

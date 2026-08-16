@@ -23,6 +23,8 @@ _SECRET_KEYS = {
     "ftp_password",
     "webdav_password",
     "lan_secret",
+    "ai_chat_api_key",
+    "ai_image_api_key",
 }
 
 # ~~~ 导入限制 ~~~（超过限制的图片拒绝入库）
@@ -122,8 +124,22 @@ class Config:
         "window_y": -1,
         "auto_play_gif": True,
         "hover_to_play": False,
+        "grid_scale": 72,
+        "tagbar_collapsed": False,
         "try_original_image": False,
         "show_uncategorized": True,  # 显示「未分类」分组
+        "record_recent_use": True,  # 复制时记录最近使用
+        # AI 编辑
+        "ai_chat_base_url": "",  # 整理服务 OpenAI 兼容 API 地址
+        "ai_chat_api_key": "",  # 整理服务 API 密钥（加密存储）
+        "ai_chat_model": "",  # 多模态对话模型名（整理用）
+        "ai_organize_style": "general",  # 整理风格预设
+        "ai_image_base_url": "",  # 生图服务 OpenAI 兼容 API 地址
+        "ai_image_api_key": "",  # 生图服务 API 密钥（加密存储）
+        "ai_image_model": "",  # 文生图模型名（生成用）
+        "ai_search_source": "bing",  # 找图来源标识
+        # 聊天客户端适配
+        "chat_client_mode": "manual",  # manual | qq | wechat
     }
 
     def __init__(self, path: Path = None):
@@ -191,6 +207,8 @@ class Config:
             try:
                 with open(self._path, "r", encoding="utf-8") as f:
                     raw = json.load(f)
+                if not isinstance(raw, dict):
+                    return
                 for k in self.DEFAULTS:
                     if k in raw:
                         self._data[k] = raw[k]
@@ -201,6 +219,19 @@ class Config:
     def _migrate(self, raw):
         """配置文件版本迁移"""
         saved_ver = raw.get("version", "")
+        # 旧版共享 AI 配置迁移到两套独立配置，兼容同版本号的已有用户设置
+        if "ai_base_url" in raw or "ai_api_key" in raw:
+            shared_url = raw.get("ai_base_url", "")
+            shared_key = raw.get("ai_api_key", "")
+            if "ai_chat_base_url" not in raw:
+                self._data["ai_chat_base_url"] = shared_url
+            if "ai_image_base_url" not in raw:
+                self._data["ai_image_base_url"] = shared_url
+            if "ai_chat_api_key" not in raw:
+                self._data["ai_chat_api_key"] = shared_key
+            if "ai_image_api_key" not in raw:
+                self._data["ai_image_api_key"] = shared_key
+            self._dirty = True
         if saved_ver == _CONFIG_VERSION:
             return
         # 0.2.0 及之前：删除 window_width/window_height

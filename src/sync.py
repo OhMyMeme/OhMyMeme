@@ -925,6 +925,8 @@ def _pull_worker(entries, remote_root, cache_dir, db):
                             file_size=fsize,
                             mime_type="image/%s" % ext[1:] if ext else "image/png",
                             original_name=oname,
+                            ai_description=rentry.get("ai_description", ""),
+                            ai_ocr_text=rentry.get("ai_ocr_text", ""),
                         )
                     except Exception as e:
                         # DB 写入失败：清理残留 cache，避免“文件在但无记录”的游离态
@@ -1215,16 +1217,48 @@ def sync_test() -> str:
 
 
 def _apply_remote_collections(remote_data: dict):
+    """合并远端文件夹，兼容旧版嵌套 collections 清单"""
     db = get_db()
-    for rc in remote_data.get("collections", []):
-        cname = rc["name"]
+
+    def walk(items):
+        for item in items if isinstance(items, list) else []:
+            if not isinstance(item, dict):
+                continue
+            name = str(item.get("name", "")).strip()
+            if name:
+                yield name, item.get("filenames", [])
+            yield from walk(item.get("children", []))
+
+    for cname, filenames in walk(remote_data.get("collections", [])):
         cid = db.create_collection(cname)
         if cid < 0:
             continue
-        for fname in rc.get("filenames", []):
+        for fname in filenames if isinstance(filenames, list) else []:
+            if not isinstance(fname, str) or not _safe_remote_fname(fname):
+                continue
             row = db.get_by_filename(fname)
             if row:
                 db.add_to_collection(row["id"], cid)
+
+
+def _apply_remote_ai_text(remote_data: dict):
+    """把远端 manifest 中的 AI 描述和 OCR 文本合并到本地表情。"""
+    db = get_db()
+    for meme in remote_data.get("memes", []):
+        if not isinstance(meme, dict):
+            continue
+        fname = meme.get("filename", "")
+        if not _safe_remote_fname(fname):
+            continue
+        if "ai_description" not in meme and "ai_ocr_text" not in meme:
+            continue
+        row = db.get_by_filename(fname)
+        if row:
+            db.set_meme_ai_text(
+                row["id"],
+                meme.get("ai_description", ""),
+                meme.get("ai_ocr_text", ""),
+            )
 
 
 def _apply_remote_order(remote_data: dict):
@@ -1331,6 +1365,7 @@ def pull(remove_local: bool = None) -> dict:
                             pass
 
         _apply_remote_collections(remote_data)
+        _apply_remote_ai_text(remote_data)
         _apply_remote_order(remote_data)
         build_manifest()
         if aggregated["errors"] > 0:

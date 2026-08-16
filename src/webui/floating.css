@@ -1,0 +1,15 @@
+html, body { margin: 0; min-height: 100%; background: #15161a; color: #f1f3f5; font-family: "Microsoft YaHei", sans-serif; }
+#floating-app { min-height: 100vh; box-sizing: border-box; padding: 10px; background: #15161a; }
+#floating-titlebar { height: 28px; display: flex; align-items: center; justify-content: space-between; color: #c7ccd4; font-size: 12px; user-select: none; }
+#floating-close { border: 0; background: transparent; color: #a5acb8; font-size: 20px; line-height: 20px; cursor: pointer; padding: 0 4px; }
+#floating-close:hover { color: #fff; }
+#floating-search-wrap { margin-top: 6px; }
+#floating-search { width: 100%; box-sizing: border-box; padding: 9px 11px; border-radius: 8px; border: 1px solid #3d4552; background: #22252b; color: #f5f7fa; outline: none; font-size: 13px; }
+#floating-search:focus { border-color: #4d9cff; box-shadow: 0 0 0 2px rgba(77,156,255,.18); }
+#floating-hint { margin: 8px 2px; color: #8e98a7; font-size: 11px; line-height: 1.35; }
+#floating-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(64px, 1fr)); gap: 8px; max-height: 255px; overflow-y: auto; padding-right: 2px; }
+.floating-card { aspect-ratio: 1; position: relative; border: 1px solid #303844; border-radius: 8px; overflow: hidden; background: #22252b; cursor: pointer; transition: border-color .15s, transform .15s; }
+.floating-card:hover { border-color: #5aa6ff; transform: translateY(-1px); }
+.floating-card img { display: block; width: 100%; height: 100%; object-fit: contain; }
+.floating-card .floating-name { position: absolute; left: 0; right: 0; bottom: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; padding: 3px 4px; background: rgba(0,0,0,.62); color: #eef4ff; font-size: 10px; }
+#floating-empty { display: none; color: #8e98a7; text-align: center; padding: 32px 10px; font-size: 13px; }

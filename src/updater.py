@@ -142,9 +142,9 @@ def _fetch_json(url: str):
 
 
 def _parse_release(rel: dict):
-    """解析单个 release，返回 (tag, version_tuple, download_url, notes) 或 None"""
+    """解析单个稳定 release，返回 (tag, version_tuple, download_url, notes) 或 None"""
     tag = (rel.get("tag_name") or "").lstrip("v")
-    if not tag:
+    if not tag or rel.get("prerelease") or "nightly" in tag.lower():
         return None
     url = _pick_asset_url(rel.get("assets", []))
     if not url:
@@ -154,7 +154,7 @@ def _parse_release(rel: dict):
 
 
 def check_latest() -> dict:
-    """查询 GitHub 最新版本（优先稳定版，无稳定版时回退到预发布）"""
+    """查询 GitHub 最新稳定版本，忽略预发布和 nightly。"""
     current = _parse_version(__version__)
 
     # 1. 尝试 releases/latest（仅非预发布稳定版）
@@ -174,7 +174,7 @@ def check_latest() -> dict:
         logger.warning("check update (latest) failed: %s", e)
         # 任何失败（含 403/404）均回落至列表
 
-    # 2. 回退：遍历 release 列表（含预发布），取最高版本
+    # 2. 回退：遍历 release 列表，仅取最高稳定版本
     try:
         releases = _fetch_json(_GITHUB_LIST)
     except Exception as e:

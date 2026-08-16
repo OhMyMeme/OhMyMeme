@@ -21,6 +21,39 @@ from .tray import TrayManager
 from .webui import WebUI
 
 logger = logging.getLogger(__name__)
+_SINGLE_INSTANCE_HANDLE = None
+
+
+def _acquire_single_instance() -> bool:
+    """Windows 使用命名互斥体阻止第二个进程初始化。"""
+    global _SINGLE_INSTANCE_HANDLE
+    if os.name != "nt":
+        return True
+    try:
+        import ctypes
+
+        kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+        kernel32.CreateMutexW.argtypes = [
+            ctypes.c_void_p,
+            ctypes.c_bool,
+            ctypes.c_wchar_p,
+        ]
+        kernel32.CreateMutexW.restype = ctypes.c_void_p
+        kernel32.CloseHandle.argtypes = [ctypes.c_void_p]
+        kernel32.CloseHandle.restype = ctypes.c_bool
+        ctypes.set_last_error(0)
+        mutex = kernel32.CreateMutexW(None, False, "Local\\OhMyMeme.Singleton")
+        if not mutex:
+            logger.warning("无法创建单实例锁，继续启动")
+            return True
+        if ctypes.get_last_error() == 183:
+            kernel32.CloseHandle(mutex)
+            return False
+        _SINGLE_INSTANCE_HANDLE = mutex
+        return True
+    except Exception as e:
+        logger.warning("单实例检查失败，继续启动: %s", e)
+        return True
 
 
 class OhMyMemeApp:
@@ -267,6 +300,10 @@ def main():
 
     if os.name != "nt":
         signal.signal(signal.SIGTERM, lambda *a: sys.exit(0))
+
+    if not _acquire_single_instance():
+        logger.info("OhMyMeme 已在运行，忽略重复启动")
+        return
 
     app = OhMyMemeApp()
     app._update_debug = args.update_debug

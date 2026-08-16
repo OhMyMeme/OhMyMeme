@@ -893,6 +893,17 @@ def _copy_image_linux(image_path: str, ext: str) -> bool:
     return False
 
 
+def get_clipboard_text() -> str:
+    """读取纯文本剪贴板；失败或非文本时返回空字符串"""
+    if HAS_PYPERCLIP:
+        try:
+            value = pyperclip.paste()
+            return value if isinstance(value, str) else ""
+        except Exception:
+            pass
+    return ""
+
+
 def copy_text(text: str) -> bool:
     """复制文本到剪贴板"""
     if HAS_PYPERCLIP:

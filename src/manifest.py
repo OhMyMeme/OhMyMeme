@@ -18,22 +18,14 @@ def _index_path() -> Path:
     return get_config().data_dir / INDEX_FILENAME
 
 
-def _build_collection_tree(db, parent_id=None) -> list:
-    raw = db.get_collections()
+def _build_folder_list(db) -> list:
+    """将兼容用 collections 表写成单层文件夹清单"""
     items = []
-    for cid, cname, pid, _ in raw:
-        if pid != parent_id:
-            continue
+    for cid, cname, _, _ in db.get_collections():
         member_rows = db.search(collection_id=cid, limit=999999)
-        filenames = [mr["filename"] for mr in member_rows]
-        children = _build_collection_tree(db, parent_id=cid)
-        if not filenames and not children:
-            db.delete_collection(cid)
-            continue
-        item = {"name": cname, "filenames": filenames}
-        if children:
-            item["children"] = children
-        items.append(item)
+        items.append(
+            {"name": cname, "filenames": [row["filename"] for row in member_rows]}
+        )
     return items
 
 
@@ -61,12 +53,14 @@ def build() -> List[Dict]:
                 "sha256": r.get("file_hash", ""),
                 "file_size": r.get("file_size", 0),
                 "mtime": mtime,
+                "ai_description": r.get("ai_description", ""),
+                "ai_ocr_text": r.get("ai_ocr_text", ""),
             }
         )
 
-    collections = _build_collection_tree(db)
+    collections = _build_folder_list(db)
 
-    data = {"version": 3, "memes": memes, "collections": collections}
+    data = {"version": 4, "memes": memes, "collections": collections}
     path = _index_path()
     try:
         path.parent.mkdir(parents=True, exist_ok=True)
@@ -86,24 +80,13 @@ def load() -> Dict:
     """加载索引文件，不存在时返回空结构"""
     path = _index_path()
     if not path.exists():
-        return {"version": 3, "memes": [], "collections": []}
+        return {"version": 4, "memes": [], "collections": []}
     try:
         data = json.loads(path.read_text(encoding="utf-8"))
-        if data.get("version", 2) < 3:
-            # 旧版 v2 扁平分组 → 新版 v3 嵌套：原地转换
-            if isinstance(data.get("collections"), list):
-                new_colls = []
-                for c in data["collections"]:
-                    if isinstance(c, dict) and "name" in c:
-                        new_colls.append(
-                            {
-                                "name": c["name"],
-                                "filenames": c.get("filenames", []),
-                            }
-                        )
-                data["collections"] = new_colls
-            data["version"] = 3
+        if not isinstance(data.get("collections"), list):
+            data["collections"] = []
+        data["version"] = 4
         return data
     except Exception as e:
         logger.warning(f"manifest load failed: {e}")
-        return {"version": 3, "memes": [], "collections": []}
+        return {"version": 4, "memes": [], "collections": []}

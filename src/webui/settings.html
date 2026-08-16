@@ -45,10 +45,18 @@
     </div>
 
     <div class="section">
-      <div class="section-title">分组显示</div>
+      <div class="section-title">文件夹显示</div>
       <label class="check-row">
-        <input id="s-show-uncategorized" type="checkbox">显示「未分类」分组
+        <input id="s-show-uncategorized" type="checkbox">显示「未归档」
       </label>
+      <label class="check-row">
+        <input id="s-record-recent" type="checkbox">复制时记录最近使用
+      </label>
+      <div class="form-group" style="margin-top:12px">
+        <label for="s-grid-scale">网格大小 <span id="s-grid-scale-value" style="color:var(--accent)">72px</span></label>
+        <input id="s-grid-scale" type="range" min="48" max="120" step="4" value="72" oninput="updateGridScaleLabel()">
+      </div>
+      <p style="font-size:11.5px;color:var(--muted);margin-top:4px;line-height:1.6">同时调整主界面的表情和文件夹卡片大小；设置会自动保存。</p>
     </div>
 
     <div class="section">
@@ -82,6 +90,19 @@
         </select>
       </label>
       <p style="font-size:11.5px;color:var(--muted);margin-top:4px;line-height:1.6">复制超过尺寸上限的静态图时按此处模式处理；动图不受影响。隐写模式会把原图信息随 GIF 隐藏，接收方可运行解码工具还原，但会显著增大文件体积。</p>
+    </div>
+
+    <div class="section">
+      <div class="section-title">聊天客户端适配</div>
+      <div class="form-group">
+        <label>复制并粘贴目标</label>
+        <select id="s-chat-client-mode">
+          <option value="manual">手动复制（默认）</option>
+          <option value="qq">Windows QQ</option>
+          <option value="wechat">Windows 微信</option>
+        </select>
+      </div>
+      <p style="font-size:11.5px;color:var(--muted);margin-top:4px;line-height:1.6">普通点击表情始终只复制。选择 QQ 或微信后，请在目标聊天窗口前台按全局快捷键呼出本程序；只有右键明确选择「复制并粘贴」时才会尝试 Ctrl+V。不会读取聊天记录、监听剪贴板、按 Enter 或点击发送按钮。</p>
     </div>
 
     <div class="section">
@@ -370,6 +391,56 @@
       <div style="display:flex;gap:8px">
         <button class="btn btn-flex" style="border-color:#ef4444;color:#ef4444" onclick="showDangerConfirm('local')">删除本地所有表情包</button>
         <button class="btn btn-flex" style="border-color:#ef4444;color:#ef4444" onclick="showDangerConfirm('cloud')">删除云端所有表情包</button>
+      </div>
+    </div>
+
+    <div class="section">
+      <div class="section-title">AI 设置</div>
+      <p style="font-size:11.5px;color:var(--muted);margin-bottom:12px;line-height:1.6">整理和生图使用两套独立的 OpenAI 兼容接口，可分别配置不同服务商和模型。</p>
+      <div style="padding:10px 12px;border:1px solid var(--border);border-radius:var(--radius-sm);margin-bottom:12px">
+        <div style="font-size:13px;font-weight:600;margin-bottom:10px">AI 整理服务</div>
+        <div style="margin-bottom:10px">
+          <label style="font-size:12px;color:var(--muted);display:block;margin-bottom:4px">API 地址（base_url）</label>
+          <input id="s-ai-chat-base-url" type="text" placeholder="https://api.openai.com" style="width:100%;padding:8px 10px;border:1px solid var(--border);border-radius:var(--radius-sm);background:var(--card);color:var(--fg);font-size:13px;box-sizing:border-box">
+        </div>
+        <div style="margin-bottom:10px">
+          <label style="font-size:12px;color:var(--muted);display:block;margin-bottom:4px">API Key</label>
+          <input id="s-ai-chat-api-key" type="password" placeholder="sk-..." style="width:100%;padding:8px 10px;border:1px solid var(--border);border-radius:var(--radius-sm);background:var(--card);color:var(--fg);font-size:13px;box-sizing:border-box">
+        </div>
+        <div>
+          <label style="font-size:12px;color:var(--muted);display:block;margin-bottom:4px">多模态模型</label>
+          <input id="s-ai-chat-model" type="text" placeholder="gpt-4o / qwen-vl-max" style="width:100%;padding:8px 10px;border:1px solid var(--border);border-radius:var(--radius-sm);background:var(--card);color:var(--fg);font-size:13px;box-sizing:border-box">
+        </div>
+        <div class="form-group">
+          <label>整理风格</label>
+          <select id="s-ai-organize-style" style="width:100%;padding:8px 10px;border:1px solid var(--border);border-radius:var(--radius-sm);background:var(--card);color:var(--fg);font-size:13px;box-sizing:border-box">
+            <option value="general">通用聊天</option><option value="anime">二次元</option><option value="work">职场</option><option value="gaming">游戏群</option>
+          </select>
+        </div>
+        <button class="btn btn-secondary btn-sm" onclick="testAIConnectivity('chat')">测试整理服务</button><span id="s-ai-chat-status" style="font-size:11.5px;margin-left:8px"></span>
+      </div>
+      <div style="padding:10px 12px;border:1px solid var(--border);border-radius:var(--radius-sm);margin-bottom:12px">
+        <div style="font-size:13px;font-weight:600;margin-bottom:10px">AI 生图服务</div>
+        <div style="margin-bottom:10px">
+          <label style="font-size:12px;color:var(--muted);display:block;margin-bottom:4px">API 地址（base_url）</label>
+          <input id="s-ai-image-base-url" type="text" placeholder="https://api.openai.com" style="width:100%;padding:8px 10px;border:1px solid var(--border);border-radius:var(--radius-sm);background:var(--card);color:var(--fg);font-size:13px;box-sizing:border-box">
+        </div>
+        <div style="margin-bottom:10px">
+          <label style="font-size:12px;color:var(--muted);display:block;margin-bottom:4px">API Key</label>
+          <input id="s-ai-image-api-key" type="password" placeholder="sk-..." style="width:100%;padding:8px 10px;border:1px solid var(--border);border-radius:var(--radius-sm);background:var(--card);color:var(--fg);font-size:13px;box-sizing:border-box">
+        </div>
+        <div>
+          <label style="font-size:12px;color:var(--muted);display:block;margin-bottom:4px">文生图模型</label>
+          <input id="s-ai-image-model" type="text" placeholder="dall-e-3 / wanx-v1" style="width:100%;padding:8px 10px;border:1px solid var(--border);border-radius:var(--radius-sm);background:var(--card);color:var(--fg);font-size:13px;box-sizing:border-box">
+        </div>
+        <div style="font-size:11.5px;color:var(--muted);margin:10px 0 6px;line-height:1.5">测试会真实发起 1 次生图请求，服务商可能扣除额度。</div>
+        <button class="btn btn-secondary btn-sm" onclick="testAIConnectivity('image')">测试生图服务</button><span id="s-ai-image-status" style="font-size:11.5px;margin-left:8px"></span>
+      </div>
+      <div>
+        <label style="font-size:12px;color:var(--muted);display:block;margin-bottom:4px">找图来源</label>
+        <select id="s-ai-search-source" style="width:100%;padding:8px 10px;border:1px solid var(--border);border-radius:var(--radius-sm);background:var(--card);color:var(--fg);font-size:13px;box-sizing:border-box">
+          <option value="bing">Bing 图片搜索</option>
+        </select>
       </div>
     </div>
 

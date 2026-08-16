@@ -1,13 +1,18 @@
 """PyWebView 现代化 UI 窗口管理器 + JS API"""
 
 import io
+import json
 import logging
 import os
 import platform
+import shutil
 import socket
+import tempfile
 import threading
 import time
-from pathlib import Path
+import uuid
+import zipfile
+from pathlib import Path, PurePosixPath
 
 # WSL 环境强制软件渲染（必须在导入 webview/GUI 之前设置）
 if platform.system() == "Linux":
@@ -46,6 +51,7 @@ try:
 
     HAS_WEBVIEW = True
 except ImportError:
+    webview = None
     HAS_WEBVIEW = False
 
 try:
@@ -55,7 +61,7 @@ try:
 except ImportError:
     HAS_BOTTLE = False
 
-from . import adb_util, qqnt_extract, tg_stickers, updater
+from . import adb_util, ai_util, chat_client, qqnt_extract, tg_stickers, updater
 from . import sync as sync_module
 from .clipboard_util import (
     _is_animated,
@@ -233,6 +239,49 @@ class JsApi:
         self._cfg = get_config()
         self._db = get_db()
 
+    def _serialize_memes(self, rows):
+        """转换数据库记录为前端网格所需字段"""
+        favorited_ids = set()
+        try:
+            conn = self._db._get_conn()
+            favorited_ids = {
+                r[0] for r in conn.execute("SELECT meme_id FROM favorites")
+            }
+        except Exception:
+            pass
+        auto_gif = self._cfg.get("auto_play_gif", True)
+        hover_play = self._cfg.get("hover_to_play", False)
+        result = []
+        for r in rows:
+            fname = r["filename"].lower()
+            is_gif = r.get("mime_type", "").endswith("gif") or fname.endswith(".gif")
+            if is_gif:
+                is_animated = True
+            elif fname.endswith(".webp"):
+                path = self._webui._find_meme_file(r["filename"])
+                is_animated = _is_animated(path) if path else False
+            else:
+                is_animated = False
+            oname = r.get("original_name", "") or os.path.splitext(r["filename"])[0]
+            result.append(
+                {
+                    "id": r["id"],
+                    "filename": r["filename"],
+                    "name": oname,
+                    "file_hash": r.get("file_hash", ""),
+                    "from_stego": r.get("from_stego", 0),
+                    "width": r.get("width", 0),
+                    "height": r.get("height", 0),
+                    "mime_type": r.get("mime_type", ""),
+                    "is_gif": is_gif,
+                    "is_animated": is_animated,
+                    "favorited": r["id"] in favorited_ids,
+                    "auto_play_gif": auto_gif,
+                    "hover_to_play": hover_play,
+                }
+            )
+        return result
+
     def search_memes(
         self, keyword="", tags=None, collection_id=None, offset=0, limit=200
     ):
@@ -246,8 +295,6 @@ class JsApi:
         if recent_only:
             rows = self._db.get_recent(limit, offset)
         else:
-            if cid is not None and cid > 0:
-                cid = self._get_collection_ids_recursive(cid)
             rows = self._db.search(
                 keyword=keyword,
                 tags=tags,
@@ -302,6 +349,16 @@ class JsApi:
 
     def get_tags(self) -> list:
         return self._db.get_all_tags()
+
+    def get_tagbar_collapsed(self) -> bool:
+        """返回标签栏的折叠状态"""
+        return bool(self._cfg.get("tagbar_collapsed", False))
+
+    def set_tagbar_collapsed(self, collapsed) -> bool:
+        """保存标签栏的折叠状态"""
+        self._cfg.set("tagbar_collapsed", bool(collapsed))
+        self._cfg.save()
+        return True
 
     def get_meme_tags(self, meme_id):
         """返回某表情的标签列表"""
@@ -381,16 +438,65 @@ class JsApi:
             sys_cols.append(
                 {
                     "id": -4,
-                    "name": "未分类",
+                    "name": "未归档",
                     "count": self._db.count(uncategorized_only=True),
                 }
             )
-        collections = sys_cols + self._build_collection_tree()
+        collections = sys_cols + self._folder_items()
         return {
             "memes": memes,
             "tags": self._db.get_all_tags(),
             "collections": collections,
+            "tagbar_collapsed": bool(self._cfg.get("tagbar_collapsed", False)),
         }
+
+    def floating_search_memes(self, keyword: str = "", limit: int = 48) -> list:
+        """供独立悬浮窗按用户手动输入的关键词检索本地表情"""
+        try:
+            rows = self._db.search(
+                keyword=(keyword or "").strip(), limit=min(max(int(limit), 1), 100)
+            )
+            result = []
+            for row in rows:
+                name = row.get("original_name") or os.path.splitext(row["filename"])[0]
+                result.append(
+                    {"id": row["id"], "filename": row["filename"], "name": name}
+                )
+            return result
+        except Exception:
+            return []
+
+    def copy_meme_from_floating(self, meme_id):
+        """从悬浮窗复制表情，不触发主窗口的快捷键自动隐藏"""
+        row = self._db.get_by_id(int(meme_id))
+        if not row:
+            return {"ok": False, "status": "copy_failed"}
+        path = self._find_meme_file(row["filename"])
+        if not path:
+            return {"ok": False, "status": "copy_failed"}
+        resize_mode = int(self._cfg.get("copy_resize_mode", 1) or 0)
+        resize_max = int(self._cfg.get("copy_resize_max", 200) or 200)
+        match resize_mode:
+            case 1:
+                path = convert_image_mode_1(path, resize_max) or path
+            case 2:
+                path = convert_image_mode_2(path, resize_max) or path
+            case 3:
+                path = convert_image_mode_3(path, resize_max) or path
+        if not copy_image_to_clipboard(path):
+            return {"ok": False, "status": "copy_failed"}
+        if self._cfg.get("record_recent_use", True):
+            self._db.record_use(int(meme_id))
+        return {"ok": True, "status": "copied"}
+
+    def hide_floating_window(self):
+        """隐藏独立搜索悬浮窗"""
+        self._webui.hide_floating_window()
+        return True
+
+    def move_floating_window(self, x, y):
+        """按屏幕绝对坐标移动独立搜索悬浮窗"""
+        return self._webui.move_floating_window(x, y)
 
     def get_meme_path(self, meme_id: int) -> str:
         """返回表情本地文件路径（供拖拽到外部应用），不存在返回空串"""
@@ -424,10 +530,7 @@ class JsApi:
         try:
             from .native_drag import start_native_drag as _start
 
-            ok = bool(_start(p))
-            if ok:
-                self._webui.schedule_hide()
-            return ok
+            return bool(_start(p))
         except Exception:
             return False
 
@@ -451,9 +554,34 @@ class JsApi:
         ok = copy_image_to_clipboard(path)
         if not ok:
             return {"ok": False, "status": "copy_failed"}
-        self._db.record_use(meme_id)
+        if self._cfg.get("record_recent_use", True):
+            self._db.record_use(meme_id)
         self._webui.schedule_hide()
         return {"ok": True, "status": "copied"}
+
+    def paste_meme_to_chat(self, meme_id):
+        # 仅由用户明确操作且通过热键记录过目标时才向聊天窗口粘贴
+        mode = self._cfg.get("chat_client_mode", "manual")
+        target = getattr(self._webui, "_chat_target", None)
+        can_paste = bool(getattr(self._webui, "_hotkey_session", False) and target)
+        copied = self.copy_meme(meme_id)
+        if not copied.get("ok"):
+            return copied
+        if not can_paste:
+            return {
+                "ok": True,
+                "status": "copied",
+                "paste_status": "manual_paste_required",
+            }
+        pasted = chat_client.paste_to_target(mode, target)
+        self._webui.schedule_hide()
+        if pasted.get("ok"):
+            return pasted
+        return {
+            "ok": True,
+            "status": "copied",
+            "paste_status": pasted.get("status", "manual_paste_required"),
+        }
 
     def toggle_favorite(self, meme_id: int) -> bool:
         return self._db.toggle_favorite(meme_id)
@@ -496,32 +624,335 @@ class JsApi:
         build_manifest()
         return True
 
-    # 递归获取分组及其所有子分组的 ID 列表
-    def _get_collection_ids_recursive(self, collection_id):
-        ids = [collection_id]
-        children = self._db.get_child_collections(collection_id)
-        for child in children:
-            ids.extend(self._get_collection_ids_recursive(child["id"]))
-        return ids
-
-    # 构建嵌套分组树并统计各分组成员数
-    def _build_collection_tree(self, parent_id=None):
-        raw = self._db.get_collections()
-        result = []
-        for cid, name, pid, _ in raw:
-            if pid != parent_id:
+    def _batch_rows(self, meme_ids):
+        """校验并去重批量表情 ID"""
+        rows = []
+        seen = set()
+        for value in (meme_ids or [])[:500]:
+            try:
+                meme_id = int(value)
+            except (TypeError, ValueError):
                 continue
-            children = self._build_collection_tree(parent_id=cid)
-            all_ids = self._get_collection_ids_recursive(cid)
-            cnt = self._db.count(collection_id=all_ids)
-            item = {"id": cid, "name": name, "count": cnt}
-            if children:
-                item["children"] = children
-            result.append(item)
-        return result
+            if meme_id in seen or meme_id <= 0:
+                continue
+            seen.add(meme_id)
+            row = self._db.get_by_id(meme_id)
+            if row:
+                rows.append(row)
+        return rows
+
+    def batch_set_tags(self, meme_ids, tags, mode="replace"):
+        """批量覆盖或追加标签，mode 仅支持 replace/append"""
+        if mode not in ("replace", "append"):
+            return {"ok": False, "error": "不支持的标签模式"}
+        cleaned = []
+        for tag in tags or []:
+            tag = str(tag).strip()
+            if tag and tag not in cleaned:
+                cleaned.append(tag)
+        rows = self._batch_rows(meme_ids)
+        try:
+            for row in rows:
+                value = cleaned
+                if mode == "append":
+                    value = self._db.get_meme_tags(row["id"])
+                    value.extend(tag for tag in cleaned if tag not in value)
+                self._db.set_meme_tags(row["id"], value)
+            return {"ok": True, "count": len(rows), "mode": mode}
+        except Exception as e:
+            logger.error(f"batch_set_tags error: {e}")
+            return {"ok": False, "error": "标签保存失败"}
+
+    def batch_delete_preview(self, meme_ids):
+        """返回批量删除影响预览，不执行删除"""
+        rows = self._batch_rows(meme_ids)
+        total_size = 0
+        for row in rows:
+            try:
+                total_size += os.path.getsize(
+                    self._webui._find_meme_file(row["filename"])
+                )
+            except OSError:
+                total_size += int(row.get("file_size") or 0)
+        return {"ok": True, "count": len(rows), "total_size": total_size}
+
+    def batch_delete_memes(self, meme_ids):
+        """逐项复用单项删除逻辑，避免绕过文件与缩略图清理"""
+        rows = self._batch_rows(meme_ids)
+        deleted = 0
+        for row in rows:
+            if self.delete_meme(row["id"]):
+                deleted += 1
+        return {"ok": True, "count": deleted}
+
+    def _pack_metadata(self, rows):
+        """构建不含配置或密钥的可移植分享包元数据"""
+        conn = self._db._get_conn()
+        collections = self._db.get_collections()
+        collection_keys = {
+            cid: f"c{index}" for index, (cid, _, _, _) in enumerate(collections)
+        }
+        metadata_collections = [
+            {
+                "key": collection_keys[cid],
+                "name": name,
+                "parent": collection_keys.get(parent_id),
+                "sort_order": sort_order,
+            }
+            for cid, name, parent_id, sort_order in collections
+        ]
+        memes_data = []
+        for index, row in enumerate(rows):
+            memberships = conn.execute(
+                "SELECT collection_id, sort_order FROM meme_collections "
+                "WHERE meme_id=?",
+                (row["id"],),
+            ).fetchall()
+            memes_data.append(
+                {
+                    "file": f"images/{index}{Path(row['filename']).suffix.lower()}",
+                    "original_name": row.get("original_name") or "",
+                    "tags": self._db.get_meme_tags(row["id"]),
+                    "favorite": self._db.is_favorite(row["id"]),
+                    "sort_order": row.get("sort_order", index),
+                    "collections": [
+                        {"key": collection_keys[c[0]], "sort_order": c[1]}
+                        for c in memberships
+                        if c[0] in collection_keys
+                    ],
+                }
+            )
+        return {
+            "format": "ohmymeme-pack",
+            "version": 1,
+            "collections": metadata_collections,
+            "memes": memes_data,
+        }
+
+    def _export_pack_to_path(self, meme_ids, destination):
+        """导出已选表情到指定 .ohmymeme-pack 文件"""
+        rows = self._batch_rows(meme_ids)
+        if not rows:
+            return {"ok": False, "error": "未选择有效表情"}
+        items = []
+        for row in rows:
+            path = self._webui._find_meme_file(row["filename"])
+            if path and os.path.isfile(path):
+                items.append((row, path))
+        if not items:
+            return {"ok": False, "error": "未找到可导出的图片"}
+        rows = [item[0] for item in items]
+        metadata = self._pack_metadata(rows)
+        try:
+            with zipfile.ZipFile(destination, "w", zipfile.ZIP_DEFLATED) as archive:
+                archive.writestr(
+                    "metadata.json", json.dumps(metadata, ensure_ascii=False)
+                )
+                for item, meme in zip(items, metadata["memes"]):
+                    archive.write(item[1], meme["file"])
+            return {"ok": True, "count": len(rows), "path": destination}
+        except (OSError, zipfile.BadZipFile) as e:
+            logger.error(f"export pack error: {e}")
+            return {"ok": False, "error": "导出失败"}
+
+    def export_pack(self, meme_ids):
+        """选择保存位置并导出 .ohmymeme-pack"""
+        try:
+            result = webview.windows[0].create_file_dialog(
+                webview.FileDialog.SAVE,
+                allow_multiple=False,
+                save_filename="OhMyMeme.ohmymeme-pack",
+                file_types=("OhMyMeme 分享包 (*.ohmymeme-pack)",),
+            )
+        except Exception:
+            return {"ok": False, "error": "无法打开保存对话框"}
+        if not result:
+            return {"ok": False, "cancelled": True}
+        destination = result[0] if isinstance(result, (tuple, list)) else result
+        if not destination.lower().endswith(".ohmymeme-pack"):
+            destination += ".ohmymeme-pack"
+        return self._export_pack_to_path(meme_ids, destination)
+
+    def _safe_pack_member(self, name):
+        """校验 ZIP 内部路径，只接受普通 images 文件"""
+        path = PurePosixPath(name)
+        return (
+            not path.is_absolute()
+            and ".." not in path.parts
+            and not any(part in ("", ".") for part in path.parts)
+        )
+
+    def _import_pack_from_path(self, source):
+        """验证分享包并经 _do_import 入库，再恢复元数据"""
+        max_members = 501
+        max_total_size = min(_IMPORT_MAX_BYTES * 500, 200 * 1024 * 1024)
+        temp_dir = tempfile.mkdtemp(prefix="ohmm_pack_")
+        try:
+            with zipfile.ZipFile(source) as archive:
+                infos = archive.infolist()
+                if "metadata.json" not in {i.filename for i in infos}:
+                    return {"ok": False, "error": "分享包缺少元数据"}
+                if (
+                    len(infos) > max_members
+                    or sum(i.file_size for i in infos) > max_total_size
+                ):
+                    return {"ok": False, "error": "分享包内容过大"}
+                if any(not self._safe_pack_member(i.filename) for i in infos):
+                    return {"ok": False, "error": "分享包包含不安全路径"}
+                try:
+                    raw = archive.read("metadata.json")
+                    metadata = json.loads(raw.decode("utf-8"))
+                except (KeyError, UnicodeDecodeError, json.JSONDecodeError):
+                    return {"ok": False, "error": "分享包元数据无效"}
+                if (
+                    not isinstance(metadata, dict)
+                    or metadata.get("format") != "ohmymeme-pack"
+                    or metadata.get("version") != 1
+                    or not isinstance(metadata.get("memes"), list)
+                    or not isinstance(metadata.get("collections", []), list)
+                    or len(metadata["memes"]) > 500
+                ):
+                    return {"ok": False, "error": "分享包格式不受支持"}
+                files, names, entries = [], [], []
+                allowed = {".png", ".jpg", ".jpeg", ".gif", ".webp", ".bmp"}
+                available = {i.filename: i for i in infos}
+                for index, entry in enumerate(metadata["memes"]):
+                    member = entry.get("file") if isinstance(entry, dict) else None
+                    if (
+                        not isinstance(member, str)
+                        or not member.startswith("images/")
+                        or not self._safe_pack_member(member)
+                        or Path(member).suffix.lower() not in allowed
+                        or member not in available
+                        or available[member].file_size > _IMPORT_MAX_BYTES
+                    ):
+                        return {"ok": False, "error": "分享包图片条目无效"}
+                    target = Path(temp_dir) / f"{index}{Path(member).suffix.lower()}"
+                    with (
+                        archive.open(available[member]) as src,
+                        open(target, "wb") as dst,
+                    ):
+                        shutil.copyfileobj(src, dst)
+                    files.append(str(target))
+                    name = entry.get("original_name", "")
+                    names.append(str(name) if isinstance(name, str) else "")
+                    entries.append(entry)
+            imported_ids = []
+            imported_by_index = {}
+            rejected = 0
+            for index, (path, name) in enumerate(zip(files, names)):
+                result = self._webui._do_import([path], [name])
+                rejected += result.get("rejected", 0)
+                ids = result.get("ids") or []
+                if ids:
+                    imported_by_index[index] = ids[0]
+                    imported_ids.append(ids[0])
+            collection_map = {}
+            pending_collections = [
+                item
+                for item in metadata.get("collections", [])
+                if isinstance(item, dict)
+            ]
+            for _ in range(len(pending_collections) + 1):
+                remaining = []
+                for item in pending_collections:
+                    key, name = item.get("key"), item.get("name")
+                    parent_key = item.get("parent")
+                    if (
+                        not isinstance(key, str)
+                        or not isinstance(name, str)
+                        or not name.strip()
+                        or (parent_key is not None and parent_key not in collection_map)
+                    ):
+                        remaining.append(item)
+                        continue
+                    parent_id = collection_map.get(parent_key)
+                    if self._db.collection_exists(name.strip(), parent_id):
+                        existing = next(
+                            (
+                                cid
+                                for cid, cname, pid, _ in self._db.get_collections()
+                                if cname == name.strip() and pid == parent_id
+                            ),
+                            -1,
+                        )
+                        collection_map[key] = existing
+                    else:
+                        collection_map[key] = self._db.create_collection(
+                            name.strip(), parent_id
+                        )
+                if len(remaining) == len(pending_collections):
+                    break
+                pending_collections = remaining
+            for index, meme_id in imported_by_index.items():
+                entry = entries[index]
+                tags = entry.get("tags", [])
+                if isinstance(tags, list) and all(isinstance(tag, str) for tag in tags):
+                    self._db.set_meme_tags(meme_id, tags[:100])
+                if entry.get("favorite") and not self._db.is_favorite(meme_id):
+                    self._db.toggle_favorite(meme_id)
+                for membership in entry.get("collections", []):
+                    if not isinstance(membership, dict):
+                        continue
+                    collection_id = collection_map.get(membership.get("key"))
+                    if collection_id and collection_id > 0:
+                        self._db.add_to_collection(meme_id, collection_id)
+                        try:
+                            sort_order = int(membership.get("sort_order", 0))
+                            conn = self._db._get_conn()
+                            conn.execute(
+                                "UPDATE meme_collections SET sort_order=? "
+                                "WHERE meme_id=? AND collection_id=?",
+                                (sort_order, meme_id, collection_id),
+                            )
+                            conn.commit()
+                        except (TypeError, ValueError):
+                            pass
+            ordered = sorted(
+                imported_by_index.items(),
+                key=lambda pair: entries[pair[0]].get("sort_order", pair[0]),
+            )
+            if ordered:
+                self._db.reorder_memes([meme_id for _, meme_id in ordered])
+            build_manifest()
+            return {
+                "ok": True,
+                "imported": len(imported_ids),
+                "rejected": rejected,
+            }
+        except (OSError, zipfile.BadZipFile) as e:
+            logger.warning(f"import pack error: {e}")
+            return {"ok": False, "error": "无法读取分享包"}
+        finally:
+            shutil.rmtree(temp_dir, ignore_errors=True)
+
+    def import_pack(self):
+        """选择 .ohmymeme-pack 文件并导入"""
+        try:
+            result = webview.windows[0].create_file_dialog(
+                webview.FileDialog.OPEN,
+                allow_multiple=False,
+                file_types=("OhMyMeme 分享包 (*.ohmymeme-pack)",),
+            )
+        except Exception:
+            return {"ok": False, "error": "无法打开文件选择对话框"}
+        if not result:
+            return {"ok": False, "cancelled": True}
+        source = result[0] if isinstance(result, (tuple, list)) else result
+        if not str(source).lower().endswith(".ohmymeme-pack"):
+            return {"ok": False, "error": "请选择 .ohmymeme-pack 文件"}
+        return self._import_pack_from_path(source)
+
+    # 底层继续使用 collections 表，前端只以单层文件夹方式展示。
+    def _folder_items(self) -> list:
+        raw = self._db.get_collections()
+        return [
+            {"id": cid, "name": name, "count": self._db.count(collection_id=cid)}
+            for cid, name, _, _ in raw
+        ]
 
     def get_collections(self) -> list:
-        top = self._build_collection_tree()
+        folders = self._folder_items()
         recent = self._db.get_recent(9999)
         sys_cols = [
             {"id": -2, "name": "收藏夹", "count": self._db.count(favorite_only=True)},
@@ -531,83 +962,107 @@ class JsApi:
             sys_cols.append(
                 {
                     "id": -4,
-                    "name": "未分类",
+                    "name": "未归档",
                     "count": self._db.count(uncategorized_only=True),
                 }
             )
-        return sys_cols + top
-
-    def get_child_collections(self, parent_id: int) -> list:
-        return self._db.get_child_collections(parent_id)
+        return sys_cols + folders
 
     def search_collections(self, keyword: str = "") -> list:
-        """按名称搜索已有分组（顶层 + 子分组），供添加分组弹窗下拉框"""
+        """按名称搜索文件夹，供放入文件夹选择器使用"""
         kw = (keyword or "").strip().lower()
-        out = []
-        for item in self._flatten_collections():
-            if not kw or kw in item["name"].lower():
-                out.append(
-                    {"id": item["id"], "name": item["name"], "depth": item["depth"]}
-                )
-        return out[:20]
+        return [
+            {"id": item["id"], "name": item["name"]}
+            for item in self._folder_items()
+            if not kw or kw in item["name"].lower()
+        ][:50]
 
-    def get_collection_members(self, collection_id: int) -> list:
-        """返回分组内表情成员，供添加分组弹窗右侧栏展示"""
+    def create_folder(self, name: str) -> dict:
+        """创建单层文件夹"""
+        name = (name or "").strip()
+        if not name:
+            return {"ok": False, "error": "请输入文件夹名称"}
+        if any(item[1] == name for item in self._db.get_collections()):
+            return {"ok": False, "error": "同名文件夹已存在"}
         try:
-            return self._db.search(collection_id=collection_id, limit=5000) or []
+            folder_id = self._db.create_collection(name)
+            if folder_id <= 0:
+                return {"ok": False, "error": "创建文件夹失败"}
+            build_manifest()
+            return {"ok": True, "id": folder_id, "name": name}
         except Exception:
-            return []
+            return {"ok": False, "error": "创建文件夹失败"}
 
-    def _flatten_collections(self) -> list:
-        """展平分组树（含子分组），带 depth"""
-        out = []
-
-        def walk(items, depth):
-            for c in items:
-                if c.get("id", 0) > 0:
-                    out.append({"id": c["id"], "name": c["name"], "depth": depth})
-                for ch in c.get("children", []) or []:
-                    walk([ch], depth + 1)
-
-        walk(self._build_collection_tree(), 0)
-        return out
-
-    def add_to_collection(self, meme_id: int, name: str) -> bool:
-        cid = self._db.create_collection(name)
-        if cid < 0:
-            return False
-        self._db.add_to_collection(meme_id, cid)
-        return True
-
-    def add_to_existing_collection(self, meme_id: int, collection_id: int) -> bool:
+    def add_to_folder(self, meme_id: int, folder_id: int, mode: str = "copy") -> dict:
+        """把表情复制或移动到文件夹，并自动补充文件夹同名标签"""
         try:
-            self._db.add_to_collection(meme_id, collection_id)
-            return True
+            meme_id = int(meme_id)
+            folder_id = int(folder_id)
+        except (TypeError, ValueError):
+            return {"ok": False, "error": "文件夹或表情无效"}
+        if mode not in ("copy", "move"):
+            return {"ok": False, "error": "不支持的放入方式"}
+        folder = next(
+            (item for item in self._db.get_collections() if item[0] == folder_id), None
+        )
+        if not folder or not self._db.get_by_id(meme_id):
+            return {"ok": False, "error": "文件夹或表情不存在"}
+        try:
+            if mode == "move":
+                self._db.move_to_collection(meme_id, folder_id)
+            else:
+                self._db.add_to_collection(meme_id, folder_id)
+            tags = self._db.get_meme_tags(meme_id)
+            folder_tag = folder[1].strip()
+            if folder_tag and folder_tag not in tags:
+                self._db.set_meme_tags(meme_id, tags + [folder_tag])
+            build_manifest()
+            return {"ok": True, "mode": mode, "tag": folder_tag}
         except Exception:
-            return False
+            logger.exception("add_to_folder failed")
+            return {"ok": False, "error": "放入文件夹失败"}
 
-    def set_collection_members(self, collection_id: int, meme_ids: list) -> bool:
-        """批量设置分组内成员（先清空再写入），供添加分组弹窗确定时保存右侧列表"""
+    def remove_from_folder(self, meme_id: int, folder_id: int) -> bool:
+        """仅移除当前文件夹归属，保留图片与标签"""
         try:
-            self._db.set_collection_members(collection_id, meme_ids)
+            self._db.remove_from_collection(int(meme_id), int(folder_id))
             build_manifest()
             return True
         except Exception:
             return False
 
-    def set_collection_members_new(self, name: str, meme_ids: list) -> dict:
-        """创建新分组并批量设置成员，返回 {ok, id}"""
+    def delete_folder(self, folder_id: int) -> bool:
+        """删除文件夹，不删除表情文件或同名标签"""
         try:
-            if self._db.collection_exists(name):
-                return {"ok": False, "error": "同名分组已存在，请从下拉框选择已有分组"}
-            cid = self._db.create_collection(name)
-            if cid < 0:
-                return {"ok": False}
-            self._db.set_collection_members(cid, meme_ids)
+            self._db.delete_collection(int(folder_id))
             build_manifest()
-            return {"ok": True, "id": cid}
+            return True
         except Exception:
-            return {"ok": False}
+            return False
+
+    def rename_folder(self, folder_id: int, new_name: str) -> bool:
+        """重命名文件夹，不改动已生成的同名标签"""
+        new_name = (new_name or "").strip()
+        try:
+            folder_id = int(folder_id)
+        except (TypeError, ValueError):
+            return False
+        if not new_name:
+            return False
+        folder = next(
+            (item for item in self._db.get_collections() if item[0] == folder_id), None
+        )
+        if not folder or any(
+            item[0] != folder_id and item[1] == new_name
+            for item in self._db.get_collections()
+        ):
+            return False
+        try:
+            self._db.rename_collection(folder_id, new_name)
+            build_manifest()
+            return True
+        except Exception:
+            return False
 
     def reorder_memes(self, meme_ids: list) -> bool:
         try:
@@ -633,32 +1088,6 @@ class JsApi:
         except Exception:
             return False
 
-    def delete_collection(self, collection_id: int) -> bool:
-        try:
-            self._db.delete_collection(collection_id)
-            return True
-        except Exception:
-            return False
-
-    def rename_collection(self, collection_id: int, new_name: str) -> bool:
-        if not new_name:
-            return False
-        try:
-            self._db.rename_collection(collection_id, new_name)
-            build_manifest()
-            return True
-        except Exception:
-            return False
-
-    def create_subcollection(self, name: str, parent_id: int) -> dict:
-        depth = self._db.get_collection_depth(parent_id)
-        if depth >= 1:
-            return {"ok": False, "error": "最大支持1层小分组"}
-        cid = self._db.create_collection(name, parent_id=parent_id)
-        if cid < 0:
-            return {"ok": False}
-        return {"ok": True, "id": cid}
-
     def record_meme_use(self, meme_id: int) -> bool:
         try:
             self._db.record_use(meme_id)
@@ -679,10 +1108,6 @@ class JsApi:
             return True
         except Exception:
             return False
-
-    def remove_from_collection(self, meme_id: int, collection_id: int) -> bool:
-        self._db.remove_from_collection(meme_id, collection_id)
-        return True
 
     def log(self, msg, level="info"):
         """供前端输出调试日志到终端"""
@@ -900,7 +1325,7 @@ class JsApi:
         }
 
     def import_folder(self, make_collection=True) -> dict:
-        """选择文件夹并导入其中全部图片；make_collection 时以文件夹名创建分组"""
+        """选择文件夹并导入图片，可创建同名文件夹并自动添加同名标签"""
         try:
             result = webview.windows[0].create_file_dialog(
                 webview.FileDialog.FOLDER, allow_multiple=False
@@ -926,22 +1351,23 @@ class JsApi:
             r = self._webui._do_import(files, names)
             ids = r.get("ids") or []
             rejected = r.get("rejected", 0)
-            collection_id = None
+            folder_id = None
             folder_name = os.path.basename(os.path.normpath(folder))
             if make_collection and ids:
-                collection_id = self._db.create_collection(folder_name)
-                if collection_id > 0:
+                folder_id = self._db.create_collection(folder_name)
+                if folder_id > 0:
                     for mid in ids:
-                        self._db.add_to_collection(mid, collection_id)
-                    from .manifest import build as build_manifest
-
+                        self._db.add_to_collection(mid, folder_id)
+                        tags = self._db.get_meme_tags(mid)
+                        if folder_name and folder_name not in tags:
+                            self._db.set_meme_tags(mid, tags + [folder_name])
                     build_manifest()
             return {
                 "ok": True,
                 "imported": len(ids),
                 "rejected": rejected,
-                "collection_id": collection_id,
-                "collection_name": folder_name if make_collection and ids else None,
+                "folder_id": folder_id,
+                "folder_name": folder_name if make_collection and ids else None,
             }
         except Exception as e:
             logger.error(f"import_folder failed: {e}")
@@ -1073,6 +1499,8 @@ class JsApi:
             self._cfg.save()
             if "hotkey" in settings:
                 self._webui._on_hotkey_change(settings["hotkey"])
+            return {"ok": True}
+        return {"ok": False, "error": "设置格式无效"}
 
     def reset_settings(self) -> dict:
         prev_cache_dir = self._cfg.get("cache_dir", "")
@@ -1157,12 +1585,199 @@ class JsApi:
     def hide_window(self):
         self._webui.hide()
 
+    def toggle_floating_window(self):
+        """切换独立搜索悬浮窗"""
+        self._webui.toggle_floating_window_safe()
+        return True
+
     def _find_meme_file(self, filename: str) -> str:
         cache_dir = self._cfg.cache_dir
         for root, _, files in os.walk(cache_dir):
             if filename in files:
                 return os.path.join(root, filename)
         return ""
+
+    def ai_organize(self, batch_size=50):
+        # 启动 AI 整理后台任务，仅生成建议，不写入数据库
+        global _AI_CANCEL
+        _AI_CANCEL = False
+        task_id = uuid.uuid4().hex
+        with _AI_LOCK:
+            _AI_SUGGESTIONS[task_id] = {}
+        _set_ai(
+            status="running",
+            task_type="organize",
+            task_id=task_id,
+            progress=0,
+            message="准备中",
+            error="",
+            log=[],
+            result=None,
+        )
+        threading.Thread(
+            target=_ai_organize_worker,
+            args=(self, batch_size, task_id),
+            daemon=True,
+        ).start()
+        return {"ok": True, "task_id": task_id}
+
+    def get_ai_suggestions(self, task_id=None):
+        # 获取指定整理任务的建议，避免并发任务串线
+        with _AI_LOCK:
+            return dict(_AI_SUGGESTIONS.get(task_id or _AI_STATE.get("task_id"), {}))
+
+    def adjust_ai_suggestion(
+        self,
+        task_id,
+        meme_id,
+        tags=None,
+        collection=None,
+        description=None,
+        ocr_text=None,
+    ):
+        # 调整单条整理建议
+        with _AI_LOCK:
+            suggestions = _AI_SUGGESTIONS.get(task_id)
+            if suggestions is None or str(meme_id) not in suggestions:
+                return {"ok": False, "error": "建议不存在"}
+            item = dict(suggestions[str(meme_id)])
+            if tags is not None:
+                item["tags"] = list(tags) if isinstance(tags, list) else []
+            if collection is not None:
+                item["collection"] = str(collection)
+            if description is not None:
+                item["description"] = str(description)
+            if ocr_text is not None:
+                item["ocr_text"] = str(ocr_text)
+            suggestions[str(meme_id)] = item
+            return {"ok": True, "suggestion": item}
+
+    def discard_ai_suggestions(self, task_id, meme_ids=None):
+        # 丢弃指定或全部未应用的整理建议
+        with _AI_LOCK:
+            store = _AI_SUGGESTIONS.get(task_id)
+            if store is None:
+                return {"ok": False, "error": "建议不存在"}
+            if meme_ids is None:
+                discarded = len(store)
+                _AI_SUGGESTIONS.pop(task_id, None)
+            else:
+                keys = {str(x) for x in meme_ids}
+                discarded = sum(1 for key in keys if store.pop(key, None) is not None)
+        return {"ok": True, "discarded": discarded}
+
+    def apply_ai_suggestions(self, task_id, meme_ids=None):
+        # 批量接受整理建议并写入数据库
+        db = get_db()
+        with _AI_LOCK:
+            suggestions = dict(_AI_SUGGESTIONS.get(task_id, {}))
+        if meme_ids is not None:
+            wanted = {str(x) for x in meme_ids}
+            suggestions = {k: v for k, v in suggestions.items() if k in wanted}
+        applied = 0
+        for item in suggestions.values():
+            db.update_meme(
+                item["id"],
+                ai_description=item.get("description", ""),
+                ai_ocr_text=item.get("ocr_text", ""),
+            )
+            if item.get("tags"):
+                db.set_meme_tags(item["id"], item["tags"])
+            if item.get("collection"):
+                cid = db.create_collection(item["collection"])
+                if cid:
+                    db.add_to_collection(item["id"], cid)
+            applied += 1
+        if applied:
+            try:
+                build_manifest()
+            except Exception:
+                logger.warning(
+                    "failed to rebuild manifest after applying AI suggestions"
+                )
+        with _AI_LOCK:
+            store = _AI_SUGGESTIONS.get(task_id)
+            if store is not None:
+                for key in suggestions:
+                    store.pop(key, None)
+        return {"ok": True, "applied": applied}
+
+    def ai_search_web(self, keyword, count=10):
+        # 启动 AI 网络搜索表情包后台任务
+        global _AI_CANCEL
+        _AI_CANCEL = False
+        _set_ai(
+            status="running",
+            task_type="search",
+            progress=0,
+            message="准备中",
+            error="",
+            log=[],
+            result=None,
+        )
+        threading.Thread(
+            target=_ai_search_worker,
+            args=(self, keyword, count),
+            daemon=True,
+        ).start()
+        return True
+
+    def ai_generate(self, prompt, count=1):
+        # 启动 AI 生成表情包后台任务
+        global _AI_CANCEL
+        _AI_CANCEL = False
+        _set_ai(
+            status="running",
+            task_type="generate",
+            progress=0,
+            message="准备中",
+            error="",
+            log=[],
+            result=None,
+        )
+        threading.Thread(
+            target=_ai_generate_worker,
+            args=(self, prompt, count),
+            daemon=True,
+        ).start()
+        return True
+
+    def ai_edit(self, meme_id, prompt):
+        # 使用 AI 编辑单张表情，结果作为新表情导入
+        row = self._db.get_by_id(int(meme_id))
+        if not row:
+            return {"ok": False, "error": "表情不存在"}
+        path = self._find_meme_file(row["filename"])
+        if not path:
+            return {"ok": False, "error": "找不到表情文件"}
+        if not isinstance(prompt, str) or not prompt.strip():
+            return {"ok": False, "error": "请输入编辑要求"}
+        global _AI_CANCEL
+        _AI_CANCEL = False
+        _set_ai(
+            status="running",
+            task_type="edit",
+            progress=0,
+            message="准备编辑",
+            error="",
+            log=[],
+            result=None,
+        )
+        threading.Thread(
+            target=_ai_edit_worker,
+            args=(self, path, prompt.strip()),
+            daemon=True,
+        ).start()
+        return {"ok": True}
+
+    def get_ai_progress(self):
+        # 返回 AI 任务进度供前端轮询
+        return get_ai_progress()
+
+    def cancel_ai_task(self):
+        # 取消正在运行的 AI 任务
+        cancel_ai_task()
+        return True
 
 
 # ─── QQNT 提取驱动（后台线程 + 状态，供设置页向导轮询） ───
@@ -1261,6 +1876,331 @@ def _qqnt_worker(
         _set_qqnt(status="error", message="提取失败", error=str(e))
 
 
+# ─── AI 编辑驱动（后台线程 + 状态，供前端轮询） ───
+
+_AI_STATE = {
+    "status": "idle",  # idle|running|done|cancelled|error
+    "task_type": "",  # organize|search|generate
+    "task_id": "",
+    "progress": 0,
+    "message": "",
+    "error": "",
+    "log": [],
+    "result": None,
+}
+_AI_LOCK = threading.Lock()
+_AI_CANCEL = False
+_AI_SUGGESTIONS = {}
+
+
+def _set_ai(**kw):
+    with _AI_LOCK:
+        _AI_STATE.update(**kw)
+
+
+def _append_ai_log(msg):
+    with _AI_LOCK:
+        _AI_STATE["log"] = (_AI_STATE["log"] + [msg])[-100:]
+
+
+def get_ai_progress():
+    with _AI_LOCK:
+        return dict(_AI_STATE)
+
+
+def cancel_ai_task():
+    global _AI_CANCEL
+    _AI_CANCEL = True
+
+
+def _get_ai_service_config(cfg, service):
+    # 读取并校验指定 AI 服务配置
+    if service == "chat":
+        keys = ("ai_chat_base_url", "ai_chat_api_key", "ai_chat_model")
+    else:
+        keys = ("ai_image_base_url", "ai_image_api_key", "ai_image_model")
+    values = tuple(cfg.get(key, "") for key in keys)
+    if not all(values):
+        return None
+    return values
+
+
+def _ai_organize_worker(webui, batch_size, task_id):
+    cfg = get_config()
+    db = get_db()
+    info = _get_ai_service_config(cfg, "chat")
+    if not info:
+        _set_ai(status="error", message="请先在设置页配置 AI 整理服务（地址和密钥）")
+        return
+    base_url, api_key, chat_model = info
+    if not chat_model:
+        _set_ai(status="error", message="请先在设置页配置多模态模型名")
+        return
+    try:
+        memes = db.search(
+            keyword="",
+            tags=None,
+            collection_id=None,
+            favorite_only=False,
+            ai_pending_only=True,
+            offset=0,
+            limit=batch_size,
+        )
+        if not memes:
+            _set_ai(status="done", progress=100, message="没有需要 AI 补充信息的表情包")
+            return
+        total = len(memes)
+        _set_ai(progress=0, message="开始整理 %d 张" % total)
+        meme_list = []
+        for m in memes:
+            mid = m["id"] if isinstance(m, dict) else m[0]
+            fname = m["filename"] if isinstance(m, dict) else m[1]
+            path = webui._find_meme_file(fname)
+            if not path:
+                continue
+            meme_list.append({"id": mid, "path": path, "filename": fname})
+        if not meme_list:
+            _set_ai(status="done", progress=100, message="没有可整理的文件")
+            return
+        total = len(meme_list)
+
+        def on_progress(done, total, msg):
+            pct = int(done * 100 / total) if total else 0
+            _set_ai(progress=pct, message=msg)
+            _append_ai_log(msg)
+
+        results = ai_util.ai_organize_memes(
+            base_url,
+            api_key,
+            chat_model,
+            meme_list,
+            on_progress=on_progress,
+            should_stop=lambda: _AI_CANCEL,
+            style=cfg.get("ai_organize_style", "general"),
+        )
+        with _AI_LOCK:
+            _AI_SUGGESTIONS[task_id] = {
+                str(r["id"]): {
+                    "id": r["id"],
+                    "tags": r.get("tags", []),
+                    "collection": r.get("collection", ""),
+                    "description": r.get("description", ""),
+                    "ocr_text": r.get("ocr_text", ""),
+                }
+                for r in results
+            }
+        if _AI_CANCEL:
+            _set_ai(
+                status="cancelled", message="已取消，建议保留待审核", result=results
+            )
+        else:
+            _set_ai(
+                status="done",
+                progress=100,
+                message="整理完成，请审核建议",
+                result=results,
+            )
+    except Exception as e:
+        _set_ai(status="error", message="整理失败: %s" % e)
+
+
+def _guess_ext(url):
+    low = url.lower().split("?")[0]
+    for ext in (".png", ".jpg", ".jpeg", ".gif", ".webp", ".bmp"):
+        if low.endswith(ext):
+            return ext
+    return ".png"
+
+
+def _ai_search_worker(webui, keyword, count):
+    import tempfile
+
+    cfg = get_config()
+    source = cfg.get("ai_search_source", "bing")
+    try:
+        _set_ai(progress=0, message="搜索中: %s" % keyword)
+
+        def on_progress(done, total, msg):
+            pct = int(done * 100 / total) if total else 0
+            _set_ai(progress=pct, message=msg)
+            _append_ai_log(msg)
+
+        urls = ai_util.ai_search_images(
+            keyword,
+            count=count,
+            source=source,
+            on_progress=on_progress,
+            should_stop=lambda: _AI_CANCEL,
+        )
+        if not urls:
+            _set_ai(status="done", progress=100, message="未找到图片")
+            return
+        downloaded = 0
+        temp_paths = []
+        for i, u in enumerate(urls):
+            if _AI_CANCEL:
+                break
+            tmp = tempfile.NamedTemporaryFile(delete=False, suffix=_guess_ext(u))
+            tmp.close()
+            if ai_util.download_image(u, tmp.name):
+                temp_paths.append(tmp.name)
+                downloaded += 1
+            else:
+                try:
+                    os.unlink(tmp.name)
+                except OSError:
+                    pass
+            pct = int((i + 1) * 100 / len(urls))
+            _set_ai(progress=pct, message="下载 %d/%d" % (downloaded, len(urls)))
+            _append_ai_log("下载 %d/%d" % (downloaded, len(urls)))
+        import_result = {"ids": [], "rejected": 0}
+        if temp_paths:
+            try:
+                import_result = _import_ai_temp_files(webui, temp_paths)
+            finally:
+                for tp in temp_paths:
+                    try:
+                        os.unlink(tp)
+                    except OSError:
+                        pass
+        imported = len(import_result.get("ids") or [])
+        rejected = import_result.get("rejected", 0)
+        if _AI_CANCEL:
+            _set_ai(status="cancelled", message="已取消，下载 %d 张" % downloaded)
+        elif imported:
+            _set_ai(
+                status="done",
+                progress=100,
+                message="下载并导入 %d 张" % imported,
+            )
+        elif rejected:
+            _set_ai(status="error", message="图片超过大小或分辨率限制，未导入")
+        else:
+            _set_ai(status="done", progress=100, message="图片已存在或未能导入")
+    except Exception as e:
+        _set_ai(status="error", message="搜索失败: %s" % e)
+
+
+def _import_ai_temp_files(api, paths):
+    """通过 API 关联的 WebUI 导入临时 AI 图片"""
+    window = getattr(api, "_webui", None)
+    importer = getattr(window, "_do_import", None)
+    if not callable(importer):
+        raise RuntimeError("AI 图片导入器不可用")
+    return importer(paths)
+
+
+def _ai_generate_worker(api, prompt, count):
+    import base64
+    import tempfile
+
+    cfg = get_config()
+    info = _get_ai_service_config(cfg, "image")
+    if not info:
+        _set_ai(status="error", message="请先在设置页配置 AI 生图服务（地址和密钥）")
+        return
+    base_url, api_key, image_model = info
+    if not image_model:
+        _set_ai(status="error", message="请先在设置页配置文生图模型名")
+        return
+    temp_paths = []
+    try:
+        _set_ai(progress=0, message="生成中: %s" % prompt[:30])
+        for i in range(count):
+            if _AI_CANCEL:
+                break
+            result = ai_util.image_generation(base_url, api_key, image_model, prompt)
+            tmp = tempfile.NamedTemporaryFile(delete=False, suffix=".png")
+            tmp.close()
+            if "b64" in result:
+                try:
+                    with open(tmp.name, "wb") as f:
+                        f.write(base64.b64decode(result["b64"]))
+                    temp_paths.append(tmp.name)
+                except Exception:
+                    try:
+                        os.unlink(tmp.name)
+                    except OSError:
+                        pass
+                    raise ValueError("AI 返回的图片数据无法写入")
+            elif "url" in result:
+                if ai_util.download_image(result["url"], tmp.name):
+                    temp_paths.append(tmp.name)
+                else:
+                    try:
+                        os.unlink(tmp.name)
+                    except OSError:
+                        pass
+                    raise ValueError("无法下载 AI 生成的图片")
+            pct = int((i + 1) * 100 / count)
+            _set_ai(progress=pct, message="生成 %d/%d" % (len(temp_paths), count))
+            _append_ai_log("生成 %d/%d" % (len(temp_paths), count))
+        import_result = {"ids": [], "rejected": 0}
+        if temp_paths:
+            import_result = _import_ai_temp_files(api, temp_paths)
+        imported = len(import_result.get("ids") or [])
+        rejected = import_result.get("rejected", 0)
+        if _AI_CANCEL:
+            _set_ai(status="cancelled", message="已取消，生成 %d 张" % len(temp_paths))
+        elif imported:
+            _set_ai(
+                status="done",
+                progress=100,
+                message="生成并导入 %d 张" % imported,
+            )
+        elif rejected:
+            _set_ai(status="error", message="图片超过大小或分辨率限制，未导入")
+        else:
+            _set_ai(status="done", progress=100, message="图片已存在或未能导入")
+    except Exception as e:
+        _set_ai(status="error", message="生成失败: %s" % e)
+    finally:
+        for tp in temp_paths:
+            try:
+                os.unlink(tp)
+            except OSError:
+                pass
+
+
+def _ai_edit_worker(api, image_path, prompt):
+    # 调用图片编辑接口并作为新表情导入，始终保留原文件
+    import base64
+    import tempfile
+
+    cfg = get_config()
+    info = _get_ai_service_config(cfg, "image")
+    if not info:
+        _set_ai(status="error", message="请先在设置页配置 AI 生图服务（地址和密钥）")
+        return
+    base_url, api_key, image_model = info
+    try:
+        _set_ai(progress=20, message="AI 编辑中")
+        result = ai_util.image_edit(base_url, api_key, image_model, image_path, prompt)
+        tmp = tempfile.NamedTemporaryFile(delete=False, suffix=".png")
+        tmp.close()
+        import_result = {"ids": [], "rejected": 0}
+        try:
+            if "b64" in result:
+                with open(tmp.name, "wb") as f:
+                    f.write(base64.b64decode(result["b64"]))
+                import_result = _import_ai_temp_files(api, [tmp.name])
+            elif "url" in result and ai_util.download_image(result["url"], tmp.name):
+                import_result = _import_ai_temp_files(api, [tmp.name])
+        finally:
+            try:
+                os.unlink(tmp.name)
+            except OSError:
+                pass
+        if import_result.get("ids"):
+            _set_ai(status="done", progress=100, message="编辑完成，已作为新表情导入")
+        elif import_result.get("rejected"):
+            _set_ai(status="error", message="编辑图片超过大小或分辨率限制，未导入")
+        else:
+            _set_ai(status="error", message="编辑结果导入失败或图片已存在")
+    except Exception as e:
+        _set_ai(status="error", message="编辑失败: %s" % e)
+
+
 class SettingsApi:
     """暴露给设置窗口的 JS API（仅设置相关方法）"""
 
@@ -1270,6 +2210,29 @@ class SettingsApi:
 
     def check_connectivity(self) -> dict:
         return _check_connectivity()
+
+    def test_ai_connectivity(self, service="chat") -> dict:
+        # 分别测试整理或生图服务连通性，生图仅请求一张
+        if service not in ("chat", "image"):
+            return {"ok": False, "error": "未知 AI 服务"}
+        info = _get_ai_service_config(self._cfg, service)
+        if not info:
+            return {"ok": False, "error": "请填写服务地址、API Key 和模型"}
+        base_url, api_key, model = info
+        try:
+            if service == "chat":
+                ai_util.chat_completion(
+                    base_url,
+                    api_key,
+                    model,
+                    [{"role": "user", "content": "ping"}],
+                    max_tokens=1,
+                )
+            else:
+                ai_util.image_generation(base_url, api_key, model, "test", n=1)
+            return {"ok": True, "message": "连接成功"}
+        except Exception as e:
+            return {"ok": False, "error": str(e)}
 
     def lan_start(self, port: int = None, secret: str = None) -> dict:
         from . import lan
@@ -1350,12 +2313,30 @@ class SettingsApi:
             "show_download_progress": d.get("show_download_progress", True),
             "show_download_done": d.get("show_download_done", True),
             "show_uncategorized": d.get("show_uncategorized", True),
+            "record_recent_use": d.get("record_recent_use", True),
             "tg_tdata_path": d.get("tg_tdata_path", ""),
             "hover_to_play": d.get("hover_to_play", False),
+            "grid_scale": int(d.get("grid_scale", 72) or 72),
+            "ai_chat_base_url": d.get("ai_chat_base_url", ""),
+            "ai_chat_api_key": d.get("ai_chat_api_key", ""),
+            "ai_chat_model": d.get("ai_chat_model", ""),
+            "ai_organize_style": d.get("ai_organize_style", "general"),
+            "ai_image_base_url": d.get("ai_image_base_url", ""),
+            "ai_image_api_key": d.get("ai_image_api_key", ""),
+            "ai_image_model": d.get("ai_image_model", ""),
+            "ai_search_source": d.get("ai_search_source", "bing"),
+            "chat_client_mode": d.get("chat_client_mode", "manual"),
         }
 
     def save_settings(self, settings: dict):
         if isinstance(settings, dict):
+            if "grid_scale" in settings:
+                try:
+                    settings["grid_scale"] = max(
+                        48, min(120, int(settings["grid_scale"]))
+                    )
+                except (TypeError, ValueError):
+                    settings["grid_scale"] = 72
             if "auto_start" in settings:
                 from .platform_util import set_auto_start
 
@@ -1366,7 +2347,9 @@ class SettingsApi:
                 self._webui._on_hotkey_change(settings["hotkey"])
             try:
                 if len(webview.windows) > 0:
-                    webview.windows[0].evaluate_js("refreshMemes();")
+                    webview.windows[0].evaluate_js(
+                        "applyGridScale(" + str(self._cfg.get("grid_scale", 72)) + ");"
+                    )
             except Exception:
                 pass
 
@@ -1423,8 +2406,18 @@ class SettingsApi:
             "show_upload_done": True,
             "show_download_progress": True,
             "show_download_done": True,
+            "record_recent_use": self._cfg.get("record_recent_use", True),
             "tg_tdata_path": self._cfg.get("tg_tdata_path", ""),
             "hover_to_play": self._cfg.get("hover_to_play", False),
+            "grid_scale": self._cfg.get("grid_scale", 72),
+            "ai_chat_base_url": "",
+            "ai_chat_api_key": "",
+            "ai_chat_model": "",
+            "ai_organize_style": "general",
+            "ai_image_base_url": "",
+            "ai_image_api_key": "",
+            "ai_image_model": "",
+            "ai_search_source": "bing",
         }
 
     def move_window(self, dx: int, dy: int):
@@ -2092,6 +3085,8 @@ class WebUI:
         self._cfg = get_config()
         self._window = None
         self._settings_window = None
+        self._floating_window = None
+        self._floating_visible = False
         self._port = self._find_free_port()
         self._bottle_thread = None
         self._api = JsApi(self)
@@ -2100,6 +3095,7 @@ class WebUI:
         self._started = False
         self._pending_hide = False
         self._hotkey_session = False
+        self._chat_target = None
         self._on_hotkey_change_cb = None
         self._update_debug = update_debug
         self._silent_start = silent_start
@@ -2238,6 +3234,8 @@ class WebUI:
         if self._visible:
             self.hide()
             return
+        mode = self._cfg.get("chat_client_mode", "manual")
+        self._chat_target = chat_client.capture_foreground_target(mode)
         if self._cfg.get("hotkey_show_at_mouse", False):
             try:
                 position = self._get_hotkey_window_position()
@@ -2247,6 +3245,62 @@ class WebUI:
                 logger.warning("hotkey window move error: %s", e)
         self.show()
         self._hotkey_session = True
+
+    def show_floating_window(self):
+        """显示独立搜索悬浮窗；只使用用户手动输入，不读取第三方应用内容"""
+        if not self._floating_window:
+            try:
+                self._floating_window = webview.create_window(
+                    "OhMyMeme 快速搜索",
+                    f"http://127.0.0.1:{self._port}/floating/",
+                    js_api=self._api,
+                    width=380,
+                    height=350,
+                    resizable=True,
+                    frameless=True,
+                    easy_drag=False,
+                    hidden=True,
+                )
+            except Exception as e:
+                logger.warning("create floating window error: %s", e)
+                return False
+        try:
+            self._floating_window.on_top = True
+            self._floating_window.show()
+            self._floating_window.focus()
+            self._floating_window.evaluate_js("focusFloatingSearch()")
+            self._floating_visible = True
+            return True
+        except Exception as e:
+            logger.warning("show floating window error: %s", e)
+            return False
+
+    def hide_floating_window(self):
+        """隐藏独立搜索悬浮窗"""
+        if not self._floating_window:
+            return
+        try:
+            self._floating_window.hide()
+        except Exception as e:
+            logger.warning("hide floating window error: %s", e)
+        self._floating_visible = False
+
+    def move_floating_window(self, x, y):
+        """按屏幕绝对坐标移动悬浮窗，避免读取异步窗口位置导致跳动"""
+        if not self._floating_window:
+            return False
+        try:
+            self._floating_window.move(int(x), int(y))
+            return True
+        except Exception:
+            return False
+
+    def toggle_floating_window_safe(self):
+        """由全局热键切换独立搜索悬浮窗"""
+        if self._floating_visible:
+            self.hide_floating_window()
+        else:
+            self.show_floating_window()
 
     def schedule_hide(self):
         if not self._hotkey_session:
@@ -2456,6 +3510,13 @@ class WebUI:
             if html_path.exists():
                 return bottle.static_file("settings.html", root=str(HTML_DIR))
             return "<h1>设置</h1><p>settings.html not found</p>"
+
+        @app.route("/floating/")
+        def floating_page():
+            html_path = HTML_DIR / "floating.html"
+            if html_path.exists():
+                return bottle.static_file("floating.html", root=str(HTML_DIR))
+            return "<h1>快速搜索</h1><p>floating.html not found</p>"
 
         @app.route("/api/thumb/<meme_id>/<filename>")
         def serve_thumb(meme_id, filename):

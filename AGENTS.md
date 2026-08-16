@@ -99,12 +99,13 @@ tests/
 - 三级降级: `keyboard` → `pynput` → 200ms 轮询 (`keyboard.is_pressed`)
 - WSL 无法捕获全局快捷键
 - 配置 `hotkey_show_at_mouse` 默认 `false`；仅 Windows 生效。开启后仅在全局热键将隐藏主面板显示时，按鼠标所在显示器工作区依次尝试 `(cursor_x, cursor_y)`、`(right-width, cursor_y)`、`(cursor_x, bottom-height)`、`(right-width, bottom-height)`，仅使用首个完整容纳窗口的候选位置；出错或没有可用位置时不移动。托盘保持普通切换，热键回调仍为零参数。
-- WebUI 维护非持久的快捷键显示会话状态：仅隐藏主窗口被全局快捷键显示后，成功复制或成功原生向外文件拖拽才会自动隐藏；任意 hide、普通/托盘显示、LAN/其他 show、内部排序拖拽及失败交互均不会触发该自动隐藏。
+- WebUI 维护非持久的快捷键显示会话状态：仅隐藏主窗口被全局快捷键显示后，成功复制才会自动隐藏；成功原生向外文件拖拽后主窗口保持显示。任意 hide、普通/托盘显示、LAN/其他 show、内部排序拖拽及失败交互均不会触发该自动隐藏。
+- **QQ / 微信受控粘贴**：设置可选 `manual` / `qq` / `wechat`。仅在目标聊天窗口前台、用户通过全局快捷键显示主窗口前记录该 HWND/PID/可执行名；仅用户右键明确选择「复制并粘贴」时才尝试 `Ctrl+V`。普通点击仅复制，绝不读取聊天记录、监听剪贴板、发送 Enter、点击发送按钮或调用聊天发送 API；目标不可验证时必须退回「已复制，请手动粘贴」。
 
 ### 窗口
-- 主窗口 ~700×500 frameless, 设置窗口 460×560 frameless
+- 主窗口 ~700×500 frameless，设置窗口 460×560 frameless；独立快速搜索悬浮窗默认 380×350，带用户手动输入框，仅检索本地表情的文件名、标签、AI 描述和 OCR 文本，不读取 QQ、微信或其他应用内容
 - Windows 全局热键显示位置仅在隐藏到显示的转换时计算，使用鼠标所在显示器工作区；不改变托盘激活或其他窗口显示路径
-- 自定义 JS 拖拽: 鼠标事件 → `pywebview.api.move_window(dx, dy)`
+- 自定义 JS 拖拽: 鼠标事件 → `pywebview.api.move_window(dx, dy)`；Windows 独立悬浮搜索窗用 Pointer Capture 保证拖动过程持续收到事件，基于 `screenX/screenY - window.screenX/window.screenY` 计算绝对窗口坐标，并以 `requestAnimationFrame` 合并为每帧最多一次 `move_floating_window(x, y)` 调用；不得读取异步窗口位置后叠加增量，否则会产生反馈跳动
 - 增量回退（Windows/macOS）用 `screenX/screenY`（**勿改 `clientX/clientY`** — clientX 是相对窗口坐标，窗口自身滞后位移会被下一次 mousemove 当作反向增量回传，形成反馈振荡导致高频抖动）；Linux 走合成器原生拖动不经过此路径
 - **Linux 拖拽必须走合成器**：`w.move()` 在 Wayland 下无效（合成器不允许客户端自定位），mousedown 时 JS 调 `start_window_drag()` → 后端 `GLib.idle_add(native.begin_move_drag, ...)` 交给合成器交互式拖动；时间戳用 `Gdk.CURRENT_TIME`（GDK 文档允许未知时间时用它，X11 回填最近输入事件时间、Wayland 不参与）
 - `#titlebar` 上可拖拽 (排除 `.title-btn` 按钮区域)
@@ -115,12 +116,13 @@ tests/
 - `PRAGMA journal_mode=WAL`, `PRAGMA foreign_keys=ON`
 - `MemeDB.search()`: 动态 WHERE, 多标签交集用 `HAVING COUNT = len(tags)`
 - `memes.sort_order`: 自定义排序（拖拽更新），默认 0，查询 `ORDER BY sort_order ASC, updated_at DESC`
-- `collections.parent_id`: 多级分组支持（最多 3 层），`NULL` 为顶层分组
-- `meme_collections.sort_order`: 分组内成员自定义排序
+- `collections` / `meme_collections`：兼容旧数据库与同步格式的底层文件夹表；前端仅展示单层文件夹。旧层级记录按平铺文件夹显示，不再创建子文件夹
+- `meme_collections.sort_order`: 文件夹内成员自定义排序；“复制到文件夹”保留已有归属，“移动到文件夹”清除其他归属。两种方式都自动补充目标文件夹同名标签
 - `recent_uses`: `meme_id` + `used_at`，复制时 `INSERT OR REPLACE`，按 `used_at DESC` 取最近使用
 
 ### 配置
 - `%APPDATA%/OhMyMeme/config.json` (Win), JSON 格式
+- `grid_scale`（默认 72，范围 48-120）控制主网格中表情和文件夹卡片的统一尺寸；设置页保存后，主窗口通过 CSS 变量即时读取，重启后保持
 - 密钥字段 (ftp_password, s3_secret_key 等) 用 Fernet 加密存储
 - 全局单例: `get_config()`, `get_db()`
 - `hotkey_show_at_mouse` 默认 `false`，控制 Windows 上全局热键显示隐藏主面板时是否按鼠标位置放置
@@ -157,7 +159,7 @@ tests/
 - **TCP 握手（明文帧）**: `[4B 长度][JSON]`；服务端发 `challenge{nonce}` → 客户端回 `proof{HMAC-SHA256(secret, nonce)}` → 验 `ok`/`no`（3 次错误断开）；无密钥时直接放行
 - **数据帧（加密）**: `[4B 长度][12B IV][AES-GCM 密文+16B tag]`；密钥由 PBKDF2(secret, 100000) 派生；JSON 载荷，命令由手机（客户端）发起
 - **设备确认（连接前置）**: 客户端握手后发 `device_info` 帧（`{name,model,os,ver}`，手机 Build.MODEL/MANUFACTURER/versionName）；桌面端 `_cmd_device_info` 弹窗展示设备信息，用户允许/拒绝后回 `{ok, approved, allow_secret_config}`；**未确认期间其他命令挂起**（`confirmed` Event，等待超时 60s 后拒），无确认回调（测试/无 UI）默认放行；`confirm_device()` 由 JS 回传批准结果（`pending_confirm` 记录 + `threading.Event`）；WebUI 主窗口 `showLanDeviceConfirm()` 弹窗 → `JsApi.lan_confirm_device` 回传
-- **命令**: `pull_manifest` / `push_manifest`（复用 sync 的 `_apply_remote_order`/`_apply_remote_collections`）/ `pull_file` / `push_file`（base64 传输）/ `get_config` / `send_config` / `device_info` / `ping`
+- **命令**: `pull_manifest` / `push_manifest`（复用 sync 的 `_apply_remote_ai_text`/`_apply_remote_order`/`_apply_remote_collections`，同步 AI 描述与 OCR）/ `pull_file` / `push_file`（base64 传输）/ `get_config` / `send_config` / `device_info` / `ping`
 - **配置同步（双向，电脑为权威源）**: `get_config` 由手机拉取、`send_config` 由手机推送；两端均剔除 `_SECRET_KEYS`（FTP/S3/R2/WebDAV 密码等）；设置页「允许密钥传输」开关（`lan_set_allow_secret_config`，仅内存生效）开启后配置同步才包含密钥字段，开启前弹窗警示「请勿在公共网络或不信任的网络进行此操作！」；`device_info` 确认响应携带 `allow_secret_config` bool，手机端据此动态显示密钥拉取/推送按钮
 - **文件安全（与手机端对称）**: `_safe_fname` 拒绝路径穿越/绝对路径；`push_file` 四重校验：文件名安全 → 字节 ≤`MAX_FILE_SIZE`（64MB）→ 可选 `sha256` 与本地计算一致 → `_import_bytes` 先解码校验宽高>0 合法才写盘；**不合法字节绝不落盘**（杜绝孤儿缓存文件）；合法图片按 SHA-256 去重后存 `cache_dir/{hash[:16]}{ext}` 并入库
 - **生命周期**: 设置页开关临时启动（重启默认关，不写入 config）；`lan_port`/`lan_secret` 持久化（`lan_secret` 加密存储）；`main.py` `shutdown()` 兜底 `lan.stop()`
@@ -166,15 +168,16 @@ tests/
 - Bottle 只绑 `127.0.0.1` 随机端口；`before_request` 校验 `Host` 必须为本机回环（`_host_allowed`），POST 额外校验 `Origin` 同源且 `Sec-Fetch-Site` 非 `cross-site`，拒绝则 403（阻断 DNS rebinding / 跨站注入）
 - `after_request` 统一加 `X-Content-Type-Options: nosniff` / `Referrer-Policy: no-referrer` / `X-Frame-Options: DENY`，`/api/` 路由 `Cache-Control: no-store`
 - 文件名安全：`_safe_serve_filename`（webui）与 `_safe_remote_fname`（sync）拒绝含 `/` `\`、以 `.` `/` `\` `~` `..` 开头的名字；`_find_meme_file` 入口校验，远端 manifest 文件名在 `_fetch_remote_memes` 过滤 + `_pull_worker` 写盘前再防御
-- 前端 XSS：`index.js`/`settings.js` 的 `esc()` 转义所有拼入 innerHTML 的外部/动态数据（远端分组名、GitHub 版本号、QQ 昵称、输出目录、弹窗标题/正文等）
+- 前端 XSS：`index.js`/`settings.js` 的 `esc()` 转义所有拼入 innerHTML 的外部/动态数据（远端文件夹名、GitHub 版本号、QQ 昵称、输出目录、弹窗标题/正文等）
 
 ### 环境检测
 - WSL 检测: `/proc/version` 包含 "microsoft"
 - WSL 时设置 `MESA_LOADER_DRIVER_OVERRIDE=llvmpipe`, `LIBGL_ALWAYS_SOFTWARE=1` 等软渲染环境变量
 
 ### 启动流程 (关键时序)
+- Windows 入口在创建 `OhMyMemeApp` 前取得 `Local\\OhMyMeme.Singleton` 命名互斥体；已有实例时安静退出，不得初始化第二个 WebView、托盘、全局快捷键或 ADB 线程。
 - `index.html` `DOMContentLoaded` 分两阶段执行:
-  1. 立即: `get_init_data()` 加载数据库数据 → 渲染网格/标签/分组（秒开）
+  1. 立即: `get_init_data()` 加载数据库数据 → 渲染网格/标签/文件夹（秒开）
   2. 延迟 300ms 后: `rescan_cache()` → 重新渲染 → `run_auto_sync()` → 重新渲染 → `check_update()`（静默捕获异常）
 - **300ms 延时不可移除** — 给 Bottle + pywebview 桥接稳定时间
 - **必须先 rescan_cache 再 run_auto_sync** — 确保本地文件与 DB 一致后再对比远端，否则同步产生错误 diff
@@ -188,7 +191,7 @@ tests/
 - **双重去重** — 文件名去重防止每次启动重复注册，哈希去重防止同图不同名重复
 - `_do_import`（拖入/导入对话框）同样有哈希去重，且文件重命名为 `{hash[:16]}{ext}`
 - **导入限制**：`config.py` 常量 `_IMPORT_MAX_PX=2560`（最长边）/`_IMPORT_MAX_BYTES=20MiB`，超过即拒绝接收；覆盖 `_do_import`、`scan_cache`、同步 `_pull_worker`、LAN `_import_bytes` 四类接收路径，跳过超限文件并计数（前端 toast 提示）
-- **文件夹导入** (`JsApi.import_folder`)：FOLDER 对话框 → `os.walk` 递归收集图片（扩展名过滤）→ 复用 `_do_import`；`make_collection`（前端导入菜单「自动创建分组」勾选，默认开）时以文件夹名 `create_collection` + 批量 `add_to_collection`（同名分组复用，重复导入并入），导入菜单入口 `importFolder()` 复用 `pending` 并发锁
+- **文件夹导入** (`JsApi.import_folder`)：FOLDER 对话框 → `os.walk` 递归收集图片（扩展名过滤）→ 复用 `_do_import`；`make_collection`（前端导入菜单「创建同名文件夹并自动加标签」勾选，默认开）时以目录名 `create_collection` + 批量 `add_to_collection`（同名文件夹复用，重复导入并入），并为成功导入的表情补充目录同名标签；导入菜单入口 `importFolder()` 复用 `pending` 并发锁
 
 ### 剪贴板 (GIF/WebP 直接传送)
 - `_copy_gif_windows` 同时写入三个剪贴板格式:
@@ -210,8 +213,8 @@ tests/
 - **不能移除 XOR 降级** — 无 `cryptography` 时系统崩溃
 
 ### Sync pull 集合合并
-- `_apply_remote_collections` 以**并集**方式合并远端分组，不清除本地已有成员
-- 远端 manifest 中的 `collections` 用文件名关联（非 ID），跨设备稳定
+- `_apply_remote_collections` 以**并集**方式合并远端文件夹，不清除本地已有归属；兼容读取旧版嵌套 `children` 清单并平铺处理
+- 远端 manifest 中保留兼容字段 `collections`，按文件名关联（非 ID），跨设备稳定
 - `_apply_remote_order` 按远端 manifest 的 `memes` 顺序重排本地 `sort_order`（`reorder_memes`），确保 pull 后本地显示顺序与云端一致，再次 push 不致覆盖云端排序
 
 ### 排序同步闭环
@@ -220,45 +223,48 @@ tests/
 - pull：`_apply_remote_order` 按云端 manifest 顺序回写本地 `sort_order`，实现双向闭环
 
 ### Manifest
-- `build()` 递归遍历嵌套分组树，空分组自动 `delete_collection`
-- 远端 manifest 中的 `collections` 以嵌套格式存储（`name`/`filenames`/`children`），version 2 旧格式启动时自动转换
+- `build()` 将兼容数据表 `collections` 输出为单层文件夹清单（`name`/`filenames`），保留空文件夹；清单版本为 4
+- 读取和同步仍兼容旧版嵌套 `children` 格式，但会将其平铺到当前文件夹模型
 
-### 自定义排序
-- `memes.sort_order` 字段存储全局展示顺序；前端可拖拽排序仅在正 ID 分组/子分组内进行，成员顺序存 `meme_collections.sort_order`
+### 自定义排序与拖入文件夹
+- `memes.sort_order` 字段存储全局展示顺序；前端可拖拽排序仅在正 ID 文件夹内进行，成员顺序存 `meme_collections.sort_order`
 - **无限滚动分页**：`search_memes` 支持 `offset`/`limit`（`MEME_PAGE=200`），前端滚动 `#grid-wrap` 接近底部时 `loadMoreMemes()` 增量拉取追加（`renderMemeCard` 复用）；`memeOffset`/`memeHasMore` 维护分页状态，返回不足一页即到底；`memes` 数组是已加载子集
 - **模型驱动**：`memes` 数组为唯一真源，拖拽跨槽时先 `moveInArray` 同步模型、再挪 DOM 节点（不再以 DOM 顺序回读重建数组）；`initDragReorder()` 在 `#meme-grid` 上绑定一次
-- **Pointer Events + 指针捕获**：`pointerdown/pointermove/pointerup`，拖拽激活（位移 >8px）时才 `setPointerCapture`（避免普通点击被捕获重定向）；无 `PointerEvent` 的旧 WebView 自动回退 mouse 事件（`mousemove/mouseup` 挂 document）；`pointercancel`/`blur` 取消并回滚模型 + 重渲染
-- **网格感知插入点**：`gridMetrics()` 按首卡片实测宽/高 + `columnGap` 推算 `cols`，`gridSlotIndex(x,y)` 先定位绝对格子（含 folder-card 占位）再映射到非 folder 的 meme 卡数组索引并 clamp（分组内 folder 卡混排时插槽不串位）
+- **Pointer Events + 指针捕获**：`pointerdown/pointermove/pointerup`，拖拽达到 8px 阈值后处理；鼠标移到侧栏 `.folder-row` 时优先高亮目标文件夹，松开后由用户选择复制或移动。无 `PointerEvent` 的旧 WebView 自动回退 mouse 事件（`mousemove/mouseup` 挂 document）；`pointercancel`/`blur` 取消并回滚模型 + 重渲染
+- **网格感知插入点**：`gridMetrics()` 按首卡片实测宽/高 + `columnGap` 推算 `cols`，`gridSlotIndex(x,y)` 映射表情卡数组索引并 clamp
 - **FLIP 让位动画**：跨槽时对被挤开卡片记录 First/Last rect，invert 后靠 `#meme-grid.drag-active .meme-card` 的 `transition: transform 200ms` 归位，实时显示空位跟随指针
-- 落点持久化：前端可拖拽排序仅在正 ID 分组/子分组内调用 `reorder_collection_members(collection_id, id[])` 更新 `meme_collections.sort_order`；`reorder_memes(id[])` 仍用于维护全局 `sort_order`；API 失败回滚 `originalOrder` 并重渲染 + toast
-- `canReorderMemes()`: 搜索或标签筛选时禁用；**全局开关 `dragSortEnabled`（标题栏「拖拽排序」图标按钮，位于上传/下载左侧，图标蓝色高亮=开，灰色=关）关闭时禁用排序**；仅正 ID 分组（含子分组）视图可排序，全部（null）、收藏夹/最近使用等特殊集合（-2/-3）不可排
-- **排序视觉反馈**：`renderGrid()` 按 `canReorderMemes()` 切换 `sort-enabled`；启用时仅普通 meme 卡（排除 `.folder-card` 和 `.dragging`）最终显示 `scale(0.95)`、3px `var(--border-light)` 描边及 3px 偏移。稳定卡使用独立 `rotate` 属性作轻微快速晃动，且必须排除 `.drag-active`、`.sort-enter`、`.folder-card` 和 `.dragging`；`prefers-reduced-motion: reduce` 时禁用晃动。不得用 `transform` 实现晃动，避免覆盖拖拽和 FLIP 的变换。正在拖拽的卡内联变换固定为最终 `translate(...) scale(0.90)`，与现有透明度、阴影和 FLIP 效果并存，CSS 与内联变换不得叠加；开启工具栏排序开关时沿用现有入场反馈，只有明确关闭该开关才保留当前卡片播放退场动画。搜索、标签、分组或虚拟分组导致的资格变化均按普通刷新处理，不播放退场动画；文件夹卡不显示排序反馈
+- 落点持久化：前端可拖拽排序仅在正 ID 文件夹内调用 `reorder_collection_members(collection_id, id[])` 更新 `meme_collections.sort_order`；`reorder_memes(id[])` 仍用于维护全局 `sort_order`；API 失败回滚 `originalOrder` 并重渲染 + toast
+- `canReorderMemes()`: 搜索或标签筛选时禁用；**全局开关 `dragSortEnabled`（标题栏「拖拽排序」图标按钮，位于上传/下载左侧，图标蓝色高亮=开，灰色=关）关闭时禁用排序**；仅正 ID 文件夹视图可排序，全部（null）、收藏夹/最近使用等特殊项（-2/-3）不可排
+- **排序视觉反馈**：`renderGrid()` 按 `canReorderMemes()` 切换 `sort-enabled`；启用时表情卡（排除 `.dragging`）最终显示 `scale(0.95)`、3px `var(--border-light)` 描边及 3px 偏移。稳定卡使用独立 `rotate` 属性作轻微快速晃动，且必须排除 `.drag-active`、`.sort-enter` 和 `.dragging`；`prefers-reduced-motion: reduce` 时禁用晃动。不得用 `transform` 实现晃动，避免覆盖拖拽和 FLIP 的变换。正在拖拽的卡内联变换固定为最终 `translate(...) scale(0.90)`，与现有透明度、阴影和 FLIP 效果并存，CSS 与内联变换不得叠加；开启工具栏排序开关时沿用现有入场反馈，只有明确关闭该开关才保留当前卡片播放退场动画。搜索、标签、文件夹或虚拟项导致的资格变化均按普通刷新处理，不播放退场动画
 - **拖拽到外部应用**：关闭拖拽排序后 meme 卡**不用 HTML5 拖拽**（WebView2 http 源的 `text/uri-list`/`DownloadURL` 不生成 CF_HDROP，QQ/微信会报"图片拖拽失败"或资源管理器无反应）；改用 **WinForms 原生文件拖拽**（`native_drag.py`）：`pointerdown` 记录起点 → `pointermove` 位移 >8px 时 `JsApi.start_native_drag(id)` → 后端用 `webview.windows[0].native`（主 Form）`Invoke` 在 UI 线程执行 `DoDragDrop`（`DataObject` + `DataFormats.FileDrop` → CF_HDROP）→ 拖到 QQ/微信/桌面是真实本地文件；`native_drag.py` 懒加载 pythonnet/WinForms，非 Windows 或无 .NET 时返回 False，JS 端 toast 提示；`memes` 数组不因原生拖拽改变（`d.natDrag` 跳过排序持久化与 cancel 重置）
 - 排序拖拽与原生拖拽共用 `initDragReorder` 的 pointer 事件：`onDown` 按 `canReorderMemes()` 决定 `d.natDrag`（排序关=true），`onMove` 按 natDrag 分支走原生拖拽或排序，`onUp`/`cancelMemeDrag` 对 `d.natDrag` 跳过排序回滚
-- `search()` 带 `collection_id` 时按 `meme_collections.sort_order ASC, m.updated_at DESC` 排序（子查询取该 meme 在目标分组内的 sort_order）
+- `search()` 带 `collection_id` 时按 `meme_collections.sort_order ASC, m.updated_at DESC` 排序（子查询取该表情在目标文件夹内的 sort_order）
 - 拖拽后通过 `ignoreClick` 抑制误触发的 `click`（防止误复制），下一次 `pointerdown` 时重置
 
-### 多级分组（最多 3 层）
-- `collections.parent_id` 自引用实现嵌套
-- `create_subcollection(name, parent_id)` 自动检查深度（`get_collection_depth`），超出 2 层拒绝
-- 顶层分组在 `#colbar` 渲染为 tab，选中后展开子分组
-- `#tagbar`/`#colbar` 横向溢出：细滚动条可见（`scrollbar-width: thin` + 5px webkit 样式），`initHScroll(barId)` 把滚轮竖向增量转成 `scrollLeft`（按 `deltaMode` 归一化），`DOMContentLoaded` 时对两个栏各绑定一次
-- 分组内右键空白区域 → 新建子分组
-- 右键表情包 → 加入分组 → 弹窗列出当前大分组下的子分组
-
-### 未分类（虚拟分组）
-- **`collection_id = -4`** 标识「未分类」虚拟分组：展示未加入任何分组的表情包（`meme_collections` 无记录），**不写入 DB/manifest，动态生成**
-- `MemeDB.search()/count()` 新增 `uncategorized_only` 参数（`NOT EXISTS` 于 `meme_collections`），`search_memes` 中 `collection_id == -4` 路由到该参数，同时过滤隐写载体
-- `get_init_data`/`get_collections` 按配置 `show_uncategorized`（默认开）决定是否追加 `-4` 条目（`get_collections` 中放于 `-2`/`-3` 之后）；设置页「分组显示 → 显示未分类分组」开关（`s-show-uncategorized`），保存到 `save_settings` 的 `show_uncategorized`
-- 前端走通用集合渲染路径：计数为 0 时自动隐藏（`renderCollections` 的 `count === 0` 过滤）；不可排序（`canReorderMemes` 对负 id 返回 false）；无特殊右键菜单
-- 未分类集合内的删除/加入分组等操作经 `refreshCollections` 后计数自动刷新，全部归类后 `-4` 从标签栏消失
+### 单层文件夹与未归档
+- 前端主网格首页展示 Wallpaper Engine 风格的单层文件夹卡片；侧栏仅保留收藏夹、最近使用、未归档等系统项。`collections.parent_id`、`get_child_collections()` 和旧层级记录仅作为数据库兼容层保留，旧层级记录会被平铺显示
+- 文件夹可从标题栏新建、通过右键重命名或删除；删除文件夹只解除归属，不删除表情文件、表情记录或同名标签
+- **`collection_id = -4`** 标识「未归档」虚拟项：展示未加入任何文件夹的表情（`meme_collections` 无记录），**不写入 DB/manifest，动态生成**
+- `MemeDB.search()/count()` 的 `uncategorized_only` 参数保留为兼容命名（`NOT EXISTS` 于 `meme_collections`），`search_memes` 中 `collection_id == -4` 路由到该参数，同时过滤隐写载体
+- `get_init_data`/`get_collections` 按配置 `show_uncategorized`（默认开）决定是否追加 `-4` 条目；设置页显示为「文件夹显示 → 显示未归档」，配置键保留兼容命名
+- 前端走通用文件夹渲染路径；不可排序（`canReorderMemes` 对负 id 返回 false）；无特殊右键菜单
 
 ### 最近使用
 - `recent_uses` 表：`meme_id` + `used_at`
 - `copy_meme` 时自动 `record_use`（`INSERT OR REPLACE`）
 - `get_init_data` 中 `collection_id = -3` 标识最近使用，`search_memes` 路由到 `get_recent()`
 - 前端复制后自动刷新最近使用列表
-- 右键「最近使用」分组 → 「清空最近使用」菜单项（`clear_recent` 清空全表）；右键列表内表情 → 「从最近使用中删除」（`remove_from_recent`）
+- 右键「最近使用」项 → 「清空最近使用」菜单项（`clear_recent` 清空全表）；右键列表内表情 → 「从最近使用中删除」（`remove_from_recent`）
+
+### AI 工作流 (ai_util.py + webui.py)
+- **配置**: `config.py` 使用 `ai_chat_base_url`/`ai_chat_api_key`（加密）/`ai_chat_model` 与 `ai_image_base_url`/`ai_image_api_key`（加密）/`ai_image_model` 两套独立服务配置，另有 `ai_search_source`；旧版共享 `ai_base_url`/`ai_api_key` 会在加载时迁移到两套配置；`SettingsApi.get_settings`/`save_settings`/`reset_settings` 同步读写
+- **后台任务**: 复用 QQNT 状态机模型（`_AI_STATE`+`_AI_LOCK`+`_AI_CANCEL`+daemon worker+`get_ai_progress()`+`cancel_ai_task()`），前端 300ms 轮询
+- **整理草案** `JsApi.ai_organize`: 优先查找标签、AI 描述或 OCR 文本尚未补全的表情（不因已放入文件夹而跳过）→ 逐张 base64 → `ai_util.ai_organize_memes` 返回 tags/collection/description/ocr_text → 仅写入按 task_id 隔离的 `_AI_SUGGESTIONS`。用户可在 `showAiPanel()` 编辑、确认应用或丢弃；只有 `apply_ai_suggestions` 才写数据库并重建 manifest
+- **找图** `JsApi.ai_search_web`: `ai_util.ai_search_images` Bing 搜索图片直链 → 逐个 `download_image` 到临时文件 → `_do_import` 入库
+- **生成** `JsApi.ai_generate`: `ai_util.image_generation` 文生图 → URL 下载或 base64 写临时文件 → `_do_import` 入库
+- **编辑副本** `JsApi.ai_edit`: 右键单张表情输入提示词 → `ai_util.image_edit` 以 multipart 调用 `/v1/images/edits` → 结果作为新表情导入，绝不覆盖原图
+- **入库复用**: 找图、生成和编辑均调 `webui._do_import` 做 SHA256 去重、落盘和尺寸校验
+- **前端**: 标题栏「AI」按钮 → `showAiPanel()` 弹窗（三 tab：整理/找图/生成），进度条+日志+取消；右键菜单含「AI 编辑副本」
 
 ### QQ 表情包导入 (adb_util.py)
 - **入口**: `start_qq_import()` — 后台线程执行完整流程

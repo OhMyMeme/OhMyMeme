@@ -407,10 +407,15 @@ class LanServer:
     def _cmd_push_manifest(self, manifest) -> dict:
         if not isinstance(manifest, dict):
             return {"ok": False, "error": "manifest 格式错误"}
-        from .sync import _apply_remote_collections, _apply_remote_order
+        from .sync import (
+            _apply_remote_ai_text,
+            _apply_remote_collections,
+            _apply_remote_order,
+        )
 
         db = get_db()
         try:
+            _apply_remote_ai_text(manifest)
             _apply_remote_order(manifest)
             _apply_remote_collections(manifest)
         except Exception as e:
