@@ -109,6 +109,7 @@ Section: utils
 Priority: optional
 Architecture: amd64
 Maintainer: OhMyMeme Team
+Depends: python3-gi, gir1.2-webkit2-4.1 | gir1.2-webkit2-4.0
 Description: 轻量化跨平台表情包管理系统
  轻量化表情包管理器，支持快捷键呼出、搜索、一键复制到剪贴板。
 CTRL

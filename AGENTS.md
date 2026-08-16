@@ -87,6 +87,9 @@ config/
 scripts/
   build.py        # PyInstaller + InnoSetup 构建脚本 (i18n zh/en)
   launcher.py     # PyInstaller 入口
+  hooks/          # 自定义 PyInstaller hooks（Linux GTK: WebKit2/Soup typelib 收集，内置无对应 hook）
+    hook-gi.repository.WebKit2.py
+    hook-gi.repository.Soup.py
 tests/
   test_core.py    # unittest 风格: Version/Config/Crypto/Database
   test_abogus.py  # unittest 风格: ABogus 签名算法 SM3/RC4/签名
@@ -249,7 +252,7 @@ tests/
 - **网格感知插入点**：`gridMetrics()` 按首卡片实测宽/高 + `columnGap` 推算 `cols`，`gridSlotIndex(x,y)` 先定位绝对格子（含 folder-card 占位）再映射到非 folder 的 meme 卡数组索引并 clamp（分组内 folder 卡混排时插槽不串位）
 - **FLIP 让位动画**：跨槽时对被挤开卡片记录 First/Last rect，invert 后靠 `#meme-grid.drag-active .meme-card` 的 `transition: transform 200ms` 归位，实时显示空位跟随指针
 - 落点持久化：前端可拖拽排序仅在正 ID 分组/子分组内调用 `reorder_collection_members(collection_id, id[])` 更新 `meme_collections.sort_order`；`reorder_memes(id[])` 仍用于维护全局 `sort_order`；API 失败回滚 `originalOrder` 并重渲染 + toast
-- `canReorderMemes()`: 搜索或标签筛选时禁用；**全局开关 `dragSortEnabled`（标题栏「拖拽排序」图标按钮，位于上传/下载左侧，图标蓝色高亮=开，灰色=关）关闭时禁用排序**；仅正 ID 分组（含子分组）视图可排序，全部（null）、收藏夹/最近使用等特殊集合（-2/-3）不可排
+- `canReorderMemes()`: 搜索或标签筛选时禁用；**全局开关 `dragSortEnabled`（标题栏「拖拽排序」图标按钮，位于上传/下载左侧，图标蓝色高亮=开，灰色=关）关闭时禁用排序**；仅正 ID 分组（含子分组）、全部（null）与未分类（-4）视图可排序，收藏夹/最近使用等特殊集合（-2/-3）不可排
 - **排序视觉反馈**：`renderGrid()` 按 `canReorderMemes()` 切换 `sort-enabled`；启用时仅普通 meme 卡（排除 `.folder-card` 和 `.dragging`）最终显示 `scale(0.95)`、3px `var(--border-light)` 描边及 3px 偏移。稳定卡使用独立 `rotate` 属性作轻微快速晃动，且必须排除 `.drag-active`、`.sort-enter`、`.folder-card` 和 `.dragging`；`prefers-reduced-motion: reduce` 时禁用晃动。不得用 `transform` 实现晃动，避免覆盖拖拽和 FLIP 的变换。正在拖拽的卡内联变换固定为最终 `translate(...) scale(0.90)`，与现有透明度、阴影和 FLIP 效果并存，CSS 与内联变换不得叠加；开启工具栏排序开关时沿用现有入场反馈，只有明确关闭该开关才保留当前卡片播放退场动画。搜索、标签、分组或虚拟分组导致的资格变化均按普通刷新处理，不播放退场动画；文件夹卡不显示排序反馈
 - **拖拽到外部应用**：关闭拖拽排序后 meme 卡**不用 HTML5 拖拽**（WebView2 http 源的 `text/uri-list`/`DownloadURL` 不生成 CF_HDROP，QQ/微信会报"图片拖拽失败"或资源管理器无反应）；改用 **WinForms 原生文件拖拽**（`native_drag.py`）：`pointerdown` 记录起点 → `pointermove` 位移 >8px 时 `JsApi.start_native_drag(id)` → 后端用 `webview.windows[0].native`（主 Form）`Invoke` 在 UI 线程执行 `DoDragDrop`（`DataObject` + `DataFormats.FileDrop` → CF_HDROP）→ 拖到 QQ/微信/桌面是真实本地文件；`DoDragDrop` 返回 `DragDropEffects.None`（拖回取消）时 `start_native_drag` 返回 False，不触发 `schedule_hide`；`native_drag.py` 懒加载 pythonnet/WinForms，非 Windows 或无 .NET 时返回 False，JS 端 toast 提示；**原生拖拽进行中回拖到窗口**用全局 `nativeDragActive` 标志抑制 drop 导入处理器（dragenter/dragover/dragleave/drop 均忽略，视为取消，不弹导入浮层）；`memes` 数组不因原生拖拽改变（`d.natDrag` 跳过排序持久化与 cancel 重置）
 - 排序拖拽与原生拖拽共用 `initDragReorder` 的 pointer 事件：`onDown` 按 `canReorderMemes()` 决定 `d.natDrag`（排序关=true），`onMove` 按 natDrag 分支走原生拖拽或排序，`onUp`/`cancelMemeDrag` 对 `d.natDrag` 跳过排序回滚
@@ -268,7 +271,7 @@ tests/
 - **`collection_id = -4`** 标识「未分类」虚拟分组：展示未加入任何分组的表情包（`meme_collections` 无记录），**不写入 DB/manifest，动态生成**
 - `MemeDB.search()/count()` 新增 `uncategorized_only` 参数（`NOT EXISTS` 于 `meme_collections`），`search_memes` 中 `collection_id == -4` 路由到该参数，同时过滤隐写载体
 - `get_init_data`/`get_collections` 按配置 `show_uncategorized`（默认开）决定是否追加 `-4` 条目（`get_collections` 中放于 `-2`/`-3` 之后）；设置页「分组显示 → 显示未分类分组」开关（`s-show-uncategorized`），保存到 `save_settings` 的 `show_uncategorized`
-- 前端走通用集合渲染路径：计数为 0 时自动隐藏（`renderCollections` 的 `count === 0` 过滤）；不可排序（`canReorderMemes` 对负 id 返回 false）；无特殊右键菜单
+- 前端走通用集合渲染路径：计数为 0 时自动隐藏（`renderCollections` 的 `count === 0` 过滤）；可拖拽排序（复用全局 `sort_order`，走 `reorder_memes` 持久化，`canReorderMemes` 对 -4 返回 true）；无特殊右键菜单
 - 未分类集合内的删除/加入分组等操作经 `refreshCollections` 后计数自动刷新，全部归类后 `-4` 从标签栏消失
 
 ### 最近使用
@@ -355,6 +358,7 @@ black src/        # 格式化
 python scripts/build.py  # PyInstaller + InnoSetup 完整构建
 python scripts/build.py --lang en  # 指定语言构建
 ```
+- **Linux 打包（GTK）**: `--linux` 时 `build.py` 自动传 `--additional-hooks-dir scripts/hooks`（收集 WebKit2/Soup typelib）并 `--collect-all gi`，把 PyGObject/GTK 打进产物，脱离系统 python3-gi 运行；构建机需装 `python3-gi gir1.2-webkit2-4.1 libgirepository1.0-dev gobject-introspection` 并 `pip install PyGObject`（对应 `build.yml`/`nightly.yml` build-linux job）；deb `Depends: python3-gi, gir1.2-webkit2-4.1 | gir1.2-webkit2-4.0`
 
 **前端架构**：主窗口为 Vue 3（`vue-src/`，Vite 构建 IIFE 单文件），设置窗口仍为 vanilla（`webui/settings.*`，独立 webview）。修改主窗口前端后需 `npx vite build` 再运行。
 
