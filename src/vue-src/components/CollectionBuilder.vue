@@ -63,7 +63,7 @@ function handleConfirm(name: string, ids: number[]) {
               :class="{ selected: cb.selectedIds.value.has(meme.id) }"
               @click="cb.toggleMeme(meme.id)"
             >
-              <img :src="`/api/thumb/${meme.id}/${encodeURIComponent(meme.filename)}`" :alt="meme.original_name || meme.filename" loading="lazy">
+              <img :src="`/api/thumb/${meme.id}/${encodeURIComponent(meme.filename)}`" :alt="meme.name || meme.original_name || meme.filename" loading="lazy">
               <div v-if="cb.selectedIds.value.has(meme.id)" class="cb-check">✓</div>
             </div>
             <div v-if="cb.filteredMemes.value.length === 0" class="cb-empty">没有表情包</div>
@@ -74,12 +74,12 @@ function handleConfirm(name: string, ids: number[]) {
           <div class="cb-col-title">已添加 ({{ cb.selectedIds.value.size }})</div>
           <div class="cb-col-list">
             <div
-              v-for="meme in cb.filteredMemes.value.filter(m => cb.selectedIds.value.has(m.id))"
+              v-for="meme in cb.allMemes.value.filter(m => cb.selectedIds.value.has(m.id))"
               :key="meme.id"
               class="cb-meme selected"
               @click="cb.toggleMeme(meme.id)"
             >
-              <img :src="`/api/thumb/${meme.id}/${encodeURIComponent(meme.filename)}`" :alt="meme.original_name || meme.filename" loading="lazy">
+              <img :src="`/api/thumb/${meme.id}/${encodeURIComponent(meme.filename)}`" :alt="meme.name || meme.original_name || meme.filename" loading="lazy">
               <div class="cb-check">✓</div>
             </div>
             <div v-if="cb.selectedIds.value.size === 0" class="cb-empty">点击左侧表情添加到分组</div>

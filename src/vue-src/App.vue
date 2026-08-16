@@ -408,10 +408,18 @@ function findParentCollection(items: any[], target: number): any | null {
 }
 
 async function showCollectionBuilder() {
-  cb.open(async (name, memeIds) => {
-    const result = await window.pywebview?.api?.set_collection_members_new(name, memeIds)
-    if (result?.ok) { showToast('分组已创建'); refreshCollections(); search() }
-    else showToast(result?.error || '创建失败')
+  cb.open(async (confirm) => {
+    const { name, memeIds, existingId } = confirm
+    // 已选已有分组 → 更新其成员；否则新建分组
+    const result = existingId
+      ? await window.pywebview?.api?.set_collection_members(existingId, memeIds)
+      : await window.pywebview?.api?.set_collection_members_new(name, memeIds)
+    if (result?.ok || result === true) {
+      showToast(existingId ? '已保存到分组：' + name : '分组已创建')
+      refreshCollections(); search()
+    } else {
+      showToast(result?.error || '保存失败')
+    }
   })
 }
 

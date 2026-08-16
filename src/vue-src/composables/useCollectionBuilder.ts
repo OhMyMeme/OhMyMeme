@@ -1,16 +1,23 @@
-import { ref, computed, onMounted, onUnmounted } from 'vue'
+import { ref, computed, onMounted, onUnmounted, watch } from 'vue'
 import { api } from '../utils/api'
 
 export interface CollectionBuilderMeme {
   id: number
   filename: string
-  original_name: string | null
+  name?: string
+  original_name?: string | null
 }
 
 export interface CollectionOption {
   id: number
   name: string
   depth?: string
+}
+
+export interface CollectionConfirm {
+  name: string
+  memeIds: number[]
+  existingId: number | null
 }
 
 const visible = ref(false)
@@ -21,17 +28,22 @@ const selectedIds = ref(new Set<number>())
 const collectionName = ref('')
 const collectionOptions = ref<CollectionOption[]>([])
 const showDropdown = ref(false)
+// 已选中的已有分组 id（null = 新建分组）
+const selectedId = ref<number | null>(null)
+const selectedName = ref('')
 
-let onConfirmCallback: ((name: string, memeIds: number[]) => void) | null = null
+let onConfirmCallback: ((result: CollectionConfirm) => void) | null = null
 
 export function useCollectionBuilder() {
-  async function open(onConfirm: (name: string, memeIds: number[]) => void) {
+  async function open(onConfirm: (result: CollectionConfirm) => void) {
     onConfirmCallback = onConfirm
     visible.value = true
     loading.value = true
     searchQuery.value = ''
     selectedIds.value = new Set()
     collectionName.value = ''
+    selectedId.value = null
+    selectedName.value = ''
     showDropdown.value = false
 
     const [memes, collections] = await Promise.all([
@@ -60,6 +72,8 @@ export function useCollectionBuilder() {
   }
 
   function selectCollection(opt: CollectionOption) {
+    selectedId.value = opt.id
+    selectedName.value = opt.name
     collectionName.value = opt.name
     showDropdown.value = false
     api('get_collection_members', opt.id).then((members: any) => {
@@ -68,16 +82,27 @@ export function useCollectionBuilder() {
   }
 
   function createNew() {
+    selectedId.value = null
+    selectedName.value = ''
     collectionName.value = ''
     selectedIds.value = new Set()
     showDropdown.value = false
   }
 
+  // 用户手动改输入框文字 → 视为新建分组，取消已选分组
+  watch(collectionName, (val) => {
+    if (selectedId.value != null && val !== selectedName.value) {
+      selectedId.value = null
+    }
+  })
+
   function confirm() {
     const name = collectionName.value.trim()
     if (!name) return
-    const ids = Array.from(selectedIds.value)
-    if (onConfirmCallback) onConfirmCallback(name, ids)
+    const memeIds = Array.from(selectedIds.value)
+    if (onConfirmCallback) {
+      onConfirmCallback({ name, memeIds, existingId: selectedId.value })
+    }
     close()
   }
 
@@ -85,7 +110,7 @@ export function useCollectionBuilder() {
     if (!searchQuery.value) return allMemes.value
     const q = searchQuery.value.toLowerCase()
     return allMemes.value.filter(m =>
-      (m.original_name || m.filename).toLowerCase().includes(q)
+      (m.name || m.original_name || m.filename).toLowerCase().includes(q)
     )
   })
 
@@ -114,6 +139,7 @@ export function useCollectionBuilder() {
     collectionName,
     collectionOptions,
     showDropdown,
+    allMemes,
     filteredMemes,
     open,
     close,
