@@ -1,7 +1,8 @@
 <script setup lang="ts">
+import { ref, watch, nextTick } from 'vue'
 import type { MenuItem, MenuTrigger } from '../composables/useContextMenu'
 
-defineProps<{
+const props = defineProps<{
   visible: boolean
   x: number
   y: number
@@ -19,6 +20,41 @@ const emit = defineEmits<{
   close: []
 }>()
 
+const menuEl = ref<HTMLElement>()
+const submenuEl = ref<HTMLElement>()
+const pos = ref({ x: props.x, y: props.y })
+const subPos = ref({ x: props.submenuX, y: props.submenuY })
+
+// 把菜单位置钳制在窗口可见范围内（越界时翻转/内移）
+function clamp(el: HTMLElement | undefined, x: number, y: number) {
+  if (!el) return { x, y }
+  const w = el.offsetWidth
+  const h = el.offsetHeight
+  const vw = window.innerWidth
+  const vh = window.innerHeight
+  let left = x
+  let top = y
+  if (left + w > vw) left = Math.max(4, vw - w - 4)
+  if (top + h > vh) top = Math.max(4, vh - h - 4)
+  if (left < 4) left = 4
+  if (top < 4) top = 4
+  return { x: left, y: top }
+}
+
+watch(() => [props.visible, props.items, props.x, props.y], async () => {
+  if (props.visible) {
+    await nextTick()
+    pos.value = clamp(menuEl.value, props.x, props.y)
+  }
+})
+
+watch(() => [props.submenuVisible, props.submenuItems, props.submenuX, props.submenuY], async () => {
+  if (props.submenuVisible) {
+    await nextTick()
+    subPos.value = clamp(submenuEl.value, props.submenuX, props.submenuY)
+  }
+})
+
 function onClick(action: string) {
   emit('action', action, {} as MenuTrigger)
 }
@@ -32,7 +68,7 @@ function onSubmenuEnter(e: MouseEvent, action: string) {
 
 <template>
   <div v-if="visible" class="ctx-overlay" @click="emit('close')" @contextmenu.prevent="emit('close')">
-    <div class="ctx-menu" :style="{ left: x + 'px', top: y + 'px' }">
+    <div ref="menuEl" class="ctx-menu" :style="{ left: pos.x + 'px', top: pos.y + 'px' }">
       <button
         v-for="item in items"
         :key="item.action"
@@ -45,7 +81,7 @@ function onSubmenuEnter(e: MouseEvent, action: string) {
         {{ item.label }}
       </button>
     </div>
-    <div v-if="submenuVisible" class="ctx-submenu" :style="{ left: submenuX + 'px', top: submenuY + 'px' }">
+    <div v-if="submenuVisible" ref="submenuEl" class="ctx-submenu" :style="{ left: subPos.x + 'px', top: subPos.y + 'px' }">
       <button
         v-for="item in submenuItems"
         :key="item.action"
