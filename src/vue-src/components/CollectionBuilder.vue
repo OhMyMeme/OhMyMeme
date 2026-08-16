@@ -20,14 +20,17 @@ const cb = useCollectionBuilder()
             @focus="cb.showDropdown.value = true"
           />
           <div v-if="cb.showDropdown.value" id="cb-dropdown" class="cb-dropdown show">
+            <div class="cb-dd-section" v-if="cb.collectionName.value.trim() || cb.selectedId.value == null">新建分组</div>
             <div v-if="cb.collectionName.value.trim()" class="cb-dd-item cb-dd-new-item" @click="cb.createNew()">
               <span class="cb-dd-new">「{{ cb.collectionName.value }}」</span>
-              <span class="cb-dd-hint">新建分组</span>
+              <span class="cb-dd-hint">创建新分组</span>
             </div>
+            <div class="cb-dd-section">加入已有分组</div>
             <div
               v-for="opt in cb.collectionOptions.value"
               :key="opt.id"
               class="cb-dd-item"
+              :class="{ 'cb-dd-selected': cb.selectedId.value === opt.id }"
               @click="cb.selectCollection(opt)"
             >
               {{ opt.name }}
@@ -85,7 +88,7 @@ const cb = useCollectionBuilder()
 
       <div class="cb-footer">
         <button class="btn btn-secondary" @click="cb.close()">取消</button>
-        <button class="btn btn-primary" :disabled="!cb.collectionName.value.trim()" @click="cb.confirm()">确定</button>
+        <button class="btn btn-primary" :disabled="!cb.collectionName.value.trim()" @click="cb.confirm()">{{ cb.selectedId.value ? '保存到该分组' : '创建分组' }}</button>
       </div>
     </div>
   </div>
@@ -167,6 +170,21 @@ const cb = useCollectionBuilder()
   display: flex;
   align-items: center;
   justify-content: space-between;
+}
+
+.cb-dd-section {
+  padding: 5px 12px;
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--muted);
+  background: var(--surface-2);
+  text-transform: uppercase;
+  letter-spacing: 0.3px;
+}
+
+.cb-dd-selected {
+  color: var(--primary);
+  font-weight: 600;
 }
 
 .cb-dd-item:hover {

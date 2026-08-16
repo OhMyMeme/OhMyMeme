@@ -117,10 +117,31 @@ async function checkConnectivity() {  // DeepSeek V4 Flash
 /* 局域网互联 */
 let lanPollTimer = null;
 
+function showConfirm(title, message) {
+  return new Promise(resolve => {
+    const overlay = document.createElement('div');
+    overlay.style.cssText = 'position:fixed;inset:0;background:rgba(0,0,0,.55);display:flex;align-items:center;justify-content:center;z-index:200;animation:fadeIn .15s';
+    overlay.onclick = (e) => { if (e.target === overlay) { overlay.remove(); resolve(false); } };
+    const box = document.createElement('div');
+    box.style.cssText = 'background:var(--surface);border-radius:var(--radius-lg);padding:24px 28px;width:400px;border:1px solid var(--border);box-shadow:var(--shadow-lg)';
+    box.innerHTML = '<div style="margin-bottom:16px"><h2 style="font-size:15px;font-weight:600;color:var(--fg);margin-bottom:8px">' + esc(title) + '</h2><p style="font-size:13px;color:var(--fg-secondary);line-height:1.7;white-space:pre-line">' + esc(message) + '</p></div>'
+      + '<div style="display:flex;gap:8px;justify-content:flex-end">'
+      + '<button id="sconfirm-cancel" class="btn btn-secondary">取消</button>'
+      + '<button id="sconfirm-ok" class="btn btn-primary">确定</button></div>';
+    overlay.appendChild(box);
+    document.body.appendChild(overlay);
+    document.getElementById('sconfirm-ok').focus();
+    const cleanup = () => { overlay.remove(); };
+    document.getElementById('sconfirm-ok').onclick = () => { cleanup(); resolve(true); };
+    document.getElementById('sconfirm-cancel').onclick = () => { cleanup(); resolve(false); };
+    overlay.onkeydown = (e) => { if (e.key === 'Escape') { e.stopPropagation(); cleanup(); resolve(false); } };
+  });
+}
+
 async function toggleLanSecretConfig() {
   const cb = document.getElementById('s-lan-secret-config');
   if (cb.checked) {
-    const ok = confirm('请勿在公共网络或不信任的网络进行此操作！\n\n开启后配置同步将包含 FTP/S3/R2/WebDAV 等密钥字段，密钥将明文传输给局域网内配对设备。\n仅本次会话有效，不写入配置。是否继续？');
+    const ok = await showConfirm('允许密钥传输', '请勿在公共网络或不信任的网络进行此操作！\n\n开启后配置同步将包含 FTP/S3/R2/WebDAV 等密钥字段，密钥将明文传输给局域网内配对设备。\n仅本次会话有效，不写入配置。是否继续？');
     if (!ok) {
       cb.checked = false;
       return;

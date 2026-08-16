@@ -1390,6 +1390,33 @@ class SettingsApi:
             "hover_to_play": d.get("hover_to_play", False),
         }
 
+    def refresh_memes(self) -> dict:
+        """设置窗口同步完成后刷新主窗口表情列表"""
+        try:
+            if len(webview.windows) > 0:
+                webview.windows[0].evaluate_js("refreshMemes();")
+        except Exception:
+            pass
+        return {"ok": True}
+
+    def refresh_tags(self) -> dict:
+        """设置窗口同步完成后刷新主窗口标签栏"""
+        try:
+            if len(webview.windows) > 0:
+                webview.windows[0].evaluate_js("refreshTags();")
+        except Exception:
+            pass
+        return {"ok": True}
+
+    def refresh_collections(self) -> dict:
+        """设置窗口同步完成后刷新主窗口分组树"""
+        try:
+            if len(webview.windows) > 0:
+                webview.windows[0].evaluate_js("refreshCollections();")
+        except Exception:
+            pass
+        return {"ok": True}
+
     def save_settings(self, settings: dict):
         if isinstance(settings, dict):
             if "auto_start" in settings:

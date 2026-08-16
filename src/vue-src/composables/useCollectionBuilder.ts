@@ -31,16 +31,19 @@ const showDropdown = ref(false)
 // 已选中的已有分组 id（null = 新建分组）
 const selectedId = ref<number | null>(null)
 const selectedName = ref('')
+// 打开时预选的表情（右键「添加分组」带入），切换新建/已有分组时保留
+const preselectIds = ref<number[]>([])
 
 let onConfirmCallback: ((result: CollectionConfirm) => void) | null = null
 
 export function useCollectionBuilder() {
-  async function open(onConfirm: (result: CollectionConfirm) => void) {
+  async function open(onConfirm: (result: CollectionConfirm) => void, preselect: number[] = []) {
     onConfirmCallback = onConfirm
+    preselectIds.value = preselect
     visible.value = true
     loading.value = true
     searchQuery.value = ''
-    selectedIds.value = new Set()
+    selectedIds.value = new Set(preselect)
     collectionName.value = ''
     selectedId.value = null
     selectedName.value = ''
@@ -76,16 +79,18 @@ export function useCollectionBuilder() {
     selectedName.value = opt.name
     collectionName.value = opt.name
     showDropdown.value = false
+    // 已有分组：加载其现有成员，并保留预选的表情（右键带入的新增项）
     api('get_collection_members', opt.id).then((members: any) => {
-      selectedIds.value = new Set((members || []).map((m: any) => m.id))
+      const ids = new Set((members || []).map((m: any) => m.id))
+      preselectIds.value.forEach(id => ids.add(id))
+      selectedIds.value = ids
     })
   }
-
   function createNew() {
     selectedId.value = null
     selectedName.value = ''
     collectionName.value = ''
-    selectedIds.value = new Set()
+    selectedIds.value = new Set(preselectIds.value)
     showDropdown.value = false
   }
 
@@ -136,6 +141,7 @@ export function useCollectionBuilder() {
     loading,
     searchQuery,
     selectedIds,
+    selectedId,
     collectionName,
     collectionOptions,
     showDropdown,
