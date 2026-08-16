@@ -109,61 +109,8 @@ install_log_buffer()
 HTML_DIR = Path(__file__).resolve().parent / "webui"
 RESOURCES_DIR = Path(__file__).resolve().parent / "resources"
 
-# 启动动画视频边缘主色缓存（采样一次复用），供启动遮罩背景贴合视频边框
-_STARTUP_BG_CACHE = None
-_STARTUP_BG_DEFAULT = "#0d0d0f"
-
-
-def startup_bg_color():
-    """采样启动视频边缘主色作窗口背景，使遮罩贴合视频边框；无 ffmpeg 时回退默认"""
-    global _STARTUP_BG_CACHE
-    if _STARTUP_BG_CACHE is not None:
-        return _STARTUP_BG_CACHE
-    color = _STARTUP_BG_DEFAULT
-    mp4 = RESOURCES_DIR / "OhMyMeme.mp4"
-    try:
-        import shutil
-        import subprocess
-        import tempfile
-        from collections import Counter
-
-        ffmpeg = shutil.which("ffmpeg")
-        if ffmpeg and mp4.exists() and HAS_PIL:
-            with tempfile.TemporaryDirectory() as td:
-                frame = os.path.join(td, "frame.png")
-                subprocess.run(
-                    [
-                        ffmpeg,
-                        "-y",
-                        "-v",
-                        "error",
-                        "-i",
-                        str(mp4),
-                        "-frames:v",
-                        "1",
-                        frame,
-                    ],
-                    check=True,
-                    timeout=30,
-                    stdout=subprocess.DEVNULL,
-                    stderr=subprocess.DEVNULL,
-                )
-                img = PILImage.open(frame).convert("RGB")
-                w, h = img.size
-                px = img.load()
-                cnt = Counter()
-                for x in range(w):
-                    cnt[px[x, 0]] += 1
-                    cnt[px[x, h - 1]] += 1
-                for y in range(h):
-                    cnt[px[0, y]] += 1
-                    cnt[px[w - 1, y]] += 1
-                r, g, b = cnt.most_common(1)[0][0]
-                color = "#%02x%02x%02x" % (r, g, b)
-    except Exception:
-        pass
-    _STARTUP_BG_CACHE = color
-    return color
+# 启动动画视频边缘主色（OhMyMeme.mp4 边框纯黑，写死避免运行时 ffmpeg 抽帧采样）
+_STARTUP_BG_COLOR = "#000000"
 
 
 # 静态资源扩展名 → 强制 Content-Type：本机 mimetypes/注册表 .js 映射可能为
@@ -472,7 +419,7 @@ class JsApi:
             "tags": self._db.get_all_tags(),
             "collections": collections,
             "show_startup_animation": self._cfg.get("show_startup_animation", True),
-            "startup_bg_color": startup_bg_color(),
+            "startup_bg_color": _STARTUP_BG_COLOR,
         }
 
     def get_meme_path(self, meme_id: int) -> str:
