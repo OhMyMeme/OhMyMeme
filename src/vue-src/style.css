@@ -487,13 +487,19 @@ body {
 #tagbar {
   padding: 8px 12px;
   display: flex;
-  flex-wrap: wrap;
+  flex-wrap: nowrap;
+  align-items: center;
   gap: 6px;
   flex-shrink: 0;
   border-bottom: 1px solid var(--border);
-  max-height: 80px;
-  overflow-y: auto;
+  overflow-x: auto;
+  overflow-y: hidden;
+  scrollbar-width: thin;
+  scrollbar-color: var(--border) transparent;
 }
+
+#tagbar::-webkit-scrollbar { height: 5px; }
+#tagbar::-webkit-scrollbar-thumb { background: var(--border); border-radius: 20px; }
 
 #tagbar.collapsed {
   min-height: 37px;

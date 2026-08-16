@@ -33,8 +33,8 @@ function onChildContext(e: MouseEvent, id: number, name: string) {
       class="tree-row"
       :class="{ active: activeId === node.id }"
       :style="{ paddingLeft: (8 + depth * 14) + 'px' }"
-      @click="emit('select', node.id)"
-      @contextmenu="emit('folder-context', $event, node.id, node.name)"
+      @click.stop="emit('select', node.id)"
+      @contextmenu.prevent.stop="emit('folder-context', $event, node.id, node.name)"
     >
       <span
         v-if="hasChildren && !collapsed"

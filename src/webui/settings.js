@@ -1834,6 +1834,18 @@ async function initVersion() {
   if (el) el.textContent = '当前版本: ' + (ver || '--');
 }
 document.addEventListener('DOMContentLoaded', () => {
+  // 不依赖 inline onclick；部分 WebView 环境会禁用或丢失内联事件。
+  // 使用事件委托保证左侧各分组始终可点击切换。
+  const nav = document.getElementById('settings-nav');
+  if (nav) {
+    nav.addEventListener('click', (event) => {
+      const item = event.target.closest('.nav-item[data-group]');
+      if (!item) return;
+      event.preventDefault();
+      switchSettingsGroup(item.dataset.group);
+    });
+  }
+  switchSettingsGroup('base');
   initSettings();
   setTimeout(initVersion, 500);
 });

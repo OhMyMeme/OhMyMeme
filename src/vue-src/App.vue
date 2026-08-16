@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { ref, onMounted, onUnmounted, computed } from 'vue'
+import { ref, onMounted, onUnmounted, computed, nextTick } from 'vue'
 import { useMemes } from './composables/useMemes'
 import { useDragSort } from './composables/useDragSort'
 import { useContextMenu, type MenuItem } from './composables/useContextMenu'
@@ -79,8 +79,13 @@ const breadcrumb = computed(() => {
   return current ? [{ id: null, name: '全部' }, current] : []
 })
 
-function goToAllMemes() {
-  if (state.activeCollection !== null) setActiveCollection(null)
+async function goToAllMemes() {
+  // 不依赖可切换的集合选择器：无论当前状态如何都直接回到根视图。
+  state.activeCollection = null
+  state.searchQuery = ''
+  state.activeTags.clear()
+  await nextTick()
+  await search()
 }
 
 function onBreadcrumbClick(id: number | null) {
@@ -694,7 +699,7 @@ onUnmounted(() => {
             v-for="c in state.collections"
             :key="c.id"
             :node="c"
-            :active-id="sidebarCollapsed ? activeTopLevel : state.activeCollection"
+            :active-id="state.activeCollection"
             :depth="0"
             :collapsed="sidebarCollapsed"
             @select="setActiveCollection"
