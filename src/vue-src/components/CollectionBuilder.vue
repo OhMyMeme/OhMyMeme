@@ -86,9 +86,14 @@ const cb = useCollectionBuilder()
         </div>
       </div>
 
+      <div v-if="cb.memberLoadError.value" class="cb-error">
+        <span>分组信息加载失败，请重试</span>
+        <button class="btn btn-sm btn-secondary" @click="cb.retryLoadMembers()">重试</button>
+      </div>
+
       <div class="cb-footer">
         <button class="btn btn-secondary" @click="cb.close()">取消</button>
-        <button class="btn btn-primary" :disabled="cb.memberLoading.value || !cb.collectionName.value.trim()" @click="cb.confirm()">{{ cb.selectedId.value != null ? '保存到该分组' : '创建分组' }}</button>
+        <button class="btn btn-primary" :disabled="cb.memberLoading.value || cb.memberLoadError.value || !cb.collectionName.value.trim()" @click="cb.confirm()">{{ cb.selectedId.value != null ? '保存到该分组' : '创建分组' }}</button>
       </div>
     </div>
   </div>
@@ -312,6 +317,18 @@ const cb = useCollectionBuilder()
   text-align: center;
   font-size: 12px;
   color: var(--muted);
+}
+
+.cb-error {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 8px 20px;
+  font-size: 12px;
+  color: var(--danger, #dc2626);
+  background: rgba(220, 38, 38, 0.08);
+  border-top: 1px solid var(--border);
 }
 
 .cb-footer {
