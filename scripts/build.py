@@ -41,6 +41,7 @@ _MSGS = {
     "running": {"zh": "运行:", "en": "Running:"},
     "build_failed": {"zh": "PyInstaller 打包失败 (code=%d)", "en": "PyInstaller build failed (code=%d)"},
     "build_done": {"zh": "打包完成:", "en": "Build done:"},
+    "vue_build_failed": {"zh": "Vue 前端构建失败，请检查 node/npm 环境", "en": "Vue frontend build failed, check node/npm environment"},
     "skip_installer": {"zh": "跳过安装包制作（非 Windows 平台）", "en": "Skipping installer (non-Windows target)"},
     "iscc_not_found": {"zh": "警告: 未找到 ISCC.exe（InnoSetup），跳过安装包制作", "en": "WARNING: ISCC.exe (InnoSetup) not found, skipping installer"},
     "outdir_not_found": {"zh": "错误: 未找到输出目录:", "en": "ERROR: output directory not found:"},
@@ -122,6 +123,33 @@ def check_pyinstaller():
         sys.exit(1)
 
 
+def ensure_vue_frontend():
+    """确保 Vue 前端产物存在（dist/ 被 gitignore），缺失则 npm ci + vite build"""
+    dist_js = SRC_DIR / "webui" / "dist" / "ohmymeme.js"
+    if dist_js.exists():
+        return
+    if not (PROJECT_ROOT / "package.json").exists():
+        print("WARNING: package.json not found, cannot build Vue frontend")
+        return
+    npx = "npx.cmd" if IS_WINDOWS else "npx"
+    cmds = []
+    if not (PROJECT_ROOT / "node_modules").exists():
+        ci = "npm.cmd" if IS_WINDOWS else "npm"
+        lock = PROJECT_ROOT / "package-lock.json"
+        cmd = [ci, "ci"] if lock.exists() else [ci, "install"]
+        cmds.append(cmd)
+    cmds.append([npx, "vite", "build"])
+    for c in cmds:
+        print("Running:", " ".join(c))
+        result = subprocess.run(c, cwd=str(PROJECT_ROOT))
+        if result.returncode != 0:
+            print(L("vue_build_failed"))
+            sys.exit(result.returncode)
+    if not dist_js.exists():
+        print(L("vue_build_failed"))
+        sys.exit(1)
+
+
 def clean():
     out_dir = BUILD_DIR / APP_NAME
     if out_dir.is_dir():
@@ -136,6 +164,7 @@ def clean():
 
 def build_pyinstaller(target=None):
     check_pyinstaller()
+    ensure_vue_frontend()
     clean()
 
     version = get_version()

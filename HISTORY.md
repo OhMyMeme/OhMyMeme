@@ -12,6 +12,7 @@
 ## 变更
 
 - **PyInstaller 打包内置资源** — `build.py` 新增 `--add-data src/resources`，启动动画 mp4 随安装包分发
+- **构建自动编译 Vue 前端** — `build.py` 打包前检查 `src/webui/dist/ohmymeme.js`（被 gitignore，CI 全新检出缺失），缺失时自动 `npm ci` → `npx vite build`，失败中止构建；CI 打包不再缺失前端产物
 
 ## 修复
 
