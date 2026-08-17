@@ -6,6 +6,7 @@ dist/
 build/
 *.spec
 .venv/
+.pytest_cache/
 
 # OhMyMeme 本地数据
 config.json
@@ -41,3 +42,13 @@ cookie.txt
 uv.lock
 node_modules/
 src/webui/dist/
+
+# mise 本地配置
+mise.local.toml
+mise.local.lock
+mise.*.local.toml
+mise.*.local.lock
+
+# 本地开发工具状态
+.codegraph/
+.omo/

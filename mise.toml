@@ -1,0 +1,56 @@
+min_version = '2026.8.0'
+
+[tools]
+python = '3.12'
+node = '22'
+npm = '10.9.8'
+
+[env]
+_.python.venv = { path = '.venv', create = true }
+
+[settings]
+lockfile = true
+
+[tasks.setup]
+description = 'Install Python and Node dependencies'
+run = [
+  'python -m pip install --upgrade pip',
+  'python -m pip install -r requirements.txt pytest ruff black==26.5.1',
+  'npm ci',
+]
+
+[tasks.run]
+description = 'Run OhMyMeme from source'
+run = 'python -m src'
+
+[tasks.test]
+description = 'Run the Python test suite'
+run = 'python -m pytest tests/ -v'
+
+[tasks.lint]
+description = 'Check Python lint and formatting'
+run = [
+  'ruff check src/',
+  'black --check src/',
+]
+
+[tasks.format]
+description = 'Format Python sources'
+run = 'black src/'
+
+[tasks.frontend]
+description = 'Build the Vue frontend'
+run = 'npm run build'
+
+[tasks.check]
+description = 'Run lint, tests, and the frontend build'
+run = [
+  'ruff check src/',
+  'black --check src/',
+  'python -m pytest tests/ -v',
+  'npm run build',
+]
+
+[tasks.build]
+description = 'Build the application package'
+run = 'python scripts/build.py'
