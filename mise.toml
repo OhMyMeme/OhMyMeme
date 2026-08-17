@@ -54,3 +54,7 @@ run = [
 [tasks.build]
 description = 'Build the application package'
 run = 'python scripts/build.py'
+
+[tasks.package-smoke]
+description = 'Validate package contracts without building artifacts'
+run = 'mise exec -- python scripts/package_smoke.py'

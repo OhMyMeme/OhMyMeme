@@ -31,6 +31,8 @@ jobs:
           echo "ISCC_DIR=C:\Program Files (x86)\Inno Setup 6\ISCC.exe" | Out-File -FilePath $env:GITHUB_ENV -Append
       - name: Build installer
         run: python scripts/build.py --installer-only
+      - name: Package contract smoke
+        run: python scripts/package_smoke.py --contract-only --target windows-x64
       - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
@@ -56,6 +58,8 @@ jobs:
           pip install PyGObject
       - name: Build Linux packages
         run: python scripts/build.py --linux
+      - name: Package contract smoke
+        run: python scripts/package_smoke.py --contract-only
       - name: Upload artifacts
         uses: actions/upload-artifact@v4
         with:
@@ -88,6 +92,8 @@ jobs:
           pip install pyinstaller
       - name: Build macOS packages (.app + .dmg)
         run: python scripts/build.py --macos --arch ${{ matrix.arch }}
+      - name: Package contract smoke
+        run: python scripts/package_smoke.py --contract-only --target macos-${{ matrix.arch }}
       - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:

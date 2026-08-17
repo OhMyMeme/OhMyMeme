@@ -138,7 +138,7 @@ Name: ohmymeme
 Version: 0.1.0
 Release: 1%{?dist}
 Summary: 轻量化跨平台表情包管理系统
-License: MIT
+License: GPL-3.0
 URL: https://github.com/OhMyMeme/OhMyMeme
 Source0: ohmymeme-0.1.0.tar.gz
 
