@@ -20,6 +20,7 @@ WINDOWS_ISS = ROOT / "scripts" / "installer" / "windows.iss"
 LINUX_BUILD = ROOT / "scripts" / "installer" / "linux" / "build.sh"
 BUILD_SCRIPT = ROOT / "scripts" / "build.py"
 MACOS_INFO_PLIST = ROOT / "scripts" / "installer" / "macos" / "Info.plist"
+EXPECTED_MACOS_BUNDLE_ID = "com.ohmymeme.app"
 
 
 class ContractViolation(ValueError):
@@ -57,6 +58,7 @@ def _contracts(version, channel="stable"):
     nightly = channel == "nightly"
     artifact_version = "nightly" if nightly else version
     updater_selectable = not nightly
+    macos_bundle_id = _macos_bundle_id()
     resources = ("src/resources/icon.png",)
     contracts = {
         "windows-x64": ArtifactContract(
@@ -107,7 +109,7 @@ def _contracts(version, channel="stable"):
             channel,
             version,
             updater_selectable,
-            bundle_id="com.ohmymeme.app",
+            bundle_id=macos_bundle_id,
             resources=(
                 "src/resources/icon.png",
                 "scripts/installer/macos/Info.plist",
@@ -121,7 +123,7 @@ def _contracts(version, channel="stable"):
             channel,
             version,
             updater_selectable,
-            bundle_id="com.ohmymeme.app",
+            bundle_id=macos_bundle_id,
             resources=(
                 "src/resources/icon.png",
                 "scripts/installer/macos/Info.plist",
@@ -156,6 +158,10 @@ def _macos_bundle_id():
 
 
 def validate_contract(contract):
+    try:
+        validate_probes(contract.lifecycle_probes)
+    except LifecycleViolation as exc:
+        raise ContractViolation(str(exc)) from exc
     expected = ArtifactContract.default(
         contract.target, contract.package_version, contract.channel
     )
@@ -179,10 +185,6 @@ def validate_contract(contract):
     for resource in contract.resources:
         if "/" in resource and not (ROOT / resource).is_file():
             raise ContractViolation("resource missing: %s" % resource)
-    try:
-        validate_probes(contract.lifecycle_probes)
-    except LifecycleViolation as exc:
-        raise ContractViolation(str(exc)) from exc
 
 
 def _validate_source_contracts():
@@ -203,8 +205,8 @@ def _validate_source_contracts():
     for value, source in required:
         if value not in source:
             raise ContractViolation("source metadata missing: %s" % value)
-    if bundle_id != "com.ohmymeme.app":
-        _fail("bundle id", "com.ohmymeme.app", bundle_id)
+    if bundle_id != EXPECTED_MACOS_BUNDLE_ID:
+        _fail("bundle id", EXPECTED_MACOS_BUNDLE_ID, bundle_id)
     if 'shutil.copy2(info_plist, contents_dir / "Info.plist")' not in build_script:
         raise ContractViolation("macOS bundle id input is not wired to packaging")
 
@@ -226,7 +228,7 @@ def contract_report(target=None, channel="stable"):
                 "package_version": contract.package_version,
                 "updater_selectable": contract.updater_selectable,
                 "lifecycle_probes": [
-                    probe.phase for probe in contract.lifecycle_probes
+                    probe.__dict__ for probe in contract.lifecycle_probes
                 ],
                 "valid": True,
             }

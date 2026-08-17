@@ -10,7 +10,6 @@ import pytest
 from scripts.package_smoke import (
     ArtifactContract,
     ContractViolation,
-    LifecycleProbe,
     contract_report,
     validate_contract,
 )
@@ -68,7 +67,14 @@ def test_every_target_defines_required_non_skippable_lifecycle_probes():
             probe.runner and probe.tool and probe.input
             for probe in contract.lifecycle_probes
         )
+        assert all(
+            probe.command and probe.observable and probe.cleanup
+            for probe in contract.lifecycle_probes
+        )
         assert contract.lifecycle_probes[0].input == "source tree"
+        assert contract.lifecycle_probes[0].command.startswith(
+            "python scripts/build.py"
+        )
         assert contract.lifecycle_probes[3].input == "previous and candidate artifacts"
 
 
@@ -86,13 +92,43 @@ def test_contract_rejects_skippable_lifecycle_probe():
     contract = ArtifactContract.default("linux-rpm-x64", "0.6.2")
     invalid = contract.with_metadata(
         lifecycle_probes=(
-            LifecycleProbe("build", "ubuntu-latest", "rpmbuild", "source tree", False),
+            contract.lifecycle_probes[0].with_field("required", False),
             *contract.lifecycle_probes[1:],
         )
     )
 
     with pytest.raises(ContractViolation, match="required"):
         validate_contract(invalid)
+
+
+@pytest.mark.parametrize("field", ("command", "observable", "cleanup"))
+def test_contract_rejects_incomplete_executable_lifecycle_probe(field):
+    """Given a lifecycle probe, when its Todo 30 spec is absent, then it fails."""
+    contract = ArtifactContract.default("linux-appimage-x64", "0.6.2")
+    incomplete = contract.lifecycle_probes[0].with_field(field, "")
+    invalid = contract.with_metadata(
+        lifecycle_probes=(incomplete, *contract.lifecycle_probes[1:])
+    )
+
+    with pytest.raises(ContractViolation, match=field):
+        validate_contract(invalid)
+
+
+def test_macos_bundle_id_is_derived_from_info_plist(monkeypatch, tmp_path):
+    """Given a plist bundle ID, when loading macOS contracts, then it is derived."""
+    from scripts import package_smoke
+
+    plist = tmp_path / "Info.plist"
+    plist.write_text(
+        "<?xml version='1.0'?><plist><dict><key>CFBundleIdentifier</key>"
+        "<string>com.example.derived</string></dict></plist>",
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(package_smoke, "MACOS_INFO_PLIST", plist)
+
+    assert ArtifactContract.default("macos-arm64", "0.6.2").bundle_id == (
+        "com.example.derived"
+    )
 
 
 def test_macos_bundle_id_is_read_from_build_input(monkeypatch, tmp_path):
