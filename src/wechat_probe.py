@@ -33,13 +33,13 @@ logger = logging.getLogger(__name__)
 
 # 二进制完整性校验（发布时更新）
 _WECHAT_KEYFINDER_SHA256 = {
-    "Windows": "PLACEHOLDER_UPDATE_ON_RELEASE",
+    "Windows": "72f281c6b7638735b13c2c80f8de92034f49ce0e20d75feb6640c8c6e0dd4e31",
 }
 
 # 下载源（GitHub Releases）
 _WECHAT_KEYFINDER_URLS = {
     "Windows": (
-        "https://github.com/ZE514/OhMyMeme/releases/download/v0.6.0/"
+        "https://github.com/ZE514/OhMyMeme/releases/download/v0.6.3/"
         "wechat_keyfinder-windows-x64.exe"
     ),
 }

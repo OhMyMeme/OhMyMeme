@@ -293,7 +293,7 @@ def _check_ffmpeg():
 
 
 def convert_webm_to_webp(webm_path, out_path):
-    """webm 转 animated webp: 无损(lossless 1), 保持宽高比, 最长边 512"""
+    """webm 转 animated webp: 有损(q80), 保持宽高比, 最长边 512"""
     try:
         cmd = [
             "ffmpeg",
@@ -303,11 +303,11 @@ def convert_webm_to_webp(webm_path, out_path):
             "-i",
             webm_path,
             "-loop",
-            "0",
-            "-lossless",
             "1",
+            "-lossless",
+            "0",
             "-quality",
-            "100",
+            "80",
             "-vf",
             "scale=512:512:force_original_aspect_ratio=decrease",
             "-an",

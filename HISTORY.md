@@ -1,3 +1,11 @@
+# v0.6.3
+
+## 修复
+
+- **微信导入 helper 二进制哈希配置** — `wechat_keyfinder` SHA-256 从占位符替换为真实值 `72f281c6...`，Windows 微信导入不再因未配置哈希而拒绝执行；下载 URL 指向 v0.6.3 release 资产
+- **Telegram WebM 转 WebP 循环播放** — ffmpeg 参数 `-loop 0` → `-loop 1`，转换后的动画 WebP 无限循环而非播放一次即停
+- **Telegram WebM 转换速度** — 无损编码（`-lossless 1 -quality 100`）实测 11-35s/个过慢导致"导入无反应"，改为有损 q80（`-lossless 0 -quality 80`），贴纸场景质量几乎无损，速度提升 3-7 倍
+
 # v0.6.2
 
 ## 变更
