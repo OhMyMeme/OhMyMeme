@@ -1,0 +1,23 @@
+{
+  "todo": 4,
+  "title": "建立升级备份、跨根恢复和进程互斥",
+  "status": "implemented",
+  "scope": [
+    "atomic config and manifest replacement",
+    "storage move rollback after config commit failure",
+    "SQLite migration and compound write rollback",
+    "sync worker failure boundaries"
+  ],
+  "red": [
+    "Config replacement failure preserved original bytes and left no temp file",
+    "Tag write failure left no meme or tag rows",
+    "Non-duplicate migration error was not swallowed",
+    "Manifest replacement failure propagated and preserved the previous manifest",
+    "Partial pull did not apply metadata or rebuild the manifest",
+    "Storage save failure restored moved files and the prior cache_dir"
+  ],
+  "green": "mise exec -- python -m pytest tests/test_core.py tests/test_sync.py tests/test_startup.py -q",
+  "result": "100 passed",
+  "cleanup": "Config and manifest temporary files are removed after replacement errors; sync temporary-file cleanup remains covered by existing tests.",
+  "known_risk": "Storage rollback still reports a failed reverse move only through its primary error text; it does not introduce a new API field."
+}

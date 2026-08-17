@@ -1325,14 +1325,15 @@ def pull(remove_local: bool = None) -> dict:
                         except Exception:
                             pass
 
-        _apply_remote_collections(remote_data)
-        _apply_remote_order(remote_data)
-        build_manifest()
         if aggregated["errors"] > 0:
             _update_sync_state(failed_items=aggregated["failed"])
             msg = "%d 个文件下载失败，本地清单仅包含成功项" % aggregated["errors"]
             logger.warning("sync pull aborted: %s", msg)
             raise SyncError(msg)
+
+        _apply_remote_collections(remote_data)
+        _apply_remote_order(remote_data)
+        build_manifest()
 
         _update_sync_state(
             status="done",

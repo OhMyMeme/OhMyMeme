@@ -107,8 +107,10 @@ class MemeDB:
         for tbl, col, col_def in migrates:
             try:
                 conn.execute(f"ALTER TABLE {tbl} ADD COLUMN {col} {col_def}")
-            except sqlite3.OperationalError:
-                pass  # 列已存在
+            except sqlite3.OperationalError as e:
+                if "duplicate column name" not in str(e).lower():
+                    conn.rollback()
+                    raise
         # 该索引依赖迁移新增的 stego_of_hash 列，必须放在迁移之后建，
         # 否则旧库缺列时 CREATE INDEX 会抛 OperationalError 中断启动
         conn.execute(
@@ -156,10 +158,13 @@ class MemeDB:
                 ),
             )
             meme_id = cur.lastrowid
-            conn.commit()  # 先提交meme插入，确保FOREIGN KEY约束通过
-            if tags:
-                self._set_tags(conn, meme_id, tags)
+            try:
+                if tags:
+                    self._set_tags(conn, meme_id, tags)
                 conn.commit()
+            except sqlite3.Error:
+                conn.rollback()
+                raise
             return meme_id
 
     def delete_memes(self, meme_ids: List[int]):

@@ -509,15 +509,48 @@ class TestSyncPush(unittest.TestCase):
         local = json.loads((self.data_dir / INDEX_FILENAME).read_text(encoding="utf-8"))
         self.assertNotIn("empty.png", {m["filename"] for m in local["memes"]})
 
+    def test_pull_failure_does_not_apply_metadata_or_rebuild_manifest(self):
+        self.fake_backend.remote_memes = {
+            "test.png": _entry("test.png", "abc"),
+            "missing.png": _entry("missing.png", "x"),
+        }
+        self.fake_backend.remote_files = {"test.png"}
+        original_manifest = (self.data_dir / INDEX_FILENAME).read_bytes()
+
+        with patch("src.sync._apply_remote_collections") as collections, patch(
+            "src.sync._apply_remote_order"
+        ) as order, patch("src.sync.build_manifest") as rebuild:
+            with self.assertRaises(SyncError):
+                sync.pull()
+
+        collections.assert_not_called()
+        order.assert_not_called()
+        rebuild.assert_not_called()
+        self.assertEqual(
+            (self.data_dir / INDEX_FILENAME).read_bytes(), original_manifest
+        )
+
     def test_build_manifest_atomic_replace_preserves_old_on_failure(self):
         """build_manifest 原子替换：os.replace 失败时旧清单完好"""
         old = json.loads((self.data_dir / INDEX_FILENAME).read_text(encoding="utf-8"))
         with patch("src.manifest.os.replace", side_effect=OSError("disk full")):
             from src.manifest import build as _build
 
-            _build()
+            with self.assertRaises(OSError):
+                _build()
         after = json.loads((self.data_dir / INDEX_FILENAME).read_text(encoding="utf-8"))
         self.assertEqual(after, old)
+
+    def test_build_manifest_replace_failure_propagates_and_cleans_temp(self):
+        old = (self.data_dir / INDEX_FILENAME).read_bytes()
+        with patch("src.manifest.os.replace", side_effect=OSError("disk full")):
+            from src.manifest import build as _build
+
+            with self.assertRaises(OSError):
+                _build()
+
+        self.assertEqual((self.data_dir / INDEX_FILENAME).read_bytes(), old)
+        self.assertFalse((self.data_dir / f"{INDEX_FILENAME}.tmp").exists())
 
     # ─── PR3 新增用例 ───
 

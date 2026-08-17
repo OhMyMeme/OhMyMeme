@@ -223,8 +223,16 @@ class Config:
         """持久化到磁盘（加锁，防止 pywebview 多线程并发写坏文件）"""
         with self._lock:
             self._path.parent.mkdir(parents=True, exist_ok=True)
-            with open(self._path, "w", encoding="utf-8") as f:
-                json.dump(self._data, f, ensure_ascii=False, indent=2)
+            tmp = self._path.with_name(self._path.name + ".tmp")
+            try:
+                with open(tmp, "w", encoding="utf-8") as f:
+                    json.dump(self._data, f, ensure_ascii=False, indent=2)
+                    f.flush()
+                    os.fsync(f.fileno())
+                os.replace(tmp, self._path)
+            finally:
+                if tmp.exists():
+                    tmp.unlink()
             self._dirty = False
 
     @property

@@ -1844,6 +1844,7 @@ class SettingsApi:
         if not os.access(new, os.W_OK):
             return {"ok": False, "error": "目标目录不可写"}
         moved, failed = 0, []
+        moved_pairs = []
         if move_files:
             plan = []
             for root, dirs, files in os.walk(str(old)):
@@ -1877,7 +1878,6 @@ class SettingsApi:
                             for c in collisions
                         ],
                     }
-                moved_pairs = []
                 for src, dst in plan:
                     try:
                         dst.parent.mkdir(parents=True, exist_ok=True)
@@ -1885,14 +1885,26 @@ class SettingsApi:
                         moved_pairs.append((src, dst))
                         moved += 1
                     except OSError as e:
+                        rollback_failed = []
                         for s, d in reversed(moved_pairs):
                             try:
                                 shutil.move(str(d), s)
-                            except OSError:
-                                pass
+                            except OSError as rollback_error:
+                                rollback_failed.append(
+                                    {
+                                        "name": os.path.basename(s),
+                                        "path": os.path.relpath(s, str(old)),
+                                        "error": str(rollback_error),
+                                    }
+                                )
                         return {
                             "ok": False,
-                            "error": f"迁移失败（{e}），已回滚已移动文件",
+                            "error": (
+                                "迁移失败（%s），回滚失败 %d 个文件"
+                                % (e, len(rollback_failed))
+                                if rollback_failed
+                                else f"迁移失败（{e}），已回滚已移动文件"
+                            ),
                             "failed": [
                                 {
                                     "name": os.path.basename(s),
@@ -1900,10 +1912,38 @@ class SettingsApi:
                                     "error": str(e),
                                 }
                                 for s, _d in moved_pairs
-                            ],
+                            ]
+                            + rollback_failed,
                         }
+        previous_cache_dir = self._cfg.get("cache_dir", "")
+        previous_dirty = self._cfg._dirty
         self._cfg.set("cache_dir", str(new))
-        self._cfg.save()
+        try:
+            self._cfg.save()
+        except OSError as e:
+            self._cfg._data["cache_dir"] = previous_cache_dir
+            self._cfg._dirty = previous_dirty
+            rollback_failed = []
+            for src, dst in reversed(moved_pairs if move_files else []):
+                try:
+                    shutil.move(str(dst), src)
+                except OSError as rollback_error:
+                    rollback_failed.append(
+                        {
+                            "name": os.path.basename(src),
+                            "path": os.path.relpath(src, str(old)),
+                            "error": str(rollback_error),
+                        }
+                    )
+            return {
+                "ok": False,
+                "error": (
+                    f"保存配置失败: {e}；回滚失败 {len(rollback_failed)} 个文件"
+                    if rollback_failed
+                    else f"保存配置失败: {e}"
+                ),
+                "failed": rollback_failed,
+            }
         fc = getattr(self._webui, "_file_cache", None)
         if fc is not None:
             fc.clear()

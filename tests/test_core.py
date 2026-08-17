@@ -1,10 +1,12 @@
 """OhMyMeme 核心模块测试"""
 
 import re
+import sqlite3
 import sys
 import tempfile
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 # 确保 src 在导入路径中
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
@@ -86,6 +88,19 @@ class TestConfig(unittest.TestCase):
         cfg2 = Config(self.config_path)
         self.assertEqual(cfg2.get("hotkey"), "Ctrl+Alt+N")
         self.assertEqual(cfg2.get("s3_access_key"), "AKID123")
+
+    def test_save_replace_failure_preserves_original_bytes_and_cleans_temp(self):
+        self.config_path.write_bytes(b'{"hotkey":"old"}\n')
+        cfg = Config(self.config_path)
+        cfg.set("hotkey", "new")
+
+        with patch("src.config.os.replace", side_effect=OSError("disk full")):
+            with self.assertRaises(OSError):
+                cfg.save()
+
+        self.assertEqual(self.config_path.read_bytes(), b'{"hotkey":"old"}\n')
+        self.assertFalse(self.config_path.with_name("config.json.tmp").exists())
+        self.assertTrue(cfg._dirty)
 
     def test_hotkey_show_at_mouse_old_config_defaults_false(self):
         self.config_path.write_text('{"hotkey": "Ctrl+Shift+X"}', encoding="utf-8")
@@ -286,6 +301,45 @@ class TestDatabase(unittest.TestCase):
         # 允许重复hash入库，但上层应用应去重
         self.assertIsNotNone(mid1)
         self.assertIsNotNone(mid2)
+
+    def test_add_meme_tag_failure_rolls_back_meme(self):
+        original = self.db._set_tags
+
+        def fail_tags(conn, meme_id, tags):
+            original(conn, meme_id, tags)
+            raise sqlite3.OperationalError("tags disk full")
+
+        with patch.object(self.db, "_set_tags", side_effect=fail_tags):
+            with self.assertRaises(sqlite3.OperationalError):
+                self.db.add_meme("partial.png", tags=["broken"])
+
+        self.assertIsNone(self.db.get_by_filename("partial.png"))
+        self.assertEqual(self.db.get_all_tags(), [])
+
+    def test_init_db_raises_for_non_duplicate_migration_error(self):
+        db_path = self.tmp_dir / "broken-migration.db"
+        original_connect = sqlite3.connect
+
+        class BrokenConnection:
+            def __init__(self, connection):
+                self.connection = connection
+
+            def execute(self, sql, *args):
+                if sql.startswith("ALTER TABLE"):
+                    raise sqlite3.OperationalError("database disk image is malformed")
+                return self.connection.execute(sql, *args)
+
+            def __getattr__(self, name):
+                return getattr(self.connection, name)
+
+        with patch(
+            "src.database.sqlite3.connect",
+            side_effect=lambda *args, **kwargs: BrokenConnection(
+                original_connect(*args, **kwargs)
+            ),
+        ):
+            with self.assertRaisesRegex(sqlite3.OperationalError, "malformed"):
+                MemeDB(db_path)
 
     def test_empty_search(self):
         results = self.db.search()

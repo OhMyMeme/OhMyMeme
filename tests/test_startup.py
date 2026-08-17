@@ -5,6 +5,7 @@ import re
 import subprocess
 import sys
 from pathlib import Path
+from unittest.mock import patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 os.environ["OHMYMEME_TEST"] = "1"
@@ -804,3 +805,26 @@ def test_storage_dir_validation(tmp_path):
     assert _storage_dir_validation(str(data / "x"), str(old), (data,))[0] is False
     assert _storage_dir_validation(str(tmp_path), str(old), (data,))[0] is False
     assert _storage_dir_validation(str(tmp_path / "ok"), str(old), (data,))[0] is True
+
+
+def test_storage_move_save_failure_rolls_back_files_and_config(tmp_path):
+    from src.webui import SettingsApi
+
+    data_dir = tmp_path / "data"
+    with patch("src.config._get_data_dir", return_value=data_dir):
+        cfg = Config(tmp_path / "config.json")
+        old = cfg.cache_dir
+        source = old / "nested" / "meme.png"
+        source.parent.mkdir(parents=True)
+        source.write_bytes(b"meme")
+        destination = tmp_path / "destination"
+        api = SettingsApi(None)
+        api._cfg = cfg
+
+        with patch("src.config.Config.save", side_effect=OSError("disk full")):
+            result = api.apply_storage_dir(str(destination), move_files=True)
+
+    assert result["ok"] is False
+    assert source.read_bytes() == b"meme"
+    assert not (destination / "nested" / "meme.png").exists()
+    assert cfg.get("cache_dir") == ""

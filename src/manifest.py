@@ -68,16 +68,20 @@ def build() -> List[Dict]:
 
     data = {"version": 3, "memes": memes, "collections": collections}
     path = _index_path()
+    tmp = path.with_name(path.name + ".tmp")
     try:
         path.parent.mkdir(parents=True, exist_ok=True)
-        tmp = path.with_name(path.name + ".tmp")
         tmp.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
         os.replace(tmp, path)  # 原子替换，避免中断留下半写清单
         logger.debug(
             f"manifest written: {len(memes)} memes, {len(collections)} collections"
         )
-    except Exception as e:
-        logger.warning(f"manifest write failed: {e}")
+    except OSError:
+        logger.exception("manifest write failed")
+        raise
+    finally:
+        if tmp.exists():
+            tmp.unlink()
 
     return memes
 
