@@ -7,6 +7,7 @@ from pathlib import Path
 
 import pytest
 
+from scripts.package_lifecycle import LifecycleViolation, validate_probes
 from scripts.package_smoke import (
     ArtifactContract,
     ContractViolation,
@@ -112,6 +113,26 @@ def test_contract_rejects_incomplete_executable_lifecycle_probe(field):
 
     with pytest.raises(ContractViolation, match=field):
         validate_contract(invalid)
+
+
+@pytest.mark.parametrize(
+    ("field", "value"),
+    [
+        ("runner", " "),
+        ("tool", 1),
+        ("input", " "),
+        ("command", 1),
+        ("observable", " "),
+        ("cleanup", " "),
+    ],
+)
+def test_contract_rejects_non_string_or_blank_lifecycle_text(field, value):
+    """Given malformed lifecycle text, when validating, then the contract rejects it."""
+    contract = ArtifactContract.default("linux-appimage-x64", "0.6.2")
+    malformed = contract.lifecycle_probes[0].with_field(field, value)
+
+    with pytest.raises(LifecycleViolation, match=field):
+        validate_probes((malformed, *contract.lifecycle_probes[1:]))
 
 
 def test_macos_bundle_id_is_derived_from_info_plist(monkeypatch, tmp_path):

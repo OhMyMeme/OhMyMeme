@@ -172,5 +172,8 @@ def validate_probes(probes):
         if not probe.required:
             raise LifecycleViolation("lifecycle probe must be required")
         for field in ("runner", "tool", "input", "command", "observable", "cleanup"):
-            if not getattr(probe, field):
-                raise LifecycleViolation("lifecycle probe %s is missing" % field)
+            value = getattr(probe, field)
+            if not isinstance(value, str) or not value.strip():
+                raise LifecycleViolation(
+                    "lifecycle probe %s must be nonempty text" % field
+                )

@@ -1,7 +1,7 @@
 {
   "task": 6,
   "title": "建立六类发布产物 smoke 定义",
-  "status": "complete-executable-spec",
+  "status": "complete-strict-probe-text",
   "contract_only_command": "mise run package-smoke -- --contract-only",
   "targets": [
     "windows-x64",
@@ -30,8 +30,8 @@
     "cleanup"
   ],
   "verification": {
-    "red": "mise exec -- python -m pytest tests/test_package_smoke.py -q (5 failed: executable probe fields and Bundle ID derivation missing)",
-    "green": "mise exec -- python -m pytest tests/test_package_smoke.py -q (20 passed)",
+    "red": "mise exec -- python -m pytest tests/test_package_smoke.py -q (6 failed: truthy non-string and whitespace probe fields accepted)",
+    "green": "mise exec -- python -m pytest tests/test_package_smoke.py -q (26 passed)",
     "manual": "mise run package-smoke -- --contract-only"
   },
   "limitations": [
