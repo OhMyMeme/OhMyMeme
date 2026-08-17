@@ -18,7 +18,9 @@ def _index_path() -> Path:
     return get_config().data_dir / INDEX_FILENAME
 
 
-def _build_collection_tree(db, parent_id=None) -> list:
+def _build_collection_tree(db, parent_id=None, empty_ids=None) -> list:
+    if empty_ids is None:
+        empty_ids = []
     raw = db.get_collections()
     items = []
     for cid, cname, pid, _ in raw:
@@ -26,15 +28,28 @@ def _build_collection_tree(db, parent_id=None) -> list:
             continue
         member_rows = db.search(collection_id=cid, limit=999999)
         filenames = [mr["filename"] for mr in member_rows]
-        children = _build_collection_tree(db, parent_id=cid)
+        children = _build_collection_tree(db, parent_id=cid, empty_ids=empty_ids)
         if not filenames and not children:
-            db.delete_collection(cid)
+            if not member_rows:
+                empty_ids.append(cid)
             continue
         item = {"name": cname, "filenames": filenames}
         if children:
             item["children"] = children
         items.append(item)
     return items
+
+
+def _write(data) -> None:
+    path = _index_path()
+    tmp = path.with_name(path.name + ".tmp")
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        tmp.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
+        os.replace(tmp, path)
+    finally:
+        if tmp.exists():
+            tmp.unlink()
 
 
 def build() -> List[Dict]:
@@ -64,24 +79,20 @@ def build() -> List[Dict]:
             }
         )
 
-    collections = _build_collection_tree(db)
+    empty_ids = []
+    collections = _build_collection_tree(db, empty_ids=empty_ids)
 
     data = {"version": 3, "memes": memes, "collections": collections}
-    path = _index_path()
-    tmp = path.with_name(path.name + ".tmp")
     try:
-        path.parent.mkdir(parents=True, exist_ok=True)
-        tmp.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
-        os.replace(tmp, path)  # 原子替换，避免中断留下半写清单
+        _write(data)
+        for collection_id in empty_ids:
+            db.delete_collection(collection_id)
         logger.debug(
             f"manifest written: {len(memes)} memes, {len(collections)} collections"
         )
     except OSError:
         logger.exception("manifest write failed")
         raise
-    finally:
-        if tmp.exists():
-            tmp.unlink()
 
     return memes
 

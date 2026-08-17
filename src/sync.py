@@ -18,6 +18,7 @@ from urllib.parse import quote, unquote, urlparse
 from .config import _IMPORT_MAX_BYTES, _IMPORT_MAX_PX, get_config
 from .database import get_db
 from .manifest import INDEX_FILENAME
+from .manifest import _write as write_manifest
 from .manifest import build as build_manifest
 from .manifest import load as load_manifest
 
@@ -848,6 +849,8 @@ def _pull_worker(entries, remote_root, cache_dir, db):
         "errors": 0,
         "bytes": 0,
         "failed": [],
+        "created_files": [],
+        "created_meme_ids": [],
     }
     local_idx = {}
     try:
@@ -912,7 +915,7 @@ def _pull_worker(entries, remote_root, cache_dir, db):
                                 pass
                             continue
                         oname = rentry.get("name", "") or os.path.splitext(fname)[0]
-                        db.add_meme(
+                        meme_id = db.add_meme(
                             filename=fname,
                             file_hash=rentry.get("sha256", ""),
                             width=w,
@@ -921,6 +924,8 @@ def _pull_worker(entries, remote_root, cache_dir, db):
                             mime_type="image/%s" % ext[1:] if ext else "image/png",
                             original_name=oname,
                         )
+                        local_results["created_meme_ids"].append(meme_id)
+                        local_results["created_files"].append(local_path)
                     except Exception as e:
                         # DB 写入失败：清理残留 cache，避免“文件在但无记录”的游离态
                         logger.warning("pull db add failed %s: %s", fname, e)
@@ -1283,6 +1288,8 @@ def pull(remove_local: bool = None) -> dict:
             "errors": 0,
             "bytes": 0,
             "failed": [],
+            "created_files": [],
+            "created_meme_ids": [],
         }
         with ThreadPoolExecutor(max_workers=len(chunks)) as executor:
             futures = [
@@ -1296,6 +1303,8 @@ def pull(remove_local: bool = None) -> dict:
                 aggregated["errors"] += r["errors"]
                 aggregated["bytes"] += r["bytes"]
                 aggregated["failed"].extend(r.get("failed", []))
+                aggregated["created_files"].extend(r.get("created_files", []))
+                aggregated["created_meme_ids"].extend(r.get("created_meme_ids", []))
 
         results = {
             "downloaded": aggregated["downloaded"],
@@ -1304,6 +1313,30 @@ def pull(remove_local: bool = None) -> dict:
             "removed_local": 0,
             "failed_files": aggregated["failed"],
         }
+
+        if aggregated["errors"] > 0:
+            for meme_id in aggregated["created_meme_ids"]:
+                db.delete_meme(meme_id)
+            for path in aggregated["created_files"]:
+                if path.exists():
+                    path.unlink()
+            _update_sync_state(failed_items=aggregated["failed"])
+            msg = "%d 个文件下载失败，本地清单仅包含成功项" % aggregated["errors"]
+            logger.warning("sync pull aborted: %s", msg)
+            raise SyncError(msg)
+
+        try:
+            write_manifest(remote_data)
+        except OSError:
+            for meme_id in aggregated["created_meme_ids"]:
+                db.delete_meme(meme_id)
+            for path in aggregated["created_files"]:
+                if path.exists():
+                    path.unlink()
+            raise
+
+        _apply_remote_collections(remote_data)
+        _apply_remote_order(remote_data)
 
         if remove_local:
             for fname in list(local_idx.keys()):
@@ -1324,16 +1357,6 @@ def pull(remove_local: bool = None) -> dict:
                             thumb_path.unlink()
                         except Exception:
                             pass
-
-        if aggregated["errors"] > 0:
-            _update_sync_state(failed_items=aggregated["failed"])
-            msg = "%d 个文件下载失败，本地清单仅包含成功项" % aggregated["errors"]
-            logger.warning("sync pull aborted: %s", msg)
-            raise SyncError(msg)
-
-        _apply_remote_collections(remote_data)
-        _apply_remote_order(remote_data)
-        build_manifest()
 
         _update_sync_state(
             status="done",

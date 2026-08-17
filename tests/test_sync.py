@@ -164,12 +164,17 @@ class _FakeDb:
             ]
         )
         self.order = []  # reorder_memes 记录的 id 顺序
+        self.collections = []
+        self.deleted_collections = []
 
     def search(self, keyword="", tags=None, limit=999999, collection_id=None):
         return list(self.rows)
 
     def get_collections(self):
-        return []
+        return list(self.collections)
+
+    def delete_collection(self, collection_id):
+        self.deleted_collections.append(collection_id)
 
     def get_by_filename(self, filename):
         for i, r in enumerate(self.rows):
@@ -526,6 +531,75 @@ class TestSyncPush(unittest.TestCase):
         collections.assert_not_called()
         order.assert_not_called()
         rebuild.assert_not_called()
+        self.assertEqual(
+            (self.data_dir / INDEX_FILENAME).read_bytes(), original_manifest
+        )
+
+    def test_pull_partial_failure_keeps_new_rows_and_files_out_of_state(self):
+        self._set_local_memes([])
+        original_manifest = (self.data_dir / INDEX_FILENAME).read_bytes()
+        self.fake_backend.remote_memes = {
+            "new.png": _entry("new.png", "new"),
+            "missing.png": _entry("missing.png", "missing"),
+        }
+        self.fake_backend.remote_files = {"new.png"}
+
+        with self.assertRaises(SyncError):
+            sync.pull()
+
+        self.assertEqual(self.fake_db.rows, [])
+        self.assertFalse((self.data_dir / "cache" / "new.png").exists())
+        self.assertEqual(
+            (self.data_dir / INDEX_FILENAME).read_bytes(), original_manifest
+        )
+
+    def test_pull_failure_does_not_remove_local_before_commit_boundary(self):
+        self._set_local_memes([{"filename": "old.png", "sha256": "old"}])
+        self.fake_backend.remote_memes = {
+            "missing.png": _entry("missing.png", "missing")
+        }
+        self.fake_backend.remote_files = set()
+
+        with self.assertRaises(SyncError):
+            sync.pull(remove_local=True)
+
+        self.assertIsNotNone(self.fake_db.get_by_filename("old.png"))
+        self.assertTrue((self.data_dir / "cache" / "old.png").exists())
+
+    def test_pull_remove_local_commits_remote_manifest_before_deleting(self):
+        self._set_local_memes([{"filename": "old.png", "sha256": "old"}])
+        self.fake_backend.remote_memes = {"remote.png": _entry("remote.png", "remote")}
+        self.fake_backend.remote_files = {"remote.png"}
+
+        result = sync.pull(remove_local=True)
+
+        self.assertEqual(result["removed_local"], 1)
+        self.assertIsNone(self.fake_db.get_by_filename("old.png"))
+        self.assertFalse((self.data_dir / "cache" / "old.png").exists())
+        local = json.loads((self.data_dir / INDEX_FILENAME).read_text(encoding="utf-8"))
+        self.assertEqual([m["filename"] for m in local["memes"]], ["remote.png"])
+
+    def test_manifest_replace_failure_keeps_empty_collections(self):
+        self.fake_db.rows = []
+        self.fake_db.collections = [(1, "empty", None, 0)]
+        with patch("src.manifest.os.replace", side_effect=OSError("disk full")):
+            from src.manifest import build as _build
+
+            with self.assertRaises(OSError):
+                _build()
+
+        self.assertEqual(self.fake_db.deleted_collections, [])
+
+    def test_pull_manifest_replace_failure_reverts_new_rows_and_files(self):
+        self._set_local_memes([])
+        original_manifest = (self.data_dir / INDEX_FILENAME).read_bytes()
+        self.fake_backend.remote_memes = {"new.png": _entry("new.png", "new")}
+        with patch("src.manifest.os.replace", side_effect=OSError("disk full")):
+            with self.assertRaises(OSError):
+                sync.pull()
+
+        self.assertEqual(self.fake_db.rows, [])
+        self.assertFalse((self.data_dir / "cache" / "new.png").exists())
         self.assertEqual(
             (self.data_dir / INDEX_FILENAME).read_bytes(), original_manifest
         )
