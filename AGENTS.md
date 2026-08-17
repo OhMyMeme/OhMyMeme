@@ -20,6 +20,11 @@ JsApi / SettingsApi → SQLite (WAL) + 本地缓存 + 远端同步
 - **InnoSetup** (Windows 安装包) / **PyInstaller** (打包)
 - **GitHub Actions** (lint+test on Ubuntu, build+installer on Windows/Linux/macOS)
 
+## 开发工具链
+- `mise.toml` 与 `mise.lock` 是共享工具链版本的来源；使用 `mise install python node npm --locked` 安装锁定版本
+- 使用 `mise run <task>` 执行项目工作流；运行 `mise tasks ls` 查看可用任务
+- `mise.local.toml`、`mise.local.lock` 及其他本地 mise 状态不得提交
+
 ## 核心原则
 - **不得重构该项目** — 仅做最小必要修改，不改变现有架构、设计模式、代码组织
 - **尽量不创建新文件** — 优先修改现有文件

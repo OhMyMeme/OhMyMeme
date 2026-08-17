@@ -48,6 +48,16 @@
 
 **环境要求**: Python 3.10+
 
+项目提供 `mise.toml` 与 `mise.lock` 固定 Python 3.12 和 Node 22，并统一常用开发命令：
+
+```bash
+mise install python node npm --locked
+mise run setup
+mise run run
+```
+
+可用任务通过 `mise tasks ls` 查看；`mise run check` 会依次执行 lint、测试和 Vue 前端构建。
+
 **Linux 额外依赖**:
 ```bash
 # Debian / Ubuntu
