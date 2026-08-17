@@ -217,6 +217,9 @@ class _FakeDb:
     def add_to_collection(self, meme_id, collection_id):
         pass
 
+    def apply_remote_metadata(self, remote_data):
+        self.order = [meme["filename"] for meme in remote_data.get("memes", [])]
+
 
 class TestSyncPush(unittest.TestCase):
     """push() manifest 一致性回归测试"""
@@ -548,6 +551,49 @@ class TestSyncPush(unittest.TestCase):
             sync.pull()
 
         self.assertEqual(self.fake_db.rows, [])
+        self.assertFalse((self.data_dir / "cache" / "new.png").exists())
+        self.assertEqual(
+            (self.data_dir / INDEX_FILENAME).read_bytes(), original_manifest
+        )
+
+    def test_pull_partial_failure_restores_overwritten_cache_bytes(self):
+        original_cache = (self.data_dir / "cache" / "test.png").read_bytes()
+        original_manifest = (self.data_dir / INDEX_FILENAME).read_bytes()
+        original_rows = list(self.fake_db.rows)
+        self.fake_backend.remote_memes = {
+            "test.png": _entry("test.png", "changed"),
+            "missing.png": _entry("missing.png", "missing"),
+        }
+        self.fake_backend.remote_files = {"test.png"}
+
+        with self.assertRaises(SyncError):
+            sync.pull()
+
+        self.assertEqual(
+            (self.data_dir / "cache" / "test.png").read_bytes(), original_cache
+        )
+        self.assertEqual(self.fake_db.rows, original_rows)
+        self.assertEqual(
+            (self.data_dir / INDEX_FILENAME).read_bytes(), original_manifest
+        )
+
+    def test_pull_metadata_failure_restores_manifest_and_new_state(self):
+        original_manifest = (self.data_dir / INDEX_FILENAME).read_bytes()
+        original_rows = list(self.fake_db.rows)
+        original_order = list(self.fake_db.order)
+        original_collections = list(self.fake_db.collections)
+        self.fake_backend.remote_memes = {"new.png": _entry("new.png", "new")}
+        self.fake_backend.remote_files = {"new.png"}
+
+        with patch(
+            "src.sync._apply_remote_metadata", side_effect=RuntimeError("db failure")
+        ):
+            with self.assertRaisesRegex(RuntimeError, "db failure"):
+                sync.pull()
+
+        self.assertEqual(self.fake_db.rows, original_rows)
+        self.assertEqual(self.fake_db.order, original_order)
+        self.assertEqual(self.fake_db.collections, original_collections)
         self.assertFalse((self.data_dir / "cache" / "new.png").exists())
         self.assertEqual(
             (self.data_dir / INDEX_FILENAME).read_bytes(), original_manifest

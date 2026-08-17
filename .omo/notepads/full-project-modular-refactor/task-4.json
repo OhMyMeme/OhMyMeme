@@ -21,5 +21,6 @@
   "result": "review follow-up: targeted recovery regressions pass",
   "cleanup": "Config and manifest temporary files are removed after replacement errors; sync temporary-file cleanup remains covered by existing tests.",
   "known_risk": "Storage rollback still reports a failed reverse move only through its primary error text; it does not introduce a new API field.",
-  "review_follow_up": "Partial pull reverses newly created DB rows and cache files; remove_local waits until the first durable manifest write; empty collection deletion waits until manifest replacement succeeds."
+  "review_follow_up": "Partial pull reverses newly created DB rows and cache files; remove_local waits until the first durable manifest write; empty collection deletion waits until manifest replacement succeeds.",
+  "review_follow_up_2": "Overwritten cache files retain same-directory backups until pull completion. Metadata failures restore the prior manifest and reverse new files and DB rows before reporting the error."
 }

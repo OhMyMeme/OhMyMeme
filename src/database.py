@@ -604,6 +604,44 @@ class MemeDB:
                 )
             conn.commit()
 
+    def apply_remote_metadata(self, remote_data: dict):
+        """原子应用远端分组与全局排序"""
+        with self._lock:
+            conn = self._get_conn()
+            try:
+                for collection in remote_data.get("collections", []):
+                    name = collection["name"]
+                    conn.execute(
+                        "INSERT OR IGNORE INTO collections (name) VALUES (?)",
+                        (name,),
+                    )
+                    row = conn.execute(
+                        "SELECT id FROM collections WHERE name=?", (name,)
+                    ).fetchone()
+                    if row is None:
+                        continue
+                    for filename in collection.get("filenames", []):
+                        meme = conn.execute(
+                            "SELECT id FROM memes WHERE filename=?", (filename,)
+                        ).fetchone()
+                        if meme is not None:
+                            conn.execute(
+                                "INSERT OR IGNORE INTO meme_collections "
+                                "(meme_id, collection_id) VALUES (?, ?)",
+                                (meme[0], row[0]),
+                            )
+                for index, meme in enumerate(remote_data.get("memes", [])):
+                    filename = meme.get("filename", "")
+                    if filename:
+                        conn.execute(
+                            "UPDATE memes SET sort_order=? WHERE filename=?",
+                            (index, filename),
+                        )
+                conn.commit()
+            except Exception:
+                conn.rollback()
+                raise
+
     def record_use(self, meme_id: int):
         with self._lock:
             conn = self._get_conn()

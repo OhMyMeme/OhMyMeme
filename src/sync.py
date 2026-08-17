@@ -851,6 +851,7 @@ def _pull_worker(entries, remote_root, cache_dir, db):
         "failed": [],
         "created_files": [],
         "created_meme_ids": [],
+        "overwritten_files": [],
     }
     local_idx = {}
     try:
@@ -878,6 +879,17 @@ def _pull_worker(entries, remote_root, cache_dir, db):
             rem_path = remote_root.rstrip("/") + "/" + REMOTE_MEME_DIR + "/" + fname
             local_path = cache_dir / fname
             fsize = rentry.get("file_size", 0)
+            backup_path = None
+            if local_path.exists():
+                fd, backup_name = tempfile.mkstemp(
+                    prefix=".%s.pull-" % fname,
+                    suffix=".bak",
+                    dir=str(local_path.parent),
+                )
+                os.close(fd)
+                backup_path = Path(backup_name)
+                backup_path.unlink()
+                os.replace(local_path, backup_path)
             if bk.download_file(rem_path, local_path):
                 if local_path.stat().st_size == 0:
                     # 下载到空文件视为失败：清理并计错误，避免污染本地清单
@@ -886,10 +898,10 @@ def _pull_worker(entries, remote_root, cache_dir, db):
                         {"filename": fname, "status": "error", "error": "下载内容为空"}
                     )
                     _increment_sync_progress(files_add=1)
-                    try:
+                    if local_path.exists():
                         local_path.unlink()
-                    except Exception:
-                        pass
+                    if backup_path is not None:
+                        os.replace(backup_path, local_path)
                     continue
                 row = db.get_by_filename(fname)
                 if not row:
@@ -909,10 +921,10 @@ def _pull_worker(entries, remote_root, cache_dir, db):
                             logger.info(f"pull skip (over limit): {fname}")
                             local_results["skipped"] += 1
                             _increment_sync_progress(files_add=1)
-                            try:
+                            if local_path.exists():
                                 local_path.unlink()
-                            except Exception:
-                                pass
+                            if backup_path is not None:
+                                os.replace(backup_path, local_path)
                             continue
                         oname = rentry.get("name", "") or os.path.splitext(fname)[0]
                         meme_id = db.add_meme(
@@ -938,15 +950,19 @@ def _pull_worker(entries, remote_root, cache_dir, db):
                             }
                         )
                         _increment_sync_progress(files_add=1)
-                        try:
+                        if local_path.exists():
                             local_path.unlink()
-                        except Exception:
-                            pass
+                        if backup_path is not None:
+                            os.replace(backup_path, local_path)
                         continue
+                if backup_path is not None:
+                    local_results["overwritten_files"].append((local_path, backup_path))
                 local_results["downloaded"] += 1
                 local_results["bytes"] += fsize
                 _increment_sync_progress(files_add=1, bytes_add=fsize)
             else:
+                if backup_path is not None:
+                    os.replace(backup_path, local_path)
                 local_results["errors"] += 1
                 local_results["failed"].append(
                     {"filename": fname, "status": "error", "error": "下载失败"}
@@ -974,6 +990,24 @@ def _pull_worker(entries, remote_root, cache_dir, db):
         return local_results
     finally:
         bk.close()
+
+
+def _rollback_pull_changes(db, aggregated):
+    for meme_id in aggregated["created_meme_ids"]:
+        db.delete_meme(meme_id)
+    for path in aggregated["created_files"]:
+        if path.exists():
+            path.unlink()
+    for path, backup_path in aggregated["overwritten_files"]:
+        if path.exists():
+            path.unlink()
+        os.replace(backup_path, path)
+
+
+def _discard_pull_backups(aggregated):
+    for _path, backup_path in aggregated["overwritten_files"]:
+        if backup_path.exists():
+            backup_path.unlink()
 
 
 # ─── 公开 API ───
@@ -1244,6 +1278,10 @@ def _apply_remote_order(remote_data: dict):
         db.reorder_memes(ordered_ids)
 
 
+def _apply_remote_metadata(remote_data: dict):
+    get_db().apply_remote_metadata(remote_data)
+
+
 def pull(remove_local: bool = None) -> dict:
     """远端 -> 本地：下载缺失/变更的表情包和清单（多线程）"""
     cfg = get_config()
@@ -1290,6 +1328,7 @@ def pull(remove_local: bool = None) -> dict:
             "failed": [],
             "created_files": [],
             "created_meme_ids": [],
+            "overwritten_files": [],
         }
         with ThreadPoolExecutor(max_workers=len(chunks)) as executor:
             futures = [
@@ -1305,6 +1344,7 @@ def pull(remove_local: bool = None) -> dict:
                 aggregated["failed"].extend(r.get("failed", []))
                 aggregated["created_files"].extend(r.get("created_files", []))
                 aggregated["created_meme_ids"].extend(r.get("created_meme_ids", []))
+                aggregated["overwritten_files"].extend(r.get("overwritten_files", []))
 
         results = {
             "downloaded": aggregated["downloaded"],
@@ -1315,28 +1355,40 @@ def pull(remove_local: bool = None) -> dict:
         }
 
         if aggregated["errors"] > 0:
-            for meme_id in aggregated["created_meme_ids"]:
-                db.delete_meme(meme_id)
-            for path in aggregated["created_files"]:
-                if path.exists():
-                    path.unlink()
+            _rollback_pull_changes(db, aggregated)
             _update_sync_state(failed_items=aggregated["failed"])
             msg = "%d 个文件下载失败，本地清单仅包含成功项" % aggregated["errors"]
             logger.warning("sync pull aborted: %s", msg)
             raise SyncError(msg)
 
+        manifest_path = cfg.data_dir / INDEX_FILENAME
+        manifest_backup = None
+        if manifest_path.exists():
+            fd, backup_name = tempfile.mkstemp(
+                prefix=".manifest.pull-", suffix=".bak", dir=str(cfg.data_dir)
+            )
+            os.close(fd)
+            manifest_backup = Path(backup_name)
+            shutil.copyfile(manifest_path, manifest_backup)
         try:
             write_manifest(remote_data)
         except OSError:
-            for meme_id in aggregated["created_meme_ids"]:
-                db.delete_meme(meme_id)
-            for path in aggregated["created_files"]:
-                if path.exists():
-                    path.unlink()
+            if manifest_backup is not None:
+                shutil.copyfile(manifest_backup, manifest_path)
+                manifest_backup.unlink()
+            _rollback_pull_changes(db, aggregated)
             raise
 
-        _apply_remote_collections(remote_data)
-        _apply_remote_order(remote_data)
+        try:
+            _apply_remote_metadata(remote_data)
+        except Exception:
+            if manifest_backup is not None:
+                shutil.copyfile(manifest_backup, manifest_path)
+                manifest_backup.unlink()
+            _rollback_pull_changes(db, aggregated)
+            raise
+        if manifest_backup is not None:
+            manifest_backup.unlink()
 
         if remove_local:
             for fname in list(local_idx.keys()):
@@ -1357,6 +1409,8 @@ def pull(remove_local: bool = None) -> dict:
                             thumb_path.unlink()
                         except Exception:
                             pass
+
+        _discard_pull_backups(aggregated)
 
         _update_sync_state(
             status="done",

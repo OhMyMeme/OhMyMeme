@@ -295,6 +295,25 @@ class TestDatabase(unittest.TestCase):
         results = self.db.search()
         self.assertEqual([r["id"] for r in results], [mid1, mid2])
 
+    def test_apply_remote_metadata_rolls_back_collection_and_order(self):
+        first = self.db.add_meme("first.png")
+        second = self.db.add_meme("second.png")
+        self.db.reorder_memes([first, second])
+
+        with self.assertRaises(KeyError):
+            self.db.apply_remote_metadata(
+                {
+                    "collections": [
+                        {"name": "remote", "filenames": ["first.png"]},
+                        {"filenames": []},
+                    ],
+                    "memes": [{"filename": "second.png"}],
+                }
+            )
+
+        self.assertEqual(self.db.get_collections(), [])
+        self.assertEqual([row["id"] for row in self.db.search()], [first, second])
+
     def test_hash_dedup(self):
         mid1 = self.db.add_meme("a.png", file_hash="hash1")
         mid2 = self.db.add_meme("b.png", file_hash="hash1")
