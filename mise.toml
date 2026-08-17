@@ -57,4 +57,4 @@ run = 'python scripts/build.py'
 
 [tasks.package-smoke]
 description = 'Validate package contracts without building artifacts'
-run = 'mise exec -- python scripts/package_smoke.py'
+run = 'mise exec -- python -m scripts.package_smoke'

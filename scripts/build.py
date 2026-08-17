@@ -419,6 +419,14 @@ def build_macos_packages(version, filename_version=None, arch=None):
         print(L("run_build_first"))
         return
 
+    info_plist = PROJECT_ROOT / "scripts" / "installer" / "macos" / "Info.plist"
+    contents_dir = app_dir / "Contents"
+    if not info_plist.is_file() or not contents_dir.is_dir():
+        output = info_plist if not info_plist.is_file() else contents_dir
+        print(L("outdir_not_found"), output)
+        return
+    shutil.copy2(info_plist, contents_dir / "Info.plist")
+
     print(L("building_macos"))
     dmg_name = "%s-v%s-%s.dmg" % (APP_NAME, filename_version, arch)
     dmg_path = BUILD_DIR / dmg_name

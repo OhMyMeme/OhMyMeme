@@ -32,7 +32,7 @@ jobs:
       - name: Build installer
         run: python scripts/build.py --installer-only
       - name: Package contract smoke
-        run: python scripts/package_smoke.py --contract-only --target windows-x64
+        run: python -m scripts.package_smoke --contract-only --target windows-x64
       - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
@@ -59,7 +59,7 @@ jobs:
       - name: Build Linux packages
         run: python scripts/build.py --linux
       - name: Package contract smoke
-        run: python scripts/package_smoke.py --contract-only
+        run: python -m scripts.package_smoke --contract-only
       - name: Upload artifacts
         uses: actions/upload-artifact@v4
         with:
@@ -93,7 +93,7 @@ jobs:
       - name: Build macOS packages (.app + .dmg)
         run: python scripts/build.py --macos --arch ${{ matrix.arch }}
       - name: Package contract smoke
-        run: python scripts/package_smoke.py --contract-only --target macos-${{ matrix.arch }}
+        run: python -m scripts.package_smoke --contract-only --target macos-${{ matrix.arch }}
       - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:

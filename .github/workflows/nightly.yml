@@ -30,7 +30,7 @@ jobs:
       - name: Build installer
         run: python scripts/build.py --installer-only --nightly
       - name: Package contract smoke
-        run: python scripts/package_smoke.py --contract-only --channel nightly --target windows-x64
+        run: python -m scripts.package_smoke --contract-only --channel nightly --target windows-x64
       - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
@@ -58,7 +58,7 @@ jobs:
       - name: Build Linux nightly
         run: python scripts/build.py --linux --nightly
       - name: Package contract smoke
-        run: python scripts/package_smoke.py --contract-only --channel nightly
+        run: python -m scripts.package_smoke --contract-only --channel nightly
       - name: Upload artifacts
         uses: actions/upload-artifact@v4
         with:
@@ -93,7 +93,7 @@ jobs:
       - name: Build macOS nightly (.app + .dmg)
         run: python scripts/build.py --macos --nightly --arch ${{ matrix.arch }}
       - name: Package contract smoke
-        run: python scripts/package_smoke.py --contract-only --channel nightly --target macos-${{ matrix.arch }}
+        run: python -m scripts.package_smoke --contract-only --channel nightly --target macos-${{ matrix.arch }}
       - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:

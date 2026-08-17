@@ -7,7 +7,13 @@ from pathlib import Path
 
 import pytest
 
-from scripts.package_smoke import ArtifactContract, ContractViolation, validate_contract
+from scripts.package_smoke import (
+    ArtifactContract,
+    ContractViolation,
+    LifecycleProbe,
+    contract_report,
+    validate_contract,
+)
 
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
@@ -35,6 +41,98 @@ def test_contract_only_reports_six_release_targets():
         "macos-x86_64",
     ]
     assert all(row["valid"] for row in report["targets"])
+
+
+def test_every_target_defines_required_non_skippable_lifecycle_probes():
+    """Given all release targets, when loaded, then each owns six required probes."""
+    for target in (
+        "windows-x64",
+        "linux-appimage-x64",
+        "linux-deb-amd64",
+        "linux-rpm-x64",
+        "macos-arm64",
+        "macos-x86_64",
+    ):
+        contract = ArtifactContract.default(target, "0.6.2")
+
+        assert tuple(probe.phase for probe in contract.lifecycle_probes) == (
+            "build",
+            "install",
+            "launch",
+            "upgrade",
+            "rollback",
+            "uninstall",
+        )
+        assert all(probe.required for probe in contract.lifecycle_probes)
+        assert all(
+            probe.runner and probe.tool and probe.input
+            for probe in contract.lifecycle_probes
+        )
+        assert contract.lifecycle_probes[0].input == "source tree"
+        assert contract.lifecycle_probes[3].input == "previous and candidate artifacts"
+
+
+def test_contract_rejects_missing_lifecycle_probe():
+    """Given a target contract, when a lifecycle probe is omitted, then it fails."""
+    contract = ArtifactContract.default("windows-x64", "0.6.2")
+    invalid = contract.with_metadata(lifecycle_probes=contract.lifecycle_probes[:-1])
+
+    with pytest.raises(ContractViolation, match="lifecycle probes"):
+        validate_contract(invalid)
+
+
+def test_contract_rejects_skippable_lifecycle_probe():
+    """Given a target contract, when a required probe is skippable, then it fails."""
+    contract = ArtifactContract.default("linux-rpm-x64", "0.6.2")
+    invalid = contract.with_metadata(
+        lifecycle_probes=(
+            LifecycleProbe("build", "ubuntu-latest", "rpmbuild", "source tree", False),
+            *contract.lifecycle_probes[1:],
+        )
+    )
+
+    with pytest.raises(ContractViolation, match="required"):
+        validate_contract(invalid)
+
+
+def test_macos_bundle_id_is_read_from_build_input(monkeypatch, tmp_path):
+    """Given a drifted Info.plist, when reporting, then it rejects the build input."""
+    from scripts import package_smoke
+
+    plist = tmp_path / "Info.plist"
+    plist.write_text(
+        "<?xml version='1.0'?><plist><dict><key>CFBundleIdentifier</key>"
+        "<string>com.example.drift</string></dict></plist>",
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(package_smoke, "MACOS_INFO_PLIST", plist)
+
+    with pytest.raises(ContractViolation, match="bundle id"):
+        contract_report(target="macos-arm64")
+
+
+def test_macos_packaging_copies_bundle_id_build_input(monkeypatch, tmp_path):
+    """Given a macOS app, when DMG staging runs, then it copies Info.plist."""
+    from scripts import build
+
+    project = tmp_path / "project"
+    template = project / "scripts" / "installer" / "macos" / "Info.plist"
+    template.parent.mkdir(parents=True)
+    template.write_text("bundle input", encoding="utf-8")
+    contents = tmp_path / "dist" / "OhMyMeme.app" / "Contents"
+    contents.mkdir(parents=True)
+
+    class Result:
+        returncode = 0
+
+    monkeypatch.setattr(build, "PROJECT_ROOT", project)
+    monkeypatch.setattr(build, "BUILD_DIR", tmp_path / "dist")
+    monkeypatch.setattr(build.subprocess, "run", lambda *args, **kwargs: Result())
+    monkeypatch.setattr(build.os, "symlink", lambda *args: None)
+
+    build.build_macos_packages("0.6.2", arch="arm64")
+
+    assert (contents / "Info.plist").read_text(encoding="utf-8") == "bundle input"
 
 
 def test_contract_rejects_wrong_architecture():

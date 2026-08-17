@@ -1,7 +1,7 @@
 {
   "task": 6,
   "title": "建立六类发布产物 smoke 定义",
-  "status": "complete",
+  "status": "complete-follow-up",
   "contract_only_command": "mise run package-smoke -- --contract-only",
   "targets": [
     "windows-x64",
@@ -11,9 +11,18 @@
     "macos-arm64",
     "macos-x86_64"
   ],
+  "lifecycle_phases": [
+    "build",
+    "install",
+    "launch",
+    "upgrade",
+    "rollback",
+    "uninstall"
+  ],
+  "macos_bundle_input": "scripts/installer/macos/Info.plist",
   "verification": {
-    "red": "mise exec -- python -m pytest tests/test_package_smoke.py -q (6 failed: missing task/module)",
-    "green": "mise exec -- python -m pytest tests/test_package_smoke.py -q",
+    "red": "mise exec -- python -m pytest tests/test_package_smoke.py -q (ImportError: LifecycleProbe missing)",
+    "green": "mise exec -- python -m pytest tests/test_package_smoke.py -q (16 passed)",
     "manual": "mise run package-smoke -- --contract-only"
   },
   "limitations": [

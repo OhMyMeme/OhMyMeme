@@ -2,14 +2,24 @@
 
 import argparse
 import json
+import plistlib
 import re
 from dataclasses import dataclass, replace
 from pathlib import Path
+
+from scripts.package_lifecycle import (
+    LifecycleProbe,
+    LifecycleViolation,
+    probes_for,
+    validate_probes,
+)
 
 ROOT = Path(__file__).resolve().parent.parent
 VERSION_FILE = ROOT / "src" / "__init__.py"
 WINDOWS_ISS = ROOT / "scripts" / "installer" / "windows.iss"
 LINUX_BUILD = ROOT / "scripts" / "installer" / "linux" / "build.sh"
+BUILD_SCRIPT = ROOT / "scripts" / "build.py"
+MACOS_INFO_PLIST = ROOT / "scripts" / "installer" / "macos" / "Info.plist"
 
 
 class ContractViolation(ValueError):
@@ -29,6 +39,7 @@ class ArtifactContract:
     package_name: str = ""
     license: str = ""
     resources: tuple[str, ...] = ()
+    lifecycle_probes: tuple[LifecycleProbe, ...] = ()
 
     @classmethod
     def default(cls, target, version, channel="stable"):
@@ -47,7 +58,7 @@ def _contracts(version, channel="stable"):
     artifact_version = "nightly" if nightly else version
     updater_selectable = not nightly
     resources = ("src/resources/icon.png",)
-    return {
+    contracts = {
         "windows-x64": ArtifactContract(
             "windows-x64",
             "OhMyMeme-%s-setup.exe" % artifact_version,
@@ -97,7 +108,11 @@ def _contracts(version, channel="stable"):
             version,
             updater_selectable,
             bundle_id="com.ohmymeme.app",
-            resources=("src/resources/icon.png", "OhMyMeme.app"),
+            resources=(
+                "src/resources/icon.png",
+                "scripts/installer/macos/Info.plist",
+                "OhMyMeme.app",
+            ),
         ),
         "macos-x86_64": ArtifactContract(
             "macos-x86_64",
@@ -107,8 +122,16 @@ def _contracts(version, channel="stable"):
             version,
             updater_selectable,
             bundle_id="com.ohmymeme.app",
-            resources=("src/resources/icon.png", "OhMyMeme.app"),
+            resources=(
+                "src/resources/icon.png",
+                "scripts/installer/macos/Info.plist",
+                "OhMyMeme.app",
+            ),
         ),
+    }
+    return {
+        target: replace(contract, lifecycle_probes=probes_for(target))
+        for target, contract in contracts.items()
     }
 
 
@@ -121,6 +144,15 @@ def _version():
 
 def _fail(field, expected, actual):
     raise ContractViolation("%s drift: expected %s, got %s" % (field, expected, actual))
+
+
+def _macos_bundle_id():
+    with MACOS_INFO_PLIST.open("rb") as handle:
+        data = plistlib.load(handle)
+    bundle_id = data.get("CFBundleIdentifier")
+    if not isinstance(bundle_id, str):
+        raise ContractViolation("macOS bundle id is missing")
+    return bundle_id
 
 
 def validate_contract(contract):
@@ -138,19 +170,26 @@ def validate_contract(contract):
         "package_name",
         "license",
         "resources",
+        "lifecycle_probes",
     ):
         actual = getattr(contract, field)
         wanted = getattr(expected, field)
         if actual != wanted:
             _fail(field.replace("_", " "), wanted, actual)
     for resource in contract.resources:
-        if resource.startswith("src/") and not (ROOT / resource).is_file():
+        if "/" in resource and not (ROOT / resource).is_file():
             raise ContractViolation("resource missing: %s" % resource)
+    try:
+        validate_probes(contract.lifecycle_probes)
+    except LifecycleViolation as exc:
+        raise ContractViolation(str(exc)) from exc
 
 
 def _validate_source_contracts():
     windows = WINDOWS_ISS.read_text("utf-8")
     linux = LINUX_BUILD.read_text("utf-8")
+    build_script = BUILD_SCRIPT.read_text("utf-8")
+    bundle_id = _macos_bundle_id()
     required = (
         ("AppId={{B8F4A3D2-1C5E-4A7B-9D6F-8E2C3A1B5D7F}", windows),
         ("ArchitecturesInstallIn64BitMode=x64compatible", windows),
@@ -164,6 +203,10 @@ def _validate_source_contracts():
     for value, source in required:
         if value not in source:
             raise ContractViolation("source metadata missing: %s" % value)
+    if bundle_id != "com.ohmymeme.app":
+        _fail("bundle id", "com.ohmymeme.app", bundle_id)
+    if 'shutil.copy2(info_plist, contents_dir / "Info.plist")' not in build_script:
+        raise ContractViolation("macOS bundle id input is not wired to packaging")
 
 
 def contract_report(target=None, channel="stable"):
@@ -182,6 +225,9 @@ def contract_report(target=None, channel="stable"):
                 "channel": contract.channel,
                 "package_version": contract.package_version,
                 "updater_selectable": contract.updater_selectable,
+                "lifecycle_probes": [
+                    probe.phase for probe in contract.lifecycle_probes
+                ],
                 "valid": True,
             }
         )
