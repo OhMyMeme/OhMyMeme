@@ -64,8 +64,9 @@ from .clipboard_util import (
     convert_image_mode_3,
     copy_image_to_clipboard,
 )
-from .config import _IMPORT_MAX_BYTES, _IMPORT_MAX_PX, get_config
+from .config import get_config
 from .database import get_db
+from .import_service import ImageImportService, ImportBytes, ImportPath
 from .manifest import build as build_manifest
 
 logger = logging.getLogger(__name__)
@@ -2478,79 +2479,18 @@ class WebUI:
         return ""
 
     def _do_import(self, file_paths, names=None):
-        import shutil
-
-        cfg = get_config()
-        db = get_db()
-        cache_dir = cfg.cache_dir
-        imported = 0
-        rejected = 0
-        imported_ids = []
-        for i, src in enumerate(file_paths):
-            try:
-                base_name = (
-                    names[i]
-                    if names and i < len(names)
-                    else os.path.splitext(os.path.basename(src))[0]
-                )
-                # 隐写 GIF 无论开关与否都只入库解码还原的原图（开关仅控制复制输出）
-                restored = None
-                if _detect_image_ext(src) == ".gif":
-                    restored = _try_decode_stego(src)
-                if restored:
-                    items = [(restored, base_name, None, 1)]
-                else:
-                    items = [(src, base_name, None, 0)]
-                for path, oname, stego_of_hash, from_stego in items:
-                    w = h = 0
-                    try:
-                        fsize = os.path.getsize(path)
-                    except OSError:
-                        fsize = 0
-                    if HAS_PIL:
-                        try:
-                            with PILImage.open(path) as img:
-                                w, h = img.size
-                        except Exception:
-                            pass
-                    if fsize > _IMPORT_MAX_BYTES or max(w, h) > _IMPORT_MAX_PX:
-                        rejected += 1
-                        logger.info(
-                            "import rejected (over limit): %s", os.path.basename(path)
-                        )
-                        continue
-                    fhash = _file_sha256(path)
-                    if db.get_by_hash(fhash):
-                        continue
-                    ext = _detect_image_ext(path) or os.path.splitext(path)[1] or ".png"
-                    dst = cache_dir / f"{fhash[:16]}{ext}"
-                    shutil.copy2(path, dst)
-                    db.add_meme(
-                        filename=dst.name,
-                        file_hash=fhash,
-                        width=w,
-                        height=h,
-                        file_size=fsize,
-                        mime_type=f"image/{ext[1:]}" if ext else "image/png",
-                        original_name=oname,
-                        stego_of_hash=stego_of_hash,
-                        from_stego=from_stego,
-                    )
-                    row = db.get_by_hash(fhash)
-                    if row:
-                        imported_ids.append(row["id"])
-                    imported += 1
-                if restored:
-                    try:
-                        os.unlink(restored)
-                    except OSError:
-                        pass
-            except Exception as e:
-                logger.error(f"import {src}: {e}")
-        if imported:
-            build_manifest()
-        logger.info(f"导入完成: {imported} 个")
-        return {"ids": imported_ids, "rejected": rejected}
+        requests = []
+        for index, source in enumerate(file_paths):
+            original_name = (
+                names[index]
+                if names and index < len(names)
+                else os.path.splitext(os.path.basename(source))[0]
+            )
+            requests.append(ImportPath(Path(source), original_name))
+        result = ImageImportService(
+            get_db(), self._cfg.cache_dir, build_manifest, _try_decode_stego
+        ).import_batch(requests)
+        return {"ids": list(result.imported_ids), "rejected": result.rejected}
 
     def _on_hotkey_change(self, new_hotkey: str):
         if self._on_hotkey_change_cb:
@@ -2659,31 +2599,20 @@ class WebUI:
 
                 data = json.loads(bottle.request.body.read())
                 files = data.get("files", []) if isinstance(data, dict) else data
-                allowed = {".png", ".jpg", ".jpeg", ".gif", ".webp", ".bmp"}
-                paths, names = [], []
+                requests = []
                 for item in files:
                     oname = item.get("name", "")
                     b64 = item.get("data", "")
-                    ext = os.path.splitext(oname)[1].lower()
-                    if ext not in allowed or not b64:
+                    if not oname or not b64:
                         continue
                     import base64
-                    import uuid
 
                     raw = base64.b64decode(b64)
-                    tmp = str(self._cfg.cache_dir / f"_upload_{uuid.uuid4().hex}{ext}")
-                    with open(tmp, "wb") as f:
-                        f.write(raw)
-                    paths.append(tmp)
-                    base = os.path.splitext(oname)[0]
-                    names.append(base)
-                if paths:
-                    self._do_import(paths, names)
-                    for p in paths:
-                        try:
-                            os.unlink(p)
-                        except Exception:
-                            pass
+                    requests.append(ImportBytes(raw, oname))
+                if requests:
+                    ImageImportService(
+                        get_db(), self._cfg.cache_dir, build_manifest, _try_decode_stego
+                    ).import_batch(requests)
                 return {"ok": True}
             except Exception as e:
                 logger.error(f"upload error: {e}")
@@ -2713,8 +2642,6 @@ class WebUI:
 
     def scan_cache(self):
         """扫描本地缓存目录，将已有文件自动注册到数据库"""
-        import hashlib
-
         cache_dir = self._cfg.cache_dir
         db = get_db()
         allowed_ext = {".png", ".jpg", ".jpeg", ".gif", ".webp", ".bmp"}
@@ -2737,36 +2664,10 @@ class WebUI:
                 if db.get_by_filename(fname):
                     continue
                 try:
-                    fsize = os.path.getsize(fpath)
-                    w = h = 0
-                    if HAS_PIL:
-                        try:
-                            with PILImage.open(fpath) as img:
-                                w, h = img.size
-                        except Exception:
-                            pass
-                    if fsize > _IMPORT_MAX_BYTES or max(w, h) > _IMPORT_MAX_PX:
-                        logger.info("scan_cache skip (over limit): %s", fname)
-                        continue
-                    sha256 = hashlib.sha256()
-                    with open(fpath, "rb") as f:
-                        for chunk in iter(lambda: f.read(65536), b""):
-                            sha256.update(chunk)
-                    fhash = sha256.hexdigest()
-                    if db.get_by_hash(fhash):
-                        continue
-                    mime = f"image/{ext[1:]}" if ext else "image/png"
-                    oname = os.path.splitext(fname)[0]
-                    db.add_meme(
-                        filename=fname,
-                        file_hash=fhash,
-                        width=w,
-                        height=h,
-                        file_size=fsize,
-                        mime_type=mime,
-                        original_name=oname,
-                    )
-                    added += 1
+                    result = ImageImportService(
+                        db, cache_dir, build_manifest, _try_decode_stego
+                    ).register_existing_path(ImportPath(Path(fpath), fname))
+                    added += len(result.imported_ids)
                 except Exception as e:
                     logger.warning(f"scan_cache skip {fname}: {e}")
         if added:

@@ -3,7 +3,6 @@
 import base64
 import hashlib
 import hmac
-import io
 import json
 import logging
 import os
@@ -23,13 +22,9 @@ except ImportError:
     HAS_AESGCM = False
 
 from . import __version__
-from .config import (
-    _IMPORT_MAX_BYTES,
-    _IMPORT_MAX_PX,
-    _SECRET_KEYS,
-    get_config,
-)
+from .config import _SECRET_KEYS, get_config
 from .database import get_db
+from .import_service import ImageImportService, ImportBytes
 from .manifest import build as build_manifest
 
 logger = logging.getLogger(__name__)
@@ -552,47 +547,18 @@ def _find_meme_file(filename: str):
 
 def _import_bytes(data: bytes, filename: str) -> dict:
     """把收到的文件字节校验合法性后按哈希去重入库（不合法不落盘，杜绝孤儿文件）"""
-    db = get_db()
-    cache_dir = get_config().cache_dir
-    ext = _detect_ext(data[:16]) or os.path.splitext(filename)[1] or ".png"
-    if not ext:
-        return {"ok": False, "error": "无法识别的图片格式"}
-    # 先解码校验图片，确认宽高有效后才写缓存，避免孤儿文件
     try:
-        from PIL import Image as PILImage
-
-        img = PILImage.open(io.BytesIO(data))
-        w, h = img.size
-    except Exception:
-        return {"ok": False, "error": "图片解析失败"}
-    if w <= 0 or h <= 0:
-        return {"ok": False, "error": "图片尺寸无效"}
-    if len(data) > _IMPORT_MAX_BYTES:
-        return {
-            "ok": False,
-            "error": "文件超过 %dMB 限制" % (_IMPORT_MAX_BYTES // (1024 * 1024)),
-        }
-    if max(w, h) > _IMPORT_MAX_PX:
-        return {"ok": False, "error": "分辨率超过 %dK 限制" % (_IMPORT_MAX_PX // 1000)}
-    fhash = hashlib.sha256(data).hexdigest()
-    if db.get_by_hash(fhash):
-        return {"ok": True, "dedup": True}
-    dst = cache_dir / f"{fhash[:16]}{ext}"
-    try:
-        dst.write_bytes(data)
+        result = ImageImportService(
+            get_db(), get_config().cache_dir, build_manifest
+        ).import_bytes(ImportBytes(data, filename))
     except OSError:
         return {"ok": False, "error": "写入缓存失败"}
-    db.add_meme(
-        filename=dst.name,
-        file_hash=fhash,
-        width=w,
-        height=h,
-        file_size=len(data),
-        mime_type=f"image/{ext[1:]}",
-        original_name=os.path.splitext(filename)[0],
-    )
-    build_manifest()
-    return {"ok": True, "filename": dst.name}
+    if result.rejected:
+        return {"ok": False, "error": "图片解析失败或超过导入限制"}
+    if not result.imported_ids:
+        return {"ok": True, "dedup": True}
+    row = get_db().get_by_id(result.imported_ids[0])
+    return {"ok": True, "filename": row["filename"]}
 
 
 def _detect_ext(data: bytes):
