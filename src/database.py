@@ -169,9 +169,7 @@ class MemeDB:
         with self._lock:
             conn = self._get_conn()
             placeholders = ",".join("?" for _ in meme_ids)
-            conn.execute(
-                f"DELETE FROM memes WHERE id IN ({placeholders})", meme_ids
-            )
+            conn.execute(f"DELETE FROM memes WHERE id IN ({placeholders})", meme_ids)
             self._prune_orphan_tags(conn)
             conn.commit()
 
