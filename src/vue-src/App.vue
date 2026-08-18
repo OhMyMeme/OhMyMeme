@@ -16,7 +16,7 @@ import TagEditor from './components/TagEditor.vue'
 import UpdateDialog from './components/UpdateDialog.vue'
 import type { Meme } from './types'
 
-const { state, setMemes, search, goToPage, setSearch, toggleTag, setActiveCollection, refreshTags, refreshCollections, copyMeme, reorderMemes, canReorder, startNativeDrag, loadInitData } = useMemes()
+const { state, setMemes, search, goToPage, setSearch, toggleTag, setActiveCollection, refreshTags, refreshCollections, copyMeme, reorderMemes, canReorder, startNativeDrag, selectAllVisible, clearSelection, loadInitData } = useMemes()
 const ctx = useContextMenu()
 const cb = useCollectionBuilder()
 const tagEditor = ref<InstanceType<typeof TagEditor> | null>(null)
@@ -147,6 +147,8 @@ function onFolderCardContext(e: MouseEvent, childId: number, childName: string) 
 
 async function handleCopy(meme: Meme) {
   if (ignoreClick) { ignoreClick = false; return }
+  // 整理模式：勾选由 drag-select-option 处理，这里不复制也不二次切换
+  if (sortEnabled.value) return
   const ok = await copyMeme(meme.id)
   if (ok) showToast(`${meme.name} 已复制`)
   else showToast('复制失败')
@@ -182,6 +184,7 @@ function toggleSidebar() { sidebarCollapsed.value = !sidebarCollapsed.value }
 function toggleSort() {
   sortEnabled.value = !sortEnabled.value
   drag.toggle()
+  if (!sortEnabled.value) clearSelection()
 }
 
 const importMenu = ref<InstanceType<typeof ImportMenu> | null>(null)
@@ -422,6 +425,42 @@ async function onCtxAction(action: string) {
   }
 }
 
+// 批量删除选中的表情包（整理模式操作栏）
+async function batchDelete() {
+  const ids = [...state.selectedIds]
+  if (ids.length === 0) return
+  if (!await confirmAsk('批量删除', `确定删除选中的 ${ids.length} 个表情包吗？此操作不可恢复。`)) return
+  // 后端异常或 pywebview 不可用：报错即中止，不刷新以免 UI 与 DB 不一致
+  let result: any
+  try {
+    result = await window.pywebview?.api?.delete_memes(ids)
+  } catch {
+    showToast('批量删除失败')
+    return
+  }
+  if (!result?.ok) {
+    showToast('批量删除失败')
+    return
+  }
+  if (result.deleted === 0) {
+    // 后端一个都没删掉（所选 id 在库中已不存在），刷新以对齐 UI
+    showToast('没有删除任何表情包')
+    await search(false)
+    refreshCollections()
+    refreshTags()
+    return
+  }
+  showToast(`已删除 ${result.deleted ?? ids.length} 个表情包`)
+  await search(false) // search() 内已清空选择
+  // 当前页删空时钳回新末页，避免空页
+  if (state.memes.length === 0 && state.page > 1) {
+    state.page = Math.max(1, Math.min(state.page, state.pageCount))
+    await search(false)
+  }
+  refreshCollections()
+  refreshTags()
+}
+
 // 在 collections 树中查找 target 的父分组
 function findParentCollection(items: any[], target: number): any | null {
   for (const c of items) {
@@ -613,10 +652,11 @@ async function onDrop(e: DragEvent) {
   }
 }
 
-// ESC：有右键菜单时先关菜单，否则隐藏窗口
+// ESC：右键菜单 → 整理模式 → 隐藏窗口
 function onDocKeydown(e: KeyboardEvent) {
   if (e.key !== 'Escape') return
   if (ctx.visible.value) { ctx.hide(); return }
+  if (sortEnabled.value) { toggleSort(); return }
   hideWindow()
 }
 
@@ -751,6 +791,13 @@ onUnmounted(() => {
           @go="goToPage"
         />
 
+        <div v-if="sortEnabled" id="batch-bar">
+          <span class="count">已选 {{ state.selectedIds.size }} 项</span>
+          <button class="btn btn-sm" :disabled="state.memes.length === 0" @click="selectAllVisible">全选当前页</button>
+          <button class="btn btn-sm btn-secondary" :disabled="state.selectedIds.size === 0" @click="clearSelection">取消选择</button>
+          <button class="btn btn-sm btn-danger" :disabled="state.selectedIds.size === 0" @click="batchDelete">批量删除</button>
+        </div>
+
         <div id="grid-wrap">
           <div v-if="folderCards.length" class="meme-grid folder-grid" :style="{ gridTemplateColumns: `repeat(${gridCols}, 1fr)` }">
             <div
@@ -768,32 +815,46 @@ onUnmounted(() => {
             </div>
           </div>
 
-          <TransitionGroup
-            id="meme-grid"
-            tag="div"
-            name="meme-list"
-            class="meme-grid"
-            :class="{ 'sort-enabled': sortEnabled && canReorder() }"
-            :style="{ gridTemplateColumns: `repeat(${gridCols}, 1fr)` }"
+          <drag-select
+            v-model="state.selectedIds"
+            :disabled="true"
+            :multiple="true"
+            :click-option-to-select="sortEnabled"
+            :draggable-on-option="false"
+            :click-blank-to-clear="false"
           >
-            <div
-              v-for="meme in state.memes"
-              :key="meme.id"
-              class="meme-card"
-              :class="{ 'dragging': drag.dragState.active && drag.dragState.memeId === meme.id }"
-              :data-meme-id="meme.id"
-              @click="handleCopy(meme)"
-              @contextmenu="onMemeRightClick($event, meme)"
-              @pointerdown="onCardPointerDown($event, meme, $event.currentTarget as HTMLElement)"
-              @mouseenter="onCardMouseEnter(meme)"
-              @mouseleave="onCardMouseLeave(meme)"
+            <TransitionGroup
+              id="meme-grid"
+              tag="div"
+              name="meme-list"
+              class="meme-grid"
+              :class="{ 'sort-enabled': sortEnabled && canReorder() }"
+              :style="{ gridTemplateColumns: `repeat(${gridCols}, 1fr)` }"
             >
-              <img :src="memeSrc(meme)" :alt="meme.name" loading="lazy">
-              <span v-if="meme.from_stego" class="gif-badge stego-badge">隐写导入</span>
-              <span v-else-if="meme.is_animated" class="gif-badge">{{ meme.is_gif ? 'GIF' : 'WebP' }}</span>
-              <span class="meme-name">{{ meme.name }}</span>
-            </div>
-          </TransitionGroup>
+              <drag-select-option
+                v-for="meme in state.memes"
+                :key="meme.id"
+                :value="meme.id"
+              >
+                <div
+                  class="meme-card"
+                  :class="{ 'dragging': drag.dragState.active && drag.dragState.memeId === meme.id, selected: state.selectedIds.has(meme.id) }"
+                  :data-meme-id="meme.id"
+                  @click="handleCopy(meme)"
+                  @contextmenu="onMemeRightClick($event, meme)"
+                  @pointerdown="onCardPointerDown($event, meme, $event.currentTarget as HTMLElement)"
+                  @mouseenter="onCardMouseEnter(meme)"
+                  @mouseleave="onCardMouseLeave(meme)"
+                >
+                  <img :src="memeSrc(meme)" :alt="meme.name" loading="lazy">
+                  <span v-if="state.selectedIds.has(meme.id)" class="select-badge">✓</span>
+                  <span v-if="meme.from_stego" class="gif-badge stego-badge">隐写导入</span>
+                  <span v-else-if="meme.is_animated" class="gif-badge">{{ meme.is_gif ? 'GIF' : 'WebP' }}</span>
+                  <span class="meme-name">{{ meme.name }}</span>
+                </div>
+              </drag-select-option>
+            </TransitionGroup>
+          </drag-select>
 
           <div v-if="state.memes.length === 0 && !state.loading" id="empty">
             <div class="icon">_(:3 」∠)_</div>

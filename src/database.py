@@ -162,12 +162,21 @@ class MemeDB:
                 conn.commit()
             return meme_id
 
-    def delete_meme(self, meme_id: int):
+    def delete_memes(self, meme_ids: List[int]):
+        """批量删除表情（单锁单事务），一次性清理孤儿标签"""
+        if not meme_ids:
+            return
         with self._lock:
             conn = self._get_conn()
-            conn.execute("DELETE FROM memes WHERE id=?", (meme_id,))
+            placeholders = ",".join("?" for _ in meme_ids)
+            conn.execute(
+                f"DELETE FROM memes WHERE id IN ({placeholders})", meme_ids
+            )
             self._prune_orphan_tags(conn)
             conn.commit()
+
+    def delete_meme(self, meme_id: int):
+        self.delete_memes([meme_id])
 
     def update_meme(self, meme_id: int, **kwargs):
         allowed = {

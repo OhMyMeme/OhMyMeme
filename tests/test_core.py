@@ -170,6 +170,29 @@ class TestDatabase(unittest.TestCase):
         self.db.delete_meme(mid)
         self.assertIsNone(self.db.get_by_id(mid))
 
+    def test_delete_memes(self):
+        m1 = self.db.add_meme("a.png", tags=["shared", "only1"])
+        m2 = self.db.add_meme("b.png", tags=["shared"])
+        m3 = self.db.add_meme("c.png", tags=["only2"])
+        cid = self.db.create_collection("g")
+        self.db.add_to_collection(m1, cid)
+        self.db.toggle_favorite(m2)
+        self.db.delete_memes([m1, m2])
+        self.assertIsNone(self.db.get_by_id(m1))
+        self.assertIsNone(self.db.get_by_id(m2))
+        self.assertIsNotNone(self.db.get_by_id(m3))
+        # 孤儿标签一次性修剪
+        self.assertEqual(set(self.db.get_all_tags()), {"only2"})
+        # 外键级联清理分组成员关系
+        rows = self.db._get_conn().execute(
+            "SELECT 1 FROM meme_collections WHERE meme_id=?", (m1,)
+        ).fetchall()
+        self.assertEqual(len(rows), 0)
+        self.assertFalse(self.db.is_favorite(m2))
+
+    def test_delete_memes_empty_list(self):
+        self.db.delete_memes([])  # 空列表不炸
+
     def test_search(self):
         self.db.add_meme("cat.png", tags=["cat", "funny"])
         self.db.add_meme("dog.png", tags=["dog"])

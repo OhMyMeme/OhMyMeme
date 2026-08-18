@@ -1,4 +1,5 @@
 import { createApp, h, ref } from 'vue'
+import VueDragSelect from '@coleqiu/vue-drag-select'
 import App from './App.vue'
 import './style.css'
 
@@ -64,4 +65,5 @@ function showLanDeviceConfirm(device: any) {
 window.showLanDeviceConfirm = showLanDeviceConfirm
 
 const app = createApp(App)
+app.use(VueDragSelect) // 注册 <drag-select> / <drag-select-option>
 app.mount('#app-mount')
