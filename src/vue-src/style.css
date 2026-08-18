@@ -603,6 +603,63 @@ body {
   box-shadow: 0 4px 12px rgba(59, 130, 246, 0.3);
 }
 
+/* ── 多选批量删除（整理模式） ── */
+
+/* drag-select-option 作为网格单元格，卡片填满单元格 */
+.drag-select-option {
+  display: block;
+  position: relative;
+  min-width: 0;
+}
+
+/* 整理模式选中态：停止晃动、outline 高亮
+   （选择器须与排序晃动规则同级特异性 (1,5,0)，且后置，才能覆盖其 animation） */
+#meme-grid.sort-enabled:not(.drag-active) .meme-card.selected:not(.dragging):not(.sort-enter) {
+  outline: 3px solid var(--primary);
+  outline-offset: 3px;
+  animation: none;
+  rotate: 0deg;
+}
+
+#meme-grid.sort-enabled .meme-card.selected:hover {
+  transform: translateY(-1px) scale(0.95);
+}
+
+/* 勾选角标（左上，点击透传不拦截） */
+.select-badge {
+  position: absolute;
+  top: 6px;
+  left: 6px;
+  width: 20px;
+  height: 20px;
+  border-radius: 50%;
+  background: var(--primary);
+  color: #fff;
+  font-size: 13px;
+  line-height: 20px;
+  text-align: center;
+  pointer-events: none;
+  z-index: 2;
+}
+
+/* 底部批量操作栏（flow 布局，不与 toast/弹层重叠） */
+#batch-bar {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 12px;
+  background: var(--surface);
+  border-bottom: 1px solid var(--border);
+  flex-shrink: 0;
+}
+
+#batch-bar .count {
+  margin-right: auto;
+  font-size: 12px;
+  color: var(--fg-secondary);
+  font-variant-numeric: tabular-nums;
+}
+
 /* Empty State */
 #empty {
   display: flex;

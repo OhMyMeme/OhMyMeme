@@ -574,9 +574,10 @@ class _WebDAVBackend(_SyncBackend):
         tmp_path = local_path.with_suffix(local_path.suffix + ".tmp")
         try:
             local_path.parent.mkdir(parents=True, exist_ok=True)
-            with self._request("GET", self._url(remote_path)) as resp, tmp_path.open(
-                "wb"
-            ) as f:
+            with (
+                self._request("GET", self._url(remote_path)) as resp,
+                tmp_path.open("wb") as f,
+            ):
                 shutil.copyfileobj(resp, f, length=1024 * 1024)
             os.replace(tmp_path, local_path)
             return True

@@ -503,7 +503,8 @@ class JsApi:
             logging.getLogger(__name__).error(f"rename error: {e}")
             return False
 
-    def delete_meme(self, meme_id: int) -> bool:
+    def _delete_meme_files(self, meme_id) -> bool:
+        """删除磁盘原图+缩略图+file_cache 条目；id 不存在返回 False"""
         import os
 
         row = self._db.get_by_id(meme_id)
@@ -523,9 +524,26 @@ class JsApi:
                 pass
         if hasattr(self._webui, "_file_cache"):
             self._webui._file_cache.pop(row["filename"], None)
+        return True
+
+    def delete_meme(self, meme_id: int) -> bool:
+        if not self._delete_meme_files(meme_id):
+            return False
         self._db.delete_meme(meme_id)
         build_manifest()
         return True
+
+    def delete_memes(self, meme_ids: list) -> dict:
+        """批量删除，返回 {ok, deleted}"""
+        ids = list(dict.fromkeys(int(x) for x in (meme_ids or [])))
+        deleted = 0
+        for mid in ids:
+            if self._delete_meme_files(mid):
+                deleted += 1
+        if deleted:
+            self._db.delete_memes(ids)
+            build_manifest()  # 只重建一次 manifest
+        return {"ok": True, "deleted": deleted}
 
     # 递归获取分组及其所有子分组的 ID 列表
     def _get_collection_ids_recursive(self, collection_id):

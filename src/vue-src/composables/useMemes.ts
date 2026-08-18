@@ -9,6 +9,7 @@ const state = reactive({
   collections: [] as any[],
   activeCollection: null as number | null,
   activeTags: new Set<string>(),
+  selectedIds: new Set<number>(),
   allTags: [] as string[],
   searchQuery: '',
   total: 0,
@@ -47,6 +48,8 @@ export function useMemes() {
     const gen = ++searchGen
     if (resetPage) state.page = 1
     state.loading = true
+    // 换页/筛选/切分组即清空选择（「全选当前页」语义）
+    state.selectedIds = new Set()
     const offset = (state.page - 1) * MEME_PAGE
     try {
       const [countResult, memesResult] = await Promise.all([
@@ -103,6 +106,9 @@ export function useMemes() {
   }
   function setMemes(newMemes: Meme[]) { state.memes = newMemes }
 
+  function selectAllVisible() { state.selectedIds = new Set(state.memes.map(m => m.id)) }
+  function clearSelection() { state.selectedIds = new Set() }
+
   function canReorder(): boolean {
     const q = state.searchQuery.trim()
     if (q || state.activeTags.size > 0) return false
@@ -128,6 +134,8 @@ export function useMemes() {
     reorderMemes,
     canReorder,
     startNativeDrag,
+    selectAllVisible,
+    clearSelection,
     loadInitData,
     waitForPywebview,
     MEME_PAGE,
