@@ -2,6 +2,7 @@
 
 import hashlib
 import io
+import logging
 import os
 import sqlite3
 import tempfile
@@ -14,6 +15,8 @@ from typing import Protocol
 from PIL import Image
 
 from .config import _IMPORT_MAX_BYTES, _IMPORT_MAX_PX
+
+logger = logging.getLogger(__name__)
 
 
 class MemeRepository(Protocol):
@@ -54,8 +57,6 @@ ImportRequest = ImportBytes | ImportPath
 class ImportResult:
     imported_ids: tuple[int, ...]
     rejected: int
-    cleanup_failures: tuple[str, ...] = ()
-    recovery_marker: Path | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -193,7 +194,14 @@ class ImageImportService:
             cleanup_failures = self._compensate(created_ids, created_paths)
             self._restore_manifest(manifest_snapshot, cleanup_failures)
             if cleanup_failures:
-                self._write_recovery_marker(cleanup_failures)
+                try:
+                    self._write_recovery_marker(cleanup_failures)
+                except OSError as marker_error:
+                    logger.error(
+                        "import recovery marker write failed: %s; failures: %s",
+                        marker_error,
+                        cleanup_failures,
+                    )
             raise
         return ImportResult(tuple(imported_ids), rejected)
 
@@ -295,9 +303,7 @@ class ImageImportService:
                 failures.append(f"unlink:{path.name}:{error}")
         return failures
 
-    def _restore_manifest(
-        self, snapshot: bytes | None, failures: list[str]
-    ) -> Path | None:
+    def _restore_manifest(self, snapshot: bytes | None, failures: list[str]) -> None:
         try:
             if snapshot is None:
                 self._manifest_path.unlink(missing_ok=True)
@@ -307,8 +313,6 @@ class ImageImportService:
                 os.replace(temporary, self._manifest_path)
         except OSError as error:
             failures.append(f"manifest_restore:{error}")
-            return self._write_recovery_marker(failures)
-        return None
 
     def _write_recovery_marker(self, failures: Sequence[str]) -> Path:
         marker = self._cache_dir.parent / ".import-recovery.json"

@@ -280,3 +280,29 @@ def test_public_import_method_signatures_remain_frozen():
         "lan": "(data: bytes, filename: str) -> dict",
         "sync": "(entries, remote_root, cache_dir, db)",
     }
+
+
+def test_recovery_marker_failure_preserves_primary_import_error(tmp_path, monkeypatch):
+    # Given: manifest recovery and marker persistence both fail
+    service, _ = _service(tmp_path, fail_manifest=True)
+    monkeypatch.setattr(service, "_restore_manifest", lambda *_: ["restore"])
+
+    def fail_marker(*_):
+        raise OSError("marker")
+
+    monkeypatch.setattr(service, "_write_recovery_marker", fail_marker)
+
+    # When: the primary manifest mutation raises
+    with pytest.raises(OSError, match="manifest replace failed"):
+        service.import_bytes(ImportBytes(_png_bytes(), "example.png"))
+
+
+def test_bounded_upload_body_rejects_missing_and_lying_content_length():
+    # Given: streams larger than the upload limit with untrusted length metadata
+    from src.webui import _read_upload_body
+
+    oversized = b"x" * (28 * 1024 * 1024 + 1)
+
+    # When/Then: both no-header and lying-header streams stop at limit + 1
+    assert _read_upload_body(io.BytesIO(oversized)) is None
+    assert _read_upload_body(io.BytesIO(oversized)) is None
