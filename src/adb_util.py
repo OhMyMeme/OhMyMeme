@@ -394,6 +394,7 @@ def _find_qq_favorite_dir(adb_path):
 
 
 def _qq_worker():
+    """后台执行 QQ 表情包导入：检测/下载 ADB → 连接设备 → 拉取缓存 → 打包 ZIP"""
     _update_qq(status="downloading_adb", progress=0, message="检查 ADB...", error="")
     adb_path = detect_adb()
     if _check_cancel():

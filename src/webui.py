@@ -1060,7 +1060,7 @@ class JsApi:
             return {"ok": False, "error": str(e)}
 
     def open_settings(self):
-        self._webui.open_settings()
+        return self._webui.open_settings()
 
     def lan_confirm_device(self, approved: bool) -> dict:
         from . import lan
@@ -1282,6 +1282,8 @@ def start_qqnt_extract(
 def _qqnt_worker(
     qq_number, output_dir, image_only, overwrite, ini_path, userdata_save_path
 ):
+    """后台执行 QQNT 表情提取：调用 qqnt_extract 并转发进度/错误到 _QQNT_STATE"""
+
     def on_progress(done, total, src, dst):
         pct = int(done * 100 / total) if total else 0
         _set_qqnt(progress=pct, message="复制中 %d/%d" % (done, total))
@@ -1310,7 +1312,7 @@ def _qqnt_worker(
         else:
             _set_qqnt(status="done", progress=100, message="提取完成", result=result)
     except Exception as e:
-        logger.error(f"qqnt extract error: {e}")
+        logger.error("qqnt extract error: %s", e)
         _set_qqnt(status="error", message="提取失败", error=str(e))
 
 
@@ -2754,7 +2756,7 @@ class WebUI:
         return True
 
     def open_settings(self):
-        self._create_settings_window()
+        return self._create_settings_window()
 
     def _create_settings_window(self):
         try:
@@ -2776,8 +2778,10 @@ class WebUI:
                 frameless=True,
                 easy_drag=False,
             )
+            return True
         except Exception as e:
             logger.warning(f"create settings window error: {e}")
+            return False
 
     def close_settings(self):
         if self._settings_window:

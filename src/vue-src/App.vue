@@ -174,9 +174,9 @@ function debounceSearch() {
   searchTimer = setTimeout(() => search(), 300)
 }
 
-function openSettings() {
+async function openSettings() {
   try {
-    const ok = window.pywebview?.api?.open_settings()
+    const ok = await window.pywebview?.api?.open_settings()
     if (!ok) showToast('无法打开设置窗口')
   } catch (_) {
     showToast('无法打开设置窗口')
@@ -650,18 +650,24 @@ async function onDrop(e: DragEvent) {
     }
   }
   if (file) {
+    let b64: string
     try {
-      const b64 = await new Promise<string>((resolve, reject) => {
+      b64 = await new Promise<string>((resolve, reject) => {
         const reader = new FileReader()
         reader.onload = () => resolve((reader.result as string).split(',')[1])
         reader.onerror = () => reject(reader.error)
         reader.readAsDataURL(file!)
       })
+    } catch (_) {
+      showToast('导入失败：无法读取文件')
+      return
+    }
+    try {
       const res = await fetch('/api/upload/', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ files: [{ name: file.name, data: b64 }] }) })
       if (res.ok) { showToast('导入成功'); search(); refreshCollections() }
       else { showToast('导入失败：服务器返回错误') }
     } catch (_) {
-      showToast('导入失败：无法读取文件')
+      showToast('导入失败：网络或服务异常')
     }
     return
   }

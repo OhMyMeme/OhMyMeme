@@ -984,9 +984,6 @@ async function startDYImport() {
       } else if (s.status === 'error') {
         document.getElementById('dy-import-title').textContent = '导入失败';
         if (dyPollTimer) { clearInterval(dyPollTimer); dyPollTimer = null; }
-        const el = document.getElementById('dy-status');
-        el.textContent = '导入失败: ' + (s.error || '');
-        el.className = 'error';
         let hint = s.error || '未知错误';
         if (s.error_code === 'login_failed') {
           hint += '；请从浏览器抖音网页版重新复制 Cookie 后重试';
@@ -995,6 +992,9 @@ async function startDYImport() {
         } else if (s.error_code === 'no_stickers') {
           hint += '；请确认抖音收藏的自定义表情包存在';
         }
+        const el = document.getElementById('dy-status');
+        el.textContent = '导入失败: ' + hint;
+        el.className = 'error';
         document.getElementById('dy-import-error').style.display = '';
         document.getElementById('dy-import-error').textContent = hint;
         btn.disabled = false;

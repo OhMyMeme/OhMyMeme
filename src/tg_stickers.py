@@ -401,6 +401,7 @@ def start_tg_import(webui, tdata_path=None, passcode="", convert_webm=True):
             "loading_key",
             "decrypting",
             "converting",
+            "deduping",
             "importing",
         ):
             return False
@@ -624,7 +625,6 @@ def _tg_worker(webui, tdata_path, passcode, convert_webm):
         if _check_cancel():
             _update_tg(status="cancelled", message="已取消")
             return
-        # 分批入库，每批更新进度，避免大批量导入时进度条长时间不动
         total = len(decrypted_paths)
         imported_ids = []
         rejected = 0
