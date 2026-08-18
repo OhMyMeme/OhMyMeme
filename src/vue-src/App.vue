@@ -817,7 +817,7 @@ onUnmounted(() => {
 
           <drag-select
             v-model="state.selectedIds"
-            :disabled="true"
+            :disabled="!sortEnabled"
             :multiple="true"
             :click-option-to-select="sortEnabled"
             :draggable-on-option="false"
