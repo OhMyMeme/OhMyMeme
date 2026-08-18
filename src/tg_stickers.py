@@ -401,6 +401,7 @@ def start_tg_import(webui, tdata_path=None, passcode="", convert_webm=True):
             "loading_key",
             "decrypting",
             "converting",
+            "deduping",
             "importing",
         ):
             return False
@@ -424,6 +425,7 @@ def _tg_worker(webui, tdata_path, passcode, convert_webm):
         if tdata_path:
             tdata = tdata_path
             if not is_valid_tdata(tdata):
+                logger.error("tg import: 无效 tdata 目录: %s", tdata)
                 _update_tg(
                     status="error",
                     error_code="invalid_tdata",
@@ -436,6 +438,7 @@ def _tg_worker(webui, tdata_path, passcode, convert_webm):
         else:
             tdata = find_tdata_path()
             if not tdata:
+                logger.error("tg import: 未检测到 tdata 目录")
                 _update_tg(
                     status="error",
                     error_code="no_tdata",
@@ -453,6 +456,7 @@ def _tg_worker(webui, tdata_path, passcode, convert_webm):
         if not os.path.exists(key_path):
             key_path = os.path.join(tdata, "key_data")
         if not os.path.exists(key_path):
+            logger.error("tg import: 未找到 key_datas 文件: %s", key_path)
             _update_tg(
                 status="error",
                 error_code="invalid_tdata",
@@ -462,6 +466,7 @@ def _tg_worker(webui, tdata_path, passcode, convert_webm):
         try:
             local_key = read_local_key(key_path, passcode)
         except Exception as e:
+            logger.error("tg import: 密钥加载失败: %s", e)
             _update_tg(
                 status="error",
                 error_code="bad_key",
@@ -477,6 +482,7 @@ def _tg_worker(webui, tdata_path, passcode, convert_webm):
             if os.path.isdir(p):
                 cache_dirs.append(p)
         if not cache_dirs:
+            logger.error("tg import: 未找到缓存目录: %s", tdata)
             _update_tg(status="error", error_code="no_cache", error="未找到缓存目录")
             return
         all_files = []
@@ -538,6 +544,7 @@ def _tg_worker(webui, tdata_path, passcode, convert_webm):
         if convert_webm:
             webm_count = sum(1 for p in decrypted_paths if p.endswith(".webm"))
             if webm_count and not _check_ffmpeg():
+                logger.error("tg import: 检测到 WebM 但未安装 ffmpeg")
                 _update_tg(
                     status="error",
                     error_code="no_ffmpeg",
@@ -583,6 +590,13 @@ def _tg_worker(webui, tdata_path, passcode, convert_webm):
             _update_tg(status="converting", message="转换完成")
         skipped_static = 0
         if decrypted_paths:
+            _update_tg(
+                status="deduping",
+                message="正在去重动态表情的静态版本...",
+                progress=0,
+                done=0,
+                total=len(decrypted_paths),
+            )
             decrypted_paths, skipped_static = dedup_static_against_animated(
                 decrypted_paths
             )
@@ -611,9 +625,25 @@ def _tg_worker(webui, tdata_path, passcode, convert_webm):
         if _check_cancel():
             _update_tg(status="cancelled", message="已取消")
             return
-        result = webui._do_import(decrypted_paths)
-        imported = len(result.get("ids", []))
-        rejected = result.get("rejected", 0)
+        total = len(decrypted_paths)
+        imported_ids = []
+        rejected = 0
+        batch = 20
+        for i in range(0, total, batch):
+            if _check_cancel():
+                _update_tg(status="cancelled", message="已取消")
+                return
+            chunk = decrypted_paths[i : i + batch]
+            r = webui._do_import(chunk)
+            imported_ids.extend(r.get("ids", []))
+            rejected += r.get("rejected", 0)
+            _update_tg(
+                status="importing",
+                message=f"正在导入: {min(i + batch, total)}/{total}",
+                progress=int(min(i + batch, total) / total * 100),
+                done=min(i + batch, total),
+            )
+        imported = len(imported_ids)
         msg = f"导入完成，共 {imported} 个表情"
         if convert_failed:
             msg += f"（{convert_failed} 个 WebM 转换失败已跳过）"
@@ -623,7 +653,7 @@ def _tg_worker(webui, tdata_path, passcode, convert_webm):
             status="done",
             message=msg,
             progress=100,
-            done=len(decrypted_paths),
+            done=total,
             imported=imported,
             rejected=rejected,
             convert_failed=convert_failed,
