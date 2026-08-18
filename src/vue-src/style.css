@@ -5,11 +5,12 @@
   --surface-2: #222228;
   --fg: #e2e8f0;
   --fg-secondary: #94a3b8;
-  --muted: #64748b;
+  --muted: #8a94a8;
   --border: #2a2a32;
   --border-light: #33333d;
   --primary: #3b82f6;
   --primary-light: #dbeafe;
+  --primary-strong: #1d4ed8;
   --danger: #ef4444;
   --accent: #3b82f6;
   --radius: 8px;
@@ -20,6 +21,12 @@
 }
 
 * { margin: 0; padding: 0; box-sizing: border-box; }
+
+/* 键盘焦点环（无障碍） */
+:focus-visible {
+  outline: 2px solid var(--primary);
+  outline-offset: 2px;
+}
 
 body {
   font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', 'Noto Sans SC', 'PingFang SC', 'Microsoft YaHei', sans-serif;
@@ -41,7 +48,7 @@ body {
 
 /* Titlebar */
 #titlebar {
-  height: 44px;
+  height: 38px;
   background: var(--surface);
   border-bottom: 1px solid var(--border);
   display: flex;
@@ -130,7 +137,7 @@ body {
 }
 
 .icon-btn.sort-on {
-  color: var(--primary);
+  color: var(--primary-strong);
   background: var(--primary-light);
 }
 
@@ -140,7 +147,11 @@ body {
 }
 
 .title-btn {
-  padding: 5px 10px;
+  height: 32px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0 10px;
   border-radius: var(--radius-sm);
   border: 1px solid var(--border);
   background: transparent;
@@ -166,14 +177,14 @@ body {
   display: flex;
   align-items: center;
   gap: 8px;
-  padding: 10px 12px;
+  padding: 6px 12px;
   flex-shrink: 0;
 }
 
 #search {
   flex: 1;
   min-width: 0;
-  padding: 9px 14px;
+  padding: 7px 32px 7px 12px;
   border-radius: var(--radius-sm);
   border: 1px solid var(--border);
   background: var(--surface);
@@ -181,6 +192,30 @@ body {
   font-size: 13px;
   outline: none;
   transition: border-color 0.15s;
+}
+
+.search-clear {
+  width: 26px;
+  height: 26px;
+  margin-left: -34px;
+  border-radius: 50%;
+  border: none;
+  background: var(--surface-2);
+  color: var(--muted);
+  font-size: 14px;
+  line-height: 1;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+  transition: all 0.15s;
+  z-index: 1;
+}
+
+.search-clear:hover {
+  color: var(--fg);
+  background: var(--border);
 }
 
 #search:focus {
@@ -252,7 +287,7 @@ body {
 
 .tree-row.active {
   background: var(--primary-light);
-  color: var(--primary);
+  color: var(--primary-strong);
 }
 
 .tree-icon {
@@ -287,7 +322,7 @@ body {
 }
 
 .tree-row.active .tree-icon {
-  color: var(--primary);
+  color: var(--primary-strong);
 }
 
 /* 折叠时的图标条高亮提示：胶囊底色 + 描边 */
@@ -315,7 +350,7 @@ body {
 }
 
 .tree-row.active .tree-count {
-  color: var(--primary);
+  color: var(--primary-strong);
 }
 
 /* Main */
@@ -332,7 +367,7 @@ body {
   display: flex;
   align-items: center;
   gap: 2px;
-  padding: 6px 12px;
+  padding: 2px 12px;
   border-bottom: 1px solid var(--border);
   flex-shrink: 0;
   overflow-x: auto;
@@ -373,13 +408,13 @@ body {
 
 /* Tagbar */
 #tagbar {
-  padding: 8px 12px;
+  padding: 4px 12px;
   display: flex;
   flex-wrap: wrap;
   gap: 6px;
   flex-shrink: 0;
   border-bottom: 1px solid var(--border);
-  max-height: 80px;
+  max-height: 52px;
   overflow-y: auto;
 }
 
@@ -402,14 +437,15 @@ body {
 .tag.active {
   background: var(--primary-light);
   border-color: var(--primary);
-  color: var(--primary);
+  color: var(--primary-strong);
+  font-weight: 500;
 }
 
 /* Grid */
 #grid-wrap {
   flex: 1;
   overflow-y: auto;
-  padding: 12px;
+  padding: 10px;
 }
 
 .meme-card {
@@ -460,6 +496,7 @@ body {
   transition: transform 0.2s ease;
 }
 
+/* 整理（拖拽排序）模式：缩放 + 描边 + 稳定卡轻微晃动 */
 #meme-grid.sort-enabled .meme-card {
   cursor: grab;
   transform: scale(0.95);
@@ -480,6 +517,11 @@ body {
 #meme-grid.sort-enabled .meme-card.dragging {
   transition: none;
   outline: 0 solid transparent;
+}
+
+#meme-grid.sort-enabled .meme-card:focus-visible {
+  outline: 2px solid var(--primary);
+  outline-offset: 2px;
 }
 
 /* 稳定卡轻微晃动循环：用独立 rotate 属性，避免覆盖拖拽/FLIP 的 transform */
@@ -582,6 +624,44 @@ body {
   color: #fff;
 }
 
+.fav-btn {
+  position: absolute;
+  top: 6px;
+  left: 6px;
+  width: 26px;
+  height: 26px;
+  border-radius: 50%;
+  border: 1px solid var(--border);
+  background: rgba(0, 0, 0, 0.55);
+  color: #fff;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+  opacity: 0;
+  transition: opacity 0.12s, background 0.12s, color 0.12s;
+  z-index: 3;
+}
+
+.fav-btn svg {
+  width: 14px;
+  height: 14px;
+}
+
+.fav-btn:hover {
+  background: rgba(0, 0, 0, 0.75);
+}
+
+.meme-card:hover .fav-btn,
+.fav-btn:focus-visible,
+.fav-btn.active {
+  opacity: 1;
+}
+
+.fav-btn.active {
+  color: #f43f5e;
+}
+
 .meme-card img {
   width: 100%;
   aspect-ratio: 1;
@@ -612,6 +692,16 @@ body {
   min-width: 0;
 }
 
+/* 多选模式选中态：outline 高亮（与拖拽排序模式独立） */
+#meme-grid.select-enabled .meme-card.selected {
+  outline: 2px solid var(--primary-strong);
+  outline-offset: 2px;
+}
+
+#meme-grid.select-enabled .meme-card.selected:hover {
+  outline-color: var(--primary);
+}
+
 /* 整理模式选中态：停止晃动、outline 高亮
    （选择器须与排序晃动规则同级特异性 (1,5,0)，且后置，才能覆盖其 animation） */
 #meme-grid.sort-enabled:not(.drag-active) .meme-card.selected:not(.dragging):not(.sort-enter) {
@@ -633,7 +723,7 @@ body {
   width: 20px;
   height: 20px;
   border-radius: 50%;
-  background: var(--primary);
+  background: var(--primary-strong);
   color: #fff;
   font-size: 13px;
   line-height: 20px;
@@ -671,11 +761,17 @@ body {
   color: var(--muted);
 }
 
-#empty .icon {
-  font-size: 40px;
+#empty .empty-svg {
+  width: 84px;
+  height: 84px;
+  color: var(--muted);
 }
 
 #empty .text {
+  font-size: 13px;
+}
+
+#empty .btn {
   font-size: 13px;
 }
 
@@ -836,14 +932,14 @@ body {
 }
 
 .btn-primary {
-  background: var(--primary);
-  border-color: var(--primary);
+  background: var(--primary-strong);
+  border-color: var(--primary-strong);
   color: #fff;
 }
 
 .btn-primary:hover {
-  background: #3b82f6;
-  border-color: #3b82f6;
+  background: #1e40af;
+  border-color: #1e40af;
 }
 
 .btn-secondary {

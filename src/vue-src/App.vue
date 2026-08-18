@@ -40,6 +40,7 @@ async function checkUpdateAndPrompt() {
 }
 
 const sortEnabled = ref(false)
+const selectMode = ref(false)
 const drag = useDragSort(
   () => state.memes,
   setMemes,
@@ -147,8 +148,8 @@ function onFolderCardContext(e: MouseEvent, childId: number, childName: string) 
 
 async function handleCopy(meme: Meme) {
   if (ignoreClick) { ignoreClick = false; return }
-  // 整理模式：勾选由 drag-select-option 处理，这里不复制也不二次切换
-  if (sortEnabled.value) return
+  // 整理/多选模式：不复制（勾选由 drag-select 处理）
+  if (sortEnabled.value || selectMode.value) return
   const ok = await copyMeme(meme.id)
   if (ok) showToast(`${meme.name} 已复制`)
   else showToast('复制失败')
@@ -162,10 +163,29 @@ function showToast(msg: string) {
   setTimeout(() => el.classList.remove('show'), 1600)
 }
 
+// 卡片悬停快速收藏（右键菜单外的一键入口）
+async function quickFavorite(meme: Meme) {
+  if (sortEnabled.value || selectMode.value) return
+  const ok = await window.pywebview?.api?.toggle_favorite(meme.id)
+  if (ok === null || ok === undefined) return
+  meme.favorited = ok
+  await refreshCollections()
+  if (!ok && state.activeCollection === -2) {
+    const fav = state.collections.find((c: any) => c.id === -2)
+    if (!fav || fav.count === 0) setActiveCollection(-4)
+  }
+  showToast(ok ? '已收藏' : '已取消收藏')
+}
+
 function onSearchInput(e: Event) {
   const q = (e.target as HTMLInputElement).value
   setSearch(q)
   debounceSearch()
+}
+
+function clearSearch() {
+  setSearch('')
+  search()
 }
 
 let searchTimer: ReturnType<typeof setTimeout>
@@ -186,8 +206,15 @@ function toggleSidebar() { sidebarCollapsed.value = !sidebarCollapsed.value }
 
 function toggleSort() {
   sortEnabled.value = !sortEnabled.value
-  drag.toggle()
+  if (sortEnabled.value) { selectMode.value = false; drag.enable() }
+  else drag.disable()
   if (!sortEnabled.value) clearSelection()
+}
+
+function toggleSelect() {
+  selectMode.value = !selectMode.value
+  if (selectMode.value) { sortEnabled.value = false; drag.disable() }
+  else clearSelection()
 }
 
 const importMenu = ref<InstanceType<typeof ImportMenu> | null>(null)
@@ -539,11 +566,11 @@ let ignoreClick = false
 
 function onCardPointerDown(e: PointerEvent, meme: Meme, card: HTMLElement) {
   ignoreClick = false
-  if (sortEnabled.value && canReorder()) {
+  if (sortEnabled.value && canReorder() && !selectMode.value) {
     drag.onPointerDown(e, meme.id, card)
     return
   }
-  if (e.button !== 0) return
+  if (e.button !== 0 || selectMode.value) return
   nativeDragStart = { x: e.clientX, y: e.clientY, memeId: meme.id }
 }
 
@@ -552,7 +579,7 @@ function onDocPointerMove(e: PointerEvent) {
     drag.onPointerMove(e)
     return
   }
-  if (!nativeDragStart || sortEnabled.value) return
+  if (!nativeDragStart || sortEnabled.value || selectMode.value) return
   const dist = Math.hypot(e.clientX - nativeDragStart.x, e.clientY - nativeDragStart.y)
   if (dist > 8) {
     const id = nativeDragStart.memeId
@@ -674,10 +701,11 @@ async function onDrop(e: DragEvent) {
   showToast('未识别到可导入的内容')
 }
 
-// ESC：右键菜单 → 整理模式 → 隐藏窗口
+// ESC：右键菜单 → 多选 → 整理模式 → 隐藏窗口
 function onDocKeydown(e: KeyboardEvent) {
   if (e.key !== 'Escape') return
   if (ctx.visible.value) { ctx.hide(); return }
+  if (selectMode.value) { toggleSelect(); return }
   if (sortEnabled.value) { toggleSort(); return }
   hideWindow()
 }
@@ -724,7 +752,8 @@ onUnmounted(() => {
     await refreshTags()
     await refreshCollections()
   }
-  if (state.showStartupAnimation) {
+  const prefersReducedMotion = !!(window.matchMedia && window.matchMedia('(prefers-reduced-motion: reduce)').matches)
+  if (state.showStartupAnimation && !prefersReducedMotion) {
     // 启动遮罩背景贴合视频边缘色（含 html/body 首次渲染）
     document.documentElement.style.background = state.startupBgColor
     document.body.style.background = state.startupBgColor
@@ -748,19 +777,22 @@ onUnmounted(() => {
       </div>
       <span class="spacer"></span>
       <div class="titlebar__actions">
-        <button class="icon-btn" :class="{ 'sort-on': sortEnabled }" title="拖拽排序" @click="toggleSort">
-          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 6h18M3 12h18M3 18h18"/></svg>
+        <button class="icon-btn" :class="{ 'sort-on': sortEnabled }" title="拖拽排序" aria-label="拖拽排序" @click="toggleSort">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M7 10l5-5 5 5M7 14l5 5 5-5"/></svg>
         </button>
-        <button class="icon-btn" title="上传到远端" @click="syncUpload()">
+        <button class="icon-btn" :class="{ 'sort-on': selectMode }" title="多选" aria-label="多选" @click="toggleSelect">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M9 11l3 3L22 4"/><path d="M21 12v7a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11"/></svg>
+        </button>
+        <button class="icon-btn" title="上传到远端" aria-label="上传到远端" @click="syncUpload()">
           <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 19V5m-7 7l7-7 7 7"/></svg>
         </button>
-        <button class="icon-btn" title="从远端下载" @click="syncDownload()">
+        <button class="icon-btn" title="从远端下载" aria-label="从远端下载" @click="syncDownload()">
           <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 5v14m-7-7l7 7 7-7"/></svg>
         </button>
         <button class="title-btn" @click="showImportMenu()">导入</button>
         <button class="title-btn" @click="rescanCache()">刷新</button>
         <button class="title-btn" @click="openSettings()">设置</button>
-        <button class="title-btn close-btn" @click="hideWindow()">×</button>
+        <button class="title-btn close-btn" aria-label="隐藏窗口" @click="hideWindow()">×</button>
       </div>
     </header>
 
@@ -783,16 +815,28 @@ onUnmounted(() => {
 
       <div id="main">
         <div id="search-wrap">
-          <button class="sidebar-toggle" :class="{ collapsed: sidebarCollapsed }" @click="toggleSidebar" title="折叠/展开侧边栏">
+          <button class="sidebar-toggle" :class="{ collapsed: sidebarCollapsed }" @click="toggleSidebar" title="折叠/展开侧边栏" aria-label="折叠/展开侧边栏" :aria-expanded="!sidebarCollapsed">
             <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
               <line x1="3" y1="6" x2="21" y2="6"/><line x1="3" y1="12" x2="21" y2="12"/><line x1="3" y1="18" x2="21" y2="18"/>
             </svg>
           </button>
           <input id="search" type="text" placeholder="搜索表情包..." :value="state.searchQuery" @input="onSearchInput" autofocus spellcheck="false">
+          <button v-if="state.searchQuery" class="search-clear" title="清除搜索" aria-label="清除搜索" @click="clearSearch">×</button>
         </div>
 
         <div id="tagbar">
-          <span v-for="tag in state.allTags" :key="tag" class="tag" :class="{ active: state.activeTags.has(tag) }" @click="toggleTag(tag)">{{ tag }}</span>
+          <span
+            v-for="tag in state.allTags"
+            :key="tag"
+            class="tag"
+            :class="{ active: state.activeTags.has(tag) }"
+            role="button"
+            tabindex="0"
+            :aria-pressed="state.activeTags.has(tag)"
+            @click="toggleTag(tag)"
+            @keydown.enter.prevent="toggleTag(tag)"
+            @keydown.space.prevent="toggleTag(tag)"
+          >{{ tag }}</span>
         </div>
 
         <div v-if="breadcrumb.length > 1" id="breadcrumb">
@@ -813,7 +857,7 @@ onUnmounted(() => {
           @go="goToPage"
         />
 
-        <div v-if="sortEnabled" id="batch-bar">
+        <div v-if="selectMode" id="batch-bar">
           <span class="count">已选 {{ state.selectedIds.size }} 项</span>
           <button class="btn btn-sm" :disabled="state.memes.length === 0" @click="selectAllVisible">全选当前页</button>
           <button class="btn btn-sm btn-secondary" :disabled="state.selectedIds.size === 0" @click="clearSelection">取消选择</button>
@@ -827,8 +871,13 @@ onUnmounted(() => {
               :key="'folder-' + child.id"
               class="meme-card folder-card"
               :data-folder-id="child.id"
+              role="button"
+              tabindex="0"
+              :aria-label="'打开分组 ' + child.name"
               @click="onFolderCardClick(child.id)"
               @contextmenu="onFolderCardContext($event, child.id, child.name)"
+              @keydown.enter.prevent="onFolderCardClick(child.id)"
+              @keydown.space.prevent="onFolderCardClick(child.id)"
             >
               <div class="folder-preview">
                 <svg viewBox="0 0 24 24" width="32" height="32" fill="none" stroke="var(--accent)" stroke-width="1.5"><path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"/></svg>
@@ -839,9 +888,9 @@ onUnmounted(() => {
 
           <drag-select
             v-model="state.selectedIds"
-            :disabled="!sortEnabled"
+            :disabled="!sortEnabled && !selectMode"
             :multiple="true"
-            :click-option-to-select="sortEnabled"
+            :click-option-to-select="selectMode"
             :draggable-on-option="false"
             :click-blank-to-clear="false"
           >
@@ -850,7 +899,7 @@ onUnmounted(() => {
               tag="div"
               name="meme-list"
               class="meme-grid"
-              :class="{ 'sort-enabled': sortEnabled && canReorder() }"
+              :class="{ 'sort-enabled': sortEnabled && canReorder(), 'select-enabled': selectMode }"
               :style="{ gridTemplateColumns: `repeat(${gridCols}, 1fr)` }"
             >
               <drag-select-option
@@ -862,14 +911,30 @@ onUnmounted(() => {
                   class="meme-card"
                   :class="{ 'dragging': drag.dragState.active && drag.dragState.memeId === meme.id, selected: state.selectedIds.has(meme.id) }"
                   :data-meme-id="meme.id"
+                  role="button"
+                  tabindex="0"
+                  :aria-label="meme.name"
                   @click="handleCopy(meme)"
                   @contextmenu="onMemeRightClick($event, meme)"
                   @pointerdown="onCardPointerDown($event, meme, $event.currentTarget as HTMLElement)"
                   @mouseenter="onCardMouseEnter(meme)"
                   @mouseleave="onCardMouseLeave(meme)"
+                  @keydown.enter.prevent="handleCopy(meme)"
+                  @keydown.space.prevent="handleCopy(meme)"
                 >
                   <img :src="memeSrc(meme)" :alt="meme.name" loading="lazy">
                   <span v-if="state.selectedIds.has(meme.id)" class="select-badge">✓</span>
+                  <button
+                    v-if="!selectMode && !sortEnabled"
+                    class="fav-btn"
+                    :class="{ active: meme.favorited }"
+                    :aria-label="meme.favorited ? '取消收藏' : '收藏'"
+                    :title="meme.favorited ? '取消收藏' : '收藏'"
+                    @click.stop="quickFavorite(meme)"
+                    @pointerdown.stop
+                  >
+                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M20.84 4.61a5.5 5.5 0 0 0-7.78 0L12 5.67l-1.06-1.06a5.5 5.5 0 0 0-7.78 7.78l1.06 1.06L12 21.23l7.78-7.78 1.06-1.06a5.5 5.5 0 0 0 0-7.78z"/></svg>
+                  </button>
                   <span v-if="meme.from_stego" class="gif-badge stego-badge">隐写导入</span>
                   <span v-else-if="meme.is_animated" class="gif-badge">{{ meme.is_gif ? 'GIF' : 'WebP' }}</span>
                   <span class="meme-name">{{ meme.name }}</span>
@@ -879,8 +944,12 @@ onUnmounted(() => {
           </drag-select>
 
           <div v-if="state.memes.length === 0 && !state.loading" id="empty">
-            <div class="icon">_(:3 」∠)_</div>
-            <div class="text">还没有表情包，点击「导入」添加</div>
+            <svg class="empty-svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+              <path d="M3 7a2 2 0 0 1 2-2h4l2 3h8a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V7z"/>
+              <path d="M8.5 13.5h7M8.5 16.5h4.5"/>
+            </svg>
+            <div class="text">还没有表情包</div>
+            <button class="btn btn-primary" @click="showImportMenu()">导入表情包</button>
           </div>
         </div>
       </div>
@@ -900,7 +969,7 @@ onUnmounted(() => {
     :submenu-visible="ctx.submenuVisible.value" :submenu-items="ctx.submenuItems.value"
     :submenu-x="ctx.submenuX.value" :submenu-y="ctx.submenuY.value"
     @action="onCtxAction" @close="ctx.hide"
-    @show-submenu="onShowSubmenu"
+    @show-submenu="onShowSubmenu" @hide-submenu="ctx.hideSubmenu"
   />
 
   <div id="drop-overlay" :class="{ 'drag-over': dragOver }">
@@ -912,11 +981,11 @@ onUnmounted(() => {
     </div>
   </div>
 
-  <div id="toast"></div>
-  <div id="loading"><div class="spinner"></div></div>
+  <div id="toast" role="status" aria-live="polite"></div>
+  <div id="loading" :class="{ show: state.loading }"><div class="spinner"></div></div>
 
   <Transition name="startup-fade">
-    <div v-if="startupAnim" id="startup-anim" :style="{ background: state.startupBgColor }">
+    <div v-if="startupAnim" id="startup-anim" :style="{ background: state.startupBgColor }" @click="dismissStartupAnim">
       <video v-if="startupVideoReady" :src="startupVideoSrc" autoplay muted playsinline @ended="dismissStartupAnim"></video>
     </div>
   </Transition>

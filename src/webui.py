@@ -2563,6 +2563,24 @@ class WebUI:
                 return bottle.static_file("settings.html", root=str(HTML_DIR))
             return "<h1>设置</h1><p>settings.html not found</p>"
 
+        @app.route("/api/contributors")
+        def serve_contributors():
+            # 代理贡献者 SVG：剥离白色背景矩形，适配深色主题
+            try:
+                from urllib.request import Request, urlopen
+
+                url = "https://contributor.starsfire.top/TNTXZ/OhMyMeme"
+                req = Request(url, headers={"User-Agent": "OhMyMeme"})
+                with urlopen(req, timeout=10) as resp:
+                    svg = resp.read().decode("utf-8", "replace")
+                white_rect = '<rect width="100%" height="100%" fill="#ffffff"/>'
+                svg = svg.replace(white_rect, "")
+                bottle.response.content_type = "image/svg+xml; charset=utf-8"
+                return svg
+            except Exception:
+                bottle.response.status = 502
+                return ""
+
         @app.route("/api/thumb/<meme_id>/<filename>")
         def serve_thumb(meme_id, filename):
             path = self._get_thumbnail_path(int(meme_id), filename)

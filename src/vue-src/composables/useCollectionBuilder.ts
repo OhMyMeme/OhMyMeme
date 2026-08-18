@@ -1,5 +1,5 @@
-import { ref, computed, onMounted, onUnmounted, watch } from 'vue'
-import { api } from '../utils/api'
+import { ref, computed, onMounted, onUnmounted, watch, nextTick } from 'vue'
+import { api, rememberFocus, restoreFocus } from '../utils/api'
 
 export interface CollectionBuilderMeme {
   id: number
@@ -48,6 +48,7 @@ export function useCollectionBuilder() {
     memberReqGen++
     memberLoading.value = false
     memberLoadError.value = false
+    rememberFocus()
     visible.value = true
     loading.value = true
     searchQuery.value = ''
@@ -68,6 +69,10 @@ export function useCollectionBuilder() {
       .map((c: any) => ({ id: c.id, name: c.name }))
 
     loading.value = false
+    await nextTick()
+    const nameInput = document.getElementById('cb-name') as HTMLInputElement | null
+    nameInput?.focus()
+    nameInput?.select()
   }
 
   function close() {
@@ -76,6 +81,7 @@ export function useCollectionBuilder() {
     memberLoadError.value = false
     visible.value = false
     showDropdown.value = false
+    restoreFocus()
   }
 
   function toggleMeme(memeId: number) {

@@ -1,11 +1,13 @@
 <script setup lang="ts">
 import { ref, nextTick } from 'vue'
+import { rememberFocus, restoreFocus, trapTabFocus } from '../utils/api'
 
 const visible = ref(false)
 const title = ref('')
 const value = ref('')
 const placeholder = ref('')
 const inputEl = ref<HTMLInputElement>()
+const boxEl = ref<HTMLElement>()
 
 let resolveFn: ((v: string | null) => void) | null = null
 
@@ -15,6 +17,7 @@ async function open(t: string, initial: string = '', ph: string = ''): Promise<s
   title.value = t
   value.value = initial
   placeholder.value = ph
+  rememberFocus()
   visible.value = true
   await nextTick()
   inputEl.value?.focus()
@@ -24,6 +27,7 @@ async function open(t: string, initial: string = '', ph: string = ''): Promise<s
 
 function close(v: string | null) {
   visible.value = false
+  restoreFocus()
   if (resolveFn) { resolveFn(v); resolveFn = null }
 }
 
@@ -34,6 +38,7 @@ function confirm() {
 function onKeydown(e: KeyboardEvent) {
   if (e.key === 'Enter') { e.preventDefault(); confirm() }
   else if (e.key === 'Escape') { e.stopPropagation(); close(null) }
+  else if (boxEl.value) trapTabFocus(boxEl.value, e)
 }
 
 defineExpose({ open })
@@ -41,8 +46,8 @@ defineExpose({ open })
 
 <template>
   <div v-if="visible" class="input-dialog-overlay" @click.self="close(null)">
-    <div class="input-dialog-box" @keydown="onKeydown">
-      <div class="input-dialog-title">{{ title }}</div>
+    <div class="input-dialog-box" ref="boxEl" role="dialog" aria-modal="true" aria-labelledby="input-dialog-title" @keydown="onKeydown">
+      <div id="input-dialog-title" class="input-dialog-title">{{ title }}</div>
       <input
         id="input-dialog-input"
         ref="inputEl"

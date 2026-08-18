@@ -40,3 +40,32 @@ export function renderMarkdown(md: string): string {
   s = s.replace(/<br>\s*(<\/?(?:h[1-5]|pre|blockquote|li|hr)[^>]*>)/g, '$1')
   return s
 }
+
+// ── 弹窗焦点管理（无障碍） ──
+let _focusTarget: HTMLElement | null = null
+
+// 记住打开弹窗前的焦点元素，关闭后归还
+export function rememberFocus() {
+  _focusTarget = document.activeElement instanceof HTMLElement ? document.activeElement : null
+}
+
+export function restoreFocus() {
+  const el = _focusTarget
+  _focusTarget = null
+  if (el && el.isConnected) el.focus()
+}
+
+// Tab 循环：把焦点限制在弹窗 box 内
+export function trapTabFocus(box: HTMLElement, e: KeyboardEvent) {
+  if (e.key !== 'Tab') return
+  const items = box.querySelectorAll<HTMLElement>('button, input, select, textarea, [tabindex]:not([tabindex="-1"])')
+  if (!items.length) return
+  const first = items[0]
+  const last = items[items.length - 1]
+  const active = document.activeElement as HTMLElement | null
+  if (e.shiftKey && (active === first || !box.contains(active))) {
+    e.preventDefault(); last.focus()
+  } else if (!e.shiftKey && (active === last || !box.contains(active))) {
+    e.preventDefault(); first.focus()
+  }
+}

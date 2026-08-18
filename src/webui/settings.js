@@ -41,8 +41,63 @@ function renderMarkdown(md) {
   return s;
 }
 
+/* 覆盖层焦点管理（无障碍） */
+let _settingsFocusTarget = null;
+function rememberSettingsFocus() {
+  _settingsFocusTarget = document.activeElement instanceof HTMLElement ? document.activeElement : null;
+}
+function restoreSettingsFocus() {
+  const el = _settingsFocusTarget;
+  _settingsFocusTarget = null;
+  if (el && el.isConnected) el.focus();
+}
+// Tab 循环：把焦点限制在覆盖层 box 内
+function trapSettingsFocus(box, e) {
+  if (e.key !== 'Tab') return;
+  const items = box.querySelectorAll('button, input, select, textarea, [tabindex]:not([tabindex="-1"])');
+  if (!items.length) return;
+  const first = items[0];
+  const last = items[items.length - 1];
+  const active = document.activeElement;
+  if (e.shiftKey && (active === first || !box.contains(active))) {
+    e.preventDefault(); last.focus();
+  } else if (!e.shiftKey && (active === last || !box.contains(active))) {
+    e.preventDefault(); first.focus();
+  }
+}
+// 找当前可见覆盖层（静态 HTML + 动态创建的 update/confirm 弹窗）
+const _SETTINGS_OVERLAY_IDS = ['danger-overlay','sync-progress-overlay','sync-done-overlay','qq-import-overlay','qqnt-overlay','tg-import-overlay','dy-import-overlay','wechat-import-overlay','update-overlay'];
+function visibleSettingsOverlay() {
+  for (const id of _SETTINGS_OVERLAY_IDS) {
+    const el = document.getElementById(id);
+    if (el && el.style.display !== 'none') {
+      return el.querySelector('[role="dialog"]') || el;
+    }
+  }
+  return null;
+}
+
 /* Close settings window */
-function closeSettings() {
+let _settingsDirty = false;
+function markSettingsDirty() { _settingsDirty = true; }
+
+// 收集表单输入，未保存的修改在关闭/按 Esc 时提示
+function initDirtyTracking() {
+  const root = document.getElementById('settings-content');
+  if (!root) return;
+  const track = (e) => {
+    const t = e.target;
+    if (t && t.matches && t.matches('input, select, textarea')) markSettingsDirty();
+  };
+  root.addEventListener('input', track);
+  root.addEventListener('change', track);
+}
+
+async function closeSettings() {
+  if (_settingsDirty) {
+    const ok = await showConfirm('有未保存的更改', '当前修改尚未保存，确定放弃并关闭设置窗口吗？');
+    if (!ok) return;
+  }
   try { pywebview.api.close_settings(); } catch(e) {}
 }
 
@@ -94,23 +149,33 @@ async function exportLogs() {
   showToast('日志已导出');
 }
 
-async function checkConnectivity() {  // DeepSeek V4 Flash
+// 网络/LAN 状态色：统一走 CSS token 类，不在 JS 里写死颜色
+function setStatusColor(el, mode) {
+  if (!el) return;
+  el.style.color = '';
+  el.classList.remove('status-ok', 'status-error');
+  if (mode === 'ok') el.classList.add('status-ok');
+  else if (mode === 'error') el.classList.add('status-error');
+}
+
+async function checkConnectivity() {
   const el = document.getElementById('s-net-status');
   if (!el) return;
   el.textContent = '正在检查网络...';
+  setStatusColor(el, '');
   el.style.color = 'var(--muted)';
   try {
     const r = await api('check_connectivity');
     if (r && r.ok) {
       el.innerHTML = '● 已连接 <span style="opacity:.6">(' + esc(r.latency || '') + ')</span>';
-      el.style.color = '#4caf50';
+      setStatusColor(el, 'ok');
     } else {
       el.textContent = '● 无网络连接';
-      el.style.color = '#f44336';
+      setStatusColor(el, 'error');
     }
   } catch(_) {
     el.textContent = '● 检查失败';
-    el.style.color = '#f44336';
+    setStatusColor(el, 'error');
   }
 }
 
@@ -131,12 +196,13 @@ function showConfirm(title, message) {
       + '<button id="sconfirm-cancel" class="btn btn-secondary">取消</button>'
       + '<button id="sconfirm-ok" class="btn btn-primary">确定</button></div>';
     overlay.appendChild(box);
+    rememberSettingsFocus();
     document.body.appendChild(overlay);
     document.getElementById('sconfirm-ok').focus();
-    const cleanup = () => { overlay.remove(); };
+    const cleanup = () => { overlay.remove(); restoreSettingsFocus(); };
     document.getElementById('sconfirm-ok').onclick = () => { cleanup(); resolve(true); };
     document.getElementById('sconfirm-cancel').onclick = () => { cleanup(); resolve(false); };
-    overlay.onkeydown = (e) => { if (e.key === 'Escape') { e.stopPropagation(); cleanup(); resolve(false); } };
+    overlay.onkeydown = (e) => { if (e.key === 'Escape') { e.stopPropagation(); cleanup(); resolve(false); } else trapSettingsFocus(box, e); };
   });
 }
 
@@ -179,12 +245,14 @@ async function refreshLanStatus() {
   if (cc && r) cc.checked = r.allow_secret_config === true;
   if (!r || r.status === 'stopped') {
     el.innerHTML = '● 已停止 <span style="opacity:.6">(端口 ' + (r ? r.port : 17852) + ')</span>';
+    setStatusColor(el, '');
     el.style.color = 'var(--muted)';
     if (lanPollTimer) { clearInterval(lanPollTimer); lanPollTimer = null; }
     return;
   }
   if (r.status === 'error') {
-    el.innerHTML = '● 启动失败 <span style="color:#ef4444">' + esc(r.last_error || '') + '</span>';
+    el.innerHTML = '● 启动失败 <span class="status-error">' + esc(r.last_error || '') + '</span>';
+    setStatusColor(el, '');
     el.style.color = 'var(--muted)';
     if (lanPollTimer) { clearInterval(lanPollTimer); lanPollTimer = null; }
     return;
@@ -194,7 +262,7 @@ async function refreshLanStatus() {
     html += '<br>已连接设备：' + r.clients.map(c => '<code>' + esc(c.addr) + '</code>').join('、');
   }
   el.innerHTML = html;
-  el.style.color = '#4caf50';
+  setStatusColor(el, 'ok');
   if (lanPollTimer) { clearInterval(lanPollTimer); }
   lanPollTimer = setInterval(async () => {
     const r2 = await api('lan_get_status');
@@ -285,6 +353,7 @@ async function getSettings() {
   checkConnectivity();  // DeepSeek V4 Flash
   loadStorageInfo();
   refreshLanStatus();
+  _settingsDirty = false;
   return true;
 }
 
@@ -480,6 +549,7 @@ async function saveSettings() {
     ...sync
   });
   showToast('设置已保存');
+  _settingsDirty = false;
 }
 
 async function resetSettings() {
@@ -561,6 +631,7 @@ async function resetSettings() {
     await api('lan_set_allow_secret_config', false);
     refreshLanStatus();
     showToast('已恢复默认设置');
+    _settingsDirty = false;
   }
 }
 
@@ -636,6 +707,8 @@ async function showUploadWarning() {
     overlay.style.cssText = 'position:fixed;inset:0;background:rgba(0,0,0,.55);display:flex;align-items:center;justify-content:center;z-index:200;animation:fadeIn .15s';
     overlay.onclick = (e) => { if (e.target === overlay) { overlay.remove(); resolve(false); } };
     const box = document.createElement('div');
+    box.setAttribute('role', 'dialog');
+    box.setAttribute('aria-modal', 'true');
     box.style.cssText = 'background:var(--surface);border-radius:var(--radius-lg);padding:24px 28px;width:380px;border:1px solid var(--border);box-shadow:var(--shadow-lg)';
     box.innerHTML = '<div style="margin-bottom:14px"><h2 style="font-size:15px;font-weight:600;color:var(--fg);margin-bottom:8px">上传确认</h2>'
       + '<p style="font-size:13px;color:var(--fg-secondary);line-height:1.6">上传会将本地的完整状态同步到远端，包括新增、更新和删除操作。远程文件将被覆盖，建议先下载备份。</p></div>'
@@ -645,16 +718,17 @@ async function showUploadWarning() {
       + '<button id="supload-modal-cancel" class="btn btn-secondary">取消</button>'
       + '<button id="supload-modal-confirm" class="btn btn-primary">继续上传</button></div>';
     overlay.appendChild(box);
+    rememberSettingsFocus();
     document.body.appendChild(overlay);
     document.getElementById('supload-modal-confirm').focus();
-    const cleanup = () => { overlay.remove(); };
+    const cleanup = () => { overlay.remove(); restoreSettingsFocus(); };
     document.getElementById('supload-modal-confirm').onclick = async () => {
       const hide = document.getElementById('supload-warn-hide').checked;
       if (hide) await api('save_settings', { sync_hide_upload_warning: true });
       cleanup(); resolve(true);
     };
     document.getElementById('supload-modal-cancel').onclick = () => { cleanup(); resolve(false); };
-    overlay.onkeydown = (e) => { if (e.key === 'Escape') { e.stopPropagation(); cleanup(); resolve(false); } };
+    overlay.onkeydown = (e) => { if (e.key === 'Escape') { e.stopPropagation(); cleanup(); resolve(false); } else trapSettingsFocus(box, e); };
   });
 }
 
@@ -664,11 +738,13 @@ let syncBg = false;
 function hideSyncProgress() {
   syncBg = true;
   document.getElementById('sync-progress-overlay').style.display = 'none';
+  restoreSettingsFocus();
   if (syncPollTimer) { clearInterval(syncPollTimer); syncPollTimer = null; }
 }
 
 function hideSyncDone() {
   document.getElementById('sync-done-overlay').style.display = 'none';
+  restoreSettingsFocus();
   location.reload();
 }
 
@@ -699,6 +775,7 @@ async function doSyncWithProgress(method, title, progressSetting, doneSetting, b
   syncBg = false;
 
   if (showProgress) {
+    rememberSettingsFocus();
     document.getElementById('sync-progress-title').textContent = title;
     document.getElementById('sync-progress-file').textContent = '准备中...';
     document.getElementById('sync-progress-bar').style.width = '0%';
@@ -726,6 +803,7 @@ async function doSyncWithProgress(method, title, progressSetting, doneSetting, b
 
   if (showProgress && !syncBg) {
     document.getElementById('sync-progress-overlay').style.display = 'none';
+    restoreSettingsFocus();
   }
 
   if (r && r.ok) {
@@ -735,9 +813,12 @@ async function doSyncWithProgress(method, title, progressSetting, doneSetting, b
     status.textContent = '完成: 成功 ' + uploaded + ', 跳过 ' + skipped + ', 错误 ' + errors;
 
     if (showDone) {
+      rememberSettingsFocus();
       document.getElementById('sync-done-title').textContent = title + '完成';
       document.getElementById('sync-done-detail').textContent = '成功 ' + uploaded + ' 个';
       document.getElementById('sync-done-overlay').style.display = 'flex';
+      const closeBtn = document.querySelector('#sync-done-overlay .btn');
+      if (closeBtn) closeBtn.focus();
     }
   } else {
     let msg = '失败: ' + ((r && r.error) || '未知错误');
@@ -776,6 +857,7 @@ async function syncPull() {
 let qqPollTimer = null;
 
 function showQQOverlay() {
+  rememberSettingsFocus();
   document.getElementById('qq-import-overlay').style.display = 'flex';
   document.getElementById('btn-qq-save').style.display = 'none';
   document.getElementById('qq-import-error').style.display = 'none';
@@ -784,6 +866,7 @@ function showQQOverlay() {
 
 function closeQQOverlay() {
   document.getElementById('qq-import-overlay').style.display = 'none';
+  restoreSettingsFocus();
   if (qqPollTimer) { clearInterval(qqPollTimer); qqPollTimer = null; }
   api('cancel_qq_import');
 }
@@ -888,6 +971,7 @@ async function startImportFromZip() {
 let dyPollTimer = null;
 
 function openDYImportDialog() {
+  rememberSettingsFocus();
   document.getElementById('dy-import-overlay').style.display = 'flex';
   document.getElementById('dy-config').style.display = 'block';
   document.getElementById('dy-progress').style.display = 'none';
@@ -896,6 +980,8 @@ function openDYImportDialog() {
   if (status) { status.textContent = ''; status.className = ''; }
   const btn = document.getElementById('btn-dy-start');
   if (btn) btn.disabled = false;
+  const firstInput = document.getElementById('s-dy-cookie');
+  if (firstInput) firstInput.focus();
 }
 
 function showDYOverlay() {
@@ -911,6 +997,7 @@ function showDYOverlay() {
 
 function closeDYOverlay() {
   document.getElementById('dy-import-overlay').style.display = 'none';
+  restoreSettingsFocus();
   if (dyPollTimer) { clearInterval(dyPollTimer); dyPollTimer = null; }
   api('cancel_douyin_import');
 }
@@ -1019,6 +1106,7 @@ async function startDYImport() {
 let tgPollTimer = null;
 
 function openTGImportDialog() {
+  rememberSettingsFocus();
   document.getElementById('tg-import-overlay').style.display = 'flex';
   document.getElementById('tg-config').style.display = 'block';
   document.getElementById('tg-progress').style.display = 'none';
@@ -1027,6 +1115,8 @@ function openTGImportDialog() {
   if (status) { status.textContent = ''; status.className = ''; }
   const btn = document.getElementById('btn-tg-start');
   if (btn) btn.disabled = false;
+  const passcode = document.getElementById('s-tg-passcode');
+  if (passcode) passcode.focus();
 }
 
 function showTGOverlay() {
@@ -1039,10 +1129,13 @@ function showTGOverlay() {
   document.getElementById('tg-import-msg').textContent = '准备中';
   document.getElementById('tg-import-bar').style.width = '0%';
   document.getElementById('tg-import-pct').textContent = '0%';
+  const closeBtn = document.getElementById('btn-tg-close');
+  if (closeBtn) closeBtn.focus();
 }
 
 function closeTGOverlay() {
   document.getElementById('tg-import-overlay').style.display = 'none';
+  restoreSettingsFocus();
   if (tgPollTimer) { clearInterval(tgPollTimer); tgPollTimer = null; }
   api('cancel_tg_import');
 }
@@ -1179,6 +1272,7 @@ function wechatSetCloseLabel(label) {
 }
 
 function openWechatImportDialog() {
+  rememberSettingsFocus();
   document.getElementById('wechat-import-overlay').style.display = 'flex';
   document.getElementById('wechat-config').style.display = 'block';
   document.getElementById('wechat-progress').style.display = 'none';
@@ -1188,6 +1282,8 @@ function openWechatImportDialog() {
   const btn = document.getElementById('btn-wechat-start');
   if (btn) btn.disabled = false;
   wechatSetCloseLabel('取消导入');
+  const pick = document.getElementById('btn-wechat-pick');
+  if (pick) pick.focus();
 }
 
 function showWechatOverlay() {
@@ -1200,10 +1296,13 @@ function showWechatOverlay() {
   document.getElementById('wechat-import-bar').style.width = '0%';
   document.getElementById('wechat-import-pct').textContent = '0%';
   wechatSetCloseLabel('取消导入');
+  const closeBtn = document.getElementById('btn-wechat-close');
+  if (closeBtn) closeBtn.focus();
 }
 
 function closeWechatOverlay() {
   document.getElementById('wechat-import-overlay').style.display = 'none';
+  restoreSettingsFocus();
   const btn = document.getElementById('btn-wechat-start');
   if (btn) btn.disabled = false;
   if (wechatPollTimer) {
@@ -1393,12 +1492,14 @@ function qqntGo(step) {
 }
 
 function qqntShow() {
+  rememberSettingsFocus();
   document.getElementById('qqnt-overlay').style.display = 'flex';
   document.getElementById('qqnt-error').style.display = 'none';
 }
 
 function qqntClose() {
   document.getElementById('qqnt-overlay').style.display = 'none';
+  restoreSettingsFocus();
   if (qqntPollTimer) { clearInterval(qqntPollTimer); qqntPollTimer = null; }
   api('qqnt_cancel');
 }
@@ -1590,6 +1691,10 @@ document.addEventListener('mouseup', () => { dragState = null; });
 
 /* Keyboard shortcuts */
 document.addEventListener('keydown', (e) => {
+  if (e.key === 'Tab') {
+    const box = visibleSettingsOverlay();
+    if (box) { trapSettingsFocus(box, e); return; }
+  }
   if (e.key === 'Escape') {
     const dangerOverlay = document.getElementById('danger-overlay');
     if (dangerOverlay && dangerOverlay.style.display === 'flex') {
@@ -1618,7 +1723,7 @@ document.addEventListener('keydown', (e) => {
     }
     const qqntOverlay = document.getElementById('qqnt-overlay');
     if (qqntOverlay && qqntOverlay.style.display === 'flex') {
-      qqntOverlay.style.display = 'none';
+      qqntClose();
       return;
     }
     const syncOverlay = document.getElementById('sync-progress-overlay');
@@ -1629,6 +1734,7 @@ document.addEventListener('keydown', (e) => {
     const syncDoneOverlay = document.getElementById('sync-done-overlay');
     if (syncDoneOverlay && syncDoneOverlay.style.display === 'flex') {
       syncDoneOverlay.style.display = 'none';
+      restoreSettingsFocus();
       return;
     }
     closeSettings();
@@ -1658,9 +1764,11 @@ function showUpdateDialog(current, latest, url, notes) {
   const overlay = document.createElement('div');
   overlay.id = 'update-overlay';
   overlay.style.cssText = 'position:fixed;inset:0;background:rgba(0,0,0,.55);display:flex;align-items:center;justify-content:center;z-index:300;animation:fadeIn .15s';
-  overlay.onclick = (e) => { if (e.target === overlay) overlay.remove(); };
+  overlay.onclick = (e) => { if (e.target === overlay) { e.stopPropagation(); updCleanup(); } };
   const box = document.createElement('div');
   box.className = 'upd-dialog';
+  box.setAttribute('role', 'dialog');
+  box.setAttribute('aria-modal', 'true');
   box.style.cssText = 'background:var(--surface);border-radius:var(--radius-lg);padding:24px 28px;width:440px;max-height:80vh;overflow-y:auto;border:1px solid var(--border);box-shadow:var(--shadow-lg)';
   box.innerHTML = '<div style="margin-bottom:16px"><h2 style="font-size:15px;font-weight:600;color:var(--fg);margin-bottom:8px">发现新版本</h2>'
     + '<p style="font-size:13px;color:var(--fg-secondary);line-height:1.6">当前版本: ' + esc(current) + '<br>最新版本: ' + esc(latest) + '</p></div>'
@@ -1671,8 +1779,10 @@ function showUpdateDialog(current, latest, url, notes) {
     + '<button id="upd-later" class="btn btn-secondary btn-flex">稍后提示</button>'
     + '</div></div>';
   overlay.appendChild(box);
+  rememberSettingsFocus();
   document.body.appendChild(overlay);
   document.getElementById('upd-update').focus();
+  const updCleanup = () => { overlay.remove(); restoreSettingsFocus(); };
 
    document.getElementById('upd-update').onclick = async () => {
     const btn = document.getElementById('upd-update');
@@ -1699,7 +1809,7 @@ function showUpdateDialog(current, latest, url, notes) {
         clearInterval(poll);
         document.getElementById('upd-progress-text').textContent = '下载完成，启动安装...';
         const r = await api('run_downloaded_installer');
-        overlay.remove();
+        updCleanup();
         if (r) {
           showToast('安装程序已启动，安装完成后将自动更新');
         } else {
@@ -1709,12 +1819,12 @@ function showUpdateDialog(current, latest, url, notes) {
         clearInterval(poll);
         document.getElementById('upd-progress-text').textContent = '下载失败: ' + (s.error || '未知错误');
         container.innerHTML += '<button id="upd-retry" class="btn btn-primary" style="width:100%;margin-top:8px">重试</button>';
-        document.getElementById('upd-retry').onclick = () => { overlay.remove(); showUpdateDialog(current, latest, url); };
+        document.getElementById('upd-retry').onclick = () => { updCleanup(); showUpdateDialog(current, latest, url); };
       }
     }, 500);
   };
-  document.getElementById('upd-later').onclick = () => { overlay.remove(); };
-  overlay.onkeydown = (e) => { if (e.key === 'Escape') overlay.remove(); };
+  document.getElementById('upd-later').onclick = () => { updCleanup(); };
+  overlay.onkeydown = (e) => { if (e.key === 'Escape') { e.stopPropagation(); updCleanup(); } else trapSettingsFocus(box, e); };
 }
 
 async function checkUpdateBackground() {
@@ -1739,6 +1849,7 @@ function showDangerConfirm(target) {
     title.textContent = '删除云端所有表情包';
     desc.textContent = '将永久删除远端服务器上的全部表情包文件，本地文件不受影响。';
   }
+  rememberSettingsFocus();
   document.getElementById('danger-overlay').style.display = 'flex';
   document.getElementById('danger-input-1').value = '';
   document.getElementById('danger-input-2').value = '';
@@ -1749,6 +1860,7 @@ function showDangerConfirm(target) {
 function dangerCancel() {
   document.getElementById('danger-overlay').style.display = 'none';
   dangerTarget = null;
+  restoreSettingsFocus();
 }
 
 document.getElementById('danger-input-1').addEventListener('input', checkDangerMatch);
@@ -1772,6 +1884,7 @@ async function dangerExec() {
   btn.textContent = '确认执行';
   document.getElementById('danger-overlay').style.display = 'none';
   dangerTarget = null;
+  restoreSettingsFocus();
   if (r && r.ok) {
     showToast('操作已完成');
   } else {
@@ -1819,4 +1932,5 @@ async function initVersion() {
 document.addEventListener('DOMContentLoaded', () => {
   initSettings();
   setTimeout(initVersion, 500);
+  initDirtyTracking();
 });

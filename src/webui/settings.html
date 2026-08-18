@@ -11,7 +11,7 @@
   <div id="titlebar">
     <div class="logo">OhMy<span>Meme</span> 设置</div>
     <span class="spacer"></span>
-    <button class="title-btn" onclick="closeSettings()">x</button>
+    <button class="title-btn" onclick="closeSettings()" aria-label="关闭设置">×</button>
   </div>
 
   <div id="body">
@@ -21,6 +21,7 @@
       <button class="nav-item" data-group="network" onclick="switchSettingsGroup('network')">联网</button>
       <button class="nav-item danger" data-group="danger" onclick="switchSettingsGroup('danger')">危险操作</button>
       <button class="nav-item" data-group="logs" onclick="switchSettingsGroup('logs')">日志</button>
+      <button class="nav-item" data-group="about" onclick="switchSettingsGroup('about')">关于</button>
     </nav>
     <div id="settings-content">
     <div class="section" data-group="base">
@@ -31,15 +32,6 @@
       <label class="check-row">
         <input id="s-hotkey-show-at-mouse" type="checkbox">通过全局快捷键打开时显示在鼠标位置
       </label>
-    </div>
-
-    <div class="section" data-group="base">
-      <div class="section-title">版本更新</div>
-      <div style="display:flex;align-items:center;gap:10px;margin-bottom:6px">
-        <span style="font-size:12.5px;color:var(--fg-secondary)" id="s-ver-current">当前版本: --</span>
-        <button class="btn btn-secondary btn-sm" id="btn-check-update" onclick="checkUpdate()">检查更新</button>
-      </div>
-      <div id="s-update-status" style="font-size:11.5px;color:var(--muted)"></div>
     </div>
 
     <div class="section" data-group="base">
@@ -87,15 +79,15 @@
 
     <div class="section" data-group="base">
       <div class="section-title">复制处理</div>
-      <label class="check-row" style="gap:8px">
-        复制超限静态图时
-        <select id="s-copy-mode" style="flex:1">
+      <div class="select-row">
+        <span class="select-row-label">复制超限静态图时</span>
+        <select id="s-copy-mode">
           <option value="0">不处理，直接复制原图</option>
           <option value="1">缩放为 WebP</option>
           <option value="2">转换为 GIF</option>
           <option value="3">转换为 GIF 并隐写原图（可无损还原）</option>
         </select>
-      </label>
+      </div>
       <p style="font-size:11.5px;color:var(--muted);margin-top:4px;line-height:1.6">复制超过尺寸上限的静态图时按此处模式处理；动图不受影响。隐写模式会把原图信息随 GIF 隐藏，接收方可运行解码工具还原，但会显著增大文件体积。</p>
     </div>
 
@@ -118,6 +110,7 @@
           <button id="btn-storage-apply" class="btn btn-primary btn-sm btn-flex" onclick="applyStorageDir()">应用更改</button>
           <button class="btn btn-ghost btn-sm" onclick="cancelStoragePick()">取消</button>
         </div>
+        <div style="font-size:11px;color:var(--muted);margin-top:6px">点击「应用更改」立即生效，无需保存</div>
       </div>
       <div style="display:flex;gap:8px">
         <button id="btn-pick-storage" class="btn btn-secondary btn-sm btn-flex" onclick="pickStorageDir()">更改位置</button>
@@ -177,10 +170,10 @@
         <input id="s-lan-secret" type="password" placeholder="留空表示同一局域网无需密钥">
       </div>
       <label class="check-row" style="margin-bottom:12px">
-        <input id="s-lan-enable" type="checkbox" onchange="toggleLan()">开启互联访问
+        <input id="s-lan-enable" type="checkbox" onchange="toggleLan()">开启互联访问<span class="immediate-hint">立即生效</span>
       </label>
       <label class="check-row" style="margin-bottom:12px">
-        <input id="s-lan-secret-config" type="checkbox" onchange="toggleLanSecretConfig()">允许密钥传输（配置同步时包含 FTP/S3/R2/WebDAV 密码等密钥字段）
+        <input id="s-lan-secret-config" type="checkbox" onchange="toggleLanSecretConfig()">允许密钥传输（配置同步时包含 FTP/S3/R2/WebDAV 密码等密钥字段）<span class="immediate-hint">立即生效，仅本次会话</span>
       </label>
       <div style="display:flex;gap:8px">
         <button id="btn-lan-refresh" class="btn btn-secondary btn-sm btn-flex" onclick="refreshLanStatus()">刷新状态</button>
@@ -356,11 +349,11 @@
     </div>
 
     <div class="section" data-group="danger" style="border-color:var(--accent-muted)">
-      <div class="section-title" style="color:#ef4444">危险操作</div>
+      <div class="section-title" style="color:var(--danger)">危险操作</div>
       <p style="font-size:11.5px;color:var(--muted);margin-bottom:12px;line-height:1.6">以下操作不可撤销，请谨慎使用</p>
       <div style="display:flex;gap:8px">
-        <button class="btn btn-flex" style="border-color:#ef4444;color:#ef4444" onclick="showDangerConfirm('local')">删除本地所有表情包</button>
-        <button class="btn btn-flex" style="border-color:#ef4444;color:#ef4444" onclick="showDangerConfirm('cloud')">删除云端所有表情包</button>
+        <button class="btn btn-flex" style="border-color:var(--danger);color:var(--danger)" onclick="showDangerConfirm('local')">删除本地所有表情包</button>
+        <button class="btn btn-flex" style="border-color:var(--danger);color:var(--danger)" onclick="showDangerConfirm('cloud')">删除云端所有表情包</button>
       </div>
     </div>
 
@@ -371,6 +364,23 @@
         <button class="btn btn-secondary btn-sm btn-flex" onclick="exportLogs()">导出日志</button>
       </div>
       <div id="log-export-status" style="font-size:11.5px;color:var(--muted);margin-top:6px"></div>
+    </div>
+
+    <div class="section" data-group="about">
+      <div class="about-hero">
+        <div class="about-logo">OhMy<span>Meme</span></div>
+        <div class="about-desc">轻量跨平台表情包管理系统</div>
+      </div>
+      <div class="about-version-row">
+        <span id="s-ver-current">当前版本: --</span>
+        <button class="btn btn-secondary btn-sm" id="btn-check-update" onclick="checkUpdate()">检查更新</button>
+      </div>
+      <div id="s-update-status" class="about-update-status"></div>
+      <div class="section-title">贡献者</div>
+      <div class="about-contributors">
+        <img id="contributors-img" src="/api/contributors" alt="项目贡献者" onerror="document.getElementById('contributors-img').style.display='none';document.getElementById('contributors-fallback').style.display='block'">
+      </div>
+      <div id="contributors-fallback" style="display:none;font-size:11.5px;color:var(--muted)">贡献者名单加载失败</div>
     </div>
     </div>
   </div>
@@ -426,7 +436,7 @@
     </div>
     <button id="btn-qq-help" class="btn btn-ghost btn-sm" onclick="openADBHelp()" style="display:none">不知道怎么办？</button>
     <button id="btn-qq-close" class="btn btn-secondary btn-sm" onclick="closeQQOverlay()">关闭</button>
-    <div id="qq-import-error" style="display:none;font-size:12px;color:#ef4444;margin-top:8px"></div>
+    <div id="qq-import-error" style="display:none;font-size:12px;color:var(--danger);margin-top:8px"></div>
     <div id="qq-status" style="display:none"></div>
   </div>
 </div>
@@ -479,7 +489,7 @@
       <button id="qqnt-open-dir" class="btn btn-secondary btn-sm" onclick="qqntOpenDir()" style="width:100%">打开输出目录</button>
     </div>
 
-    <div id="qqnt-error" style="display:none;font-size:12px;color:#ef4444;margin-top:8px"></div>
+    <div id="qqnt-error" style="display:none;font-size:12px;color:var(--danger);margin-top:8px"></div>
 
     <div style="display:flex;gap:8px;justify-content:flex-end;margin-top:16px">
       <button id="qqnt-prev" class="btn btn-secondary btn-sm" onclick="qqntPrev()">上一步</button>
@@ -525,7 +535,7 @@
       </div>
       <button id="btn-tg-retry" class="btn btn-secondary btn-sm" onclick="tgRetryPick()" style="display:none">手动选择 tdata 目录</button>
       <button id="btn-tg-close" class="btn btn-secondary btn-sm" onclick="closeTGOverlay()">关闭</button>
-      <div id="tg-import-error" style="display:none;font-size:12px;color:#ef4444;margin-top:8px;word-break:break-all"></div>
+      <div id="tg-import-error" style="display:none;font-size:12px;color:var(--danger);margin-top:8px;word-break:break-all"></div>
     </div>
   </div>
 </div>
@@ -555,7 +565,7 @@
         <span id="dy-import-pct">0%</span>
       </div>
       <button id="btn-dy-close" class="btn btn-secondary btn-sm" onclick="closeDYOverlay()">关闭</button>
-      <div id="dy-import-error" style="display:none;font-size:12px;color:#ef4444;margin-top:8px;word-break:break-all"></div>
+      <div id="dy-import-error" style="display:none;font-size:12px;color:var(--danger);margin-top:8px;word-break:break-all"></div>
     </div>
   </div>
 </div>
@@ -594,26 +604,26 @@
         <span id="wechat-import-pct">0%</span>
       </div>
       <button id="btn-wechat-close" class="btn btn-secondary btn-sm" onclick="closeWechatOverlay()">取消导入</button>
-      <div id="wechat-import-error" style="display:none;font-size:12px;color:#ef4444;margin-top:8px;word-break:break-all"></div>
+      <div id="wechat-import-error" style="display:none;font-size:12px;color:var(--danger);margin-top:8px;word-break:break-all"></div>
     </div>
   </div>
 </div>
 
 <div id="danger-overlay" style="display:none;position:fixed;inset:0;background:rgba(0,0,0,.6);align-items:center;justify-content:center;z-index:400;animation:fadeIn .15s" onclick="if(event.target===this)dangerCancel()">
   <div style="background:var(--surface);border-radius:var(--radius-lg);padding:24px 28px;width:400px;border:1px solid var(--border);box-shadow:var(--shadow-lg)" onclick="event.stopPropagation()">
-    <h2 style="font-size:15px;font-weight:600;color:#ef4444;margin-bottom:10px" id="danger-title">危险操作</h2>
+    <h2 style="font-size:15px;font-weight:600;color:var(--danger);margin-bottom:10px" id="danger-title">危险操作</h2>
     <p style="font-size:13px;color:var(--fg-secondary);line-height:1.6;margin-bottom:16px" id="danger-desc">此操作不可撤销。</p>
     <div style="margin-bottom:10px">
-      <label style="display:block;font-size:12px;font-weight:500;color:var(--fg-secondary);margin-bottom:2px">请在上方输入框输入 <b style="color:#ef4444">confirm</b> 确认</label>
+      <label style="display:block;font-size:12px;font-weight:500;color:var(--fg-secondary);margin-bottom:2px">请在上方输入框输入 <b style="color:var(--danger)">confirm</b> 确认</label>
       <input class="danger-input" id="danger-input-1" placeholder="在此输入 confirm" spellcheck="false" autocomplete="off">
     </div>
     <div style="margin-bottom:18px">
-      <label style="display:block;font-size:12px;font-weight:500;color:var(--fg-secondary);margin-bottom:2px">请在下方输入框再次输入 <b style="color:#ef4444">confirm</b> 确认</label>
+      <label style="display:block;font-size:12px;font-weight:500;color:var(--fg-secondary);margin-bottom:2px">请在下方输入框再次输入 <b style="color:var(--danger)">confirm</b> 确认</label>
       <input class="danger-input" id="danger-input-2" placeholder="在此输入 confirm" spellcheck="false" autocomplete="off">
     </div>
     <div style="display:flex;gap:8px;justify-content:flex-end">
       <button class="btn btn-secondary" onclick="dangerCancel()">取消</button>
-      <button class="btn" id="danger-confirm-btn" disabled style="border-color:#ef4444;color:#ef4444" onclick="dangerExec()">确认执行</button>
+      <button class="btn" id="danger-confirm-btn" disabled style="border-color:var(--danger);color:var(--danger)" onclick="dangerExec()">确认执行</button>
     </div>
   </div>
 </div>
