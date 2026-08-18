@@ -8,7 +8,7 @@ SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 PROJECT_DIR="$(cd "$SCRIPT_DIR/../../../" && pwd)"
 DIST_DIR="$PROJECT_DIR/dist"
 APP_NAME="OhMyMeme"
-APP_VERSION="$(python3 -c "import re; print(re.search(r'__version__\s*=\s*\"([^\"]+)\"', open('$PROJECT_DIR/src/__init__.py').read())[1])")"
+APP_VERSION="$(python3 -c "import re; print(re.search(r'__version__\s*=\s*\"([^\"]+)\"', open('$PROJECT_DIR/src/ohmymeme/__init__.py').read())[1])")"
 # deb/rpm 的 Version 字段要求数字开头；nightly 时用构建脚本传入的基础版本号
 PKG_VERSION="${OHMYMEME_PKG_VERSION:-$APP_VERSION}"
 

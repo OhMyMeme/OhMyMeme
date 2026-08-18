@@ -2,8 +2,10 @@
 import sys
 from pathlib import Path
 
-sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+ROOT = Path(__file__).resolve().parent.parent
+sys.path.insert(0, str(ROOT / "src"))
+sys.path.insert(1, str(ROOT))
 
-from src.main import main
+from ohmymeme.app.bootstrap import main  # noqa: E402
 
 main()

@@ -6,7 +6,7 @@
 #define MyAppPublisher "OhMyMeme"
 #define MyAppURL "https://github.com/OhMyMeme/OhMyMeme"
 #define MyAppExeName "OhMyMeme.exe"
-#define SourceDir "..\..\dist\src.dist"
+#define SourceDir "..\..\dist\OhMyMeme"
 
 [Setup]
 AppId={{B8F4A3D2-1C5E-4A7B-9D6F-8E2C3A1B5D7F}

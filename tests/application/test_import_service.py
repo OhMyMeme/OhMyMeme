@@ -1,11 +1,13 @@
 import inspect
 import io
+import os
 import threading
 
 import pytest
 from PIL import Image
 
-from src.import_service import ImageImportService, ImportBytes, ImportPath
+from ohmymeme.core.assets import AssetPaths
+from ohmymeme.core.imports import ImageImportService, ImportBytes, ImportPath
 
 
 def _png_bytes(width=1, height=1):
@@ -44,12 +46,13 @@ class FakeDb:
 def _service(tmp_path, db=None, fail_manifest=False):
     cache_dir = tmp_path / "cache"
     cache_dir.mkdir()
+    assets = AssetPaths(tmp_path, cache_dir)
 
     def build_manifest():
         if fail_manifest:
             raise OSError("manifest replace failed")
 
-    return ImageImportService(db or FakeDb(), cache_dir, build_manifest), cache_dir
+    return ImageImportService(db or FakeDb(), assets, build_manifest), cache_dir
 
 
 def test_import_bytes_creates_validated_file_row_and_manifest(tmp_path):
@@ -163,7 +166,9 @@ def test_import_path_restores_stg3_payload_without_storing_carrier(tmp_path):
     db = FakeDb()
     cache_dir = tmp_path / "cache"
     cache_dir.mkdir()
-    service = ImageImportService(db, cache_dir, lambda: None, lambda _: restored)
+    service = ImageImportService(
+        db, AssetPaths(tmp_path, cache_dir), lambda: None, lambda _: restored
+    )
 
     # When: importing the carrier through the path entrypoint
     result = service.import_path(ImportPath(carrier, "carrier.gif"))
@@ -188,7 +193,7 @@ def test_manifest_failure_restores_previous_snapshot(tmp_path):
         manifest.write_text("new", encoding="utf-8")
         raise OSError("replace failed")
 
-    service = ImageImportService(db, cache_dir, fail_manifest)
+    service = ImageImportService(db, AssetPaths(tmp_path, cache_dir), fail_manifest)
 
     # When: the manifest update fails after a successful image insert
     with pytest.raises(OSError):
@@ -244,10 +249,14 @@ def test_manifest_restore_failure_writes_recovery_marker(tmp_path, monkeypatch):
     service, cache_dir = _service(tmp_path, fail_manifest=True)
     manifest = cache_dir.parent / "meme-index.json"
     manifest.write_text("old", encoding="utf-8")
-    monkeypatch.setattr(
-        "src.import_service.os.replace",
-        lambda *_: (_ for _ in ()).throw(OSError("restore")),
-    )
+    replace = os.replace
+
+    def fail_manifest_restore(source, destination):
+        if str(source).endswith(".restore.tmp"):
+            raise OSError("restore")
+        return replace(source, destination)
+
+    monkeypatch.setattr("ohmymeme.core.imports.os.replace", fail_manifest_restore)
 
     # When: the import fails after mutation
     with pytest.raises(OSError):
@@ -259,9 +268,9 @@ def test_manifest_restore_failure_writes_recovery_marker(tmp_path, monkeypatch):
 
 def test_public_import_method_signatures_remain_frozen():
     # Given: the established bridge and service methods
-    from src.lan import _import_bytes
-    from src.sync import _pull_worker
-    from src.webui import JsApi
+    from ohmymeme.services.lan.commands import _import_bytes
+    from ohmymeme.services.sync.service import _pull_worker
+    from ohmymeme.presentation.desktop.window_manager import JsApi
 
     # When: inspecting their public callable contracts
     signatures = {
@@ -297,9 +306,47 @@ def test_recovery_marker_failure_preserves_primary_import_error(tmp_path, monkey
         service.import_bytes(ImportBytes(_png_bytes(), "example.png"))
 
 
+def test_external_cache_keeps_manifest_marker_and_cleanup_in_data_dir(
+    tmp_path, monkeypatch
+):
+    # Given: a custom cache root separated from canonical application data.
+    data_dir = tmp_path / "data"
+    cache_dir = tmp_path / "external-cache"
+    data_dir.mkdir()
+    cache_dir.mkdir()
+    assets = AssetPaths(data_dir, cache_dir)
+    assets.manifest_path.write_text("old", encoding="utf-8")
+    db = FakeDb()
+
+    def fail_manifest():
+        assets.manifest_path.write_text("new", encoding="utf-8")
+        raise OSError("manifest replace failed")
+
+    service = ImageImportService(db, assets, fail_manifest)
+
+    # When: manifest recovery fails after the primary import error.
+    replace = os.replace
+
+    def fail_manifest_restore(source, destination):
+        if str(source).endswith(".restore.tmp"):
+            raise OSError("restore")
+        return replace(source, destination)
+
+    monkeypatch.setattr("ohmymeme.core.imports.os.replace", fail_manifest_restore)
+    with pytest.raises(OSError, match="manifest replace failed"):
+        service.import_bytes(ImportBytes(_png_bytes(), "example.png"))
+
+    # Then: the custom cache has no image orphan and canonical artifacts stay in data.
+    assert not list(cache_dir.iterdir())
+    assert db.rows == {}
+    assert assets.manifest_path.parent == data_dir
+    assert assets.recovery_marker_path.parent == data_dir
+    assert assets.recovery_marker_path.exists()
+
+
 def test_bounded_upload_body_rejects_missing_and_lying_content_length():
     # Given: streams larger than the upload limit with untrusted length metadata
-    from src.webui import _read_upload_body
+    from ohmymeme.presentation.desktop.window_manager import _read_upload_body
 
     oversized = b"x" * (28 * 1024 * 1024 + 1)
 

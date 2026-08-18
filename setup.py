@@ -8,7 +8,7 @@ HERE = Path(__file__).parent
 
 # 读取版本号
 about = {}
-with open(HERE / "src" / "__init__.py", encoding="utf-8") as f:
+with open(HERE / "src" / "ohmymeme" / "__init__.py", encoding="utf-8") as f:
     exec(f.read(), about)
 
 # 读取 README
@@ -25,8 +25,8 @@ setup(
     long_description_content_type="text/markdown",
     author="OhMyMeme Team",
     url="https://github.com/OhMyMeme/OhMyMeme",
-    packages=find_packages(include=["src", "src.*"]),
-    package_dir={"": "."},
+    packages=find_packages(where="src", include=["ohmymeme", "ohmymeme.*"]),
+    package_dir={"": "src"},
     python_requires=">=3.10",
     install_requires=[
         "Pillow>=10.0.0",
@@ -50,7 +50,7 @@ setup(
     },
     entry_points={
         "console_scripts": [
-            "ohmymeme=src.main:main",
+            "ohmymeme=ohmymeme.app.bootstrap:main",
         ],
     },
     classifiers=[

@@ -8,7 +8,7 @@ from unittest import mock
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from src import updater
+from ohmymeme.services import updates as updater
 
 _SLOW_RESULT = {
     "latest": "9.9.9",

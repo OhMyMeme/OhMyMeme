@@ -6,7 +6,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from src.abogus import ABogus
+from ohmymeme.integrations.imports.abogus import ABogus
 
 
 class TestABogusInit(unittest.TestCase):

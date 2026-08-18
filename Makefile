@@ -5,7 +5,7 @@ install:
 	pip install -r requirements.txt
 
 run:
-	python -m src
+	python -m ohmymeme
 
 test:
 	python -m pytest tests/ -v

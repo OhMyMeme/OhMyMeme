@@ -9,7 +9,7 @@ export default defineConfig({
     outDir: resolve(__dirname, 'src/webui/dist'),
     emptyOutDir: false,
     rollupOptions: {
-      input: resolve(__dirname, 'src/vue-src/main.ts'),
+      input: resolve(__dirname, 'src/ohmymeme/presentation/frontend/main/app/main.ts'),
       output: {
         entryFileNames: 'ohmymeme.js',
         inlineDynamicImports: true,

@@ -186,4 +186,4 @@ def verify_binary(path: str) -> bool:
 
 Checksum is updated alongside binary releases. Compute it with
 `certutil -hashfile wechat_keyfinder.exe SHA256` and replace the placeholder in
-`src/wechat_probe.py` before release.
+`ohmymeme.integrations.imports.wechat` before release.

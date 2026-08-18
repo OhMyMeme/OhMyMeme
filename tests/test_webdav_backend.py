@@ -12,8 +12,9 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 import urllib.error
 
-from src import sync
-from src.sync import SyncError, _WebDAVBackend
+from ohmymeme.services.sync import service as sync
+from ohmymeme.services.sync.backends import _WebDAVBackend
+from ohmymeme.services.sync.service import SyncError
 
 
 class _FakeResp:
@@ -100,35 +101,35 @@ class TestWebDAVFileExists(unittest.TestCase):
     def setUp(self):
         self.bk = _make_backend()
 
-    @patch("src.sync.urllib.request.urlopen")
+    @patch("ohmymeme.services.sync.backends.urllib.request.urlopen")
     def test_404_returns_false(self, urlopen):
         urlopen.side_effect = urllib.error.HTTPError("u", 404, "nf", {}, None)
         self.assertFalse(self.bk.file_exists("memes/a.png"))
 
-    @patch("src.sync.urllib.request.urlopen")
+    @patch("ohmymeme.services.sync.backends.urllib.request.urlopen")
     def test_207_returns_true(self, urlopen):
         urlopen.return_value = _FakeResp(207)
         self.assertTrue(self.bk.file_exists("memes/a.png"))
 
-    @patch("src.sync.urllib.request.urlopen")
+    @patch("ohmymeme.services.sync.backends.urllib.request.urlopen")
     def test_401_raises(self, urlopen):
         urlopen.side_effect = urllib.error.HTTPError("u", 401, "auth", {}, None)
         with self.assertRaises(SyncError):
             self.bk.file_exists("memes/a.png")
 
-    @patch("src.sync.urllib.request.urlopen")
+    @patch("ohmymeme.services.sync.backends.urllib.request.urlopen")
     def test_500_raises(self, urlopen):
         urlopen.side_effect = urllib.error.HTTPError("u", 500, "boom", {}, None)
         with self.assertRaises(SyncError):
             self.bk.file_exists("memes/a.png")
 
-    @patch("src.sync.urllib.request.urlopen")
+    @patch("ohmymeme.services.sync.backends.urllib.request.urlopen")
     def test_timeout_raises(self, urlopen):
         urlopen.side_effect = urllib.error.URLError("timed out")
         with self.assertRaises(SyncError):
             self.bk.file_exists("memes/a.png")
 
-    @patch("src.sync.urllib.request.urlopen")
+    @patch("ohmymeme.services.sync.backends.urllib.request.urlopen")
     def test_405_falls_back_to_head(self, urlopen):
         def fake_open(req, timeout=30):
             if req.method == "PROPFIND":
@@ -138,7 +139,7 @@ class TestWebDAVFileExists(unittest.TestCase):
         urlopen.side_effect = fake_open
         self.assertTrue(self.bk.file_exists("memes/a.png"))
 
-    @patch("src.sync.urllib.request.urlopen")
+    @patch("ohmymeme.services.sync.backends.urllib.request.urlopen")
     def test_405_head_404_returns_false(self, urlopen):
         def fake_open(req, timeout=30):
             if req.method == "PROPFIND":
@@ -161,7 +162,7 @@ class TestWebDAVUpload(unittest.TestCase):
     def tearDown(self):
         self.local.unlink(missing_ok=True)
 
-    @patch("src.sync.urllib.request.urlopen")
+    @patch("ohmymeme.services.sync.backends.urllib.request.urlopen")
     def test_3xx_returns_false(self, urlopen):
         for code in (301, 302, 303):
             urlopen.side_effect = urllib.error.HTTPError(
@@ -169,7 +170,7 @@ class TestWebDAVUpload(unittest.TestCase):
             )
             self.assertFalse(self.bk.upload_file(self.local, "memes/a.png"))
 
-    @patch("src.sync.urllib.request.urlopen")
+    @patch("ohmymeme.services.sync.backends.urllib.request.urlopen")
     def test_sets_content_type(self, urlopen):
         seen = {}
 
@@ -191,7 +192,7 @@ class TestWebDAVDownload(unittest.TestCase):
         self.tmp_dir = Path(tempfile.mkdtemp())
         self.addCleanup(shutil.rmtree, self.tmp_dir, ignore_errors=True)
 
-    @patch("src.sync.urllib.request.urlopen")
+    @patch("ohmymeme.services.sync.backends.urllib.request.urlopen")
     def test_download_streams_and_replaces(self, urlopen):
         urlopen.return_value = _FakeResp(200, b"0123456789")
         target = self.tmp_dir / "a.png"
@@ -199,7 +200,7 @@ class TestWebDAVDownload(unittest.TestCase):
         self.assertEqual(target.read_bytes(), b"0123456789")
         self.assertFalse(Path(str(target) + ".tmp").exists())
 
-    @patch("src.sync.urllib.request.urlopen")
+    @patch("ohmymeme.services.sync.backends.urllib.request.urlopen")
     def test_download_failure_cleans_tmp(self, urlopen):
         urlopen.side_effect = urllib.error.URLError("boom")
         target = self.tmp_dir / "a.png"
@@ -209,20 +210,20 @@ class TestWebDAVDownload(unittest.TestCase):
 
 
 class TestWebDAVTestConnection(unittest.TestCase):
-    @patch("src.sync.urllib.request.urlopen")
+    @patch("ohmymeme.services.sync.backends.urllib.request.urlopen")
     def test_ok_on_207(self, urlopen):
         urlopen.return_value = _FakeResp(207)
         bk = _make_backend(path="memes")
         bk.test_connection()
 
-    @patch("src.sync.urllib.request.urlopen")
+    @patch("ohmymeme.services.sync.backends.urllib.request.urlopen")
     def test_401_raises(self, urlopen):
         urlopen.side_effect = urllib.error.HTTPError("u", 401, "auth", {}, None)
         bk = _make_backend(path="memes")
         with self.assertRaises(SyncError):
             bk.test_connection()
 
-    @patch("src.sync.urllib.request.urlopen")
+    @patch("ohmymeme.services.sync.backends.urllib.request.urlopen")
     def test_404_raises(self, urlopen):
         urlopen.side_effect = urllib.error.HTTPError("u", 404, "nf", {}, None)
         bk = _make_backend(path="memes")
@@ -230,7 +231,7 @@ class TestWebDAVTestConnection(unittest.TestCase):
             bk.test_connection()
         self.assertIn("首次上传将自动创建", str(ctx.exception))
 
-    @patch("src.sync.urllib.request.urlopen")
+    @patch("ohmymeme.services.sync.backends.urllib.request.urlopen")
     def test_timeout_raises(self, urlopen):
         urlopen.side_effect = urllib.error.URLError("timed out")
         bk = _make_backend(path="memes")
@@ -239,7 +240,7 @@ class TestWebDAVTestConnection(unittest.TestCase):
 
 
 class TestSyncTestWebDAV(unittest.TestCase):
-    @patch("src.sync._get_backend")
+    @patch("ohmymeme.services.sync.service._get_backend")
     def test_sync_test_probes_connection(self, get_backend):
         class _Bk:
             def connect(self):
@@ -256,7 +257,7 @@ class TestSyncTestWebDAV(unittest.TestCase):
 
 
 class TestWebDAVList(unittest.TestCase):
-    @patch("src.sync.urllib.request.urlopen")
+    @patch("ohmymeme.services.sync.backends.urllib.request.urlopen")
     def test_unquotes_href(self, urlopen):
         body = (
             b'<?xml version="1.0"?><D:multistatus xmlns:D="DAV:">'
@@ -268,14 +269,14 @@ class TestWebDAVList(unittest.TestCase):
         bk = _make_backend(url="https://host/dav")
         self.assertEqual(bk.list_files("memes"), ["a b.png", "表情.png"])
 
-    @patch("src.sync.urllib.request.urlopen")
+    @patch("ohmymeme.services.sync.backends.urllib.request.urlopen")
     def test_invalid_xml_raises(self, urlopen):
         urlopen.return_value = _FakeResp(207, b"<not-xml")
         bk = _make_backend(url="https://host/dav")
         with self.assertRaises(SyncError):
             bk.list_files("memes")
 
-    @patch("src.sync.urllib.request.urlopen")
+    @patch("ohmymeme.services.sync.backends.urllib.request.urlopen")
     def test_405_raises(self, urlopen):
         urlopen.side_effect = urllib.error.HTTPError("u", 405, "method", {}, None)
         bk = _make_backend(url="https://host/dav")
@@ -284,13 +285,13 @@ class TestWebDAVList(unittest.TestCase):
 
 
 class TestWebDAVEnsureDir(unittest.TestCase):
-    @patch("src.sync.urllib.request.urlopen")
+    @patch("ohmymeme.services.sync.backends.urllib.request.urlopen")
     def test_405_ok(self, urlopen):
         urlopen.side_effect = urllib.error.HTTPError("u", 405, "exists", {}, None)
         bk = _make_backend()
         self.assertTrue(bk.ensure_remote_dir("memes"))
 
-    @patch("src.sync.urllib.request.urlopen")
+    @patch("ohmymeme.services.sync.backends.urllib.request.urlopen")
     def test_301_existing_collection_ok(self, urlopen):
         # MKCOL 301，PROPFIND 复核确认集合存在 → 幂等继续
         urlopen.side_effect = [
@@ -300,7 +301,7 @@ class TestWebDAVEnsureDir(unittest.TestCase):
         bk = _make_backend()
         self.assertTrue(bk.ensure_remote_dir("memes"))
 
-    @patch("src.sync.urllib.request.urlopen")
+    @patch("ohmymeme.services.sync.backends.urllib.request.urlopen")
     def test_301_missing_collection_raises(self, urlopen):
         # MKCOL 301，PROPFIND 复核确认集合不存在 → 判失败
         urlopen.side_effect = [

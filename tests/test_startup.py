@@ -10,12 +10,14 @@ from unittest.mock import patch
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 os.environ["OHMYMEME_TEST"] = "1"
 
-from src.clipboard_util import copy_image_to_clipboard, copy_text
-from src.config import Config
-from src.crypto_util import decrypt_data, encrypt_data
-from src.database import MemeDB
-from src.hotkey import GlobalHotkey
-from src.tray import _create_default_icon
+from ohmymeme.core.config import Config
+from ohmymeme.core.crypto import decrypt_data, encrypt_data
+from ohmymeme.core.database import MemeDB
+from ohmymeme.integrations.platform.clipboard import copy_image_to_clipboard, copy_text
+from ohmymeme.integrations.platform.hotkey import GlobalHotkey
+from ohmymeme.integrations.platform.tray import _create_default_icon
+
+ROOT = Path(__file__).resolve().parent.parent
 
 
 class _FakeConfig:
@@ -66,9 +68,10 @@ class _FakeMemeDB:
 
 
 def _fake_webui(hotkey_show_at_mouse, visible=False):
-    from src.webui import WebUI
+    from ohmymeme.app.container import Container
 
-    ui = WebUI()
+    container = Container()
+    ui = container.create_webui()
     ui._cfg = _FakeConfig(hotkey_show_at_mouse)
     ui._window = _FakeWindow()
     ui._visible = visible
@@ -142,9 +145,10 @@ def test_clipboard():
 
 
 def test_webui_import():
-    from src.webui import JsApi, WebUI
+    from ohmymeme.app.container import Container
 
-    w = WebUI()
+    container = Container()
+    w = container.create_webui()
     assert w._port > 0
     assert w._window is None
     assert not w.is_visible
@@ -152,7 +156,7 @@ def test_webui_import():
     assert hasattr(w, "show")
     assert hasattr(w, "hide")
     # JsApi
-    api = JsApi(w)
+    api = w._api
     assert hasattr(api, "search_memes")
     assert hasattr(api, "get_tags")
     assert hasattr(api, "copy_meme")
@@ -160,7 +164,9 @@ def test_webui_import():
 
 
 def test_find_hotkey_window_position_candidate_order():
-    from src.webui import _find_hotkey_window_position
+    from ohmymeme.presentation.desktop.window_manager import (
+        _find_hotkey_window_position,
+    )
 
     work_area = (0, 0, 100, 100)
     assert _find_hotkey_window_position((10, 10), work_area, 30, 20) == (10, 10)
@@ -170,7 +176,9 @@ def test_find_hotkey_window_position_candidate_order():
 
 
 def test_find_hotkey_window_position_edge_equality_allowed():
-    from src.webui import _find_hotkey_window_position
+    from ohmymeme.presentation.desktop.window_manager import (
+        _find_hotkey_window_position,
+    )
 
     assert _find_hotkey_window_position((70, 80), (0, 0, 100, 100), 30, 20) == (
         70,
@@ -179,7 +187,9 @@ def test_find_hotkey_window_position_edge_equality_allowed():
 
 
 def test_find_hotkey_window_position_none_when_window_cannot_fit():
-    from src.webui import _find_hotkey_window_position
+    from ohmymeme.presentation.desktop.window_manager import (
+        _find_hotkey_window_position,
+    )
 
     work_area = (-100, -50, 100, 50)
     assert _find_hotkey_window_position((0, 0), work_area, 201, 50) is None
@@ -280,11 +290,9 @@ def test_toggle_hotkey_safe_placement_exception_still_shows(monkeypatch):
 
 
 def test_successful_native_drag_requests_hide_only_for_hotkey_session(monkeypatch):
-    import src.native_drag as native_drag
-    from src.webui import JsApi
+    import ohmymeme.integrations.platform.native_drag as native_drag
 
     ui = _fake_webui(True)
-    ui._api = JsApi(ui)
     ui._api._db = _FakeMemeDB()
     monkeypatch.setattr(ui._api, "_find_meme_file", lambda filename: filename)
     monkeypatch.setattr(native_drag, "start_native_drag", lambda path: True)
@@ -301,11 +309,9 @@ def test_successful_native_drag_requests_hide_only_for_hotkey_session(monkeypatc
 
 
 def test_successful_copy_requests_hide_only_for_hotkey_session(monkeypatch):
-    import src.webui as webui_module
-    from src.webui import JsApi
+    import ohmymeme.presentation.desktop.window_manager as webui_module
 
     ui = _fake_webui(True)
-    ui._api = JsApi(ui)
     ui._api._db = _FakeMemeDB()
     monkeypatch.setattr(ui._api, "_find_meme_file", lambda filename: filename)
     monkeypatch.setattr(webui_module, "copy_image_to_clipboard", lambda path: True)
@@ -326,7 +332,7 @@ def test_successful_copy_requests_hide_only_for_hotkey_session(monkeypatch):
 def _start_fake_webui(monkeypatch, silent_start):
     import types
 
-    import src.webui as webui_module
+    import ohmymeme.presentation.desktop.window_manager as webui_module
 
     created = []
 
@@ -347,9 +353,9 @@ def _start_fake_webui(monkeypatch, silent_start):
     )
     monkeypatch.setattr(webui_module.time, "sleep", lambda _: None)
 
-    from src.webui import WebUI
+    from ohmymeme.app.container import Container
 
-    ui = WebUI(silent_start=silent_start)
+    ui = Container().create_webui(silent_start=silent_start)
     ui._cfg = _FakeConfig(True)
     monkeypatch.setattr(ui, "_setup_bottle", lambda: None)
     monkeypatch.setattr(ui, "_init_lan", lambda: None)
@@ -387,7 +393,7 @@ def test_webui_start_silent_visibility_allows_hotkey_placement(monkeypatch):
 def test_app_routes_hotkey_and_tray_to_separate_zero_argument_methods():
     import inspect
 
-    from src.main import OhMyMemeApp
+    from ohmymeme.app.bootstrap import OhMyMemeApp
 
     class FakeWebUI:
         def __init__(self):
@@ -412,9 +418,90 @@ def test_app_routes_hotkey_and_tray_to_separate_zero_argument_methods():
     assert len(inspect.signature(app._on_tray_show).parameters) == 0
 
 
-def test_webui_html_exists():
-    from src.webui import HTML_DIR
+def test_package_main_is_the_only_bootstrap_callable():
+    from ohmymeme.app.bootstrap import main as package_main
 
+    assert package_main.__module__ == "ohmymeme.app.bootstrap"
+
+
+def test_module_entrypoint_help_matches_bootstrap_main():
+    root = Path(__file__).resolve().parent.parent
+    env = os.environ.copy()
+    env["PYTHONPATH"] = str(root / "src")
+
+    result = subprocess.run(
+        [sys.executable, "-m", "ohmymeme", "--help"],
+        cwd=root,
+        env=env,
+        capture_output=True,
+        text=True,
+        timeout=10,
+        check=False,
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert "--silent" in result.stdout
+    assert "--debug-update" in result.stdout
+
+
+def test_bootstrap_preserves_unknown_arguments(monkeypatch):
+    from ohmymeme.app import bootstrap
+
+    created = []
+
+    class FakeApp:
+        def __init__(self):
+            created.append(self)
+
+        def run(self):
+            return None
+
+    monkeypatch.setattr("ohmymeme.app.bootstrap.OhMyMemeApp", FakeApp)
+    monkeypatch.setattr(sys, "argv", ["ohmymeme", "--unknown-benign-flag"])
+
+    bootstrap.main()
+
+    assert len(created) == 1
+
+
+def test_windows_auto_start_rewrites_legacy_source_command(monkeypatch):
+    import types
+
+    from ohmymeme.integrations.platform import system as platform_util
+
+    class FakeKey:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *args):
+            return False
+
+    legacy_module = "src" + ".main"
+    values = {"OhMyMeme": f'"C:\\Python\\python.exe" -m {legacy_module} --silent'}
+    registry = types.SimpleNamespace(
+        HKEY_CURRENT_USER=object(),
+        KEY_QUERY_VALUE=1,
+        KEY_SET_VALUE=2,
+        REG_SZ=1,
+        OpenKey=lambda *args: FakeKey(),
+        QueryValueEx=lambda key, name: (values[name], 1),
+        SetValueEx=lambda key, name, reserved, kind, value: values.__setitem__(
+            name, value
+        ),
+    )
+    monkeypatch.setitem(sys.modules, "winreg", registry)
+    monkeypatch.setattr(platform_util.platform, "system", lambda: "Windows")
+    monkeypatch.setattr(platform_util.sys, "executable", r"C:\Python\python.exe")
+    monkeypatch.setattr(platform_util.sys, "frozen", False, raising=False)
+
+    assert platform_util.is_auto_start_enabled()
+    assert values["OhMyMeme"] == '"C:\\Python\\python.exe" -m ohmymeme --silent'
+
+
+def test_webui_html_exists():
+    from ohmymeme.presentation.desktop.window_manager import HTML_DIR
+
+    root = Path(__file__).resolve().parent.parent
     assert HTML_DIR.exists()
     assert (HTML_DIR / "index.html").exists()
     html = (HTML_DIR / "index.html").read_text(encoding="utf-8")
@@ -435,6 +522,72 @@ def test_webui_html_exists():
     settings_js = (HTML_DIR / "settings.js").read_text(encoding="utf-8")
     assert settings_js.count("s.hotkey_show_at_mouse === true") == 2
     assert "hotkey_show_at_mouse," in settings_js
+    settings_source = (
+        root / "src" / "ohmymeme" / "presentation" / "frontend" / "settings"
+    )
+    assert (settings_source / "entry.mjs").exists()
+    assert (settings_source / "core" / "runtime.js").exists()
+    assert (settings_source / "core" / "window.js").exists()
+    assert (settings_source / "features" / "base.js").exists()
+    assert (settings_source / "features" / "storage.js").exists()
+    assert (settings_source / "features" / "lan.js").exists()
+    assert (settings_source / "features" / "sync" / "settings.js").exists()
+    assert (settings_source / "features" / "sync" / "operations.js").exists()
+    assert (settings_source / "features" / "imports" / "qq.js").exists()
+    assert (settings_source / "features" / "imports" / "douyin.js").exists()
+    assert (settings_source / "features" / "imports" / "telegram.js").exists()
+    assert (settings_source / "features" / "imports" / "wechat.js").exists()
+    assert (settings_source / "features" / "imports" / "qqnt.js").exists()
+    assert (settings_source / "features" / "update.js").exists()
+    assert (settings_source / "features" / "danger.js").exists()
+    assert (settings_source / "features" / "logs.js").exists()
+    package = (root / "package.json").read_text(encoding="utf-8")
+    assert '"build:settings": "node scripts/build_settings.mjs"' in package
+
+
+def test_vue_main_window_feature_layout_static_contract():
+    root = Path(__file__).resolve().parent.parent
+    frontend = root / "src" / "ohmymeme" / "presentation" / "frontend" / "main"
+    vite_config = (root / "vite.config.ts").read_text(encoding="utf-8")
+    vue_html = (root / "src" / "webui" / "vue.html").read_text(encoding="utf-8")
+    app_shell = (frontend / "app" / "App.vue").read_text(encoding="utf-8")
+    main_window = (frontend / "app" / "MainWindow.vue").read_text(encoding="utf-8")
+    entry = (frontend / "app" / "main.ts").read_text(encoding="utf-8")
+    bridge = frontend / "shared" / "bridge.ts"
+
+    assert "presentation/frontend/main/app/main.ts" in vite_config
+    assert "src/webui/dist" in vite_config
+    assert "entryFileNames: 'ohmymeme.js'" in vite_config
+    assert "inlineDynamicImports: true" in vite_config
+    assert "format: 'iife'" in vite_config
+    assert 'id="app-mount"' in vue_html
+    assert 'src="/dist/ohmymeme.js"' in vue_html
+    assert "window.focusSearch" in entry
+    assert "window.showLanDeviceConfirm" in entry
+    assert "<MainWindow />" in app_shell
+    assert "await loadInitData()" in main_window
+    assert main_window.index("api('rescan_cache')") < main_window.index(
+        "api('run_auto_sync')"
+    )
+    assert "setTimeout(runBackground, 300)" in main_window
+    assert "pointercancel" in main_window
+    assert "reorder_collection_members" in (
+        frontend / "features" / "memes" / "useMemes.ts"
+    ).read_text(encoding="utf-8")
+    assert "start_native_drag" in (
+        frontend / "features" / "memes" / "useMemes.ts"
+    ).read_text(encoding="utf-8")
+
+    raw_bridge_users = [
+        path
+        for path in frontend.rglob("*.*")
+        if path.suffix in {".ts", ".vue"}
+        and (
+            "pywebview.api" in path.read_text(encoding="utf-8")
+            or "window.pywebview" in path.read_text(encoding="utf-8")
+        )
+    ]
+    assert raw_bridge_users == [bridge]
 
 
 def test_sorting_visual_feedback_static_contract():
@@ -542,7 +695,10 @@ def test_sorting_visual_feedback_static_contract():
     assert re.search(
         r"activeCollection\s*>\s*0[\s\S]*?api\(\s*['\"]reorder_collection_members['\"]\s*,\s*activeCollection",
         index_js,
-    ), "sortable collections must persist their member order through the active collection"
+    ), (
+        "sortable collections must persist their member order through "
+        "the active collection"
+    )
     assert re.search(
         r"api\(\s*['\"]reorder_memes['\"]\s*,\s*memes\.map\([^)]*\.id\s*\)",
         index_js,
@@ -756,7 +912,7 @@ def test_grid_slot_hit_testing_stays_aligned_when_layout_moves_and_scrolls():
 
 
 def test_webui_safe_serve_filename():
-    from src.webui import _safe_serve_filename
+    from ohmymeme.presentation.desktop.window_manager import _safe_serve_filename
 
     for name in ("a.png", "表情.webp", "a b.gif", "abc123.gif"):
         assert _safe_serve_filename(name)
@@ -775,7 +931,7 @@ def test_webui_safe_serve_filename():
 
 
 def test_webui_host_allowed():
-    from src.webui import _host_allowed
+    from ohmymeme.presentation.desktop.window_manager import _host_allowed
 
     assert _host_allowed("127.0.0.1", 12345)
     assert _host_allowed("127.0.0.1:12345", 12345)
@@ -787,7 +943,7 @@ def test_webui_host_allowed():
 
 
 def test_storage_dir_validation(tmp_path):
-    from src.webui import _storage_dir_validation
+    from ohmymeme.presentation.desktop.window_manager import _storage_dir_validation
 
     old = tmp_path / "old"
     old.mkdir()
@@ -808,20 +964,23 @@ def test_storage_dir_validation(tmp_path):
 
 
 def test_storage_move_save_failure_rolls_back_files_and_config(tmp_path):
-    from src.webui import SettingsApi
+    from ohmymeme.app.container import Container
 
     data_dir = tmp_path / "data"
-    with patch("src.config._get_data_dir", return_value=data_dir):
+    with patch("ohmymeme.core.config._get_data_dir", return_value=data_dir):
         cfg = Config(tmp_path / "config.json")
         old = cfg.cache_dir
         source = old / "nested" / "meme.png"
         source.parent.mkdir(parents=True)
         source.write_bytes(b"meme")
         destination = tmp_path / "destination"
-        api = SettingsApi(None)
+        container = Container(tmp_path / "container")
+        api = container.create_webui()._settings_api
         api._cfg = cfg
 
-        with patch("src.config.Config.save", side_effect=OSError("disk full")):
+        with patch(
+            "ohmymeme.core.config.Config.save", side_effect=OSError("disk full")
+        ):
             result = api.apply_storage_dir(str(destination), move_files=True)
 
     assert result["ok"] is False

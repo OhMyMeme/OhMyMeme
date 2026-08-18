@@ -26,10 +26,14 @@ from PIL import Image
 # 确保 src 在导入路径中
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from src import sync
-from src.config import Config
-from src.manifest import INDEX_FILENAME
-from src.sync import SyncError, cleanup_remote_orphans, get_sync_progress
+from ohmymeme.core.config import Config
+from ohmymeme.core.manifest import INDEX_FILENAME
+from ohmymeme.services.sync import service as sync
+from ohmymeme.services.sync.service import (
+    SyncError,
+    cleanup_remote_orphans,
+    get_sync_progress,
+)
 
 
 def _entry(fname, sha256, size=1):
@@ -259,16 +263,28 @@ class TestSyncPush(unittest.TestCase):
         self.cfg.set("sync_threads", 1)
 
         # 将 data_dir / get_config / get_db / _get_backend 全部指向临时环境
-        self._start_patch(patch("src.config._get_data_dir", return_value=self.data_dir))
-        for target in ("src.sync.get_config", "src.manifest.get_config"):
+        self._start_patch(
+            patch("ohmymeme.core.config._get_data_dir", return_value=self.data_dir)
+        )
+        for target in (
+            "ohmymeme.services.sync.service.get_config",
+            "ohmymeme.core.manifest.get_config",
+        ):
             self._start_patch(patch(target, return_value=self.cfg))
         self.fake_db = _FakeDb()
-        self._start_patch(patch("src.manifest.get_db", return_value=self.fake_db))
-        self._start_patch(patch("src.sync.get_db", return_value=self.fake_db))
+        self._start_patch(
+            patch("ohmymeme.core.manifest.get_db", return_value=self.fake_db)
+        )
+        self._start_patch(
+            patch("ohmymeme.services.sync.service.get_db", return_value=self.fake_db)
+        )
 
         self.fake_backend = _FakeBackend()
         self._start_patch(
-            patch("src.sync._get_backend", return_value=self.fake_backend)
+            patch(
+                "ohmymeme.services.sync.service._get_backend",
+                return_value=self.fake_backend,
+            )
         )
 
         # 默认一个本地文件 test.png
@@ -565,9 +581,13 @@ class TestSyncPush(unittest.TestCase):
         self.fake_backend.remote_files = {"test.png"}
         original_manifest = (self.data_dir / INDEX_FILENAME).read_bytes()
 
-        with patch("src.sync._apply_remote_collections") as collections, patch(
-            "src.sync._apply_remote_order"
-        ) as order, patch("src.sync.build_manifest") as rebuild:
+        with patch(
+            "ohmymeme.services.sync.service._apply_remote_collections"
+        ) as collections, patch(
+            "ohmymeme.services.sync.service._apply_remote_order"
+        ) as order, patch(
+            "ohmymeme.services.sync.service.build_manifest"
+        ) as rebuild:
             with self.assertRaises(SyncError):
                 sync.pull()
 
@@ -626,7 +646,8 @@ class TestSyncPush(unittest.TestCase):
         self.fake_backend.remote_files = {"new.png"}
 
         with patch(
-            "src.sync._apply_remote_metadata", side_effect=RuntimeError("db failure")
+            "ohmymeme.services.sync.service._apply_remote_metadata",
+            side_effect=RuntimeError("db failure"),
         ):
             with self.assertRaisesRegex(RuntimeError, "db failure"):
                 sync.pull()
@@ -668,8 +689,10 @@ class TestSyncPush(unittest.TestCase):
     def test_manifest_replace_failure_keeps_empty_collections(self):
         self.fake_db.rows = []
         self.fake_db.collections = [(1, "empty", None, 0)]
-        with patch("src.manifest.os.replace", side_effect=OSError("disk full")):
-            from src.manifest import build as _build
+        with patch(
+            "ohmymeme.core.manifest.os.replace", side_effect=OSError("disk full")
+        ):
+            from ohmymeme.core.manifest import build as _build
 
             with self.assertRaises(OSError):
                 _build()
@@ -680,7 +703,9 @@ class TestSyncPush(unittest.TestCase):
         self._set_local_memes([])
         original_manifest = (self.data_dir / INDEX_FILENAME).read_bytes()
         self.fake_backend.remote_memes = {"new.png": _entry("new.png", "new")}
-        with patch("src.manifest.os.replace", side_effect=OSError("disk full")):
+        with patch(
+            "ohmymeme.core.manifest.os.replace", side_effect=OSError("disk full")
+        ):
             with self.assertRaises(OSError):
                 sync.pull()
 
@@ -693,8 +718,10 @@ class TestSyncPush(unittest.TestCase):
     def test_build_manifest_atomic_replace_preserves_old_on_failure(self):
         """build_manifest 原子替换：os.replace 失败时旧清单完好"""
         old = json.loads((self.data_dir / INDEX_FILENAME).read_text(encoding="utf-8"))
-        with patch("src.manifest.os.replace", side_effect=OSError("disk full")):
-            from src.manifest import build as _build
+        with patch(
+            "ohmymeme.core.manifest.os.replace", side_effect=OSError("disk full")
+        ):
+            from ohmymeme.core.manifest import build as _build
 
             with self.assertRaises(OSError):
                 _build()
@@ -703,8 +730,10 @@ class TestSyncPush(unittest.TestCase):
 
     def test_build_manifest_replace_failure_propagates_and_cleans_temp(self):
         old = (self.data_dir / INDEX_FILENAME).read_bytes()
-        with patch("src.manifest.os.replace", side_effect=OSError("disk full")):
-            from src.manifest import build as _build
+        with patch(
+            "ohmymeme.core.manifest.os.replace", side_effect=OSError("disk full")
+        ):
+            from ohmymeme.core.manifest import build as _build
 
             with self.assertRaises(OSError):
                 _build()
@@ -776,7 +805,7 @@ class TestSyncPush(unittest.TestCase):
         (self.data_dir / ".remote-index-abc.json").write_text("x")
         (self.data_dir / ".remote-merged-def.json").write_text("x")
         (self.data_dir / "meme-index.json.tmp").write_text("x")
-        from src.sync import cleanup_stale_temp_files
+        from ohmymeme.services.sync.service import cleanup_stale_temp_files
 
         count = cleanup_stale_temp_files()
         self.assertEqual(count, 3)
@@ -789,7 +818,7 @@ class TestSyncPush(unittest.TestCase):
         """启动清理：cache 子目录下的 *.tmp 也被清理"""
         cache = self.data_dir / "cache"
         (cache / "abc.png.tmp").write_text("x")
-        from src.sync import cleanup_stale_temp_files
+        from ohmymeme.services.sync.service import cleanup_stale_temp_files
 
         count = cleanup_stale_temp_files()
         self.assertGreaterEqual(count, 1)
@@ -798,7 +827,7 @@ class TestSyncPush(unittest.TestCase):
     def test_download_index_leaves_no_temp(self):
         """download_index 使用唯一临时文件且结束后清理，无残留"""
         self.fake_backend.remote_memes = {"a.png": _entry("a.png", "x")}
-        from src.sync import download_index
+        from ohmymeme.services.sync.service import download_index
 
         data = download_index()
         self.assertIsNotNone(data)
@@ -821,7 +850,7 @@ class TestSyncPush(unittest.TestCase):
 
     def test_concurrent_push_rejected(self):
         """运行锁被占用时第二次 push 抛"同步正在进行中" """
-        from src.sync import _sync_run_lock
+        from ohmymeme.services.sync.service import _sync_run_lock
 
         self.assertTrue(_sync_run_lock.acquire(blocking=False))
         try:
@@ -833,7 +862,7 @@ class TestSyncPush(unittest.TestCase):
 
     def test_concurrent_pull_rejected(self):
         """运行锁被占用时 pull 抛"同步正在进行中" """
-        from src.sync import _sync_run_lock
+        from ohmymeme.services.sync.service import _sync_run_lock
 
         self.assertTrue(_sync_run_lock.acquire(blocking=False))
         try:
@@ -860,10 +889,11 @@ class TestSyncPush(unittest.TestCase):
 
     def test_push_get_backend_failure_releases_lock(self):
         """_get_backend 抛异常后运行锁被释放，后续 push 可正常执行"""
-        from src.sync import _sync_run_lock
+        from ohmymeme.services.sync.service import _sync_run_lock
 
         with patch(
-            "src.sync._get_backend", side_effect=SyncError("No sync type configured")
+            "ohmymeme.services.sync.service._get_backend",
+            side_effect=SyncError("No sync type configured"),
         ):
             with self.assertRaises(SyncError):
                 sync.push()

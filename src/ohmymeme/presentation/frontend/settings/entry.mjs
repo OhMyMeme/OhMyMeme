@@ -1,0 +1,18 @@
+export default [
+  "core/runtime.js",
+  "features/logs.js",
+  "features/lan.js",
+  "features/base.js",
+  "features/storage.js",
+  "features/sync/settings.js",
+  "features/sync/operations.js",
+  "features/imports/qq.js",
+  "features/imports/douyin.js",
+  "features/imports/telegram.js",
+  "features/imports/wechat.js",
+  "features/imports/qqnt.js",
+  "core/window.js",
+  "features/update.js",
+  "features/danger.js",
+  "core/init.js",
+]

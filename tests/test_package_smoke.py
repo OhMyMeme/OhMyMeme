@@ -19,6 +19,75 @@ ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
 
 
+def test_package_smoke_reads_version_from_new_package_authority():
+    """Given package metadata, when smoke resolves a version, then it uses ohmymeme."""
+    from ohmymeme import __version__
+    from scripts import package_smoke
+
+    assert package_smoke.VERSION_FILE == ROOT / "src" / "ohmymeme" / "__init__.py"
+    assert package_smoke._version() == __version__
+
+
+def test_package_smoke_reports_frozen_package_layout():
+    """Given package scripts, when reporting, then frozen data targets are explicit."""
+    report = contract_report(target="windows-x64")
+
+    assert report["runtime_layout"] == {
+        "entrypoint": "ohmymeme.app.bootstrap",
+        "data_targets": [
+            "ohmymeme/webui",
+            "ohmymeme/resources",
+            "ohmymeme/adb-help.txt",
+            "ohmymeme/config/offsets.json",
+        ],
+    }
+
+
+def test_flat_source_modules_are_absent_and_legacy_import_fails():
+    """Given the source root, when legacy modules are requested, then none load."""
+    source_root = ROOT / "src"
+    legacy_package = "src"
+    legacy_module = legacy_package + ".main"
+    result = subprocess.run(
+        [
+            sys.executable,
+            "-c",
+            "import importlib, sys; importlib.import_module(sys.argv[1])",
+            legacy_module,
+        ],
+        cwd=ROOT,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+
+    assert not (source_root / "__init__.py").exists()
+    assert not (source_root / "__main__.py").exists()
+    assert list(source_root.glob("*.py")) == []
+    assert result.returncode != 0
+    assert "ModuleNotFoundError" in result.stderr
+
+
+def test_package_smoke_rejects_legacy_pyinstaller_data_target(monkeypatch, tmp_path):
+    """Given old data, reporting rejects the package contract."""
+    from scripts import package_smoke
+
+    build_script = package_smoke.BUILD_SCRIPT.read_text(encoding="utf-8")
+    stale_build_script = tmp_path / "build.py"
+    stale_build_script.write_text(
+        build_script.replace("ohmymeme/webui", "src/webui", 1),
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(
+        package_smoke,
+        "BUILD_SCRIPT",
+        stale_build_script,
+    )
+
+    with pytest.raises(ContractViolation, match="frozen data target"):
+        contract_report(target="windows-x64")
+
+
 def test_contract_only_reports_six_release_targets():
     """Given repository contracts, when smoke runs, then six targets pass."""
     result = subprocess.run(
@@ -232,7 +301,7 @@ def test_contract_rejects_identity_and_metadata_drift(target, field, value):
 
 def test_nightly_release_is_never_selected_as_stable(monkeypatch):
     """Given a nightly release, when stable parsing runs, then it is rejected."""
-    from src import updater
+    from ohmymeme.services import updates as updater
 
     monkeypatch.setattr(updater.platform, "system", lambda: "Windows")
     release = {
@@ -246,7 +315,7 @@ def test_nightly_release_is_never_selected_as_stable(monkeypatch):
 
 def test_linux_updater_selects_only_appimage(monkeypatch):
     """Given Linux release assets, when selection runs, then deb and rpm are ignored."""
-    from src import updater
+    from ohmymeme.services import updates as updater
 
     monkeypatch.setattr(updater.platform, "system", lambda: "Linux")
     assets = [

@@ -21,8 +21,9 @@ import subprocess
 import sys
 from pathlib import Path
 
-PROJECT_ROOT = Path(__file__).resolve().parent.parent
+PROJECT_ROOT = Path(__file__).resolve().parents[2]
 SRC_DIR = PROJECT_ROOT / "src"
+PACKAGE_DIR = SRC_DIR / "ohmymeme"
 BUILD_DIR = PROJECT_ROOT / "dist"
 APP_NAME = "OhMyMeme"
 
@@ -30,7 +31,7 @@ PYTHON = sys.executable
 
 
 def get_version():
-    init_py = SRC_DIR / "__init__.py"
+    init_py = PACKAGE_DIR / "__init__.py"
     m = re.search(r'__version__\s*=\s*"([^"]+)"', init_py.read_text(encoding="utf-8"))
     return m.group(1) if m else "0.1.0"
 
@@ -106,7 +107,14 @@ def build_nuitka(onefile=False, use_clang=False, target=None):
         ]
 
     data_opts = [
-        "--include-data-dir=" + str(SRC_DIR / "webui") + "=src/webui",
+        "--include-data-dir=" + str(SRC_DIR / "webui") + "=ohmymeme/webui",
+        "--include-data-dir=" + str(SRC_DIR / "resources") + "=ohmymeme/resources",
+        "--include-data-files="
+        + str(SRC_DIR / "adb-help.txt")
+        + "=ohmymeme/adb-help.txt",
+        "--include-data-files="
+        + str(PROJECT_ROOT / "config" / "offsets.json")
+        + "=ohmymeme/config/offsets.json",
     ]
 
     nofollow_opts = [
@@ -151,7 +159,7 @@ def build_nuitka(onefile=False, use_clang=False, target=None):
     if onefile:
         cmd.append("--onefile")
 
-    cmd.append(str(SRC_DIR))
+    cmd.append(str(PACKAGE_DIR / "__main__.py"))
 
     print("运行: %s" % " ".join(cmd))
     result = subprocess.run(cmd, cwd=str(PROJECT_ROOT))
@@ -210,7 +218,7 @@ def build_installer(version):
     # 替换路径为绝对路径（ISS 临时文件位置改变，相对路径会算错）
     source_dir_abs = str(dist_dir.resolve())
     iss_content = iss_content.replace(
-        '#define SourceDir "..\\..\\dist\\src.dist"',
+        '#define SourceDir "..\\..\\dist\\OhMyMeme"',
         '#define SourceDir "%s"' % source_dir_abs,
     )
     iss_content = iss_content.replace(

@@ -1,6 +1,6 @@
 ## Summary
 
-- 新增 src/tg_stickers.py：完整的 Telegram Desktop 缓存解密与转换管线（TDF$/TDEF 解密、webm→animated webp 无损转换保留 alpha、静态版去重、状态轮询）
+- 新增 ohmymeme.integrations.imports.telegram：完整的 Telegram Desktop 缓存解密与转换管线（TDF$/TDEF 解密、webm→animated webp 无损转换保留 alpha、静态版去重、状态轮询）
 - 设置页「从 Telegram 导入」向导（tdata 目录选择/本地密码/WebM 转换开关/进度覆盖层）
 - ffmpeg 转 webp 使用 libvpx-vp9 解码器修复透明动画丢失（原生 vp9 解码器会丢弃 alpha 平面）
 - 新增 `hover_to_play` 配置项：启用后网格显示缩略图，鼠标悬停才播放动图，解决多 3MB 动画 webp 同时渲染卡顿
@@ -9,7 +9,7 @@
 
 ### 1. Telegram 缓存导入 (`feat`)
 
-- `src/tg_stickers.py`（~620 行）
+- `ohmymeme.integrations.imports.telegram`（~620 行）
   - TDF$/TDEF 格式解密（AES-CTR，PBKDF2 密钥派生）
   - webm → animated webp 无损转换（`-c:v libvpx-vp9` 保留 alpha 平面）
   - 静态 webp vs 动画 webp 去重（归一化灰度差分，阈值 0.02）

@@ -11,10 +11,10 @@ from unittest.mock import patch
 # 确保 src 在导入路径中
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from src import __app_name__, __version__
-from src.config import Config
-from src.crypto_util import decrypt_data, encrypt_data
-from src.database import MemeDB
+from ohmymeme import __app_name__, __version__
+from ohmymeme.core.config import Config
+from ohmymeme.core.crypto import decrypt_data, encrypt_data
+from ohmymeme.core.database import MemeDB
 
 
 class TestVersion(unittest.TestCase):
@@ -94,7 +94,7 @@ class TestConfig(unittest.TestCase):
         cfg = Config(self.config_path)
         cfg.set("hotkey", "new")
 
-        with patch("src.config.os.replace", side_effect=OSError("disk full")):
+        with patch("ohmymeme.core.config.os.replace", side_effect=OSError("disk full")):
             with self.assertRaises(OSError):
                 cfg.save()
 
@@ -160,6 +160,16 @@ class TestConfig(unittest.TestCase):
         self.assertEqual(cfg.cache_dir, (self.tmp_dir / "my_memes").resolve())
         self.assertTrue((self.tmp_dir / "my_memes").exists())
 
+    def test_legacy_config_ciphertext_loads_from_new_package(self):
+        ciphertext = encrypt_data("legacy-secret")
+        self.config_path.write_text(
+            '{"s3_secret_key": "' + ciphertext + '"}', encoding="utf-8"
+        )
+
+        cfg = Config(self.config_path)
+
+        self.assertEqual(cfg.get("s3_secret_key"), "legacy-secret")
+
 
 class TestDatabase(unittest.TestCase):
     def setUp(self):
@@ -199,9 +209,11 @@ class TestDatabase(unittest.TestCase):
         # 孤儿标签一次性修剪
         self.assertEqual(set(self.db.get_all_tags()), {"only2"})
         # 外键级联清理分组成员关系
-        rows = self.db._get_conn().execute(
-            "SELECT 1 FROM meme_collections WHERE meme_id=?", (m1,)
-        ).fetchall()
+        rows = (
+            self.db._get_conn()
+            .execute("SELECT 1 FROM meme_collections WHERE meme_id=?", (m1,))
+            .fetchall()
+        )
         self.assertEqual(len(rows), 0)
         self.assertFalse(self.db.is_favorite(m2))
 
@@ -352,13 +364,38 @@ class TestDatabase(unittest.TestCase):
                 return getattr(self.connection, name)
 
         with patch(
-            "src.database.sqlite3.connect",
+            "ohmymeme.core.database.sqlite3.connect",
             side_effect=lambda *args, **kwargs: BrokenConnection(
                 original_connect(*args, **kwargs)
             ),
         ):
             with self.assertRaisesRegex(sqlite3.OperationalError, "malformed"):
                 MemeDB(db_path)
+
+    def test_legacy_database_opens_with_wal_and_schema(self):
+        legacy_path = self.tmp_dir / "legacy.db"
+        legacy = sqlite3.connect(legacy_path)
+        legacy.execute("""CREATE TABLE memes (
+                id INTEGER PRIMARY KEY,
+                filename TEXT NOT NULL,
+                file_hash TEXT NOT NULL DEFAULT '',
+                original_name TEXT NOT NULL DEFAULT '',
+                width INTEGER DEFAULT 0,
+                height INTEGER DEFAULT 0,
+                file_size INTEGER DEFAULT 0,
+                mime_type TEXT DEFAULT 'image/png',
+                created_at TEXT NOT NULL DEFAULT (datetime('now','localtime')),
+                updated_at TEXT NOT NULL DEFAULT (datetime('now','localtime'))
+            )""")
+        legacy.execute("INSERT INTO memes (filename) VALUES ('legacy.png')")
+        legacy.commit()
+        legacy.close()
+
+        db = MemeDB(legacy_path)
+
+        journal_mode = db._get_conn().execute("PRAGMA journal_mode").fetchone()[0]
+        self.assertEqual(journal_mode, "wal")
+        self.assertEqual(db.get_by_filename("legacy.png")["filename"], "legacy.png")
 
     def test_empty_search(self):
         results = self.db.search()

@@ -48,46 +48,25 @@ JsApi / SettingsApi → SQLite (WAL) + 本地缓存 + 远端同步
 
 ## 关键目录
 ```
-src/              # 主代码
-  main.py         # CLI 入口, OhMyMemeApp 编排
-  webui.py        # pywebview 窗口 + JsApi/SettingsApi + Bottle 路由
-  updater.py      # 版本检查 + 并发镜像下载
-  database.py     # MemeDB (SQLite, 6 表)
-  config.py       # Config (JSON + Fernet 加密密钥)
-  sync.py         # 同步后端 (FTP/S3/R2/WebDAV)
-  lan.py          # 局域网互联 (UDP 发现 + TCP 握手 + AES-GCM 会话)
-  tray.py         # TrayManager (pystray, 惰性导入)
-  hotkey.py       # GlobalHotkey (三级降级: keyboard→pynput→轮询)
-  clipboard_util.py # 剪贴板操作 (Win32 ctypes / macOS osascript / Linux xclip)
-  gif_stego.py     # GIF 增量隐写（实验性：粘贴表情大小 + 无损还原原图）
-  native_drag.py   # Windows 原生文件拖拽 (WinForms DoDragDrop + CF_HDROP, 惰性加载 pythonnet)
-  crypto_util.py  # 加密 (Fernet + PBKDF2, 降级 XOR)
-  manifest.py     # meme-index.json 构建/加载
-  platform_util.py # 平台工具 (WSL检测, 开机自启)
-  adb_util.py      # ADB 自动检测/下载 + QQ 表情包缓存导入（ADB 拉取 + 魔数识别扩展名 + ZIP 打包）
-  qqnt_extract.py  # QQNT 本地收藏表情提取（GPL-3.0 衍生模块，纯函数 + 回调接口，无 UI 依赖）
-  tg_stickers.py   # Telegram Desktop 缓存表情包提取（tdata 解密 + webm 转 webp + 入库）
-  douyin.py        # 抖音表情包下载导入（ABogus 签名 + curl_cffi TLS 指纹 + WebP 原格式入库）
-  abogus.py        # ABogus 签名算法（纯 Python，GPL-3.0，源自 TikTokDownloader）
-  douyin_dl.py     # 抖音下载 CLI 测试入口（独立运行，不依赖 GUI）
-  wechat_probe.py  # 微信收藏表情导入（helper 二进制提取密钥 + AES-CBC 解密 DB + CDN 下载，仅 Windows）
+src/              # 源码根与固定运行时静态资产
+  ohmymeme/       # 唯一 Python 业务包
+    app/          # CLI 入口、Container、Catalog 与 Settings
+    core/         # Config、Crypto、SQLite、资产、导入和 Manifest
+    services/     # 更新、同步与局域网服务
+    integrations/ # 平台能力与外部导入适配器
+    presentation/ # pywebview、Bottle 与前端源码
   wechat_keyfinder/ # 微信密钥提取 C++ 辅助二进制源码（CMake 构建）
-  vue-src/       # Vue 3 前端源码（Vite 构建，产物到 webui/dist/ohmymeme.js）
-    App.vue      # 根组件：标题栏/搜索/侧边栏/面包屑/标签栏/网格/分页
-    main.ts      # 入口：挂载 + window.focusSearch 全局（快捷键呼出聚焦搜索）
-    style.css    # 主窗口样式（CSS 变量主题，蓝色 #3b82f6）
-    types/       # TS 类型定义 (Meme/Collection/Tag)
-    utils/       # api 桥接 + esc + renderMarkdown
-    composables/ # useMemes 状态 / useDragSort 拖拽 / useContextMenu / useCollectionBuilder
-    components/  # Pager/TagEditor/ImportMenu/SyncOverlay/ContextMenu/CollectionBuilder/
-                 # CollectionTreeNode/UpdateDialog
+  ohmymeme/presentation/frontend/main/ # Vue 3 主窗口源码（Vite 构建，产物到 src/webui/dist/ohmymeme.js）
+    app/         # App.vue 组合壳、Vite 入口与主窗口样式
+    features/    # memes/collections/tags/sorting/imports/sync/updates/lan/dialogs
+    shared/      # 唯一 pywebview bridge、转义/焦点工具与 TS 类型
   webui/          # 前端静态文件
     vue.html      # 主窗口入口（Vue），Bottle 优先加载
     dist/ohmymeme.js # Vite 构建产物（gitignored）
     settings.html # 设置窗口 HTML（vanilla，两列布局：左导航+右内容）
     settings.css  # 设置窗口样式
     settings.js   # 设置窗口逻辑（设置项/同步/导入向导）
-    index.html/index.css/index.js  # 旧主窗口（已备份至 webui-backup/，不再使用）
+    # 主窗口入口为 vue.html，不再维护旧的 index.* 入口
 config/
   offsets.json    # wechat_keyfinder 易变参数（版本号等，微信升级时只改此文件）
 scripts/
@@ -242,7 +221,7 @@ tests/
 - `_copy_png_windows` — 带透明的 PNG 走此路径保留 alpha（CF_HDROP 指向 `.png` 文件 + 自定义 `"PNG"` 格式 + CF_DIB 回退）；不透明 PNG/JPG 仍走 CF_DIB（BMP）路径
 - **移除 CF_HDROP 会导致 QQ/微信粘贴 GIF 变静态图**
 - **复制处理模式** — config `copy_resize_mode`（0不处理；1webp缩放，默认；2转gif；3转gif隐写原图），仅设置页「复制处理」下拉选择（无主窗口开关）。复制超过 `copy_resize_max`（默认 200px）的静态图时按模式处理（动图 GIF/动画 WebP 不受影响）：`convert_image_mode_1` → `_resize_static_to_webp` 转 WebP 并**缩放到限制内**（唯一缩放原图的模式）；`convert_image_mode_2` → `_static_to_gif` 按**原分辨率**转普通 GIF（不隐写、不缩放）；`convert_image_mode_3` → `_make_stego_gif` 按原分辨率转隐写 GIF（失败原样复制原图，不回退缩放）。处理结果存系统临时目录（**不删除**，CF_HDROP 需在 QQ 粘贴时仍可读取）：`ohmm_resize_<md5>_<max>_q<质量>_v<版本>.webp` / `ohmm_gif_<md5>_v<版本>.gif` / `ohmm_stego_<md5>_v1.gif`；缓存键含编码参数与版本号，改编码逻辑后旧缓存自动失效，命中时校验完整性，同一表情重复复制复用。旧配置迁移：`experimental_stego=true` → mode 3，`copy_resize_enabled=false` → mode 0（仅当旧配置无 `copy_resize_mode` 键时）
-- **GIF 隐写（复制模式 3 + 导入自动解码）** — ①复制输出：`copy_resize_mode=3` 时 `_make_stego_gif` **懒加载** `gif_stego.make_stego_gif` 生成携带无损原图的隐写 GIF（与原图同分辨率）再复制，失败原样复制原图；缓存 `ohmm_stego_<md5>_v1.gif`（不删除，CF_HDROP 需存在）。②导入含 `STG3` 的 GIF 时**无论模式与否**都会自动解码，且**只入库还原的原图**（`_try_decode_stego` 解码到临时文件 → 原图正常入库，`from_stego=1`，载体 GIF 不入库、不进缓存目录）。③隐写缓存：复制原图时通过临时缓存 `ohmm_stego_<md5>_v1.gif` 复用（命中即校验，不再重新编码）；`memes.stego_of_hash` 字段与 `get_by_stego_of` 保留用于兼容旧库中已入库的载体行。④前端展示：隐写载体在查询层隐藏（`search`/`count`/`get_recent` 统一加 `stego_of_hash IS NULL` 过滤，仅对旧库残留载体行生效），网格只显示还原后的原图；原图行 `from_stego=1`（`memes.from_stego` 列），卡片正常渲染图像并叠加琥珀色「隐写导入」徽标。⑤本地生成（复制路径）的隐写文件不写入 DB/不同步。`src/gif_stego.py` 支持 `encode`/`decode`/`make_stego_gif`/CLI，`quiet=True` 供应用调用
+- **GIF 隐写（复制模式 3 + 导入自动解码）** — ①复制输出：`copy_resize_mode=3` 时 `_make_stego_gif` **懒加载** `gif_stego.make_stego_gif` 生成携带无损原图的隐写 GIF（与原图同分辨率）再复制，失败原样复制原图；缓存 `ohmm_stego_<md5>_v1.gif`（不删除，CF_HDROP 需存在）。②导入含 `STG3` 的 GIF 时**无论模式与否**都会自动解码，且**只入库还原的原图**（`_try_decode_stego` 解码到临时文件 → 原图正常入库，`from_stego=1`，载体 GIF 不入库、不进缓存目录）。③隐写缓存：复制原图时通过临时缓存 `ohmm_stego_<md5>_v1.gif` 复用（命中即校验，不再重新编码）；`memes.stego_of_hash` 字段与 `get_by_stego_of` 保留用于兼容旧库中已入库的载体行。④前端展示：隐写载体在查询层隐藏（`search`/`count`/`get_recent` 统一加 `stego_of_hash IS NULL` 过滤，仅对旧库残留载体行生效），网格只显示还原后的原图；原图行 `from_stego=1`（`memes.from_stego` 列），卡片正常渲染图像并叠加琥珀色「隐写导入」徽标。⑤本地生成（复制路径）的隐写文件不写入 DB/不同步。`ohmymeme.core.gif_stego` 支持 `encode`/`decode`/`make_stego_gif`/CLI，`quiet=True` 供应用调用
 
 ### 加密降级 (crypto_util)
 - 优先 `cryptography.fernet.Fernet` (AES-128-CBC + HMAC)
@@ -348,7 +327,7 @@ tests/
 - **透明动画（已解决）**: Telegram 视频贴纸 webm 内含有效 VP9+alpha（`yuva420p`）数据，但 ffmpeg **原生 VP9 解码器会静默丢弃 alpha 平面**（解码结果全不透明），导致转换出的动画 webp 背景不透明。修复：`convert_webm_to_webp` 在 `-i` 前加 `-c:v libvpx-vp9` 强制使用 libvpx 解码器保留 alpha。实测 48 个 webm 中 47 个恢复透明，透明像素分布与同表情静态 webp 完全一致
 
 ### 抖音表情包导入 (douyin.py + abogus.py)
-- **架构**: 纯协议驱动（无浏览器自动化），`src/abogus.py` 提供 ABogus 签名算法绕过抖音 WAF，`curl_cffi` 模拟 Chrome 124 TLS 指纹绕过 JA3/JA4 检测
+- **架构**: 纯协议驱动（无浏览器自动化），`ohmymeme.integrations.imports.abogus` 提供 ABogus 签名算法绕过抖音 WAF，`curl_cffi` 模拟 Chrome 124 TLS 指纹绕过 JA3/JA4 检测
 - **入口**: `start_douyin_import(webui, cookie)` — 后台线程执行完整流程，下载全部表情包
 - **签名算法** (`abogus.py`): 纯 Python 实现，源自 GPL-3.0 项目 TikTokDownloader。流程：参数 SM3 哈希 → 与 UA 指纹/浏览器指纹/时间戳拼接 → RC4 加密 → 自定义 Base64 编码表输出。`gmssl.sm3` 做国密哈希
 - **TLS 指纹绕过**: `curl_cffi.requests.Session(impersonate="chrome124")` 模拟 Chrome 124 的 JA3/JA4/H2 指纹，WAF 视为合法浏览器
@@ -380,7 +359,7 @@ tests/
 pip install -r requirements.txt
 npm install                 # Vue 前端依赖（开发时）
 npx vite build              # 构建 Vue 前端 → webui/dist/ohmymeme.js
-python -m src     # 开发运行
+python -m ohmymeme     # 开发运行
 python -m pytest tests/ -v  # 运行测试
 ruff check src/   # lint 检查
 black src/        # 格式化
@@ -390,7 +369,7 @@ python scripts/build.py --lang en  # 指定语言构建
 - **构建自动编译 Vue 前端**: `build.py` 的 `ensure_vue_frontend()` 在打包前检查 `src/webui/dist/ohmymeme.js`（被 gitignore，CI 全新检出缺失），缺失时自动 `npm ci`（有 lockfile，否则 `npm install`）→ `npx vite build`，失败则中止构建；构建机需 node/npm（GitHub Actions runner 预装），dist 已存在时直接跳过
 - **Linux 打包（GTK）**: `--linux` 时 `build.py` 自动传 `--additional-hooks-dir scripts/hooks`（收集 WebKit2/Soup typelib）并 `--collect-all gi`，把 PyGObject/GTK 打进产物，脱离系统 python3-gi 运行；构建机需装 `python3-gi gir1.2-webkit2-4.1 libgirepository1.0-dev libgirepository-2.0-dev gobject-introspection` 并 `pip install PyGObject`（对应 `build.yml`/`nightly.yml` build-linux job）；**PyGObject ≥3.52 硬依赖 girepository-2.0**（Ubuntu 24.04 对应 `libgirepository-2.0-dev`），只装 1.0-dev 会在 meson 元数据阶段报 `Dependency 'girepository-2.0' is required but not found`；deb `Depends: python3-gi, gir1.2-webkit2-4.1 | gir1.2-webkit2-4.0`
 
-**前端架构**：主窗口为 Vue 3（`vue-src/`，Vite 构建 IIFE 单文件），设置窗口仍为 vanilla（`webui/settings.*`，独立 webview）。修改主窗口前端后需 `npx vite build` 再运行。
+**前端架构**：主窗口为 Vue 3（`ohmymeme/presentation/frontend/main/`，Vite 构建 IIFE 单文件），设置窗口仍为 vanilla（`webui/settings.*`，独立 webview）。修改主窗口前端后需 `npx vite build` 再运行。
 
 `make` 命令仅供参考（`make run`/`make test`/`make lint`/`make format`/`make build`），macOS/Linux 下可能不可用，优先使用原生 Python 命令。
 
@@ -400,9 +379,9 @@ python scripts/build.py --lang en  # 指定语言构建
   - `build-windows`: InnoSetup 安装包 `dist/OhMyMeme-*-setup.exe`
   - `build-linux`: AppImage/deb/rpm（`--linux`）
   - `build-macos`: `.app` + `.dmg`（`--macos`，PyInstaller `--windowed` + iconutil 生成 icns）；矩阵双架构 `arm64`（macos-latest）+ `x86_64`（macos-15-intel），产物 `OhMyMeme-v*-{arch}.dmg`
-- **nightly.yml**: Windows + Linux + macOS 三平台每日定时（UTC 20:00）+ `workflow_dispatch`，从 `dev` 分支构建非正式版（`--nightly`，版本号为 `nightly`）并发布为 `nightly` prerelease；`updater.py` 的 `_parse_release` 跳过 prerelease 与含 `nightly` 的 tag，**软件更新绝不会指向 nightly**
+- **nightly.yml**: Windows + Linux + macOS 三平台每日定时（UTC 20:00）+ `workflow_dispatch`，从 `dev` 分支构建非正式版（`--nightly`，版本号为 `nightly`）并发布为 `nightly` prerelease；`ohmymeme.services.updates` 的 `_parse_release` 跳过 prerelease 与含 `nightly` 的 tag，**软件更新绝不会指向 nightly**
 - 上传 `dist/OhMyMeme-*-setup.exe` / `dist/OhMyMeme-v*-x86_64.AppImage` 等作为 artifact
 
 ## 版本管理
-- 版本号唯一来源: `src/__init__.py` → `__version__ = "*.*.*"`
+- 版本号唯一来源: `src/ohmymeme/__init__.py` → `__version__ = "*.*.*"`
 - `scripts/build.py` 用正则从该文件提取版本；`--version`/`--nightly` 会临时改写 `__init__.py` 构建，完成后恢复

@@ -26,6 +26,7 @@ from pathlib import Path
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 SRC_DIR = PROJECT_ROOT / "src"
+PACKAGE_DIR = SRC_DIR / "ohmymeme"
 BUILD_DIR = PROJECT_ROOT / "dist"
 APP_NAME = "OhMyMeme"
 
@@ -82,14 +83,14 @@ def L(key, *args):
 
 
 def get_version():
-    init_py = SRC_DIR / "__init__.py"
+    init_py = PACKAGE_DIR / "__init__.py"
     m = re.search(r'__version__\s*=\s*"([^"]+)"', init_py.read_text(encoding="utf-8"))
     return m.group(1) if m else "0.1.0"
 
 
 def set_version(v: str):
-    """临时改写 src/__init__.py 的 __version__（nightly 构建用，构建后恢复）"""
-    init_py = SRC_DIR / "__init__.py"
+    """临时改写 ohmymeme/__init__.py 的 __version__（nightly 构建用，构建后恢复）"""
+    init_py = PACKAGE_DIR / "__init__.py"
     content = init_py.read_text(encoding="utf-8")
     new_content = re.sub(
         r'__version__\s*=\s*"[^"]*"',
@@ -178,10 +179,14 @@ def build_pyinstaller(target=None):
         "--specpath", str(PROJECT_ROOT / "build"),
         "--noconfirm",
         "--clean",
-        "--add-data", str(SRC_DIR / "webui") + sep + "src/webui",
-        "--add-data", str(SRC_DIR / "resources") + sep + "src/resources",
-        "--add-data", str(SRC_DIR / "adb-help.txt") + sep + "src/adb-help.txt",
-        "--hidden-import", "src.main",
+        "--add-data", str(SRC_DIR / "webui") + sep + "ohmymeme/webui",
+        "--add-data", str(SRC_DIR / "resources") + sep + "ohmymeme/resources",
+        "--add-data", str(SRC_DIR / "adb-help.txt") + sep + "ohmymeme/adb-help.txt",
+        "--add-data",
+        str(PROJECT_ROOT / "config" / "offsets.json")
+        + sep
+        + "ohmymeme/config/offsets.json",
+        "--hidden-import", "ohmymeme.app.bootstrap",
         str(PROJECT_ROOT / "scripts" / "launcher.py"),
     ]
 
@@ -298,7 +303,7 @@ def build_installer(version, target=None, filename_version=None):
     )
     source_dir_abs = str(dist_dir.resolve())
     iss_content = iss_content.replace(
-        '#define SourceDir "..\\..\\dist\\src.dist"',
+        '#define SourceDir "..\\..\\dist\\OhMyMeme"',
         '#define SourceDir "%s"' % source_dir_abs,
     )
     iss_content = iss_content.replace(
@@ -478,7 +483,7 @@ if __name__ == "__main__":
         "--version",
         default=None,
         help="Override version string "
-        "(default: read from src/__init__.py)",
+        "(default: read from src/ohmymeme/__init__.py)",
     )
     parser.add_argument(
         "--nightly",

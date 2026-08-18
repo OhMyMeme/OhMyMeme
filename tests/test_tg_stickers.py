@@ -9,7 +9,7 @@ from unittest import mock
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from src import tg_stickers as tg
+from ohmymeme.integrations.imports import telegram as tg
 
 
 class DummyProc:
@@ -92,7 +92,7 @@ class TestConvertProcessLifecycle(unittest.TestCase):
     def tearDown(self):
         tg._reset_state()
 
-    @mock.patch("src.tg_stickers.subprocess.Popen")
+    @mock.patch("ohmymeme.integrations.imports.telegram.subprocess.Popen")
     def test_success_adds_and_discards(self, popen):
         proc = DummyProc(ret=0)
         popen.return_value = proc
@@ -104,7 +104,7 @@ class TestConvertProcessLifecycle(unittest.TestCase):
         with tg._TG_LOCK:
             self.assertEqual(len(tg._TG_ACTIVE_PROC), 0)
 
-    @mock.patch("src.tg_stickers.subprocess.Popen")
+    @mock.patch("ohmymeme.integrations.imports.telegram.subprocess.Popen")
     def test_timeout_kills_and_waits(self, popen):
         import subprocess
 

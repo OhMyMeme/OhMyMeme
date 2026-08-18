@@ -14,14 +14,30 @@ os.environ["OHMYMEME_TEST"] = "1"
 
 import pytest
 
-import src.config as config_module
-import src.database as database
-import src.lan as lan
-from src.config import Config
-from src.database import MemeDB
+import ohmymeme.core.config as config_module
+import ohmymeme.core.database as database
+import ohmymeme.services.lan as lan_package
+import ohmymeme.services.lan.server as lan
+from ohmymeme.core.config import Config
+from ohmymeme.core.database import MemeDB
 
 TEST_PORT = 17990
 _IV_LEN = 12
+
+
+def test_lan_package_exports_public_server_api():
+    """包级 LAN 门面应暴露启动流程使用的公共函数。"""
+    exports = (
+        "start",
+        "stop",
+        "get_status",
+        "get_lan_ip",
+        "set_allow_secret_config",
+        "set_confirm_callback",
+        "confirm_device",
+    )
+
+    assert all(callable(getattr(lan_package, name, None)) for name in exports)
 
 # 1x1 透明 PNG（合法图片，PIL 可解码，宽高 1x1）
 TINY_PNG = bytes.fromhex(
@@ -580,7 +596,7 @@ def test_device_info_approved(lan_env):
 
     def cb(device):
         called.append(device)
-        lan.confirm_device(True)
+        lan.confirm_device(True, device["_confirm_id"])
 
     old = lan.set_confirm_callback(cb)
     try:
@@ -615,7 +631,7 @@ def test_device_info_rejected(lan_env):
     cfg, db, tmp = lan_env
 
     def cb(device):
-        lan.confirm_device(False)
+        lan.confirm_device(False, device["_confirm_id"])
 
     old = lan.set_confirm_callback(cb)
     try:

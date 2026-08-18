@@ -1,0 +1,17 @@
+{
+  "discovery_request": {"t": "discover"},
+  "discovery_response_fields": ["t", "name", "os", "ver", "need_secret"],
+  "secret_handshake": ["challenge", "proof", "ok"],
+  "data_frame": "uint32_be length, 12-byte iv, aes-gcm ciphertext-plus-tag",
+  "device_confirmation_response_fields": ["ok", "approved", "allow_secret_config"],
+  "commands": [
+    "device_info",
+    "pull_manifest",
+    "push_manifest",
+    "pull_file",
+    "push_file",
+    "get_config",
+    "send_config",
+    "ping"
+  ]
+}

@@ -51,4 +51,3 @@ mise.*.local.lock
 
 # 本地开发工具状态
 .codegraph/
-.omo/

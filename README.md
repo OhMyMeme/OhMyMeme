@@ -83,17 +83,38 @@ yay -S webkit2gtk  # 依赖 libsoup，通过 yay 安装
 git clone https://github.com/OhMyMeme/OhMyMeme.git
 cd ohmymeme
 pip install -r requirements.txt
-python -m src
+python -m ohmymeme
 ```
 
-主窗口前端为 **Vue 3**（`src/vue-src/`，Vite 构建 IIFE 单文件 `src/webui/dist/ohmymeme.js`）。**源码运行**时若产物缺失会自动执行一次 `npx vite build`；手动构建方式：
+主窗口前端为 **Vue 3**（`src/ohmymeme/presentation/frontend/main/`，按 app、features 与 shared 组织，Vite 构建 IIFE 单文件 `src/webui/dist/ohmymeme.js`）。`src/ohmymeme` 是唯一 Python 包，不能使用已移除的 `src.*` 模块路径导入。**源码运行**时若产物缺失会自动执行一次 `npx vite build`；手动构建方式：
 
 ```bash
 npm install        # 首次构建前安装依赖
 npx vite build     # 构建 Vue 前端 → src/webui/dist/ohmymeme.js
 ```
 
-设置窗口仍为 vanilla 前端（`src/webui/settings.*`，独立 webview，无需构建）。旧主窗口（`src/webui/index.*`）已备份至 `src/webui-backup/`，不再使用。
+设置窗口仍为 vanilla 前端（`src/webui/settings.*`，独立 webview，无需构建）。`src/webui` 与 `src/resources` 是源码运行时静态资源，不是 Python 包。冻结构建会将它们分别放入 `ohmymeme/webui` 与 `ohmymeme/resources`，并将 `config/offsets.json` 放入 `ohmymeme/config/offsets.json`。
+
+### 源码目录与依赖方向
+
+```text
+src/
+  ohmymeme/                 唯一 Python 包，可通过 python -m ohmymeme 启动
+    app/                    启动、容器、目录与设置
+    core/                   配置、数据库、资产、导入与 manifest
+    services/               同步、局域网与更新服务
+    integrations/           平台能力与外部导入适配器
+    presentation/           pywebview、Bottle 与前端源码
+    cli/                    独立命令行入口
+  webui/                    主窗口与设置窗口的源码静态资源
+  resources/                启动视频、图标等运行时资源
+  wechat_keyfinder/         微信密钥提取辅助程序源码
+config/                     发布配置输入，例如 offsets.json
+scripts/                    开发、启动器与构建脚本
+tests/                      单元、集成、协议与发布契约测试
+```
+
+依赖方向从入口层流向 `core` 和服务层，平台集成与 UI 通过应用层调用核心能力。静态资源不作为 Python 模块导入。源码布局由 `mise.toml` 设置 `PYTHONPATH=src`，实际导入形式是 `ohmymeme.core...`，不是 `src.ohmymeme...`。源码启动命令固定为 `python -m ohmymeme`。
 
 主窗口启动时播放 `src/resources/OhMyMeme.mp4` 启动动画（全屏遮罩，视频结束或 6s 兜底后淡出），仅启动时播放一次，快捷键/托盘呼出不重播。设置页「显示启动动画」开关（配置 `show_startup_animation`，默认开）可关闭动画：关闭时不播放视频，降级为 300ms 延时后加载后续内容；开启时动画播放期间即并行加载（无 300ms 延时，动画天然覆盖桥接稳定时间）。
 
@@ -113,7 +134,7 @@ npx vite build     # 构建 Vue 前端 → src/webui/dist/ohmymeme.js
 conda create -n ohmymeme python=3.12
 conda activate ohmymeme
 pip install -r requirements.txt
-python -m src
+python -m ohmymeme
 ```
 
 ## 使用
@@ -183,7 +204,7 @@ python -m src
 
 ### 电脑版 QQ（QQNT）收藏表情提取
 
-`src/qqnt_extract.py` 提供从 PC 版 QQ（QQNT）本地缓存批量提取收藏表情的可复用模块：
+`ohmymeme.integrations.imports.qqnt` 提供从 PC 版 QQ（QQNT）本地缓存批量提取收藏表情的可复用模块：
 
 - 自动读取 `C:\Users\Public\Documents\Tencent\QQ\UserDataInfo.ini` 获取用户数据目录（自适应 GBK/UTF-8 编码，支持 BOM）
 - 多账号（纯数字子目录）识别，可通过 `uapis.cn` 查询昵称（本地 JSON 缓存 1 小时，可选、依赖网络）
@@ -194,7 +215,7 @@ python -m src
 - 复制后按文件头魔数修正扩展名（QQ 缓存文件常无扩展名或扩展名错误）
 - 无弹窗、无 `sys.exit`，失败以返回值/异常表达
 
-> ⚠️ **许可证**：`src/qqnt_extract.py` 改编自 GPL-3.0 项目 [QQFavoriteExtract](https://github.com/VanillaNahida/QQFavoriteExtract)（作者：香草味的纳西妲），按 **GPL-3.0** 协议分发，与项目其余部分的 MIT 许可不同。引入该模块后，整体作品在再分发时需以 GPL-3.0 兼容方式处理，请在使用前确认合规性。
+> ⚠️ **许可证**：`ohmymeme.integrations.imports.qqnt` 改编自 GPL-3.0 项目 [QQFavoriteExtract](https://github.com/VanillaNahida/QQFavoriteExtract)（作者：香草味的纳西妲），按 **GPL-3.0** 协议分发，与项目其余部分的 MIT 许可不同。引入该模块后，整体作品在再分发时需以 GPL-3.0 兼容方式处理，请在使用前确认合规性。
 
 ### 路径说明
 
@@ -208,7 +229,7 @@ python -m src
 
 ## 构建
 
-依赖 PyInstaller 6.0+。构建前请确认前端产物已生成：`src/webui/dist/ohmymeme.js`（Vue 构建产物已随仓库提交，改过前端后需 `npx vite build` 重新生成，见[从源码运行](#从源码运行)）。
+依赖 PyInstaller 6.0+。构建脚本使用 `src/ohmymeme/__main__.py` 作为包入口，不能依赖已移除的 `src.*` 入口。构建前请确认前端产物已生成：`src/webui/dist/ohmymeme.js`，源码运行时缺失会自动构建。
 
 > **⚠️ 注意**: PyInstaller **不支持交叉编译**。`--windows` 参数只能在 Windows 系统上使用，`--linux` 参数只能在 Linux 系统上使用，`--macos` 参数只能在 macOS 上使用。
 > 如需在本地构建其他平台安装包，请使用 [GitHub Actions](#ci-github-actions)（推送到 `main` 分支自动触发，或手动运行 workflow）。
@@ -257,7 +278,11 @@ python scripts/build.py --linux --installer-only --package appimage
 
 > 原 Nuitka 构建脚本已移至 `scripts/nuitka/build.py`，待申诉完成后重新启用。
 
-输出目录: `dist/`。
+输出目录: `dist/`。冻结包内的运行时资源固定位于 `ohmymeme/webui`、`ohmymeme/resources`、`ohmymeme/adb-help.txt` 和 `ohmymeme/config/offsets.json`。
+
+## 外部兼容契约
+
+以下内容属于升级与互操作契约，目录整理不得改变：用户数据仍位于 `%APPDATA%/OhMyMeme/config.json` 与 `%LOCALAPPDATA%/OhMyMeme/`，数据库、缓存、缩略图和 `meme-index.json` 的含义不变；远程同步仍使用 `{root}/memes/` 与 `{root}/meme-index.json`，manifest 保持 version 3 及文件名关联的分组格式；局域网仍使用 UDP 发现、TCP 明文握手和 AES-GCM 数据帧，默认不传输密钥配置；更新器仍只选择稳定版 release，并保留既有安装包文件名、平台架构和升级入口。目录名称变化只影响源码和冻结包内部位置，不改变这些用户数据、协议、URL、manifest 或升级合同。
 
 ## PR 贡献
 
@@ -300,7 +325,7 @@ CI 会自动运行 lint+test。
 └─────────────┘     └──────────────────┘
 ```
 
-主窗口前端基于 **Vue 3**（`src/vue-src/`，Vite 构建为 IIFE 单文件 `src/webui/dist/ohmymeme.js`），通过 `pywebview.api.*` 桥接调用后端 `JsApi`；设置窗口仍为 vanilla（`src/webui/settings.*`）。
+主窗口前端基于 **Vue 3**（`src/ohmymeme/presentation/frontend/main/`，Vite 构建为 IIFE 单文件 `src/webui/dist/ohmymeme.js`），通过 shared bridge 调用后端 `JsApi`；设置窗口仍为 vanilla（`src/webui/settings.*`）。这些是静态资源路径，不是可导入的 `src.*` 模块路径。
 
 ## 实现要点
 

@@ -6,7 +6,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from src.douyin_dl import gen_random_str, gen_verify_fp, sign_url
+from ohmymeme.cli.douyin_dl import gen_random_str, gen_verify_fp, sign_url
 
 
 class TestGenRandomStr(unittest.TestCase):

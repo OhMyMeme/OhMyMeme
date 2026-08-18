@@ -7,6 +7,7 @@ npm = '10.9.8'
 
 [env]
 _.python.venv = { path = '.venv', create = true }
+PYTHONPATH = 'src'
 
 [settings]
 lockfile = true
@@ -21,11 +22,19 @@ run = [
 
 [tasks.run]
 description = 'Run OhMyMeme from source'
-run = 'python -m src'
+run = 'python -m ohmymeme'
 
 [tasks.test]
 description = 'Run the Python test suite'
 run = 'python -m pytest tests/ -v'
+
+[tasks.test-python]
+description = 'Run selected Python tests'
+run = 'mise exec -- python -m pytest'
+
+[tasks.lan-v1-oracle]
+description = 'Validate the LAN v1 wire oracle'
+run = 'mise exec -- python -m pytest tests/protocol/test_lan_v1_protocol.py -q'
 
 [tasks.lint]
 description = 'Check Python lint and formatting'

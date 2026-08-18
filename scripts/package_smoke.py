@@ -15,12 +15,21 @@ from scripts.package_lifecycle import (
 )
 
 ROOT = Path(__file__).resolve().parent.parent
-VERSION_FILE = ROOT / "src" / "__init__.py"
+VERSION_FILE = ROOT / "src" / "ohmymeme" / "__init__.py"
 WINDOWS_ISS = ROOT / "scripts" / "installer" / "windows.iss"
 LINUX_BUILD = ROOT / "scripts" / "installer" / "linux" / "build.sh"
 BUILD_SCRIPT = ROOT / "scripts" / "build.py"
+NUITKA_BUILD_SCRIPT = ROOT / "scripts" / "nuitka" / "build.py"
+LAUNCHER = ROOT / "scripts" / "launcher.py"
 MACOS_INFO_PLIST = ROOT / "scripts" / "installer" / "macos" / "Info.plist"
 EXPECTED_MACOS_BUNDLE_ID = "com.ohmymeme.app"
+RUNTIME_ENTRYPOINT = "ohmymeme.app.bootstrap"
+FROZEN_DATA_TARGETS = (
+    "ohmymeme/webui",
+    "ohmymeme/resources",
+    "ohmymeme/adb-help.txt",
+    "ohmymeme/config/offsets.json",
+)
 
 
 class ContractViolation(ValueError):
@@ -191,6 +200,8 @@ def _validate_source_contracts():
     windows = WINDOWS_ISS.read_text("utf-8")
     linux = LINUX_BUILD.read_text("utf-8")
     build_script = BUILD_SCRIPT.read_text("utf-8")
+    nuitka_build = NUITKA_BUILD_SCRIPT.read_text("utf-8")
+    launcher = LAUNCHER.read_text("utf-8")
     bundle_id = _macos_bundle_id()
     required = (
         ("AppId={{B8F4A3D2-1C5E-4A7B-9D6F-8E2C3A1B5D7F}", windows),
@@ -209,6 +220,18 @@ def _validate_source_contracts():
         _fail("bundle id", EXPECTED_MACOS_BUNDLE_ID, bundle_id)
     if 'shutil.copy2(info_plist, contents_dir / "Info.plist")' not in build_script:
         raise ContractViolation("macOS bundle id input is not wired to packaging")
+    legacy_entrypoint = "src" + ".main"
+    if legacy_entrypoint in build_script or legacy_entrypoint in launcher:
+        raise ContractViolation("legacy source entrypoint is wired to packaging")
+    if "from ohmymeme.app.bootstrap import main" not in launcher:
+        raise ContractViolation("package launcher entrypoint is missing")
+    if '"--hidden-import", "ohmymeme.app.bootstrap"' not in build_script:
+        raise ContractViolation("PyInstaller package entrypoint is missing")
+    if 'cmd.append(str(PACKAGE_DIR / "__main__.py"))' not in nuitka_build:
+        raise ContractViolation("Nuitka package entrypoint is missing")
+    for destination in FROZEN_DATA_TARGETS:
+        if destination not in build_script or destination not in nuitka_build:
+            raise ContractViolation("frozen data target is missing: %s" % destination)
 
 
 def contract_report(target=None, channel="stable"):
@@ -233,7 +256,14 @@ def contract_report(target=None, channel="stable"):
                 "valid": True,
             }
         )
-    return {"contract_only": True, "targets": rows}
+    return {
+        "contract_only": True,
+        "runtime_layout": {
+            "entrypoint": RUNTIME_ENTRYPOINT,
+            "data_targets": list(FROZEN_DATA_TARGETS),
+        },
+        "targets": rows,
+    }
 
 
 def main(argv=None):
@@ -242,8 +272,6 @@ def main(argv=None):
     parser.add_argument("--target", choices=tuple(_contracts(_version())))
     parser.add_argument("--channel", choices=("stable", "nightly"), default="stable")
     args = parser.parse_args(argv)
-    if not args.contract_only:
-        parser.error("--contract-only is required; this command never builds artifacts")
     print(
         json.dumps(
             contract_report(args.target, args.channel),

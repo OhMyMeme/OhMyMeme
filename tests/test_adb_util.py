@@ -8,7 +8,7 @@ import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-import src.adb_util as A
+import ohmymeme.integrations.imports.adb_qq as A
 
 SUFFIX = A._QQ_FAVORITE_SUFFIX
 PRIMARY = "/storage/emulated/0/" + SUFFIX
