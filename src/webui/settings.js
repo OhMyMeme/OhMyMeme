@@ -987,8 +987,16 @@ async function startDYImport() {
         const el = document.getElementById('dy-status');
         el.textContent = '导入失败: ' + (s.error || '');
         el.className = 'error';
+        let hint = s.error || '未知错误';
+        if (s.error_code === 'login_failed') {
+          hint += '；请从浏览器抖音网页版重新复制 Cookie 后重试';
+        } else if (s.error_code === 'sign_failed') {
+          hint += '；请稍后重试，或更新 Cookie 后再试';
+        } else if (s.error_code === 'no_stickers') {
+          hint += '；请确认抖音收藏的自定义表情包存在';
+        }
         document.getElementById('dy-import-error').style.display = '';
-        document.getElementById('dy-import-error').textContent = s.error || '未知错误';
+        document.getElementById('dy-import-error').textContent = hint;
         btn.disabled = false;
       } else if (s.status === 'cancelled') {
         document.getElementById('dy-import-title').textContent = '已取消';
@@ -1124,10 +1132,14 @@ async function startTGImport() {
         document.getElementById('tg-import-title').textContent = '导入失败';
         if (tgPollTimer) { clearInterval(tgPollTimer); tgPollTimer = null; }
         const el = document.getElementById('tg-status');
-        el.textContent = '导入失败: ' + (s.error || '');
+        let errMsg = s.error || '未知错误';
+        if (s.error_code === 'no_ffmpeg') {
+          errMsg += '；安装 ffmpeg 后可重试，或取消勾选「WebM 转 WebP」直接导入静态贴纸';
+        }
+        el.textContent = '导入失败: ' + errMsg;
         el.className = 'error';
         document.getElementById('tg-import-error').style.display = '';
-        document.getElementById('tg-import-error').textContent = s.error || '未知错误';
+        document.getElementById('tg-import-error').textContent = errMsg;
         if (['no_tdata', 'invalid_tdata', 'no_cache'].includes(s.error_code)) {
           document.getElementById('btn-tg-retry').style.display = '';
         }
@@ -1333,10 +1345,16 @@ async function startWechatImport() {
         if (wechatPollTimer) { clearInterval(wechatPollTimer); wechatPollTimer = null; }
         const el = document.getElementById('wechat-status');
         const errCode = s.error_code ? ' [' + s.error_code + ']' : '';
-        el.textContent = '导入失败: ' + (s.error || '未知错误') + errCode;
+        let errMsg = s.error || '未知错误';
+        if (s.error_code === 'no_binary') {
+          errMsg += '；请检查网络后重试（需从 GitHub 下载辅助工具）';
+        } else if (s.error_code === 'no_key') {
+          errMsg += '；请确认微信已登录且为支持的版本';
+        }
+        el.textContent = '导入失败: ' + errMsg + errCode;
         el.className = 'error';
         document.getElementById('wechat-import-error').style.display = '';
-        document.getElementById('wechat-import-error').textContent = (s.error || '未知错误') + errCode;
+        document.getElementById('wechat-import-error').textContent = errMsg + errCode;
         wechatSetCloseLabel('关闭');
         btn.disabled = false;
       } else if (s.status === 'cancelled') {

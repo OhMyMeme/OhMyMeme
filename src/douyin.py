@@ -297,6 +297,7 @@ def start_douyin_import(webui, cookie: str) -> bool:
         global _DOUYIN_CANCEL
         tmp_dir = tempfile.mkdtemp(prefix="dy_")
         downloaded = []
+        download_failed = 0
 
         try:
             _update_dy(message="初始化 Session...")
@@ -304,6 +305,7 @@ def start_douyin_import(webui, cookie: str) -> bool:
 
             _update_dy(message="检查登录状态...")
             if not _check_login(session):
+                logger.error("douyin import: 登录失败（Cookie 无效或已过期）")
                 _update_dy(
                     status="error",
                     error="登录失败：Cookie 无效或已过期",
@@ -319,6 +321,7 @@ def start_douyin_import(webui, cookie: str) -> bool:
                 return
 
             if stickers is None:
+                logger.error("douyin import: 接口返回 403，签名验证失败")
                 _update_dy(
                     status="error",
                     error="接口返回 403：签名验证失败",
@@ -327,6 +330,7 @@ def start_douyin_import(webui, cookie: str) -> bool:
                 return
 
             if not stickers:
+                logger.error("douyin import: 未获取到任何表情包")
                 _update_dy(
                     status="error",
                     error="未获取到任何表情包",
@@ -353,6 +357,7 @@ def start_douyin_import(webui, cookie: str) -> bool:
                     )
                 except Exception as e:
                     logger.warning("download %s failed: %s", item["id"], e)
+                    download_failed += 1
                     _update_dy(done=i + 1)
 
             if _check_cancel():
@@ -365,12 +370,18 @@ def start_douyin_import(webui, cookie: str) -> bool:
                 result = webui._do_import(downloaded)
                 imported = len(result.get("ids", []))
                 rejected = result.get("rejected", 0)
+                msg = f"导入完成：{imported} 个成功"
+                if rejected:
+                    msg += f"，{rejected} 个跳过"
+                if download_failed:
+                    msg += f"，{download_failed} 个下载失败"
                 _update_dy(
                     status="done",
                     progress=100,
-                    message=f"导入完成：{imported} 个成功，{rejected} 个跳过",
+                    message=msg,
                     imported=imported,
                     rejected=rejected,
+                    download_failed=download_failed,
                 )
             else:
                 _update_dy(

@@ -176,8 +176,11 @@ function debounceSearch() {
 
 function openSettings() {
   try {
-    window.pywebview?.api?.open_settings()
-  } catch (_) {}
+    const ok = window.pywebview?.api?.open_settings()
+    if (!ok) showToast('无法打开设置窗口')
+  } catch (_) {
+    showToast('无法打开设置窗口')
+  }
 }
 function toggleSidebar() { sidebarCollapsed.value = !sidebarCollapsed.value }
 
@@ -636,7 +639,15 @@ async function onDrop(e: DragEvent) {
     } catch (_) {}
   }
   if (uri) {
-    try { const r = await window.pywebview?.api?.download_original_image(uri); if (r?.ok) { showToast('导入成功'); search(); refreshCollections(); return } } catch (_) {}
+    try {
+      const r = await window.pywebview?.api?.download_original_image(uri)
+      if (r?.ok) { showToast('导入成功'); search(); refreshCollections(); return }
+      showToast(r?.error || '导入失败')
+      return
+    } catch (_) {
+      showToast('导入失败')
+      return
+    }
   }
   if (file) {
     try {
@@ -648,8 +659,13 @@ async function onDrop(e: DragEvent) {
       })
       const res = await fetch('/api/upload/', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ files: [{ name: file.name, data: b64 }] }) })
       if (res.ok) { showToast('导入成功'); search(); refreshCollections() }
-    } catch (_) {}
+      else { showToast('导入失败：服务器返回错误') }
+    } catch (_) {
+      showToast('导入失败：无法读取文件')
+    }
+    return
   }
+  showToast('未识别到可导入的内容')
 }
 
 // ESC：右键菜单 → 整理模式 → 隐藏窗口

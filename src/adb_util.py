@@ -251,6 +251,7 @@ def _download_with_progress():
     """下载 ADB 并更新 _QQ_STATE 进度"""
     url = _adb_download_url()
     if not url:
+        logger.error("adb download: 不支持的平台")
         _update_qq(status="error", error="unsupported platform")
         return False
     adb_dir = _get_adb_dir()
@@ -287,9 +288,11 @@ def _download_with_progress():
             _ADB_STATE["done"] = True
             return str(exe_path)
         _update_qq(status="error", error="解压后未找到 adb")
+        logger.error("adb download: 解压后未找到 adb")
         return False
     except Exception as e:
         _update_qq(status="error", error=str(e))
+        logger.error("adb download: 下载/解压失败: %s", e)
         if zip_path.exists():
             try:
                 zip_path.unlink()
@@ -404,6 +407,7 @@ def _qq_worker():
                     status="error",
                     error="ADB 下载失败，请手动下载并放入 .adb 文件夹",
                 )
+                logger.error("qq import: ADB 下载失败")
             return
     if _check_cancel():
         return
@@ -412,6 +416,7 @@ def _qq_worker():
         _run_adb(adb_path, ["start-server"], timeout=10)
     except Exception as e:
         _update_qq(status="error", error="ADB 启动失败: %s" % e)
+        logger.error("qq import: ADB 启动失败: %s", e)
         return
     if _check_cancel():
         return
@@ -438,6 +443,7 @@ def _qq_worker():
         _update_qq(
             status="error", error="未检测到设备，请确认手机已连接并开启 USB 调试"
         )
+        logger.error("qq import: 未检测到 ADB 设备")
         return
     if _check_cancel():
         return
@@ -447,10 +453,12 @@ def _qq_worker():
         remote = _find_qq_favorite_dir(adb_path)
     except subprocess.TimeoutExpired:
         _update_qq(status="error", error="检测存储目录超时，请检查 ADB 连接")
+        logger.error("qq import: 检测存储目录超时")
         shutil.rmtree(tmp_dir, ignore_errors=True)
         return
     except Exception as e:
         _update_qq(status="error", error="检测存储目录失败: %s" % e)
+        logger.error("qq import: 检测存储目录失败: %s", e)
         shutil.rmtree(tmp_dir, ignore_errors=True)
         return
     if _check_cancel():
@@ -462,6 +470,7 @@ def _qq_worker():
             error="未找到 QQ_Favorite 目录，请确认手机已安装 QQ"
             "（含外置存储卡时检查 TF 卡）",
         )
+        logger.error("qq import: 未找到 QQ_Favorite 目录")
         shutil.rmtree(tmp_dir, ignore_errors=True)
         return
     pull_ok = False
@@ -473,10 +482,12 @@ def _qq_worker():
         pull_ok = False
     except Exception as e:
         _update_qq(status="error", error="拉取文件失败: %s" % e)
+        logger.error("qq import: 拉取文件失败: %s", e)
         shutil.rmtree(tmp_dir, ignore_errors=True)
         return
     if not pull_ok:
         _update_qq(status="error", error="拉取文件失败，请检查 USB 连接")
+        logger.error("qq import: 拉取文件失败（USB 连接）")
         shutil.rmtree(tmp_dir, ignore_errors=True)
         return
     if _check_cancel():
@@ -511,6 +522,7 @@ def _qq_worker():
                     zf.write(f, f.name)
     except Exception as e:
         _update_qq(status="error", error="打包失败: %s" % e)
+        logger.error("qq import: 打包 ZIP 失败: %s", e)
         shutil.rmtree(tmp_dir, ignore_errors=True)
         return
     shutil.rmtree(tmp_dir, ignore_errors=True)

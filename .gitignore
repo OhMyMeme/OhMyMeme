@@ -27,6 +27,9 @@ Thumbs.db
 # ADB 自动下载
 .adb/
 
+# 本地契约校验脚本（不上传，个人使用）
+scripts/check_contract.py
+
 # 打包输出
 *.exe
 *.AppImage

@@ -1310,6 +1310,7 @@ def _qqnt_worker(
         else:
             _set_qqnt(status="done", progress=100, message="提取完成", result=result)
     except Exception as e:
+        logger.error(f"qqnt extract error: {e}")
         _set_qqnt(status="error", message="提取失败", error=str(e))
 
 

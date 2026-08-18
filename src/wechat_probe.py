@@ -806,6 +806,11 @@ def _wechat_worker(webui, user_root, download, account_path):
             return
         env = inspect_wechat_environment(user_root)
         if env.get("status") not in _PROCEEDABLE:
+            logger.error(
+                "wechat import: 环境检测失败 status=%s reason=%s",
+                env.get("status"),
+                env.get("reason"),
+            )
             _update_wechat(
                 status="error",
                 error_code=env.get("status", "unknown"),
@@ -816,6 +821,7 @@ def _wechat_worker(webui, user_root, download, account_path):
         if not account:
             multi = env.get("account_directory_count", 0) > 1
             error_msg = "检测到多个微信账号，请选择账号" if multi else "未找到可用账号"
+            logger.error("wechat import: %s", error_msg)
             _update_wechat(
                 status="error",
                 error_code="multiple_accounts",
@@ -824,6 +830,7 @@ def _wechat_worker(webui, user_root, download, account_path):
             return
         db_path = account["db_path"]
         if not db_path:
+            logger.error("wechat import: 未找到表情数据库: %s", account.get("path"))
             _update_wechat(
                 status="error",
                 error_code="no_database",
@@ -843,6 +850,7 @@ def _wechat_worker(webui, user_root, download, account_path):
                 return
             binary_path = ensure_wechat_keyfinder()
             if not binary_path:
+                logger.error("wechat import: helper 二进制不可用")
                 _update_wechat(
                     status="error",
                     error_code="no_binary",
@@ -864,9 +872,11 @@ def _wechat_worker(webui, user_root, download, account_path):
                     error_code=result.get("reason", "keyfinder_failed"),
                     error=detail or "密钥提取失败",
                 )
+                logger.error("wechat import: 密钥提取失败: %s", detail)
                 return
             key = result.get("key", "")
             if not key:
+                logger.error("wechat import: 无法提取加密密钥")
                 _update_wechat(
                     status="error",
                     error_code="no_key",
