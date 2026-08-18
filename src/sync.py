@@ -1,5 +1,6 @@
 """云端同步 - FTP / S3 (兼容 R2/MinIO) 实现"""
 
+import hashlib
 import json
 import logging
 import os
@@ -15,8 +16,9 @@ from pathlib import Path
 from typing import Optional
 from urllib.parse import quote, unquote, urlparse
 
-from .config import _IMPORT_MAX_BYTES, _IMPORT_MAX_PX, get_config
+from .config import get_config
 from .database import get_db
+from .import_service import ImageImportService, ImportPath
 from .manifest import INDEX_FILENAME
 from .manifest import _write as write_manifest
 from .manifest import build as build_manifest
@@ -903,22 +905,32 @@ def _pull_worker(entries, remote_root, cache_dir, db):
                     if backup_path is not None:
                         os.replace(backup_path, local_path)
                     continue
+                expected_hash = rentry.get("sha256", "")
+                with open(local_path, "rb") as downloaded:
+                    actual_hash = hashlib.file_digest(downloaded, "sha256").hexdigest()
+                if len(expected_hash) == 64 and actual_hash != expected_hash:
+                    local_results["errors"] += 1
+                    local_results["failed"].append(
+                        {
+                            "filename": fname,
+                            "status": "error",
+                            "error": "下载哈希不一致",
+                        }
+                    )
+                    _increment_sync_progress(files_add=1)
+                    local_path.unlink(missing_ok=True)
+                    if backup_path is not None:
+                        os.replace(backup_path, local_path)
+                    continue
                 row = db.get_by_filename(fname)
                 if not row:
                     try:
-                        ext = os.path.splitext(fname)[1].lower()
-                        w = h = 0
-                        try:
-                            from PIL import Image as PILImage
-
-                            with PILImage.open(local_path) as img:
-                                w, h = img.size
-                        except Exception:
-                            pass
-                        fsize = local_path.stat().st_size
-                        if fsize > _IMPORT_MAX_BYTES or max(w, h) > _IMPORT_MAX_PX:
-                            # 超限文件不接收：删除本地文件并跳过（不写入 manifest）
-                            logger.info(f"pull skip (over limit): {fname}")
+                        oname = rentry.get("name", "") or os.path.splitext(fname)[0]
+                        imported = ImageImportService(
+                            db, cache_dir, lambda: None
+                        ).register_existing_path(ImportPath(local_path, oname))
+                        if imported.rejected:
+                            logger.info(f"pull skip (invalid image): {fname}")
                             local_results["skipped"] += 1
                             _increment_sync_progress(files_add=1)
                             if local_path.exists():
@@ -926,17 +938,7 @@ def _pull_worker(entries, remote_root, cache_dir, db):
                             if backup_path is not None:
                                 os.replace(backup_path, local_path)
                             continue
-                        oname = rentry.get("name", "") or os.path.splitext(fname)[0]
-                        meme_id = db.add_meme(
-                            filename=fname,
-                            file_hash=rentry.get("sha256", ""),
-                            width=w,
-                            height=h,
-                            file_size=fsize,
-                            mime_type="image/%s" % ext[1:] if ext else "image/png",
-                            original_name=oname,
-                        )
-                        local_results["created_meme_ids"].append(meme_id)
+                        local_results["created_meme_ids"].extend(imported.imported_ids)
                         local_results["created_files"].append(local_path)
                     except Exception as e:
                         # DB 写入失败：清理残留 cache，避免“文件在但无记录”的游离态

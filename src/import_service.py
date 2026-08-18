@@ -5,6 +5,7 @@ import io
 import os
 import sqlite3
 import tempfile
+import threading
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 from pathlib import Path
@@ -53,6 +54,8 @@ ImportRequest = ImportBytes | ImportPath
 class ImportResult:
     imported_ids: tuple[int, ...]
     rejected: int
+    cleanup_failures: tuple[str, ...] = ()
+    recovery_marker: Path | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -98,6 +101,8 @@ class ImageImportService:
         self._cache_dir = cache_dir
         self._build_manifest = build_manifest
         self._stego_decoder = stego_decoder
+        self._lock = _IMPORT_LOCK
+        self._manifest_path = cache_dir.parent / "meme-index.json"
 
     def import_path(self, request: ImportPath) -> ImportResult:
         return self.import_batch((request,))
@@ -106,31 +111,52 @@ class ImageImportService:
         return self.import_batch((request,))
 
     def register_existing_path(self, request: ImportPath) -> ImportResult:
+        with self._lock:
+            return self._register_existing_path_locked(request)
+
+    def _register_existing_path_locked(self, request: ImportPath) -> ImportResult:
         validated = self._validate(request)
         if validated is None:
             return ImportResult((), 1)
         if self._db.get_by_hash(validated.file_hash) is not None:
             return ImportResult((), 0)
+        filename = request.path.name
+        created_path = None
+        if validated.from_stego:
+            filename = f"{validated.file_hash[:16]}{validated.extension}"
+            destination = self._cache_dir / filename
+            if not destination.exists():
+                self._install(destination, validated.data)
+                created_path = destination
         try:
             meme_id = self._db.add_meme(
-                filename=request.path.name,
+                filename=filename,
                 file_hash=validated.file_hash,
                 width=validated.width,
                 height=validated.height,
                 file_size=len(validated.data),
                 mime_type=f"image/{validated.extension[1:]}",
                 original_name=validated.original_name,
-                from_stego=validated.from_stego,
+                **({"from_stego": 1} if validated.from_stego else {}),
             )
         except (OSError, RuntimeError, sqlite3.Error):
+            if created_path is not None:
+                created_path.unlink(missing_ok=True)
             raise
         return ImportResult((meme_id,), 0)
 
     def import_batch(self, requests: Sequence[ImportRequest]) -> ImportResult:
+        with self._lock:
+            return self._import_batch_locked(requests)
+
+    def _import_batch_locked(self, requests: Sequence[ImportRequest]) -> ImportResult:
         created_paths: list[Path] = []
         created_ids: list[int] = []
         imported_ids: list[int] = []
         rejected = 0
+        manifest_snapshot = (
+            self._manifest_path.read_bytes() if self._manifest_path.exists() else None
+        )
         try:
             for request in requests:
                 validated = self._validate(request)
@@ -144,6 +170,8 @@ class ImageImportService:
                     f"{validated.file_hash[:16]}{validated.extension}"
                 )
                 created = not destination.exists()
+                if not created and destination.read_bytes() != validated.data:
+                    raise OSError("content-addressed destination is corrupt")
                 if created:
                     self._install(destination, validated.data)
                     created_paths.append(destination)
@@ -155,14 +183,17 @@ class ImageImportService:
                     file_size=len(validated.data),
                     mime_type=f"image/{validated.extension[1:]}",
                     original_name=validated.original_name,
-                    from_stego=validated.from_stego,
+                    **({"from_stego": 1} if validated.from_stego else {}),
                 )
                 created_ids.append(meme_id)
                 imported_ids.append(meme_id)
             if imported_ids:
                 self._build_manifest()
         except (OSError, RuntimeError, sqlite3.Error):
-            self._compensate(created_ids, created_paths)
+            cleanup_failures = self._compensate(created_ids, created_paths)
+            self._restore_manifest(manifest_snapshot, cleanup_failures)
+            if cleanup_failures:
+                self._write_recovery_marker(cleanup_failures)
             raise
         return ImportResult(tuple(imported_ids), rejected)
 
@@ -178,10 +209,15 @@ class ImageImportService:
             data = path.read_bytes()
         except OSError:
             return None
+        if len(data) > _IMPORT_MAX_BYTES:
+            return None
         is_stego = _magic_extension(data) == ".gif" and b"STG3" in data
         if self._stego_decoder is None or not is_stego:
             return self._validate_data(data, original_name)
-        decoded = self._stego_decoder(path)
+        try:
+            decoded = self._stego_decoder(path)
+        except (OSError, ValueError, Image.DecompressionBombError):
+            return None
         if decoded is None:
             return self._validate_data(data, original_name)
         try:
@@ -213,7 +249,7 @@ class ImageImportService:
                 image.verify()
             with Image.open(io.BytesIO(data)) as image:
                 width, height = image.size
-        except (OSError, SyntaxError):
+        except (OSError, SyntaxError, Image.DecompressionBombError):
             return None
         if width <= 0 or height <= 0 or max(width, height) > _IMPORT_MAX_PX:
             return None
@@ -245,8 +281,39 @@ class ImageImportService:
 
     def _compensate(
         self, created_ids: Sequence[int], created_paths: Sequence[Path]
-    ) -> None:
+    ) -> list[str]:
+        failures = []
         for meme_id in reversed(created_ids):
-            self._db.delete_meme(meme_id)
+            try:
+                self._db.delete_meme(meme_id)
+            except (OSError, RuntimeError, sqlite3.Error) as error:
+                failures.append(f"delete_meme:{meme_id}:{error}")
         for path in reversed(created_paths):
-            path.unlink(missing_ok=True)
+            try:
+                path.unlink(missing_ok=True)
+            except OSError as error:
+                failures.append(f"unlink:{path.name}:{error}")
+        return failures
+
+    def _restore_manifest(
+        self, snapshot: bytes | None, failures: list[str]
+    ) -> Path | None:
+        try:
+            if snapshot is None:
+                self._manifest_path.unlink(missing_ok=True)
+            else:
+                temporary = self._manifest_path.with_suffix(".restore.tmp")
+                temporary.write_bytes(snapshot)
+                os.replace(temporary, self._manifest_path)
+        except OSError as error:
+            failures.append(f"manifest_restore:{error}")
+            return self._write_recovery_marker(failures)
+        return None
+
+    def _write_recovery_marker(self, failures: Sequence[str]) -> Path:
+        marker = self._cache_dir.parent / ".import-recovery.json"
+        marker.write_text("\n".join(failures), encoding="utf-8")
+        return marker
+
+
+_IMPORT_LOCK = threading.RLock()

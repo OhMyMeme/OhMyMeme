@@ -1,4 +1,6 @@
+import inspect
 import io
+import threading
 
 import pytest
 from PIL import Image
@@ -137,6 +139,7 @@ def test_import_transaction_faults_compensate_files_and_rows(
         ImportBytes(_png_bytes(2, 1), "two.png"),
     )
     if fault == "file":
+
         def fail_install(*_):
             raise OSError
 
@@ -171,3 +174,109 @@ def test_import_path_restores_stg3_payload_without_storing_carrier(tmp_path):
     assert row["from_stego"] == 1
     assert not restored.exists()
     assert list(cache_dir.iterdir())[0].suffix == ".png"
+
+
+def test_manifest_failure_restores_previous_snapshot(tmp_path):
+    # Given: a pre-existing manifest and a failing replacement operation
+    db = FakeDb()
+    cache_dir = tmp_path / "cache"
+    cache_dir.mkdir()
+    manifest = tmp_path / "meme-index.json"
+    manifest.write_text("old", encoding="utf-8")
+
+    def fail_manifest():
+        manifest.write_text("new", encoding="utf-8")
+        raise OSError("replace failed")
+
+    service = ImageImportService(db, cache_dir, fail_manifest)
+
+    # When: the manifest update fails after a successful image insert
+    with pytest.raises(OSError):
+        service.import_bytes(ImportBytes(_png_bytes(), "example.png"))
+
+    # Then: the prior manifest, cache and database state are recovered
+    assert manifest.read_text(encoding="utf-8") == "old"
+    assert not list(cache_dir.iterdir())
+    assert db.rows == {}
+
+
+def test_existing_corrupt_content_addressed_target_fails_closed(tmp_path):
+    # Given: the target hash name exists but holds other bytes
+    service, cache_dir = _service(tmp_path)
+    payload = _png_bytes()
+    digest = __import__("hashlib").sha256(payload).hexdigest()
+    (cache_dir / f"{digest[:16]}.png").write_bytes(b"wrong")
+
+    # When: importing the matching payload
+    with pytest.raises(OSError):
+        service.import_bytes(ImportBytes(payload, "example.png"))
+
+    # Then: corrupt existing content is never trusted or registered
+    assert not service._db.rows
+
+
+def test_concurrent_duplicate_imports_create_one_row(tmp_path):
+    # Given: 24 callers sharing the same service and content
+    service, cache_dir = _service(tmp_path)
+    results = []
+    barrier = threading.Barrier(24)
+
+    def import_same():
+        barrier.wait()
+        results.append(service.import_bytes(ImportBytes(_png_bytes(), "same.png")))
+
+    workers = [threading.Thread(target=import_same) for _ in range(24)]
+
+    # When: all callers import concurrently
+    for worker in workers:
+        worker.start()
+    for worker in workers:
+        worker.join()
+
+    # Then: content-addressed dedup has one durable winner
+    assert sum(bool(result.imported_ids) for result in results) == 1
+    assert len(service._db.rows) == 1
+    assert len(list(cache_dir.iterdir())) == 1
+
+
+def test_manifest_restore_failure_writes_recovery_marker(tmp_path, monkeypatch):
+    # Given: a manifest failure followed by a failed snapshot restore
+    service, cache_dir = _service(tmp_path, fail_manifest=True)
+    manifest = cache_dir.parent / "meme-index.json"
+    manifest.write_text("old", encoding="utf-8")
+    monkeypatch.setattr(
+        "src.import_service.os.replace",
+        lambda *_: (_ for _ in ()).throw(OSError("restore")),
+    )
+
+    # When: the import fails after mutation
+    with pytest.raises(OSError):
+        service.import_bytes(ImportBytes(_png_bytes(), "example.png"))
+
+    # Then: recovery is durably marked rather than silently losing cleanup state
+    assert (cache_dir.parent / ".import-recovery.json").exists()
+
+
+def test_public_import_method_signatures_remain_frozen():
+    # Given: the established bridge and service methods
+    from src.lan import _import_bytes
+    from src.sync import _pull_worker
+    from src.webui import JsApi
+
+    # When: inspecting their public callable contracts
+    signatures = {
+        "import_memes": str(inspect.signature(JsApi.import_memes)),
+        "import_folder": str(inspect.signature(JsApi.import_folder)),
+        "clipboard": str(inspect.signature(JsApi.import_from_clipboard)),
+        "lan": str(inspect.signature(_import_bytes)),
+        "sync": str(inspect.signature(_pull_worker)),
+    }
+
+    # Then: bridge defaults and annotations stay ABI-compatible
+    assert signatures == {
+        "import_memes": "(self) -> bool",
+        "import_folder": "(self, make_collection=True) -> dict",
+        "clipboard": "(self) -> dict",
+        "lan": "(data: bytes, filename: str) -> dict",
+        "sync": "(entries, remote_root, cache_dir, db)",
+    }

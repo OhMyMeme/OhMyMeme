@@ -2597,8 +2597,15 @@ class WebUI:
             try:
                 import json
 
+                content_length = bottle.request.headers.get("Content-Length", "0")
+                if content_length.isdigit() and int(content_length) > 28 * 1024 * 1024:
+                    bottle.response.status = 413
+                    return {"ok": False, "error": "上传内容超过限制"}
                 data = json.loads(bottle.request.body.read())
                 files = data.get("files", []) if isinstance(data, dict) else data
+                if not isinstance(files, list) or len(files) > 200:
+                    bottle.response.status = 413
+                    return {"ok": False, "error": "上传项目超过限制"}
                 requests = []
                 for item in files:
                     oname = item.get("name", "")
@@ -2607,6 +2614,8 @@ class WebUI:
                         continue
                     import base64
 
+                    if len(b64) > 28 * 1024 * 1024:
+                        continue
                     raw = base64.b64decode(b64)
                     requests.append(ImportBytes(raw, oname))
                 if requests:

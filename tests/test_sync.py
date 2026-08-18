@@ -11,6 +11,8 @@
 使用 FakeBackend 替换真实 FTP/S3/R2/WebDAV，不访问网络。
 """
 
+import hashlib
+import io
 import json
 import shutil
 import sys
@@ -18,6 +20,8 @@ import tempfile
 import unittest
 from pathlib import Path
 from unittest.mock import patch
+
+from PIL import Image
 
 # 确保 src 在导入路径中
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
@@ -36,6 +40,16 @@ def _entry(fname, sha256, size=1):
         "file_size": size,
         "mtime": "",
     }
+
+
+def _remote_png():
+    buffer = io.BytesIO()
+    Image.new("RGBA", (1, 1), (255, 0, 0, 255)).save(buffer, "PNG")
+    return buffer.getvalue()
+
+
+REMOTE_PNG = _remote_png()
+REMOTE_PNG_HASH = hashlib.sha256(REMOTE_PNG).hexdigest()
 
 
 class _FakeBackend:
@@ -110,7 +124,7 @@ class _FakeBackend:
         if fname in self.empty_downloads:
             Path(local_path).write_bytes(b"")
         else:
-            Path(local_path).write_bytes(b"fake image content")
+            Path(local_path).write_bytes(REMOTE_PNG)
         return True
 
     def upload_file(self, local_path, remote_path):
@@ -180,6 +194,12 @@ class _FakeDb:
         for i, r in enumerate(self.rows):
             if r["filename"] == filename:
                 return dict(r, id=i + 1)
+        return None
+
+    def get_by_hash(self, file_hash):
+        for index, row in enumerate(self.rows):
+            if row["file_hash"] == file_hash:
+                return dict(row, id=index + 1)
         return None
 
     def reorder_memes(self, meme_ids):
@@ -516,6 +536,26 @@ class TestSyncPush(unittest.TestCase):
         self.assertEqual(get_sync_progress()["status"], "error")
         local = json.loads((self.data_dir / INDEX_FILENAME).read_text(encoding="utf-8"))
         self.assertNotIn("empty.png", {m["filename"] for m in local["memes"]})
+
+    def test_pull_rejects_malformed_image_through_shared_import_service(self):
+        self._set_local_memes([])
+        self.fake_backend.remote_memes = {"bad.png": _entry("bad.png", "bad")}
+        self.fake_backend.remote_files = {"bad.png"}
+        original_download = self.fake_backend.download_file
+
+        def malformed(remote_path, local_path):
+            if str(remote_path).endswith(INDEX_FILENAME):
+                return original_download(remote_path, local_path)
+            Path(local_path).write_bytes(b"not an image")
+            return True
+
+        self.fake_backend.download_file = malformed
+
+        result = sync.pull()
+
+        self.assertEqual(result["skipped"], 1)
+        self.assertFalse((self.data_dir / "cache" / "bad.png").exists())
+        self.assertIsNone(self.fake_db.get_by_filename("bad.png"))
 
     def test_pull_failure_does_not_apply_metadata_or_rebuild_manifest(self):
         self.fake_backend.remote_memes = {
