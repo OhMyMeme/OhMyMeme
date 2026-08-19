@@ -711,6 +711,75 @@ body {
   cursor: grabbing;
 }
 
+.ai-image-dialog {
+  position: fixed;
+  inset: 0;
+  z-index: 220;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: rgba(0, 0, 0, 0.58);
+}
+
+.ai-image-dialog__panel {
+  width: min(520px, calc(100vw - 32px));
+  padding: 20px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-lg);
+  background: var(--surface);
+  box-shadow: var(--shadow-lg);
+}
+
+.ai-image-dialog__header,
+.ai-image-dialog__options {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.ai-image-dialog__header h2 {
+  margin: 0;
+  font-size: 17px;
+}
+
+.ai-image-dialog__prompt {
+  width: 100%;
+  min-height: 110px;
+  margin: 14px 0;
+  padding: 10px;
+  box-sizing: border-box;
+  resize: vertical;
+  color: var(--fg);
+  background: var(--card);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  font: inherit;
+}
+
+.ai-image-dialog__options label {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  color: var(--muted);
+  font-size: 13px;
+}
+
+.ai-image-dialog__options input {
+  width: 56px;
+  padding: 6px;
+  color: var(--fg);
+  background: var(--card);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+}
+
+.ai-image-dialog__message {
+  margin: 12px 0 0;
+  color: var(--muted);
+  font-size: 12px;
+}
+
 #meme-grid,
 .meme-grid {
   display: grid;
@@ -727,6 +796,8 @@ body {
   transform: scale(0.95);
   outline: 3px solid var(--border-light);
   outline-offset: 3px;
+  touch-action: none;
+  user-select: none;
 }
 
 #meme-grid.sort-enabled .meme-card:hover {
@@ -742,6 +813,21 @@ body {
 #meme-grid.sort-enabled .meme-card.dragging {
   transition: none;
   outline: 0 solid transparent;
+}
+
+/* 明确显示插入点：拖到哪条亮线就插到目标卡片之前 */
+#meme-grid.sort-enabled .meme-card.sort-target-before::before {
+  content: '';
+  position: absolute;
+  z-index: 3;
+  left: -7px;
+  top: 8px;
+  bottom: 8px;
+  width: 4px;
+  border-radius: 4px;
+  background: var(--primary);
+  box-shadow: 0 0 10px color-mix(in srgb, var(--primary) 70%, transparent);
+  pointer-events: none;
 }
 
 /* 稳定卡轻微晃动循环：用独立 rotate 属性，避免覆盖拖拽/FLIP 的 transform */

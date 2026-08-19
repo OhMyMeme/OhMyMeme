@@ -1028,12 +1028,15 @@ class JsApi:
     def import_pack(self):
         """选择 .ohmymeme-pack 文件并导入"""
         try:
+            # pywebview 的 Windows 文件过滤器不支持扩展名中的连字符，
+            # 所以不能直接传入 *.ohmymeme-pack；选择后仍会严格校验扩展名。
             result = webview.windows[0].create_file_dialog(
                 webview.FileDialog.OPEN,
                 allow_multiple=False,
-                file_types=("OhMyMeme 分享包 (*.ohmymeme-pack)",),
+                file_types=("所有文件 (*.*)",),
             )
-        except Exception:
+        except Exception as e:
+            logger.warning(f"import pack dialog error: {e!r}")
             return {"ok": False, "error": "无法打开文件选择对话框"}
         if not result:
             return {"ok": False, "cancelled": True}

@@ -307,6 +307,41 @@ class TestFolderApi(unittest.TestCase):
         )
 
 
+class TestSharePackDialog(unittest.TestCase):
+    def test_import_pack_uses_a_compatible_windows_filter(self):
+        api = object.__new__(webui.JsApi)
+        chosen = r"C:\\packs\\cats.ohmymeme-pack"
+
+        class FakeWindow:
+            def __init__(self):
+                self.args = None
+                self.kwargs = None
+
+            def create_file_dialog(self, *args, **kwargs):
+                self.args = args
+                self.kwargs = kwargs
+                return (chosen,)
+
+        window = FakeWindow()
+        fake_webview = type(
+            "FakeWebView",
+            (), {
+                "windows": [window],
+                "FileDialog": type("Dialog", (), {"OPEN": 10})(),
+            },
+        )()
+
+        with (
+            patch("src.webui.webview", fake_webview),
+            patch.object(api, "_import_pack_from_path", return_value={"ok": True}) as load,
+        ):
+            result = api.import_pack()
+
+        self.assertEqual(result, {"ok": True})
+        self.assertEqual(window.kwargs["file_types"], ("所有文件 (*.*)",))
+        load.assert_called_once_with(chosen)
+
+
 class TestManifestFolders(unittest.TestCase):
     def test_manifest_collection_builder_is_flat(self):
         tmp_dir = Path(tempfile.mkdtemp())

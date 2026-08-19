@@ -28,6 +28,9 @@ Thumbs.db
 .adb/
 
 # 打包输出
+build-*/
+dist-*/
+output/
 *.exe
 *.AppImage
 *.deb
@@ -38,3 +41,7 @@ cookie.txt
 uv.lock
 node_modules/
 src/webui/dist/
+
+# 本地运行日志
+*.log
+*.err

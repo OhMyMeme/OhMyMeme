@@ -12,6 +12,9 @@ interface DragState {
   startX: number
   startY: number
   curIndex: number
+  pointerId: number | null
+  originalOrder: Meme[]
+  targetCard: HTMLElement | null
 }
 
 const dragState = reactive<DragState>({
@@ -23,6 +26,9 @@ const dragState = reactive<DragState>({
   startX: 0,
   startY: 0,
   curIndex: -1,
+  pointerId: null,
+  originalOrder: [],
+  targetCard: null,
 })
 
 const AUTO_SCROLL_ZONE = 76
@@ -30,60 +36,45 @@ const AUTO_SCROLL_MAX_SPEED = 22
 let autoScrollFrame = 0
 let autoScrollPoint: { x: number; y: number } | null = null
 
-interface GridMetrics {
-  originX: number
-  originY: number
-  pitchX: number
-  pitchY: number
-  cols: number
-}
+function gridSlotIndex(grid: HTMLElement, x: number, y: number, dragged: HTMLElement | null) {
+  // 使用真实卡片矩形计算“插入槽位”，而不是简单取当前格子。
+  // 这样指针落在两张卡片之间时，会明确插入到前后两张卡片之间。
+  const cards = Array.from(
+    grid.querySelectorAll('.meme-card:not(.folder-card)'),
+  ).filter(card => card !== dragged) as HTMLElement[]
+  if (!cards.length) return { index: 0, targetCard: null as HTMLElement | null, before: true }
 
-function gridMetrics(grid: HTMLElement): GridMetrics | null {
-  const gRect = grid.getBoundingClientRect()
-  const cards = Array.from(grid.querySelectorAll('.meme-card'))
-  if (!cards.length) return null
-  const style = getComputedStyle(grid)
-  const finite = (v: string) => {
-    const p = parseFloat(v)
-    return Number.isFinite(p) ? p : 0
+  const rects = cards.map(card => ({ card, rect: card.getBoundingClientRect() }))
+  const rows: Array<typeof rects> = []
+  for (const item of rects) {
+    const row = rows.find(existing => Math.abs(existing[0].rect.top - item.rect.top) < 8)
+    if (row) row.push(item)
+    else rows.push([item])
   }
-  const paddingLeft = finite(style.paddingLeft)
-  const paddingRight = finite(style.paddingRight)
-  const paddingTop = finite(style.paddingTop)
-  const columnGap = finite(style.columnGap)
-  const rowGap = finite(style.rowGap)
-  const cardWidth = cards[0].offsetWidth
-  const cardHeight = cards[0].offsetHeight
-  const contentWidth = grid.clientWidth - paddingLeft - paddingRight
+  rows.forEach(row => row.sort((a, b) => a.rect.left - b.rect.left))
+  rows.sort((a, b) => a[0].rect.top - b[0].rect.top)
+
+  // 先确定指针所在行：落在两行之间时归入下一行，符合手机图标的让位直觉。
+  let row = rows[rows.length - 1]
+  for (const candidate of rows) {
+    const bottom = Math.max(...candidate.map(item => item.rect.bottom))
+    if (y <= bottom) {
+      row = candidate
+      break
+    }
+  }
+  const hitIndex = row.findIndex(item => x < item.rect.left + item.rect.width / 2)
+  const targetCard = hitIndex >= 0 ? row[hitIndex].card : null
+  const rowStart = cards.indexOf(row[0].card)
+  const index = rowStart + (hitIndex >= 0 ? hitIndex : row.length)
   return {
-    originX: gRect.left + grid.clientLeft + paddingLeft,
-    originY: gRect.top + grid.clientTop + paddingTop,
-    pitchX: cardWidth + columnGap,
-    pitchY: cardHeight + rowGap,
-    cols: Math.max(1, Math.round((contentWidth + columnGap) / (cardWidth + columnGap))),
+    index: Math.max(0, index),
+    targetCard,
+    before: !!targetCard,
   }
-}
-
-function gridSlotIndex(grid: HTMLElement, x: number, y: number) {
-  const m = gridMetrics(grid)
-  if (!m) return 0
-  const col = Math.max(0, Math.min(Math.floor((x - m.originX) / m.pitchX), m.cols - 1))
-  const row = Math.max(0, Math.floor((y - m.originY) / m.pitchY))
-  const all = Array.from(grid.querySelectorAll('.meme-card'))
-  const absSlot = Math.min(row * m.cols + col, all.length - 1)
-  return Math.max(0, absSlot)
 }
 
 /** 由网格几何直接计算槽位原点（不经 getBoundingClientRect，避免 Vue 批量更新导致的偏移） */
-function slotOrigin(m: GridMetrics, slot: number) {
-  const col = slot % m.cols
-  const row = Math.floor(slot / m.cols)
-  return {
-    left: m.originX + col * m.pitchX,
-    top: m.originY + row * m.pitchY,
-  }
-}
-
 function moveInArray<T>(arr: T[], from: number, to: number) {
   const [item] = arr.splice(from, 1)
   arr.splice(to, 0, item)
@@ -99,7 +90,10 @@ export function useDragSort(
 ) {
   function enable() { dragSortEnabled.value = true }
   function disable() { dragSortEnabled.value = false }
-  function toggle() { dragSortEnabled.value = !dragSortEnabled.value }
+  function toggle() {
+    dragSortEnabled.value = !dragSortEnabled.value
+    if (!dragSortEnabled.value && dragState.memeId) cancel()
+  }
 
   function stopAutoScroll() {
     if (autoScrollFrame) cancelAnimationFrame(autoScrollFrame)
@@ -147,12 +141,17 @@ export function useDragSort(
       startX: e.clientX,
       startY: e.clientY,
       curIndex: getMemes().findIndex(m => m.id === memeId),
+      pointerId: e.pointerId ?? null,
+      originalOrder: [...getMemes()],
+      targetCard: null,
     })
   }
 
   function onPointerMove(e: PointerEvent) {
     const d = dragState
     if (!d.memeId || !d.card) return
+
+    if (d.pointerId != null && e.pointerId != null && e.pointerId !== d.pointerId) return
 
     // 未激活：超过阈值才激活
     if (!d.active) {
@@ -171,24 +170,36 @@ export function useDragSort(
     updateAutoScrollPoint(e.clientX, e.clientY)
     const grid = d.card.closest('#meme-grid') as HTMLElement
     if (!grid) return
-    const m = gridMetrics(grid)
-    if (!m) return
+    const slot = gridSlotIndex(grid, e.clientX, e.clientY, d.card)
+    const current = getMemes().findIndex(meme => meme.id === d.memeId)
 
-    const target = gridSlotIndex(grid, e.clientX, e.clientY)
-
-    // 槽位变化时重排数组（Vue + TransitionGroup 自动 FLIP 让位动画）
-    if (target !== d.curIndex) {
-      const memes = [...getMemes()]
-      moveInArray(memes, d.curIndex, target)
+    // 先从数组中移除拖动项，再按“卡片之前/本行末尾”插入，避免向后移动时索引偏移。
+    if (current < 0) return
+    const memes = [...getMemes()]
+    const [dragged] = memes.splice(current, 1)
+    let insertAt = slot.targetCard
+      ? memes.findIndex(meme => meme.id === Number(slot.targetCard?.dataset.memeId))
+      : slot.index
+    if (insertAt < 0) insertAt = memes.length
+    insertAt = Math.max(0, Math.min(insertAt, memes.length))
+    if (insertAt !== current || d.targetCard !== slot.targetCard) {
+      if (d.targetCard) d.targetCard.classList.remove('sort-target-before')
+      memes.splice(insertAt, 0, dragged)
       setMemesFn(memes)
-      d.curIndex = target
+      d.curIndex = insertAt
+      d.targetCard = slot.targetCard
+      if (d.targetCard) d.targetCard.classList.add('sort-target-before')
+    } else {
+      memes.splice(current, 0, dragged)
     }
 
-    // 视觉位置：由网格几何直接算出槽位原点，避免读矩形产生偏移/卡顿
-    const origin = slotOrigin(m, d.curIndex)
-    const dragX = e.clientX - d.offX - origin.left
-    const dragY = e.clientY - d.offY - origin.top
-    d.card.style.transform = `translate(${dragX}px, ${dragY}px) scale(0.90)`
+    // 卡片自身通过 transform 跟随指针；其他卡片由 TransitionGroup 自动让位。
+    // 先清除旧 transform 再测量，避免把上一次位移重复累加。
+    d.card.style.transform = ''
+    const cardRect = d.card.getBoundingClientRect()
+    const dragX = e.clientX - d.offX - cardRect.left
+    const dragY = e.clientY - d.offY - cardRect.top
+    d.card.style.transform = `translate3d(${dragX}px, ${dragY}px, 0) scale(0.90)`
     d.card.style.zIndex = '10'
   }
 
@@ -206,6 +217,8 @@ export function useDragSort(
   }
 
   function cancel() {
+    const d = dragState
+    if (d.active && d.originalOrder.length) setMemesFn([...d.originalOrder])
     cleanup()
   }
 
@@ -217,11 +230,13 @@ export function useDragSort(
       d.card.style.transform = ''
       d.card.style.zIndex = ''
     }
+    if (d.targetCard) d.targetCard.classList.remove('sort-target-before')
     const grid = document.getElementById('meme-grid')
     if (grid) grid.classList.remove('drag-active')
     Object.assign(d, {
       active: false, memeId: null, card: null,
       offX: 0, offY: 0, startX: 0, startY: 0, curIndex: -1,
+      pointerId: null, originalOrder: [], targetCard: null,
     })
   }
 

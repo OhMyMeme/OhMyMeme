@@ -178,12 +178,57 @@ const aiReviewMessage = ref('')
 const aiReviewProgress = ref(0)
 const aiReviewBusy = ref(false)
 let aiReviewTimer: ReturnType<typeof setInterval> | null = null
+const aiImageOpen = ref(false)
+const aiImagePrompt = ref('')
+const aiImageCount = ref(1)
+const aiImageBusy = ref(false)
+const aiImageMessage = ref('')
+let aiImageTimer: ReturnType<typeof setInterval> | null = null
 
 function stopAiReviewPoll() {
   if (aiReviewTimer) {
     clearInterval(aiReviewTimer)
     aiReviewTimer = null
   }
+}
+
+function stopAiImagePoll() {
+  if (aiImageTimer) {
+    clearInterval(aiImageTimer)
+    aiImageTimer = null
+  }
+}
+
+async function pollAiImageProgress() {
+  const progress = await window.pywebview?.api?.get_ai_progress()
+  if (!progress || progress.task_type !== 'generate') return
+  aiImageMessage.value = progress.message || ''
+  if (progress.status === 'running') return
+  stopAiImagePoll()
+  aiImageBusy.value = false
+  if (progress.status === 'done') {
+    aiImageMessage.value = progress.message || '生成并导入完成'
+    await search()
+    showToast(aiImageMessage.value)
+  } else {
+    aiImageMessage.value = progress.message || 'AI 生图失败'
+    showToast(aiImageMessage.value)
+  }
+}
+
+async function startAiImageGeneration() {
+  const prompt = aiImagePrompt.value.trim()
+  if (!prompt || aiImageBusy.value) return
+  const result = await window.pywebview?.api?.ai_generate(prompt, Math.max(1, Math.min(10, Math.round(aiImageCount.value) || 1)))
+  if (!result) {
+    aiImageMessage.value = '启动失败，请检查 AI 生图设置'
+    return
+  }
+  aiImageBusy.value = true
+  aiImageMessage.value = '正在生成表情包…'
+  stopAiImagePoll()
+  await pollAiImageProgress()
+  aiImageTimer = setInterval(pollAiImageProgress, 500)
 }
 
 async function loadAiSuggestions() {
@@ -735,6 +780,7 @@ function selectedDragIds(source: Meme): number[] {
 }
 
 function onCardPointerDown(e: PointerEvent, meme: Meme, _card: HTMLElement) {
+  e.stopPropagation()
   ignoreClick = false
   if (batchMode.value) {
     if (e.button !== 0) return
@@ -1011,6 +1057,7 @@ onUnmounted(() => {
   window.removeEventListener('blur', onDocPointerCancel)
   if (updateInterval) { clearInterval(updateInterval); updateInterval = null }
   stopAiReviewPoll()
+  stopAiImagePoll()
   stopDragAutoScroll()
   hoverTimers.forEach(t => clearTimeout(t))
   hoverTimers.clear()
@@ -1045,6 +1092,15 @@ onUnmounted(() => {
 
 <template>
   <div id="app">
+    <div v-if="aiImageOpen" class="ai-image-dialog" @click.self="aiImageOpen = false">
+      <section class="ai-image-dialog__panel" role="dialog" aria-modal="true" aria-label="AI 绘图表情包">
+        <div class="ai-image-dialog__header"><h2>AI 绘图表情包</h2><button class="icon-btn" @click="aiImageOpen = false">×</button></div>
+        <p class="toolbar-popover__hint">请先在设置页填写 AI 生图地址、API Key 和文生图模型。</p>
+        <textarea v-model="aiImagePrompt" class="ai-image-dialog__prompt" placeholder="例如：一只猫猫举着牌子写着‘收到’的聊天表情，透明背景"></textarea>
+        <div class="ai-image-dialog__options"><label>生成数量 <input v-model.number="aiImageCount" type="number" min="1" max="10"></label><button class="title-btn primary-action" :disabled="aiImageBusy || !aiImagePrompt.trim()" @click="startAiImageGeneration">{{ aiImageBusy ? '生成中…' : '开始生成' }}</button></div>
+        <p v-if="aiImageMessage" class="ai-image-dialog__message">{{ aiImageMessage }}</p>
+      </section>
+    </div>
     <header id="titlebar" @mousedown="onTitlebarMouseDown">
       <div class="titlebar__left">
         <div class="logo">OhMy<span>Meme</span></div>
@@ -1079,6 +1135,11 @@ onUnmounted(() => {
               <p class="toolbar-popover__hint">最多 500 张；数量越多，处理和审核时间越长。</p>
               <button class="toolbar-popover__button" @click="startAiOrganize()">开始 AI 整理</button>
               <button class="toolbar-popover__button" :disabled="!aiTaskId && !aiSuggestions.length" @click="openAiReview">打开 AI 审核</button>
+            </div>
+            <div class="toolbar-popover__section">
+              <strong>AI 绘图表情包</strong>
+              <p class="toolbar-popover__hint">使用设置页配置的生图模型生成并自动导入表情包。</p>
+              <button class="toolbar-popover__button" @click="aiImageOpen = true">打开 AI 绘图</button>
             </div>
             <div class="toolbar-popover__section toolbar-popover__split-actions">
               <button class="toolbar-popover__button" @click="syncUpload">上传同步</button>
