@@ -170,7 +170,7 @@ tests/
 ### 更新
 - GitHub API 查询: `/releases/latest` → `/releases?per_page=5` 回退
 - **仅检查稳定版**：`_parse_release` 跳过 prerelease 与含 `nightly` 的 tag（保证软件更新绝不指向非正式版）；`_parse_version` 跳过非数字段（如 `0.6.0-nightly`）
-- **非阻塞检查**：`check_latest_cached()` 是唯一入口——有缓存立即返回；无缓存触发后台 daemon 线程跑 `check_latest()` 并把结果存 `_check_result`（`_check_lock` 保护，`_ensure_check_started` 幂等只启动一次），立即返回 `pending: true`（永不阻塞网络 3.8s~20s+）。`webui.py` 的 `JsApi.check_update`/`SettingsApi.check_update` 均改用它；前端 `App.vue` 的 `checkUpdateAndPrompt` 与 `settings.js` 的 `checkUpdate` 收到 `pending` 时短延时（2s/1.5s）重查直到出真实结果再弹更新窗。`reset_check_cache()` 清空缓存强制下次重查。**这解决了启动期间 `check_update` 同步阻塞曾导致的界面交互卡顿**
+- **非阻塞检查**：`check_latest_cached(force=False)` 是唯一入口——新鲜缓存（`_CHECK_TTL`=24h）立即返回；无缓存/缓存过期/`force=True` 触发后台 daemon 线程跑 `check_latest()` 填 `_check_result`+`_check_result_at`（`_check_lock` 保护，`_ensure_check_started` 幂等只启动一次），立即返回 `pending: true`（永不阻塞网络 3.8s~20s+）。**generation token**：`reset_check_cache()` 推进 `_check_generation`，后台 `_task` 完成时仅当代号匹配才写结果，防在途旧任务覆盖 reset 后新状态。`webui.py` 的 `JsApi.check_update`/`SettingsApi.check_update` 支持 `(debug, force)` 透传；前端 `App.vue` 的 `checkUpdateAndPrompt`（onMounted/24h 定时）首发 `force=true`、pending 时转 `checkUpdateResult` 非 force 轮询，`settings.js` 的 `checkUpdate` 首发 force、while 轮询暂取非 force——避免完成后再次 force 触发新检查造成永久 pending。**这解决了启动期间 `check_update` 同步阻塞曾导致的界面交互卡顿，及缓存不失效时 24h 定时器形同虚设的问题**
 - 镜像并发: `_urlopen_mirror` / `_urlretrieve_mirror` 用 `ThreadPoolExecutor` + `as_completed`
 - 镜像列表: `github.dpik.top` → `gh.dpik.top` → `gh-proxy.org` → 自建镜像（仅用于版本查询）→ 直连 GitHub
 - 下载进度: `start_download()` → 后台线程 → JS 每 500ms 轮询 `get_download_progress()`

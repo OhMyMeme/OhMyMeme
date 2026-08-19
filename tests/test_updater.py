@@ -72,6 +72,77 @@ class TestCheckLatestCached(unittest.TestCase):
             time.sleep(0.3)
             self.assertEqual(len(calls), 1)  # 只启动了一次
 
+    def test_force_triggers_recheck_despite_fresh_cache(self):
+        """force=True 时即使有新鲜缓存也触发重新检查（返回 pending 直到新结果）"""
+        calls = []
+
+        def tracking():
+            calls.append(1)
+            return dict(_SLOW_RESULT)
+
+        with mock.patch.object(updater, "check_latest", side_effect=tracking):
+            # 先完成一次后台检查，得到缓存
+            self.assertIs(updater.check_latest_cached().get("pending"), True)
+            deadline = time.time() + 5
+            while time.time() < deadline:
+                if not updater.check_latest_cached().get("pending"):
+                    break
+                time.sleep(0.05)
+            cached = updater.check_latest_cached()
+            self.assertIsNone(cached.get("pending"))
+            # 缓存新鲜时非 force 直接命中缓存，不再启动检查
+            updater.check_latest_cached()
+            self.assertEqual(len(calls), 1)
+            # force=True：立即触发再一次后台检查（fresh 缓存被忽略）
+            self.assertIs(updater.check_latest_cached(force=True).get("pending"), True)
+            time.sleep(0.2)
+            self.assertEqual(len(calls), 2)
+
+    def test_expired_cache_triggers_recheck(self):
+        """缓存超过 24h 后非 force 也会触发重新检查"""
+        calls = []
+
+        def fast():
+            calls.append(1)
+            return dict(_SLOW_RESULT)
+
+        with mock.patch.object(updater, "check_latest", side_effect=fast):
+            # 伪造一份 25 小时前的缓存
+            updater.reset_check_cache()
+            with updater._check_lock:
+                updater._check_result = dict(_SLOW_RESULT)
+                updater._check_result_at = time.time() - (updater._CHECK_TTL + 3600)
+            r = updater.check_latest_cached()  # 非 force
+            self.assertIs(r.get("pending"), True)  # 过期 → 触发重查
+
+    def test_reset_generation_discards_stale_task_result(self):
+        """reset 后启动的在途后台任务，其结果不得覆盖 reset 状态（generation 防护）"""
+        import threading as _threading
+
+        gate = _threading.Event()
+
+        def blocked():
+            gate.wait(3)  # 阻塞，模拟慢检查
+            return dict(_SLOW_RESULT)
+
+        with mock.patch.object(updater, "check_latest", side_effect=blocked):
+            # 启动后台检查（正在跑）
+            r = updater.check_latest_cached()
+            self.assertIs(r.get("pending"), True)
+            # 等待后台线程真正进入 blocked（确保 _check_running=True 且任务已启动）
+            time.sleep(0.2)
+            # reset 清空缓存并推进 generation
+            updater.reset_check_cache()
+            self.assertIsNone(updater._check_result)
+            # 放行旧任务，让其完成
+            gate.set()
+            time.sleep(0.5)
+            # 旧任务完成，但因 generation 不匹配，不得写入缓存
+            self.assertIsNone(updater._check_result)
+            # reset 本身已把 _check_running 置 False，旧任务也不得改它
+            with updater._check_lock:
+                self.assertFalse(updater._check_running)
+
 
 if __name__ == "__main__":
     unittest.main()

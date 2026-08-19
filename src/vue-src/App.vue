@@ -29,16 +29,29 @@ async function confirmAsk(title: string, message: string): Promise<boolean> {
   return !!(await confirmDialog.value?.open(title, message))
 }
 
-// 检查更新并弹窗：后台检查（非阻塞），pending 时短轮询直到出结果
+// 检查更新并弹窗：首次 force 发起后台检查；pending 时以非 force 轮询取结果
 async function checkUpdateAndPrompt() {
+  const upd = await window.pywebview?.api?.check_update(false, true)
+  if (upd && upd.pending) {
+    setTimeout(checkUpdateResult, 2000)
+  } else {
+    maybeShowUpdate(upd)
+  }
+}
+
+// 轮询最近一次后台检查结果（非 force，避免重复触发新检查造成永久 pending）
+async function checkUpdateResult() {
+  const upd = await window.pywebview?.api?.check_update(false, false)
+  if (upd && upd.pending) {
+    setTimeout(checkUpdateResult, 2000)
+  } else {
+    maybeShowUpdate(upd)
+  }
+}
+
+function maybeShowUpdate(upd) {
   try {
-    const upd = await window.pywebview?.api?.check_update()
-    if (!upd) return
-    if (upd.pending) {
-      setTimeout(checkUpdateAndPrompt, 2000)
-      return
-    }
-    if (upd.has_update) {
+    if (upd && upd.has_update) {
       updateDialog.value?.show(upd.current, upd.latest, upd.download_url, upd.notes)
     }
   } catch (_) {}

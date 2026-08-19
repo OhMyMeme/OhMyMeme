@@ -1772,11 +1772,11 @@ async function checkUpdate() {
   const btn = document.getElementById('btn-check-update');
   const status = document.getElementById('s-update-status');
   btn.disabled = true; btn.textContent = '检查中...'; status.textContent = '';
-  let r = await api('check_update');
-  // 后台检查未完成：非阻塞，短轮询直到出真实结果
-  if (r && r.pending) {
+  // 首次发起强制检查；后台未完成时用非 force 持续轮询直到拿到结果
+  let r = await api('check_update', false, true);
+  while (r && r.pending) {
     await new Promise(res => setTimeout(res, 1500));
-    r = await api('check_update');
+    r = await api('check_update', false, false);
   }
   btn.disabled = false; btn.textContent = '检查更新';
   if (!r) { status.textContent = '检查失败'; return; }

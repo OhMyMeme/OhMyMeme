@@ -42,8 +42,8 @@ def _update_tg(**kw):
         _TG_STATE.update(**kw)
 
 
+# 按任务起点刷新已用秒数（仅运行中状态推进）
 def _refresh_tg_elapsed():
-    """按任务起点刷新已用秒数（运行中才推进）"""
     if _TG_T0 is not None and _TG_STATE.get("status") in (
         "scanning",
         "loading_key",
@@ -679,7 +679,8 @@ def _tg_worker(webui, tdata_path, passcode, convert_webm):
                             message=f"正在转换: {done_count}/{total}",
                         )
             finally:
-                executor.shutdown(wait=False, cancel_futures=True)
+                # 等已启动的转换 future 退出，避免与 temp_dir 清理/下次导入交错
+                executor.shutdown(wait=True, cancel_futures=True)
             if _check_cancel():
                 _update_tg(status="cancelled", message="已取消")
                 return

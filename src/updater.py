@@ -7,6 +7,7 @@ import platform
 import subprocess
 import tempfile
 import threading
+import time
 import urllib.error
 import urllib.request
 from concurrent.futures import ThreadPoolExecutor, as_completed
@@ -64,9 +65,12 @@ _download_state = {"progress": 0, "status": "idle", "error": "", "path": None}
 _download_lock = threading.Lock()
 
 # 版本检查缓存：结果由后台线程填充，check_update 永远立即返回不阻塞
+_CHECK_TTL = 24 * 60 * 60  # 缓存有效期：24 小时
 _check_lock = threading.Lock()
 _check_result = None
+_check_result_at = None
 _check_running = False
+_check_generation = 0
 
 
 def _download_progress(block_count: int, block_size: int, total_size: int):
@@ -237,18 +241,28 @@ def check_latest() -> dict:
     }
 
 
-def _ensure_check_started():
-    """确保后台版本检查在跑（幂等，非阻塞）。返回 (有缓存, 缓存内容)"""
-    global _check_running, _check_result
+# 确保后台版本检查在跑（幂等，非阻塞）。返回 (有新鲜缓存, 缓存内容)
+def _ensure_check_started(force=False):
+    global _check_running, _check_result, _check_result_at, _check_generation
+    now = time.time()
     with _check_lock:
-        if _check_result is not None:
+        # 非强制 + 缓存新鲜：直接返回缓存
+        if (
+            not force
+            and _check_result is not None
+            and _check_result_at is not None
+            and now - _check_result_at < _CHECK_TTL
+        ):
             return True, _check_result
+        # 已在跑：返回 pending（无论是否 force 都不重复启动）
         if _check_running:
             return False, None
         _check_running = True
+        gen = _check_generation
 
-    def _task():
-        global _check_result, _check_running
+    # 后台线程完成本次检查；仅当任务与启动时同一代（未被 reset 取代）才写结果
+    def _task(gen):
+        global _check_result, _check_result_at, _check_running
         try:
             result = check_latest()
         except Exception as e:  # 兜底，绝不让后台线程带异常退出
@@ -261,16 +275,19 @@ def _ensure_check_started():
                 "error": str(e),
             }
         with _check_lock:
+            if gen != _check_generation:
+                return  # 此代已被 reset 取代，丢弃过期结果
             _check_result = result
+            _check_result_at = time.time()
             _check_running = False
 
-    threading.Thread(target=_task, daemon=True).start()
+    threading.Thread(target=_task, args=(gen,), daemon=True).start()
     return False, None
 
 
-def check_latest_cached():
-    """非阻塞版本检查：有缓存立即返回；无缓存触发后台检查并返回 pending"""
-    has, result = _ensure_check_started()
+# 非阻塞版本检查：新鲜缓存立即返回；过期/force 触发后台检查返回 pending
+def check_latest_cached(force=False):
+    has, result = _ensure_check_started(force=force)
     if has:
         return dict(result)
     return {
@@ -283,12 +300,14 @@ def check_latest_cached():
     }
 
 
+# 清空版本检查缓存，并推进 generation：使在途后台任务的过期结果无法覆盖新状态
 def reset_check_cache():
-    """清空版本检查缓存（强制下一次重新检查）"""
-    global _check_result, _check_running
+    global _check_result, _check_result_at, _check_running, _check_generation
     with _check_lock:
         _check_result = None
+        _check_result_at = None
         _check_running = False
+        _check_generation += 1
 
 
 def _macos_arch() -> str:
