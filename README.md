@@ -74,7 +74,7 @@
 
 Windows 用户可从 [Ohmymeme-AI Releases](https://github.com/luckymolong/OhMyMeme-AI/releases/latest) 下载便携版。解压后运行 `OhMyMeme.exe`，并务必保留同级 `_internal` 目录，不能只单独复制 exe 文件。
 
-Android 用户可从同一 Release 页面下载 Android Debug APK。Android 悬浮窗仍处于开发中，无法使用时可忽略，导入、搜索、文件夹、AI、分享包和同步等其他功能不受影响。
+Android 用户可从同一 Release 页面下载 Android Debug APK。Android 悬浮窗仍处于开发中，无法使用时可忽略，导入、搜索、文件夹、AI、分享包和同步等其他功能不受影响。Android 源码构建环境与命令见 [`android/README.md`](android/README.md)。
 
 ### 从源码部署
 
