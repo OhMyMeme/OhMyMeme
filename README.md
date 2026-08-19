@@ -11,7 +11,7 @@
 
 ## 📸 界面预览
 
-![OhMyMeme preview](https://raw.githubusercontent.com/OhMyMeme/OhMyMeme/dev/resource/picture.gif)
+![OhMyMeme-AI 界面预览](docs/assets/ohmymeme-ai-preview.gif)
 
 ## 💡 为什么选择 OhMyMeme-AI？
 
