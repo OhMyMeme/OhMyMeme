@@ -1,6 +1,5 @@
 # Ohmymeme-AI 增强版使用指南
 
-> 本分支衍生自 [OhMyMeme/OhMyMeme](https://github.com/OhMyMeme/OhMyMeme)，Android 代码衍生自 [OhMyMeme/OhMyMeme-Android](https://github.com/OhMyMeme/OhMyMeme-Android)。
 
 本分支是 OhMyMeme 桌面端的增强版，重点增加本地文件夹管理、审核式 AI 整理、批量操作、拖拽优化和桌面/Android 分享包互通。
 

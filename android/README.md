@@ -1,7 +1,5 @@
 # OhMyMeme Android
 
-> 本 Android 目录衍生自 [OhMyMeme/OhMyMeme-Android](https://github.com/OhMyMeme/OhMyMeme-Android)，随 `Ohmymeme-AI` 分支提供。
->
 > **重要说明：安卓版悬浮窗功能仍在开发中，当前属于不完全版。** 如果悬浮窗在你的设备上可以正常使用，可以按需使用；如果无法使用，请忽略悬浮窗，不影响其他功能。除悬浮窗外的导入、搜索、文件夹、AI、分享包、同步等功能可正常使用。遇到 Bug 请联系：<https://luckywszl.top>。
 >
 > **项目说明：本人并不擅长 Android 等移动端软件开发。** 如果有熟悉 Android 开发的开发者愿意接替或继续维护这个项目，欢迎基于本项目继续开发、修复和完善。
