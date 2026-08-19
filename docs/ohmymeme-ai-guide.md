@@ -1,5 +1,6 @@
 # Ohmymeme-AI 增强版使用指南
 
+本项目是 [OhMyMeme/OhMyMeme](https://github.com/OhMyMeme/OhMyMeme) 的衍生项目。本指南介绍增强版的使用、部署和构建方法。
 
 本分支是 OhMyMeme 桌面端的增强版，重点增加本地文件夹管理、审核式 AI 整理、批量操作、拖拽优化和桌面/Android 分享包互通。
 

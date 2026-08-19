@@ -1,8 +1,22 @@
-# OhMyMeme
+# OhMyMeme-AI
 
-> 本项目基于 [OhMyMeme/OhMyMeme](https://github.com/OhMyMeme/OhMyMeme) 衍生开发。
->
-> **安卓版说明：悬浮窗功能仍在开发中，当前属于不完全版。** 如果悬浮窗可以正常使用，可按需使用；如果无法使用，请忽略该功能，安卓版其他功能不受影响。本人并不擅长 Android 等移动端软件开发，欢迎熟悉 Android 的开发者接替或继续维护。遇到 Bug 请联系：<https://luckywszl.top>。
+## 声明
+
+> **本项目是 [OhMyMeme/OhMyMeme](https://github.com/OhMyMeme/OhMyMeme) 的衍生项目。**
+
+本项目在原项目基础上进行功能增强和跨端维护，原项目地址如上。
+
+## 在原项目基础上增加的功能
+
+- **独立 AI 设置**：AI 整理与 AI 生图分别配置服务地址、API Key 和模型。
+- **审核式 AI 整理**：先生成整理建议，再由用户审核、修改或丢弃，确认后才写入数据库。
+- **单层文件夹管理**：将表情按文件夹组织，支持复制和移动；移动采用剪切语义，表情会从原文件夹或未归档视图中移除。
+- **批量操作**：支持表情、文件夹、标签批量选择，以及批量改标签、复制/移动到文件夹、删除和导出。
+- **多选拖拽**：可将多个选中的表情一起拖入收藏夹或文件夹。
+- **拖拽优化**：修复拖拽预览起点跳动和抽帧问题，支持拖拽到网格边缘时自动滚动。
+- **分享包互通**：支持 `.ohmymeme-pack` 导入和导出，保存图片、标签、收藏、文件夹归属及排序信息。
+- **桌面端与 Android 端互通**：同步 AI 描述、OCR 文本、文件夹归属及分享包数据。
+- **Android 悬浮窗**：目前仍为开发中的不完全版；无法使用时可忽略，不影响其他功能。遇到 Bug 请联系：<https://luckywszl.top>。
 
 轻量化跨平台表情包管理系统 — 突破表情包上限，快捷键呼出、搜索即复制。
 
@@ -54,15 +68,45 @@
 
 > 文件夹“移动进去”按剪切处理：会移除旧文件夹归属；根目录只展示未归档表情。便携版运行时请保留 `OhMyMeme.exe` 同级的 `_internal` 目录。
 
-## 快速开始
+## 部署与环境依赖
 
-### 下载
+### 直接使用发布包
 
-从 [Releases](https://github.com/OhMyMeme/OhMyMeme/releases/latest) 下载对应系统的安装包或可执行文件，直接运行。
+Windows 用户可从 [Ohmymeme-AI Releases](https://github.com/luckymolong/OhMyMeme-AI/releases/latest) 下载便携版。解压后运行 `OhMyMeme.exe`，并务必保留同级 `_internal` 目录，不能只单独复制 exe 文件。
 
-### 从源码运行
+Android 用户可从同一 Release 页面下载 Android Debug APK。Android 悬浮窗仍处于开发中，无法使用时可忽略，导入、搜索、文件夹、AI、分享包和同步等其他功能不受影响。
 
-**环境要求**: Python 3.10+
+### 从源码部署
+
+**基础环境要求**:
+
+- Python 3.10+；
+- Node.js 20+ 和 npm（修改或重新构建 Vue 前端时需要）；
+- Git；
+- Windows、Linux 或 macOS；
+- Windows 下使用 PyWebView 原生窗口，Linux 下还需要 GTK/WebKit 运行库。
+
+安装桌面端 Python 依赖并启动：
+
+```bash
+git clone https://github.com/luckymolong/OhMyMeme-AI.git
+cd OhMyMeme-AI
+python -m venv .venv
+# Windows: .venv\\Scripts\\activate
+# Linux/macOS: source .venv/bin/activate
+pip install -r requirements.txt
+python -m src
+```
+
+如果需要构建或修改 Vue 前端：
+
+```bash
+npm install
+npx vite build
+python -m src
+```
+
+**Python 环境要求**: Python 3.10+
 
 **Linux 额外依赖**:
 ```bash
@@ -214,7 +258,7 @@ python -m src
 | 缩略图 | `%LOCALAPPDATA%/OhMyMeme/thumbnails/` |
 | 索引文件 | `%LOCALAPPDATA%/OhMyMeme/meme-index.json` |
 
-## 构建
+## 构建部署包
 
 依赖 PyInstaller 6.0+。构建前请确认前端产物已生成：`src/webui/dist/ohmymeme.js`（Vue 构建产物已随仓库提交，改过前端后需 `npx vite build` 重新生成，见[从源码运行](#从源码运行)）。
 
