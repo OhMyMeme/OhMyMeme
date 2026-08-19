@@ -106,8 +106,6 @@ npx vite build
 python -m src
 ```
 
-**Python 环境要求**: Python 3.10+
-
 **Linux 额外依赖**:
 ```bash
 # Debian / Ubuntu
@@ -128,13 +126,6 @@ yay -S webkit2gtk  # 依赖 libsoup，通过 yay 安装
 >   - 创建 venv 时加 `--system-site-packages`：`python -m venv --system-site-packages .venv`
 >   - 运行前设置 `PYTHONPATH=/usr/lib/python3/dist-packages`（Arch 为 `/usr/lib/python3.12/site-packages`）
 >   - conda 中可执行 `conda install -c conda-forge pygobject` 直接在环境内装 PyGObject
-
-```bash
-git clone https://github.com/OhMyMeme/OhMyMeme.git
-cd ohmymeme
-pip install -r requirements.txt
-python -m src
-```
 
 主窗口前端为 **Vue 3**（`src/vue-src/`，Vite 构建 IIFE 单文件 `src/webui/dist/ohmymeme.js`）。**源码运行**时若产物缺失会自动执行一次 `npx vite build`；手动构建方式：
 
