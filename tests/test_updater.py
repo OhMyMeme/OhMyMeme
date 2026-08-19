@@ -20,16 +20,18 @@ _SLOW_RESULT = {
 
 
 class TestCheckLatestCached(unittest.TestCase):
+    # 每个用例前后重置版本检查缓存
     def setUp(self):
         updater.reset_check_cache()
 
     def tearDown(self):
         updater.reset_check_cache()
 
+    # 首次调用触发后台检查，立即返回 pending 不阻塞
     def test_first_call_returns_pending_without_blocking(self):
-        """首次调用触发后台检查，立即返回 pending，不阻塞"""
 
         def slow():
+            # 模拟慢网络：阻塞 2s 后返回结果
             time.sleep(2)
             return dict(_SLOW_RESULT)
 
@@ -40,10 +42,11 @@ class TestCheckLatestCached(unittest.TestCase):
             self.assertIs(r.get("pending"), True)
             self.assertLess(dt, 0.5)  # 不应阻塞 2s
 
+    # 后台完成后再次调用命中缓存，返回真实 latest
     def test_cached_result_after_background_finishes(self):
-        """后台完成后再次调用命中缓存，返回真实 latest"""
 
         def fast():
+            # 立即返回，模拟快速检查
             return dict(_SLOW_RESULT)
 
         with mock.patch.object(updater, "check_latest", side_effect=fast):
@@ -58,11 +61,12 @@ class TestCheckLatestCached(unittest.TestCase):
             self.assertIsNone(r.get("pending"))
             self.assertEqual(r.get("latest"), "9.9.9")
 
+    # 并发多次调用只启动一次后台检查（不重复请求）
     def test_idempotent_single_background_start(self):
-        """并发多次调用只启动一次后台检查（不重复请求）"""
         calls = []
 
         def tracking():
+            # 记录每次真实请求次数
             calls.append(1)
             return dict(_SLOW_RESULT)
 
@@ -72,11 +76,12 @@ class TestCheckLatestCached(unittest.TestCase):
             time.sleep(0.3)
             self.assertEqual(len(calls), 1)  # 只启动了一次
 
+    # force=True 时即使有新鲜缓存也触发重新检查
     def test_force_triggers_recheck_despite_fresh_cache(self):
-        """force=True 时即使有新鲜缓存也触发重新检查（返回 pending 直到新结果）"""
         calls = []
 
         def tracking():
+            # 记录每次真实请求次数
             calls.append(1)
             return dict(_SLOW_RESULT)
 
@@ -98,11 +103,12 @@ class TestCheckLatestCached(unittest.TestCase):
             time.sleep(0.2)
             self.assertEqual(len(calls), 2)
 
+    # 缓存超 24h 后非 force 也触发重新检查
     def test_expired_cache_triggers_recheck(self):
-        """缓存超过 24h 后非 force 也会触发重新检查"""
         calls = []
 
         def fast():
+            # 记录每次真实请求次数
             calls.append(1)
             return dict(_SLOW_RESULT)
 
@@ -115,14 +121,15 @@ class TestCheckLatestCached(unittest.TestCase):
             r = updater.check_latest_cached()  # 非 force
             self.assertIs(r.get("pending"), True)  # 过期 → 触发重查
 
+    # reset 后启动的在途后台任务不得覆盖 reset 状态（generation 防护）
     def test_reset_generation_discards_stale_task_result(self):
-        """reset 后启动的在途后台任务，其结果不得覆盖 reset 状态（generation 防护）"""
         import threading as _threading
 
         started = _threading.Event()  # 后台任务真正进入 blocked 的信号
         release = _threading.Event()  # 放行 blocked 任务
 
         def blocked():
+            # 同步：进入阻塞态通知主测试，等待放行
             started.set()
             release.wait(3)
             return dict(_SLOW_RESULT)
@@ -147,14 +154,15 @@ class TestCheckLatestCached(unittest.TestCase):
             with updater._check_lock:
                 self.assertFalse(updater._check_running)
 
+    # force 刷新进行中，非 force 调用返回 pending 而非旧缓存
     def test_force_in_flight_nonforce_returns_pending(self):
-        """force 刷新的后台检查未完成时，非 force 调用必须返回 pending 而非命中旧缓存"""
         import threading as _threading
 
         started = _threading.Event()
         release = _threading.Event()
 
         def blocked():
+            # 同步：进入阻塞态通知主测试，等待放行
             started.set()
             release.wait(3)
             return dict(_SLOW_RESULT)

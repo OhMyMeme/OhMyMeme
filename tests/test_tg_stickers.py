@@ -68,6 +68,7 @@ class TestStateElapsed(unittest.TestCase):
     def tearDown(self):
         tg._reset_state()
 
+    # 运行中 elapsed 随 _TG_T0 单调推进，reset 后归零不推进
     def test_elapsed_only_advances_while_running(self):
         tg._TG_T0 = time.monotonic() - 5
         tg._update_tg(status="converting", progress=50, done=5, total=10)
@@ -76,6 +77,7 @@ class TestStateElapsed(unittest.TestCase):
         tg._reset_state()
         self.assertEqual(tg.get_tg_progress()["elapsed_s"], 0)
 
+    # reset 清空 _TG_T0 与 elapsed_s
     def test_elapsed_reset(self):
         tg._TG_T0 = time.monotonic() - 3  # 手动污染
         tg._reset_state()
