@@ -14,9 +14,10 @@ cache/
 thumbnails/
 ftp_test/
 
-# IDE
+# IDE and local project workspace
 .vscode/
 .idea/
+.workbuddy/
 *.swp
 *.swo
 
