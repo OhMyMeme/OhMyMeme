@@ -741,11 +741,11 @@ class JsApi:
         self._webui.scan_cache()
         return True
 
-    def check_update(self, debug: bool = False) -> dict:
-        """检查更新，返回版本信息 + 是否建议更新"""
+    # 非阻塞检查更新：新鲜缓存即返，首次/过期/force 触发后台检查返回 pending
+    def check_update(self, debug=False, force=False) -> dict:
         from . import __version__ as cur_ver
 
-        info = updater.check_latest()
+        info = updater.check_latest_cached(force=bool(debug) or bool(force))
         info["current"] = cur_ver
         if debug or self._webui._update_debug:
             info["has_update"] = True
@@ -1989,10 +1989,11 @@ class SettingsApi:
 
         return __version__
 
-    def check_update(self, debug: bool = False) -> dict:
+    # 非阻塞检查更新：新鲜缓存即返，首次/过期/force 触发后台检查返回 pending
+    def check_update(self, debug=False, force=False) -> dict:
         from . import __version__ as cur_ver
 
-        info = updater.check_latest()
+        info = updater.check_latest_cached(force=bool(debug) or bool(force))
         info["current"] = cur_ver
         if debug or self._webui._update_debug:
             info["has_update"] = True
