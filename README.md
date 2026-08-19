@@ -1,6 +1,6 @@
 # OhMyMeme-AI
 
-## 声明
+### 项目声明
 
 > **本项目是 [OhMyMeme/OhMyMeme](https://github.com/OhMyMeme/OhMyMeme) 的衍生项目。**
 
