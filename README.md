@@ -1,6 +1,6 @@
 # OhMyMeme
 
-> **上游项目与致谢：** 本仓库 Fork 自 [OhMyMeme/OhMyMeme](https://github.com/OhMyMeme/OhMyMeme)，原项目作者及全部贡献者保留其原有著作权。本 Fork 仅在 `Ohmymeme-AI` 分支维护额外功能；上游项目代码、历史记录和 [GPL-3.0](LICENSE) 许可证均被保留。请优先关注和支持原项目。
+> 本仓库衍生自 [OhMyMeme/OhMyMeme](https://github.com/OhMyMeme/OhMyMeme)，增强功能维护在 `Ohmymeme-AI` 分支。
 >
 > **安卓版说明：悬浮窗功能仍在开发中，当前属于不完全版。** 如果悬浮窗可以正常使用，可按需使用；如果无法使用，请忽略该功能，安卓版其他功能不受影响。本人并不擅长 Android 等移动端软件开发，欢迎熟悉 Android 的开发者接替或继续维护。遇到 Bug 请联系：<https://luckywszl.top>。
 
