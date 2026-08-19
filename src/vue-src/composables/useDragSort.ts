@@ -25,6 +25,11 @@ const dragState = reactive<DragState>({
   curIndex: -1,
 })
 
+const AUTO_SCROLL_ZONE = 76
+const AUTO_SCROLL_MAX_SPEED = 22
+let autoScrollFrame = 0
+let autoScrollPoint: { x: number; y: number } | null = null
+
 interface GridMetrics {
   originX: number
   originY: number
@@ -96,6 +101,40 @@ export function useDragSort(
   function disable() { dragSortEnabled.value = false }
   function toggle() { dragSortEnabled.value = !dragSortEnabled.value }
 
+  function stopAutoScroll() {
+    if (autoScrollFrame) cancelAnimationFrame(autoScrollFrame)
+    autoScrollFrame = 0
+    autoScrollPoint = null
+  }
+
+  function updateAutoScrollPoint(x: number, y: number) {
+    autoScrollPoint = { x, y }
+    if (!autoScrollFrame) runAutoScroll()
+  }
+
+  function runAutoScroll() {
+    autoScrollFrame = requestAnimationFrame(() => {
+      autoScrollFrame = 0
+      const d = dragState
+      const point = autoScrollPoint
+      const wrap = d.card?.closest('#grid-wrap') as HTMLElement | null
+      if (!d.active || !point || !wrap) return
+      const rect = wrap.getBoundingClientRect()
+      let delta = 0
+      if (point.y < rect.top + AUTO_SCROLL_ZONE) {
+        const depth = Math.min(1, Math.max(0, (rect.top + AUTO_SCROLL_ZONE - point.y) / AUTO_SCROLL_ZONE))
+        delta = -Math.ceil(4 + depth * AUTO_SCROLL_MAX_SPEED)
+      } else if (point.y > rect.bottom - AUTO_SCROLL_ZONE) {
+        const depth = Math.min(1, Math.max(0, (point.y - (rect.bottom - AUTO_SCROLL_ZONE)) / AUTO_SCROLL_ZONE))
+        delta = Math.ceil(4 + depth * AUTO_SCROLL_MAX_SPEED)
+      }
+      if (delta) {
+        wrap.scrollTop += delta
+        runAutoScroll()
+      }
+    })
+  }
+
   function onPointerDown(e: PointerEvent, memeId: number, card: HTMLElement) {
     if (e.button !== 0 || !getSortEnabled() || !canReorderFn()) return
     const rect = card.getBoundingClientRect()
@@ -129,6 +168,7 @@ export function useDragSort(
       } catch (_) {}
     }
 
+    updateAutoScrollPoint(e.clientX, e.clientY)
     const grid = d.card.closest('#meme-grid') as HTMLElement
     if (!grid) return
     const m = gridMetrics(grid)
@@ -170,6 +210,7 @@ export function useDragSort(
   }
 
   function cleanup() {
+    stopAutoScroll()
     const d = dragState
     if (d.card) {
       d.card.classList.remove('dragging')

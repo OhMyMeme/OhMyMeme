@@ -254,6 +254,30 @@ class TestFolderApi(unittest.TestCase):
         )
         self.assertEqual(set(self.db.get_meme_tags(self.first)), {"收藏图", "常用图"})
 
+    def test_batch_move_replaces_all_memberships_atomically(self):
+        with patch("src.webui.build_manifest") as build:
+            source = self.api.create_folder("来源")
+            target = self.api.create_folder("目标")
+            self.assertTrue(
+                self.api.batch_add_to_folder(
+                    [self.first, self.second], source["id"], "copy"
+                )["ok"]
+            )
+            result = self.api.batch_add_to_folder(
+                [self.first, self.second], target["id"], "move"
+            )
+
+        self.assertEqual(result["count"], 2)
+        self.assertEqual(result["mode"], "move")
+        self.assertEqual(self.db.search(collection_id=source["id"]), [])
+        self.assertEqual(
+            {row["id"] for row in self.db.search(collection_id=target["id"])},
+            {self.first, self.second},
+        )
+        self.assertEqual(set(self.db.get_meme_tags(self.first)), {"来源", "目标"})
+        self.assertEqual(set(self.db.get_meme_tags(self.second)), {"来源", "目标"})
+        self.assertEqual(build.call_count, 4)
+
     def test_folder_duplicate_remove_and_delete_preserve_meme_and_tags(self):
         with patch("src.webui.build_manifest"):
             folder = self.api.create_folder("表情")

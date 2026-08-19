@@ -593,7 +593,6 @@ async function resetSettings() {
     if (ud) ud.checked = true;
     if (dp) dp.checked = true;
     if (dd) dd.checked = true;
-    const rec = document.getElementById('s-record-recent');
     if (rec) rec.checked = true;
     const ssa = document.getElementById('s-show-startup-anim');
     if (ssa) ssa.checked = true;
@@ -1586,24 +1585,58 @@ function showToast(msg) {
 
 /* Window Drag */
 let dragState = null;
+let dragFrame = 0;
+let pendingDragDx = 0;
+let pendingDragDy = 0;
 const titlebar = document.getElementById('titlebar');
-titlebar.addEventListener('mousedown', async (e) => {
-  if (e.button !== 0) return;
-  if (e.target.closest('.title-btn')) return;
+
+function isTitlebarControl(target) {
+  return Boolean(target.closest('button, input, select, textarea, a, label'));
+}
+
+titlebar.addEventListener('pointerdown', async (e) => {
+  if (e.button !== 0 || isTitlebarControl(e.target)) return;
   const nativeDrag = await api('start_window_drag', e.button + 1, e.screenX, e.screenY);
-  if (nativeDrag) return;   // Linux：交给合成器拖动
-  dragState = { sx: e.screenX, sy: e.screenY };
+  if (nativeDrag) return;
+  dragState = { sx: e.screenX, sy: e.screenY, pointerId: e.pointerId };
+  try { titlebar.setPointerCapture(e.pointerId); } catch (_) {}
   e.preventDefault();
 });
-document.addEventListener('mousemove', (e) => {
-  if (!dragState) return;
-  const dx = e.screenX - dragState.sx, dy = e.screenY - dragState.sy;
-  if (dx !== 0 || dy !== 0) {
-    api('move_window', dx, dy);
-    dragState.sx = e.screenX; dragState.sy = e.screenY;
-  }
+
+titlebar.addEventListener('pointermove', (e) => {
+  if (!dragState || e.pointerId !== dragState.pointerId) return;
+  const dx = e.screenX - dragState.sx;
+  const dy = e.screenY - dragState.sy;
+  if (dx === 0 && dy === 0) return;
+  dragState.sx = e.screenX;
+  dragState.sy = e.screenY;
+  pendingDragDx += dx;
+  pendingDragDy += dy;
+  if (dragFrame) return;
+  dragFrame = requestAnimationFrame(() => {
+    dragFrame = 0;
+    const moveX = pendingDragDx;
+    const moveY = pendingDragDy;
+    pendingDragDx = 0;
+    pendingDragDy = 0;
+    if (dragState && (moveX || moveY)) api('move_window', moveX, moveY);
+  });
 });
-document.addEventListener('mouseup', () => { dragState = null; });
+
+function endWindowDrag(e) {
+  if (!dragState || (e && e.pointerId !== dragState.pointerId)) return;
+  try { titlebar.releasePointerCapture(dragState.pointerId); } catch (_) {}
+  dragState = null;
+  pendingDragDx = 0;
+  pendingDragDy = 0;
+  if (dragFrame) {
+    cancelAnimationFrame(dragFrame);
+    dragFrame = 0;
+  }
+}
+
+titlebar.addEventListener('pointerup', endWindowDrag);
+titlebar.addEventListener('pointercancel', endWindowDrag);
 
 /* Keyboard shortcuts */
 document.addEventListener('keydown', (e) => {

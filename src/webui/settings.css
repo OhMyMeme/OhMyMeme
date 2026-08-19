@@ -24,6 +24,12 @@ body {
   display: flex; align-items: center; gap: 4px;
   padding: 10px 12px 8px; flex-shrink: 0; cursor: move;
   -webkit-user-select: none; user-select: none;
+  touch-action: none;
+  -webkit-app-region: no-drag;
+}
+#titlebar button, #titlebar input, #titlebar select, #titlebar textarea, #titlebar a, #titlebar label {
+  cursor: pointer;
+  -webkit-app-region: no-drag;
 }
 #titlebar .logo {
   font-size: 14px; font-weight: 600; letter-spacing: -0.02em;

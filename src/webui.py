@@ -530,6 +530,7 @@ class JsApi:
             "collections": collections,
             "tagbar_collapsed": bool(self._cfg.get("tagbar_collapsed", False)),
             "grid_scale": int(self._cfg.get("grid_scale", 72) or 72),
+            "ai_organize_batch_size": max(1, min(500, int(self._cfg.get("ai_organize_batch_size", 50) or 50))),
             "show_startup_animation": self._cfg.get("show_startup_animation", True),
             "startup_bg_color": startup_bg_color(),
         }
@@ -672,6 +673,20 @@ class JsApi:
 
     def is_favorite(self, meme_id: int) -> bool:
         return self._db.is_favorite(meme_id)
+
+    def batch_set_favorite(self, meme_ids, favorited=True):
+        """批量设置收藏状态，避免逐张切换导致混合状态反转。"""
+        rows = self._batch_rows(meme_ids)
+        ids = [row["id"] for row in rows]
+        if not ids:
+            return {"ok": False, "error": "未选择有效表情", "count": 0}
+        try:
+            self._db.set_favorites(ids, bool(favorited))
+            build_manifest()
+            return {"ok": True, "count": len(ids), "favorited": bool(favorited)}
+        except Exception as e:
+            logger.error(f"batch_set_favorite error: {e}")
+            return {"ok": False, "error": "收藏操作失败", "count": 0}
 
     def rename_meme(self, meme_id: int, new_name: str) -> bool:
         if not new_name:
@@ -1078,33 +1093,44 @@ class JsApi:
             return {"ok": False, "error": "创建文件夹失败"}
 
     def add_to_folder(self, meme_id: int, folder_id: int, mode: str = "copy") -> dict:
-        """把表情复制或移动到文件夹，并自动补充文件夹同名标签"""
+        """兼容单张表情放入文件夹。"""
+        return self.batch_add_to_folder([meme_id], folder_id, mode)
+
+    def batch_add_to_folder(self, meme_ids, folder_id: int, mode: str = "copy") -> dict:
+        """原子地批量复制或移动表情到文件夹，并自动补充文件夹同名标签。"""
         try:
-            meme_id = int(meme_id)
             folder_id = int(folder_id)
         except (TypeError, ValueError):
-            return {"ok": False, "error": "文件夹或表情无效"}
+            return {"ok": False, "error": "文件夹无效", "count": 0}
         if mode not in ("copy", "move"):
-            return {"ok": False, "error": "不支持的放入方式"}
+            return {"ok": False, "error": "不支持的放入方式", "count": 0}
         folder = next(
             (item for item in self._db.get_collections() if item[0] == folder_id), None
         )
-        if not folder or not self._db.get_by_id(meme_id):
-            return {"ok": False, "error": "文件夹或表情不存在"}
+        if not folder:
+            return {"ok": False, "error": "文件夹不存在", "count": 0}
+        rows = self._batch_rows(meme_ids)
+        if not rows:
+            return {"ok": False, "error": "未选择有效表情", "count": 0}
+        ids = [row["id"] for row in rows]
+        folder_tag = folder[1].strip()
         try:
-            if mode == "move":
-                self._db.move_to_collection(meme_id, folder_id)
-            else:
-                self._db.add_to_collection(meme_id, folder_id)
-            tags = self._db.get_meme_tags(meme_id)
-            folder_tag = folder[1].strip()
-            if folder_tag and folder_tag not in tags:
-                self._db.set_meme_tags(meme_id, tags + [folder_tag])
+            count = self._db.put_in_collection(
+                ids, folder_id, move=(mode == "move"), tag=folder_tag
+            )
+            if count != len(ids):
+                return {"ok": False, "error": "放入文件夹失败", "count": 0}
             build_manifest()
-            return {"ok": True, "mode": mode, "tag": folder_tag}
+            return {
+                "ok": True,
+                "mode": mode,
+                "tag": folder_tag,
+                "count": count,
+                "folder_id": folder_id,
+            }
         except Exception:
-            logger.exception("add_to_folder failed")
-            return {"ok": False, "error": "放入文件夹失败"}
+            logger.exception("batch_add_to_folder failed")
+            return {"ok": False, "error": "放入文件夹失败", "count": 0}
 
     def remove_from_folder(self, meme_id: int, folder_id: int) -> bool:
         """仅移除当前文件夹归属，保留图片与标签"""
@@ -1123,6 +1149,25 @@ class JsApi:
             return True
         except Exception:
             return False
+
+    def delete_folders(self, folder_ids) -> dict:
+        """批量删除用户文件夹，不删除表情文件或标签。"""
+        try:
+            ids = sorted({int(folder_id) for folder_id in (folder_ids or []) if int(folder_id) > 0})
+        except (TypeError, ValueError):
+            return {"ok": False, "error": "文件夹无效"}
+        deleted = sum(1 for folder_id in ids if self.delete_folder(folder_id))
+        return {"ok": True, "deleted": deleted}
+
+    def delete_tags(self, tag_names) -> dict:
+        """批量删除标签及其关联关系，不删除表情。"""
+        try:
+            deleted = self._db.delete_tags(tag_names)
+            build_manifest()
+            return {"ok": True, "deleted": deleted}
+        except Exception as exc:
+            logger.warning("failed to delete tags: %s", exc)
+            return {"ok": False, "error": "标签删除失败"}
 
     def rename_folder(self, folder_id: int, new_name: str) -> bool:
         """重命名文件夹，不改动已生成的同名标签"""
@@ -1675,9 +1720,18 @@ class JsApi:
         self._webui.hide()
 
     def toggle_floating_window(self):
-        """切换独立搜索悬浮窗"""
-        self._webui.toggle_floating_window_safe()
-        return True
+        """显示独立搜索悬浮窗"""
+        return bool(self._webui.show_floating_window())
+
+    def save_ai_organize_batch_size(self, batch_size):
+        """保存 AI 整理的默认审核数量"""
+        try:
+            batch_size = max(1, min(500, int(batch_size)))
+        except (TypeError, ValueError):
+            return {"ok": False, "error": "数量必须在 1 到 500 之间"}
+        self._cfg.set("ai_organize_batch_size", batch_size)
+        self._cfg.save()
+        return {"ok": True, "batch_size": batch_size}
 
     def _find_meme_file(self, filename: str) -> str:
         cache_dir = self._cfg.cache_dir
@@ -1688,6 +1742,12 @@ class JsApi:
 
     def ai_organize(self, batch_size=50):
         # 启动 AI 整理后台任务，仅生成建议，不写入数据库
+        try:
+            batch_size = max(1, min(500, int(batch_size)))
+        except (TypeError, ValueError):
+            batch_size = 50
+        self._cfg.set("ai_organize_batch_size", batch_size)
+        self._cfg.save()
         global _AI_CANCEL
         _AI_CANCEL = False
         task_id = uuid.uuid4().hex

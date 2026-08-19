@@ -13,7 +13,7 @@ import TagEditor from './components/TagEditor.vue'
 import UpdateDialog from './components/UpdateDialog.vue'
 import type { Meme } from './types'
 
-const { state, setMemes, search, goToPage, setSearch, toggleTag, setActiveCollection, refreshTags, refreshCollections, copyMeme, pasteMemeToChat, setTagbarCollapsed, addToFolder, reorderMemes, canReorder, startNativeDrag, loadInitData } = useMemes()
+const { state, setMemes, search, goToPage, setSearch, toggleTag, setActiveCollection, refreshTags, refreshCollections, copyMeme, pasteMemeToChat, setTagbarCollapsed, addToFolder, batchAddToFolder, reorderMemes, canReorder, startNativeDrag, loadInitData } = useMemes()
 const ctx = useContextMenu()
 const tagEditor = ref<InstanceType<typeof TagEditor> | null>(null)
 const updateDialog = ref<InstanceType<typeof UpdateDialog> | null>(null)
@@ -32,6 +32,8 @@ async function checkUpdateAndPrompt() {
 const sortEnabled = ref(false)
 const batchMode = ref(false)
 const selectedMemeIds = ref(new Set<number>())
+const selectedFolderIds = ref(new Set<number>())
+const selectedTags = ref(new Set<string>())
 const drag = useDragSort(
   () => state.memes,
   setMemes,
@@ -44,7 +46,7 @@ const drag = useDragSort(
 const sidebarCollapsed = ref(false)
 const dragOver = ref(false)
 const folderDropTargetId = ref<number | null>(null)
-const nativeDraggingMemeId = ref<number | null>(null)
+const draggingMemeIds = ref(new Set<number>())
 let dragCounter = 0
 let nativeDragActive = false
 let dragState: { sx: number; sy: number } | null = null
@@ -67,7 +69,7 @@ const gridStyle = computed(() => ({
   gridTemplateColumns: `repeat(auto-fill, minmax(${state.gridScale}px, 1fr))`,
 }))
 
-// 根视图展示全部单层文件夹；进入文件夹后只展示其中的表情。
+// 根视图展示全部单层文件夹及未归档表情；进入文件夹后只展示其中的表情。
 const folderCards = computed(() => {
   if (state.activeCollection !== null || state.searchQuery || state.activeTags.size) return []
   return state.collections.filter((item: any) => item.id > 0)
@@ -76,7 +78,7 @@ const folderCards = computed(() => {
 const breadcrumb = computed(() => {
   if (state.activeCollection === null) return []
   const current = state.collections.find((item: any) => item.id === state.activeCollection)
-  return current ? [{ id: null, name: '全部' }, current] : []
+  return current ? [{ id: null, name: '根目录' }, current] : []
 })
 
 async function goToAllMemes() {
@@ -93,7 +95,25 @@ function onBreadcrumbClick(id: number | null) {
 }
 
 function onFolderCardClick(folderId: number) {
+  if (batchMode.value) {
+    toggleFolderSelection(folderId)
+    return
+  }
   setActiveCollection(folderId)
+}
+
+function toggleFolderSelection(folderId: number) {
+  const next = new Set(selectedFolderIds.value)
+  if (next.has(folderId)) next.delete(folderId)
+  else next.add(folderId)
+  selectedFolderIds.value = next
+}
+
+function toggleTagSelection(tag: string) {
+  const next = new Set(selectedTags.value)
+  if (next.has(tag)) next.delete(tag)
+  else next.add(tag)
+  selectedTags.value = next
 }
 
 function onFolderCardContext(e: MouseEvent, folderId: number, folderName: string) {
@@ -142,14 +162,149 @@ function openSettings() {
   } catch (_) {}
 }
 
+type AiReviewSuggestion = {
+  id: number
+  tags: string[]
+  collection: string
+  description: string
+  ocr_text: string
+  tagsText: string
+}
+
+const aiReviewOpen = ref(false)
+const aiTaskId = ref<string | null>(null)
+const aiSuggestions = ref<AiReviewSuggestion[]>([])
+const aiReviewMessage = ref('')
+const aiReviewProgress = ref(0)
+const aiReviewBusy = ref(false)
+let aiReviewTimer: ReturnType<typeof setInterval> | null = null
+
+function stopAiReviewPoll() {
+  if (aiReviewTimer) {
+    clearInterval(aiReviewTimer)
+    aiReviewTimer = null
+  }
+}
+
+async function loadAiSuggestions() {
+  if (!aiTaskId.value) return
+  const data = await window.pywebview?.api?.get_ai_suggestions(aiTaskId.value)
+  aiSuggestions.value = Object.values(data || {}).map((item: any) => ({
+    id: Number(item.id),
+    tags: Array.isArray(item.tags) ? item.tags : [],
+    collection: String(item.collection || ''),
+    description: String(item.description || ''),
+    ocr_text: String(item.ocr_text || ''),
+    tagsText: Array.isArray(item.tags) ? item.tags.join('、') : '',
+  }))
+}
+
+async function pollAiReviewProgress() {
+  if (!aiTaskId.value) return
+  const progress = await window.pywebview?.api?.get_ai_progress()
+  if (!progress || progress.task_id !== aiTaskId.value) return
+  aiReviewProgress.value = Number(progress.progress || 0)
+  aiReviewMessage.value = progress.message || ''
+  if (progress.status === 'running') return
+
+  stopAiReviewPoll()
+  aiReviewBusy.value = false
+  if (progress.status === 'done') {
+    await loadAiSuggestions()
+    aiReviewMessage.value = aiSuggestions.value.length
+      ? `已生成 ${aiSuggestions.value.length} 条建议，请确认后应用。`
+      : '没有需要补全的表情，或 AI 未生成可用建议。'
+    showToast(aiSuggestions.value.length ? 'AI 整理完成，等待审核' : 'AI 整理完成，没有待审核建议')
+  } else {
+    aiReviewMessage.value = progress.message || (progress.status === 'cancelled' ? 'AI 整理已取消' : 'AI 整理失败')
+    showToast(aiReviewMessage.value)
+  }
+}
+
 async function startAiOrganize() {
-  const result = await window.pywebview?.api?.ai_organize(50)
-  showToast(result?.ok ? 'AI 整理已开始，结果将在旧版 AI 面板审核后应用' : 'AI 整理启动失败，请检查设置')
+  if (aiReviewBusy.value) {
+    aiReviewOpen.value = true
+    showToast('AI 整理正在进行中')
+    return
+  }
+  const result = await window.pywebview?.api?.ai_organize(state.aiOrganizeBatchSize)
+  if (!result?.ok || !result.task_id) {
+    showToast('AI 整理启动失败，请检查 AI 设置')
+    return
+  }
+  stopAiReviewPoll()
+  aiTaskId.value = String(result.task_id)
+  aiSuggestions.value = []
+  aiReviewProgress.value = 0
+  aiReviewMessage.value = 'AI 正在分析表情；完成后请在这里审核。'
+  aiReviewBusy.value = true
+  aiReviewOpen.value = true
+  await pollAiReviewProgress()
+  aiReviewTimer = setInterval(pollAiReviewProgress, 500)
+}
+
+function openAiReview() {
+  if (!aiTaskId.value && !aiSuggestions.value.length) {
+    showToast('当前没有待审核的 AI 建议')
+    return
+  }
+  aiReviewOpen.value = true
+}
+
+async function saveAiSuggestion(item: AiReviewSuggestion) {
+  if (!aiTaskId.value) return
+  const tags = item.tagsText.split(/[、,，]/).map(tag => tag.trim()).filter(Boolean)
+  const result = await window.pywebview?.api?.adjust_ai_suggestion(
+    aiTaskId.value, item.id, tags, item.collection.trim(), item.description.trim(), item.ocr_text.trim(),
+  )
+  if (!result?.ok) {
+    showToast(result?.error || '保存建议失败')
+    return
+  }
+  item.tags = tags
+  item.tagsText = tags.join('、')
+}
+
+async function discardAiSuggestions() {
+  if (!aiTaskId.value || !aiSuggestions.value.length) return
+  if (!window.confirm(`确认丢弃当前 ${aiSuggestions.value.length} 条 AI 建议？不会修改表情库。`)) return
+  const result = await window.pywebview?.api?.discard_ai_suggestions(aiTaskId.value)
+  if (!result?.ok) {
+    showToast(result?.error || '丢弃失败')
+    return
+  }
+  aiSuggestions.value = []
+  aiTaskId.value = null
+  aiReviewOpen.value = false
+  showToast(`已丢弃 ${result.discarded || 0} 条建议`)
+}
+
+async function applyAiSuggestions() {
+  if (!aiTaskId.value || !aiSuggestions.value.length) return
+  if (!window.confirm(`确认把当前 ${aiSuggestions.value.length} 条建议写入标签、文件夹和搜索描述？`)) return
+  for (const item of aiSuggestions.value) await saveAiSuggestion(item)
+  const result = await window.pywebview?.api?.apply_ai_suggestions(aiTaskId.value)
+  if (!result?.ok) {
+    showToast(result?.error || '应用失败')
+    return
+  }
+  aiSuggestions.value = []
+  aiTaskId.value = null
+  aiReviewOpen.value = false
+  await Promise.all([search(), refreshTags(), refreshCollections()])
+  showToast(`已应用 ${result.applied || 0} 条建议`)
 }
 
 async function openFloatingSearch() {
   const result = await window.pywebview?.api?.toggle_floating_window()
   if (!result) showToast('快速搜索窗口启动失败')
+}
+
+async function setAiOrganizeBatchSize(value: number) {
+  state.aiOrganizeBatchSize = Math.min(500, Math.max(1, Math.round(value) || 50))
+  try {
+    await window.pywebview?.api?.save_ai_organize_batch_size(state.aiOrganizeBatchSize)
+  } catch (_) {}
 }
 
 function toggleSidebar() { sidebarCollapsed.value = !sidebarCollapsed.value }
@@ -173,7 +328,7 @@ function toggleSort() {
 
 function toggleBatchMode() {
   batchMode.value = !batchMode.value
-  selectedMemeIds.value = new Set()
+  clearSelection()
 }
 
 function toggleMemeSelection(memeId: number) {
@@ -187,8 +342,82 @@ function selectCurrentPage() {
   selectedMemeIds.value = new Set(state.memes.map(meme => meme.id))
 }
 
+function selectAllFolders() {
+  selectedFolderIds.value = new Set(folderCards.value.map((folder: any) => folder.id))
+}
+
+function selectAllTags() {
+  selectedTags.value = new Set(state.allTags)
+}
+
 function clearSelection() {
   selectedMemeIds.value = new Set()
+  selectedFolderIds.value = new Set()
+  selectedTags.value = new Set()
+}
+
+async function favoriteMemeIds(ids: Iterable<number>) {
+  const uniqueIds = [...new Set(ids)]
+  if (!uniqueIds.length) return false
+  const result = await window.pywebview?.api?.batch_set_favorite(uniqueIds, true)
+  if (!result?.ok) {
+    showToast(result?.error || '收藏失败')
+    return false
+  }
+  await Promise.all([refreshCollections(), search()])
+  showToast(`已收藏 ${result.count || uniqueIds.length} 张表情`)
+  return true
+}
+
+async function favoriteMemes(memes: Meme[]) {
+  return favoriteMemeIds(memes.map(meme => meme.id))
+}
+
+async function favoriteSelectedMemes() {
+  await favoriteMemeIds(selectedMemeIds.value)
+}
+
+async function exportMemePack() {
+  const ids = selectedMemeIds.value.size
+    ? [...selectedMemeIds.value]
+    : state.memes.map(meme => meme.id)
+  if (!ids.length) {
+    showToast('当前没有可导出的表情')
+    return
+  }
+  const scope = selectedMemeIds.value.size ? `已选 ${ids.length} 张` : `当前列表 ${ids.length} 张`
+  if (!window.confirm(`导出${scope}表情及其标签、文件夹归属和收藏状态为 OhMyMeme 分享包？`)) return
+  const result = await window.pywebview?.api?.export_pack(ids)
+  if (!result || result.cancelled) return
+  if (!result.ok) {
+    showToast(result.error || '分享包导出失败')
+    return
+  }
+  showToast(`已导出分享包：${result.count || ids.length} 张表情`)
+}
+
+async function deleteSelectedFolders() {
+  const ids = [...selectedFolderIds.value]
+  if (!ids.length) return
+  if (!window.confirm(`确定删除选中的 ${ids.length} 个文件夹？表情包和标签不会被删除。`)) return
+  const result = await window.pywebview?.api?.delete_folders(ids)
+  if (!result?.ok) { showToast(result?.error || '文件夹删除失败'); return }
+  selectedFolderIds.value = new Set()
+  if (state.activeCollection !== null && ids.includes(state.activeCollection)) await goToAllMemes()
+  await refreshCollections()
+  showToast(`已删除 ${result.deleted || 0} 个文件夹`)
+}
+
+async function deleteSelectedTags() {
+  const tags = [...selectedTags.value]
+  if (!tags.length) return
+  if (!window.confirm(`确定删除选中的 ${tags.length} 个标签？只会移除标签关联，不会删除表情包。`)) return
+  const result = await window.pywebview?.api?.delete_tags(tags)
+  if (!result?.ok) { showToast(result?.error || '标签删除失败'); return }
+  for (const tag of tags) state.activeTags.delete(tag)
+  selectedTags.value = new Set()
+  await Promise.all([refreshTags(), search()])
+  showToast(`已删除 ${result.deleted || 0} 个标签`)
 }
 
 const importMenu = ref<InstanceType<typeof ImportMenu> | null>(null)
@@ -433,25 +662,123 @@ function onCardMouseLeave(meme: Meme) {
   if (img && img.dataset.thumb) img.src = img.dataset.thumb
 }
 
-let nativeDragStart: { x: number; y: number; meme: Meme } | null = null
-const internalDrag = ref<{ meme: Meme; x: number; y: number } | null>(null)
-const folderDropChoice = ref<{ meme: Meme; folderId: number; folderName: string } | null>(null)
+type DragPreview = {
+  meme: Meme
+  memeIds: number[]
+  count: number
+  x: number
+  y: number
+}
+
+type NativeDragStart = {
+  x: number
+  y: number
+  meme: Meme
+  memeIds: number[]
+}
+
+const DRAG_THRESHOLD = 8
+const DRAG_PREVIEW_OFFSET = 14
+let nativeDragStart: NativeDragStart | null = null
+const internalDrag = ref<DragPreview | null>(null)
+const dragPreviewEl = ref<HTMLElement | null>(null)
+const gridWrap = ref<HTMLElement | null>(null)
+const folderDropChoice = ref<{ memeIds: number[]; folderId: number; folderName: string } | null>(null)
+let dragPreviewFrame = 0
+let dragPreviewPoint: { x: number; y: number } | null = null
+let autoScrollFrame = 0
+let autoScrollPoint: { x: number; y: number } | null = null
 let ignoreClick = false
 
-function onCardPointerDown(e: PointerEvent, meme: Meme, card: HTMLElement) {
+const AUTO_SCROLL_ZONE = 76
+const AUTO_SCROLL_MAX_SPEED = 22
+
+function stopDragAutoScroll() {
+  if (autoScrollFrame) cancelAnimationFrame(autoScrollFrame)
+  autoScrollFrame = 0
+  autoScrollPoint = null
+}
+
+function updateDragAutoScrollPoint(x: number, y: number) {
+  autoScrollPoint = { x, y }
+  if (!autoScrollFrame) runDragAutoScroll()
+}
+
+function runDragAutoScroll() {
+  autoScrollFrame = requestAnimationFrame(() => {
+    autoScrollFrame = 0
+    const wrap = gridWrap.value
+    const point = autoScrollPoint
+    if (!internalDrag.value || !wrap || !point) return
+    const rect = wrap.getBoundingClientRect()
+    let delta = 0
+    if (point.y < rect.top + AUTO_SCROLL_ZONE) {
+      const depth = Math.min(1, Math.max(0, (rect.top + AUTO_SCROLL_ZONE - point.y) / AUTO_SCROLL_ZONE))
+      delta = -Math.ceil(4 + depth * AUTO_SCROLL_MAX_SPEED)
+    } else if (point.y > rect.bottom - AUTO_SCROLL_ZONE) {
+      const depth = Math.min(1, Math.max(0, (point.y - (rect.bottom - AUTO_SCROLL_ZONE)) / AUTO_SCROLL_ZONE))
+      delta = Math.ceil(4 + depth * AUTO_SCROLL_MAX_SPEED)
+    }
+    if (delta) {
+      const before = wrap.scrollTop
+      wrap.scrollTop += delta
+      if (wrap.scrollTop !== before) updateFolderDropTarget(point.x, point.y)
+      runDragAutoScroll()
+    }
+  })
+}
+
+function selectedDragIds(source: Meme): number[] {
+  if (!batchMode.value) return [source.id]
+  const ids = [...selectedMemeIds.value]
+  return ids.length ? ids : [source.id]
+}
+
+function onCardPointerDown(e: PointerEvent, meme: Meme, _card: HTMLElement) {
   ignoreClick = false
-  if (batchMode.value) return
+  if (batchMode.value) {
+    if (e.button !== 0) return
+    // 未选中时立即选中；已选中时由 click 取消，避免一次点击被两个事件反转两次。
+    if (!selectedMemeIds.value.has(meme.id)) {
+      toggleMemeSelection(meme.id)
+      ignoreClick = true
+    }
+    const memeIds = selectedDragIds(meme)
+    nativeDragStart = { x: e.clientX, y: e.clientY, meme, memeIds }
+    return
+  }
   if (sortEnabled.value && canReorder()) {
-    drag.onPointerDown(e, meme.id, card)
+    drag.onPointerDown(e, meme.id, _card)
     return
   }
   if (e.button !== 0) return
-  nativeDragStart = { x: e.clientX, y: e.clientY, meme }
+  nativeDragStart = { x: e.clientX, y: e.clientY, meme, memeIds: [meme.id] }
 }
 
 function updateFolderDropTarget(x: number, y: number) {
   const target = document.elementFromPoint(x, y)?.closest('[data-folder-id]') as HTMLElement | null
-  folderDropTargetId.value = target ? Number(target.dataset.folderId) : null
+  const id = target ? Number(target.dataset.folderId) : null
+  const nextId = Number.isFinite(id) ? id : null
+  if (folderDropTargetId.value !== nextId) folderDropTargetId.value = nextId
+}
+
+function moveDragPreview(x: number, y: number) {
+  const preview = dragPreviewEl.value
+  if (!preview) return
+  preview.style.transform = `translate3d(${x + DRAG_PREVIEW_OFFSET}px, ${y + DRAG_PREVIEW_OFFSET}px, 0) rotate(3deg) scale(1.04)`
+}
+
+function onFavoriteDragEnter(e: DragEvent) {
+  if (!internalDrag.value) return
+  e.preventDefault()
+  folderDropTargetId.value = -2
+}
+
+function onFavoriteDragLeave(e: DragEvent) {
+  const next = e.relatedTarget as Node | null
+  if (!next || !(e.currentTarget as HTMLElement).contains(next)) {
+    if (folderDropTargetId.value === -2) folderDropTargetId.value = null
+  }
 }
 
 function onDocPointerMove(e: PointerEvent) {
@@ -462,17 +789,36 @@ function onDocPointerMove(e: PointerEvent) {
   if ((!nativeDragStart && !internalDrag.value) || sortEnabled.value) return
   if (!internalDrag.value && nativeDragStart) {
     const dist = Math.hypot(e.clientX - nativeDragStart.x, e.clientY - nativeDragStart.y)
-    if (dist <= 8) return
-    internalDrag.value = { meme: nativeDragStart.meme, x: e.clientX, y: e.clientY }
-    nativeDraggingMemeId.value = nativeDragStart.meme.id
+    if (dist <= DRAG_THRESHOLD) return
+    // 预览首次渲染即放在当前指针旁，不再使用从卡片或视口坐标补间的动画。
+    // 这样不会出现从左上角跳入的闪动。
+    internalDrag.value = {
+      meme: nativeDragStart.meme,
+      memeIds: nativeDragStart.memeIds,
+      count: nativeDragStart.memeIds.length,
+      x: e.clientX,
+      y: e.clientY,
+    }
+    draggingMemeIds.value = new Set(nativeDragStart.memeIds)
     nativeDragStart = null
+    updateDragAutoScrollPoint(e.clientX, e.clientY)
+    requestAnimationFrame(() => moveDragPreview(e.clientX, e.clientY))
   } else if (internalDrag.value) {
-    internalDrag.value = { ...internalDrag.value, x: e.clientX, y: e.clientY }
+    updateDragAutoScrollPoint(e.clientX, e.clientY)
+    dragPreviewPoint = { x: e.clientX, y: e.clientY }
+    if (!dragPreviewFrame) {
+      dragPreviewFrame = requestAnimationFrame(() => {
+        dragPreviewFrame = 0
+        if (!internalDrag.value || !dragPreviewPoint) return
+        moveDragPreview(dragPreviewPoint.x, dragPreviewPoint.y)
+        updateFolderDropTarget(dragPreviewPoint.x, dragPreviewPoint.y)
+      })
+    }
   }
-  updateFolderDropTarget(e.clientX, e.clientY)
+  if (!dragPreviewFrame) updateFolderDropTarget(e.clientX, e.clientY)
 }
 
-async function onDocPointerUp(e: PointerEvent) {
+async function onDocPointerUp() {
   if (drag.dragState.memeId) {
     const wasActive = await drag.onPointerUp()
     if (wasActive) ignoreClick = true
@@ -482,12 +828,18 @@ async function onDocPointerUp(e: PointerEvent) {
   if (activeDrag) {
     const folderId = folderDropTargetId.value
     const folder = state.collections.find((item: any) => item.id === folderId)
-    if (folderId && folder) {
-      folderDropChoice.value = { meme: activeDrag.meme, folderId, folderName: folder.name }
+    if (folderId === -2) {
+      await favoriteMemeIds(activeDrag.memeIds)
+    } else if (folderId && folder) {
+      folderDropChoice.value = { memeIds: activeDrag.memeIds, folderId, folderName: folder.name }
     }
+    stopDragAutoScroll()
+    if (dragPreviewFrame) cancelAnimationFrame(dragPreviewFrame)
+    dragPreviewFrame = 0
+    dragPreviewPoint = null
     internalDrag.value = null
     folderDropTargetId.value = null
-    nativeDraggingMemeId.value = null
+    draggingMemeIds.value = new Set()
     ignoreClick = true
   }
   nativeDragStart = null
@@ -497,14 +849,15 @@ async function finishFolderDrop(mode: 'copy' | 'move') {
   const choice = folderDropChoice.value
   if (!choice) return
   folderDropChoice.value = null
-  const result = await addToFolder(choice.meme.id, choice.folderId, mode)
-  if (result?.ok) {
-    await refreshCollections()
-    await search()
-    showToast(mode === 'copy' ? `已复制到「${choice.folderName}」` : `已移动到「${choice.folderName}」`)
-  } else {
+  const result = await batchAddToFolder(choice.memeIds, choice.folderId, mode)
+  if (!result?.ok) {
     showToast(result?.error || '放入文件夹失败')
+    return
   }
+  await Promise.all([refreshCollections(), refreshTags()])
+  await search()
+  const action = mode === 'copy' ? '复制到' : '移动到'
+  showToast(`已${action}「${choice.folderName}」${result.count || choice.memeIds.length} 张`)
 }
 
 function cancelFolderDrop() {
@@ -538,10 +891,14 @@ async function onFolderDrop(e: DragEvent, folderId: number) {
 
 function onDocPointerCancel() {
   if (drag.dragState.memeId) drag.cancel()
+  stopDragAutoScroll()
+  if (dragPreviewFrame) cancelAnimationFrame(dragPreviewFrame)
+  dragPreviewFrame = 0
+  dragPreviewPoint = null
   nativeDragStart = null
   internalDrag.value = null
   folderDropTargetId.value = null
-  nativeDraggingMemeId.value = null
+  draggingMemeIds.value = new Set()
 }
 
 function onDragEnter(e: DragEvent) {
@@ -622,6 +979,7 @@ async function onDrop(e: DragEvent) {
 function onDocKeydown(e: KeyboardEvent) {
   if (e.key !== 'Escape') return
   if (ctx.visible.value) { ctx.hide(); return }
+  if (aiReviewOpen.value) { aiReviewOpen.value = false; return }
   hideWindow()
 }
 
@@ -652,6 +1010,8 @@ onUnmounted(() => {
   document.removeEventListener('keydown', onDocKeydown)
   window.removeEventListener('blur', onDocPointerCancel)
   if (updateInterval) { clearInterval(updateInterval); updateInterval = null }
+  stopAiReviewPoll()
+  stopDragAutoScroll()
   hoverTimers.forEach(t => clearTimeout(t))
   hoverTimers.clear()
 })
@@ -688,39 +1048,50 @@ onUnmounted(() => {
     <header id="titlebar" @mousedown="onTitlebarMouseDown">
       <div class="titlebar__left">
         <div class="logo">OhMy<span>Meme</span></div>
+        <button class="icon-btn floating-search-btn" title="打开独立快速搜索悬浮窗" @click="openFloatingSearch()">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><circle cx="11" cy="11" r="6"/><path d="m20 20-4.2-4.2"/></svg>
+        </button>
       </div>
       <span class="spacer"></span>
       <div class="titlebar__actions">
-        <details class="toolbar-menu" @mousedown.stop>
-          <summary class="icon-btn" title="界面布局与显示选项">
-            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M4 7h16M4 12h16M4 17h16"/><circle cx="9" cy="7" r="1.5" fill="currentColor"/><circle cx="15" cy="12" r="1.5" fill="currentColor"/><circle cx="11" cy="17" r="1.5" fill="currentColor"/></svg>
+        <button class="title-btn primary-action" @click="showImportMenu()">导入</button>
+        <button class="title-btn" :class="{ 'batch-on': batchMode }" @click="toggleBatchMode">{{ batchMode ? '完成选择' : '批量选择' }}</button>
+        <details class="toolbar-menu more-menu" @mousedown.stop>
+          <summary class="icon-btn" title="更多工具与显示选项">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><circle cx="5" cy="12" r="1" fill="currentColor"/><circle cx="12" cy="12" r="1" fill="currentColor"/><circle cx="19" cy="12" r="1" fill="currentColor"/></svg>
           </summary>
-          <div class="toolbar-popover">
-            <div class="toolbar-popover__row">
-              <label for="grid-scale">图标大小 <strong>{{ state.gridScale }}px</strong></label>
-              <input id="grid-scale" type="range" min="48" max="120" step="4" :value="state.gridScale" @input="setGridScale(Number(($event.target as HTMLInputElement).value))">
+          <div class="toolbar-popover more-popover">
+            <div class="toolbar-popover__section">
+              <strong>显示与排序</strong>
+              <div class="toolbar-popover__row">
+                <label for="grid-scale">图标大小 <b>{{ state.gridScale }}px</b></label>
+                <input id="grid-scale" type="range" min="48" max="120" step="4" :value="state.gridScale" @input="setGridScale(Number(($event.target as HTMLInputElement).value))">
+              </div>
+              <button class="toolbar-popover__button" @click="toggleTagbar">{{ state.tagbarCollapsed ? '展开标签栏' : '折叠标签栏' }}</button>
+              <button class="toolbar-popover__button" :class="{ active: sortEnabled }" @click="toggleSort">{{ sortEnabled ? '退出排序模式' : '进入排序模式' }}</button>
             </div>
-            <button class="toolbar-popover__button" @click="toggleTagbar">
-              {{ state.tagbarCollapsed ? '展开标签栏' : '折叠标签栏' }}
-            </button>
+            <div class="toolbar-popover__section">
+              <strong>AI 整理</strong>
+              <div class="toolbar-popover__row">
+                <label for="ai-organize-batch-size">本次审核数量 <b>{{ state.aiOrganizeBatchSize }} 张</b></label>
+                <input id="ai-organize-batch-size" type="number" min="1" max="500" step="1" :value="state.aiOrganizeBatchSize" @change="setAiOrganizeBatchSize(Number(($event.target as HTMLInputElement).value))">
+              </div>
+              <p class="toolbar-popover__hint">最多 500 张；数量越多，处理和审核时间越长。</p>
+              <button class="toolbar-popover__button" @click="startAiOrganize()">开始 AI 整理</button>
+              <button class="toolbar-popover__button" :disabled="!aiTaskId && !aiSuggestions.length" @click="openAiReview">打开 AI 审核</button>
+            </div>
+            <div class="toolbar-popover__section toolbar-popover__split-actions">
+              <button class="toolbar-popover__button" @click="syncUpload">上传同步</button>
+              <button class="toolbar-popover__button" @click="syncDownload">下载同步</button>
+              <button class="toolbar-popover__button" @click="exportMemePack">导出当前列表为分享包</button>
+              <button class="toolbar-popover__button" @click="rescanCache">刷新图库</button>
+            </div>
           </div>
         </details>
-        <button class="icon-btn" :class="{ 'sort-on': sortEnabled }" title="拖拽排序" @click="toggleSort">
-          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 6h18M3 12h18M3 18h18"/></svg>
+        <button class="icon-btn" title="设置" @click="openSettings">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.7 1.7 0 0 0 .34 1.88l.06.06-2.1 2.1-.06-.06a1.7 1.7 0 0 0-1.88-.34 1.7 1.7 0 0 0-1.03 1.56v.1h-3v-.1A1.7 1.7 0 0 0 10.7 18.64a1.7 1.7 0 0 0-1.88.34l-.06.06-2.1-2.1.06-.06A1.7 1.7 0 0 0 7.06 15 1.7 1.7 0 0 0 5.5 14H5.4v-3h.1a1.7 1.7 0 0 0 1.56-1.03 1.7 1.7 0 0 0-.34-1.88l-.06-.06 2.1-2.1.06.06a1.7 1.7 0 0 0 1.88.34A1.7 1.7 0 0 0 11.73 4.8v-.1h3v.1a1.7 1.7 0 0 0 1.03 1.56 1.7 1.7 0 0 0 1.88-.34l.06-.06 2.1 2.1-.06.06a1.7 1.7 0 0 0-.34 1.88A1.7 1.7 0 0 0 21 11h.1v3H21A1.7 1.7 0 0 0 19.4 15Z"/></svg>
         </button>
-        <button class="title-btn" :class="{ 'batch-on': batchMode }" @click="toggleBatchMode">{{ batchMode ? '完成选择' : '批量选择' }}</button>
-        <button class="icon-btn" title="上传到远端" @click="syncUpload()">
-          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 19V5m-7 7l7-7 7 7"/></svg>
-        </button>
-        <button class="icon-btn" title="从远端下载" @click="syncDownload()">
-          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 5v14m-7-7l7 7 7-7"/></svg>
-        </button>
-        <button class="title-btn" @click="showImportMenu()">导入</button>
-        <button class="title-btn" @click="startAiOrganize()">AI 整理</button>
-        <button class="title-btn" @click="openFloatingSearch()">快速搜索</button>
-        <button class="title-btn" @click="rescanCache()">刷新</button>
-        <button class="title-btn" @click="openSettings()">设置</button>
-        <button class="title-btn close-btn" @click="hideWindow()">×</button>
+        <button class="title-btn close-btn" title="隐藏窗口" @click="hideWindow">×</button>
       </div>
     </header>
 
@@ -735,8 +1106,11 @@ onUnmounted(() => {
             :active-id="state.activeCollection"
             :depth="0"
             :collapsed="sidebarCollapsed"
+            :drop-target-id="folderDropTargetId"
             @select="setActiveCollection"
             @folder-context="onFolderRightClick"
+            @favorite-drag-enter="onFavoriteDragEnter"
+            @favorite-drag-leave="onFavoriteDragLeave"
           />
         </div>
       </aside>
@@ -752,9 +1126,17 @@ onUnmounted(() => {
         </div>
 
         <div v-if="batchMode" id="batchbar">
-          <span>已选 {{ selectedMemeIds.size }} 个</span>
-          <button class="tagbar-toggle" @click="selectCurrentPage">全选当前页</button>
-          <button class="tagbar-toggle" :disabled="selectedMemeIds.size === 0" @click="clearSelection">取消全选</button>
+          <span class="batchbar-summary">已选：表情 {{ selectedMemeIds.size }} · 文件夹 {{ selectedFolderIds.size }} · 标签 {{ selectedTags.size }}</span>
+          <div class="batchbar-actions">
+            <button class="tagbar-toggle" @click="selectCurrentPage">全选当前页表情</button>
+            <button class="tagbar-toggle" :disabled="selectedMemeIds.size === 0" @click="favoriteSelectedMemes">收藏选中表情</button>
+            <button class="tagbar-toggle" @click="exportMemePack">导出分享包</button>
+            <button class="tagbar-toggle" @click="selectAllFolders">全选文件夹</button>
+            <button class="tagbar-toggle" @click="selectAllTags">全选标签</button>
+            <button class="tagbar-toggle danger" :disabled="selectedFolderIds.size === 0" @click="deleteSelectedFolders">删除文件夹</button>
+            <button class="tagbar-toggle danger" :disabled="selectedTags.size === 0" @click="deleteSelectedTags">删除标签</button>
+            <button class="tagbar-toggle" :disabled="selectedMemeIds.size + selectedFolderIds.size + selectedTags.size === 0" @click="clearSelection">取消全选</button>
+          </div>
         </div>
 
         <div id="tagbar" :class="{ collapsed: state.tagbarCollapsed }">
@@ -762,30 +1144,23 @@ onUnmounted(() => {
             {{ state.tagbarCollapsed ? '展开标签' : '收起标签' }}
           </button>
           <template v-if="!state.tagbarCollapsed">
-            <span v-for="tag in state.allTags" :key="tag" class="tag" :class="{ active: state.activeTags.has(tag) }" @click="toggleTag(tag)">{{ tag }}</span>
+            <span v-for="tag in state.allTags" :key="tag" class="tag" :class="{ active: state.activeTags.has(tag), selected: batchMode && selectedTags.has(tag) }" @click="batchMode ? toggleTagSelection(tag) : toggleTag(tag)">{{ tag }}</span>
           </template>
         </div>
 
         <nav v-if="state.activeCollection !== null" id="breadcrumb" aria-label="文件夹路径">
-          <button class="crumb crumb-home" @click="goToAllMemes">← 所有表情</button>
+          <button class="crumb crumb-home" @click="goToAllMemes">← 根目录</button>
           <span class="crumb-sep">›</span>
           <span class="crumb-path">文件夹 / {{ breadcrumb[breadcrumb.length - 1]?.name || '当前文件夹' }}</span>
         </nav>
 
-        <Pager
-          v-if="state.pageCount > 1"
-          :page="state.page"
-          :page-count="state.pageCount"
-          @go="goToPage"
-        />
-
-        <div id="grid-wrap">
+        <div ref="gridWrap" id="grid-wrap">
           <div v-if="folderCards.length" class="meme-grid folder-grid" :style="gridStyle">
             <div
               v-for="child in folderCards"
               :key="'folder-' + child.id"
               class="meme-card folder-card"
-              :class="{ 'drop-target': folderDropTargetId === child.id }"
+              :class="{ 'drop-target': folderDropTargetId === child.id, 'selected': batchMode && selectedFolderIds.has(child.id) }"
               :data-folder-id="child.id"
               @click="onFolderCardClick(child.id)"
               @contextmenu="onFolderCardContext($event, child.id, child.name)"
@@ -814,7 +1189,7 @@ onUnmounted(() => {
               class="meme-card"
               :class="{
                 'dragging': drag.dragState.active && drag.dragState.memeId === meme.id,
-                'native-dragging': nativeDraggingMemeId === meme.id,
+                'native-dragging': draggingMemeIds.has(meme.id),
                 'selected': batchMode && selectedMemeIds.has(meme.id),
               }"
               :data-meme-id="meme.id"
@@ -836,6 +1211,13 @@ onUnmounted(() => {
             <div class="icon">_(:3 」∠)_</div>
             <div class="text">还没有表情包，点击「导入」添加</div>
           </div>
+
+          <Pager
+            v-if="state.pageCount > 1"
+            :page="state.page"
+            :page-count="state.pageCount"
+            @go="goToPage"
+          />
         </div>
       </div>
     </div>
@@ -857,23 +1239,62 @@ onUnmounted(() => {
 
   <div
     v-if="internalDrag"
+    ref="dragPreviewEl"
     id="meme-drag-preview"
-    :style="{ left: internalDrag.x + 'px', top: internalDrag.y + 'px' }"
+    :style="{
+      transform: `translate3d(${internalDrag.x + DRAG_PREVIEW_OFFSET}px, ${internalDrag.y + DRAG_PREVIEW_OFFSET}px, 0) rotate(3deg) scale(1.04)`,
+    }"
   >
     <img :src="memeSrc(internalDrag.meme)" :alt="internalDrag.meme.name">
-    <span>{{ internalDrag.meme.name }}</span>
+    <span>{{ internalDrag.count > 1 ? `已选 ${internalDrag.count} 张表情` : internalDrag.meme.name }}</span>
   </div>
 
   <div v-if="folderDropChoice" class="folder-drop-dialog-overlay" @click.self="cancelFolderDrop">
     <div class="folder-drop-dialog">
       <div class="folder-drop-dialog__title">放入「{{ folderDropChoice.folderName }}」</div>
-      <p>选择处理方式，表情会自动附加同名标签。</p>
+      <p>复制会保留原位置；移动会从原位置移除，并自动附加同名标签。</p>
       <div class="folder-drop-dialog__actions">
         <button class="btn btn-secondary" @click="cancelFolderDrop">取消</button>
         <button class="btn btn-secondary" @click="finishFolderDrop('copy')">复制进去</button>
         <button class="btn btn-primary" @click="finishFolderDrop('move')">移动进去</button>
       </div>
     </div>
+  </div>
+
+  <div v-if="aiReviewOpen" class="ai-review-overlay" @click.self="aiReviewOpen = false">
+    <section class="ai-review-dialog" role="dialog" aria-modal="true" aria-label="AI 整理审核">
+      <header class="ai-review-header">
+        <div>
+          <h2>AI 整理审核</h2>
+          <p>确认应用前不会修改表情库。你可以先调整每条建议。</p>
+        </div>
+        <button class="icon-btn" title="关闭审核" @click="aiReviewOpen = false">×</button>
+      </header>
+
+      <div v-if="aiReviewBusy" class="ai-review-progress">
+        <div class="ai-review-progress__line"><span>{{ aiReviewMessage }}</span><strong>{{ aiReviewProgress }}%</strong></div>
+        <div class="ai-review-progress__track"><i :style="{ width: aiReviewProgress + '%' }"></i></div>
+      </div>
+      <p v-else class="ai-review-status">{{ aiReviewMessage || '等待 AI 整理任务开始。' }}</p>
+
+      <div v-if="!aiReviewBusy && aiSuggestions.length" class="ai-review-list">
+        <article v-for="item in aiSuggestions" :key="item.id" class="ai-review-card">
+          <div class="ai-review-id">表情 #{{ item.id }}</div>
+          <div class="ai-review-fields">
+            <input v-model="item.tagsText" @change="saveAiSuggestion(item)" placeholder="标签，以顿号或逗号分隔">
+            <input v-model="item.collection" @change="saveAiSuggestion(item)" placeholder="建议文件夹">
+            <input v-model="item.description" @change="saveAiSuggestion(item)" placeholder="图片描述（用于搜索）">
+            <input v-model="item.ocr_text" @change="saveAiSuggestion(item)" placeholder="图片文字（用于搜索）">
+          </div>
+        </article>
+      </div>
+
+      <footer class="ai-review-actions">
+        <button class="btn btn-secondary" @click="aiReviewOpen = false">稍后审核</button>
+        <button v-if="!aiReviewBusy && aiSuggestions.length" class="btn btn-secondary" @click="discardAiSuggestions">全部丢弃</button>
+        <button v-if="!aiReviewBusy && aiSuggestions.length" class="btn btn-primary" @click="applyAiSuggestions">确认应用</button>
+      </footer>
+    </section>
   </div>
 
   <div id="drop-overlay" :class="{ 'drag-over': dragOver }">

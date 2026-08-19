@@ -134,6 +134,7 @@ class Config:
         "ai_chat_api_key": "",  # 整理服务 API 密钥（加密存储）
         "ai_chat_model": "",  # 多模态对话模型名（整理用）
         "ai_organize_style": "general",  # 整理风格预设
+        "ai_organize_batch_size": 50,  # 每次生成建议的表情数量（1-500）
         "ai_image_base_url": "",  # 生图服务 OpenAI 兼容 API 地址
         "ai_image_api_key": "",  # 生图服务 API 密钥（加密存储）
         "ai_image_model": "",  # 文生图模型名（生成用）

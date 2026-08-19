@@ -7,11 +7,14 @@ const props = defineProps<{
   activeId: number | null
   depth: number
   collapsed: boolean
+  dropTargetId: number | null
 }>()
 
 const emit = defineEmits<{
   select: [id: number]
   'folder-context': [e: MouseEvent, id: number, name: string]
+  'favorite-drag-enter': [e: DragEvent]
+  'favorite-drag-leave': [e: DragEvent]
 }>()
 
 const expanded = ref(props.depth < 2)
@@ -31,10 +34,13 @@ function onChildContext(e: MouseEvent, id: number, name: string) {
   <div class="tree-node">
     <div
       class="tree-row"
-      :class="{ active: activeId === node.id }"
+      :class="{ active: activeId === node.id, 'drop-target': dropTargetId === node.id }"
       :style="{ paddingLeft: (8 + depth * 14) + 'px' }"
+      :data-folder-id="node.id === -2 ? node.id : undefined"
       @click.stop="emit('select', node.id)"
       @contextmenu.prevent.stop="emit('folder-context', $event, node.id, node.name)"
+      @dragover="node.id === -2 && emit('favorite-drag-enter', $event)"
+      @dragleave="node.id === -2 && emit('favorite-drag-leave', $event)"
     >
       <span
         v-if="hasChildren && !collapsed"
@@ -59,8 +65,11 @@ function onChildContext(e: MouseEvent, id: number, name: string) {
         :active-id="activeId"
         :depth="depth + 1"
         :collapsed="collapsed"
+        :drop-target-id="dropTargetId"
         @select="emit('select', $event)"
         @folder-context="onChildContext"
+        @favorite-drag-enter="emit('favorite-drag-enter', $event)"
+        @favorite-drag-leave="emit('favorite-drag-leave', $event)"
       />
     </div>
   </div>
@@ -89,6 +98,13 @@ function onChildContext(e: MouseEvent, id: number, name: string) {
 .tree-row.active {
   background: var(--primary-light);
   color: var(--primary);
+}
+
+.tree-row.drop-target {
+  background: var(--primary-light);
+  color: var(--primary);
+  outline: 1px solid var(--primary);
+  outline-offset: -1px;
 }
 
 .tree-toggle {

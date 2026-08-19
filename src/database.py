@@ -279,6 +279,26 @@ class MemeDB:
             r[0] for r in conn.execute("SELECT name FROM tags ORDER BY name").fetchall()
         ]
 
+    def delete_tags(self, names: List[str]) -> int:
+        """删除指定标签及其关联关系，不删除任何表情。"""
+        unique_names = sorted({str(name).strip() for name in (names or []) if str(name).strip()})
+        if not unique_names:
+            return 0
+        placeholders = ",".join("?" for _ in unique_names)
+        with self._lock:
+            conn = self._get_conn()
+            rows = conn.execute(
+                f"SELECT id FROM tags WHERE name IN ({placeholders})", unique_names
+            ).fetchall()
+            tag_ids = [row[0] for row in rows]
+            if not tag_ids:
+                return 0
+            id_placeholders = ",".join("?" for _ in tag_ids)
+            conn.execute(f"DELETE FROM meme_tags WHERE tag_id IN ({id_placeholders})", tag_ids)
+            conn.execute(f"DELETE FROM tags WHERE id IN ({id_placeholders})", tag_ids)
+            conn.commit()
+            return len(tag_ids)
+
     # --- 收藏 ---
 
     def toggle_favorite(self, meme_id: int) -> bool:
@@ -306,6 +326,34 @@ class MemeDB:
             ).fetchone()
             is not None
         )
+
+    def set_favorites(self, meme_ids: List[int], favorited: bool = True) -> int:
+        """批量设置收藏状态，返回实际处理的表情数量。"""
+        ids = set()
+        for value in meme_ids or []:
+            try:
+                meme_id = int(value)
+            except (TypeError, ValueError):
+                continue
+            if meme_id > 0:
+                ids.add(meme_id)
+        ids = sorted(ids)
+        if not ids:
+            return 0
+        with self._lock:
+            conn = self._get_conn()
+            if favorited:
+                conn.executemany(
+                    "INSERT OR IGNORE INTO favorites (meme_id) VALUES (?)",
+                    [(meme_id,) for meme_id in ids],
+                )
+            else:
+                conn.executemany(
+                    "DELETE FROM favorites WHERE meme_id=?",
+                    [(meme_id,) for meme_id in ids],
+                )
+            conn.commit()
+        return len(ids)
 
     # --- 收藏集 ---
 
@@ -346,15 +394,48 @@ class MemeDB:
 
     def move_to_collection(self, meme_id: int, collection_id: int):
         """将表情移动到唯一的文件夹归属"""
+        self.put_in_collection([meme_id], collection_id, move=True)
+
+    def put_in_collection(
+        self, meme_ids: List[int], collection_id: int, move: bool = False, tag: str = ""
+    ) -> int:
+        """批量复制或移动表情到文件夹，并在同一事务中补充文件夹标签。"""
+        ids = set()
+        for value in meme_ids or []:
+            try:
+                meme_id = int(value)
+            except (TypeError, ValueError):
+                continue
+            if meme_id > 0:
+                ids.add(meme_id)
+        ids = sorted(ids)
+        if not ids:
+            return 0
         with self._lock:
             conn = self._get_conn()
-            conn.execute("DELETE FROM meme_collections WHERE meme_id=?", (meme_id,))
-            conn.execute(
-                "INSERT INTO meme_collections (meme_id, collection_id, sort_order) "
-                "VALUES (?, ?, 0)",
-                (meme_id, collection_id),
+            placeholders = ",".join("?" for _ in ids)
+            if move:
+                conn.execute(
+                    f"DELETE FROM meme_collections WHERE meme_id IN ({placeholders})", ids
+                )
+            conn.executemany(
+                "INSERT OR IGNORE INTO meme_collections "
+                "(meme_id, collection_id, sort_order) VALUES (?, ?, 0)",
+                [(meme_id, collection_id) for meme_id in ids],
             )
+            tag = tag.strip()
+            if tag:
+                conn.execute("INSERT OR IGNORE INTO tags (name) VALUES (?)", (tag,))
+                tag_row = conn.execute(
+                    "SELECT id FROM tags WHERE name=?", (tag,)
+                ).fetchone()
+                if tag_row:
+                    conn.executemany(
+                        "INSERT OR IGNORE INTO meme_tags (meme_id, tag_id) VALUES (?, ?)",
+                        [(meme_id, tag_row[0]) for meme_id in ids],
+                    )
             conn.commit()
+        return len(ids)
 
     def collection_exists(self, name: str, parent_id: int = None) -> bool:
         """检查同名分组是否已存在"""

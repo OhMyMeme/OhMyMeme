@@ -18,10 +18,16 @@ const state = reactive({
   showStartupAnimation: true,
   startupBgColor: '#0d0d0f',
   gridScale: 72,
+  aiOrganizeBatchSize: 50,
   tagbarCollapsed: false,
 })
 
 let searchGen = 0
+
+function currentFolderScope(collectionId: number | null): number | null {
+  // 根目录只展示没有归属的表情；文件夹中的表情不会同时留在根目录。
+  return collectionId === null ? -4 : collectionId
+}
 
 export function useMemes() {
   async function waitForPywebview(): Promise<void> {
@@ -38,11 +44,12 @@ export function useMemes() {
       state.allTags = data.tags || []
       state.collections = data.collections || []
       state.page = 1
-      state.total = await api('count_memes', '', [], state.activeCollection) || state.memes.length
+      state.total = await api('count_memes', '', [], currentFolderScope(state.activeCollection)) || state.memes.length
       state.pageCount = Math.max(1, Math.ceil(state.total / MEME_PAGE))
       state.showStartupAnimation = data.show_startup_animation !== false
       state.startupBgColor = data.startup_bg_color || '#0d0d0f'
       state.gridScale = Math.min(120, Math.max(48, Number(data.grid_scale) || 72))
+      state.aiOrganizeBatchSize = Math.min(500, Math.max(1, Number(data.ai_organize_batch_size) || 50))
       state.tagbarCollapsed = data.tagbar_collapsed === true
     }
   }
@@ -54,8 +61,8 @@ export function useMemes() {
     const offset = (state.page - 1) * MEME_PAGE
     try {
       const [countResult, memesResult] = await Promise.all([
-        api('count_memes', state.searchQuery, [...state.activeTags], state.activeCollection),
-        api('search_memes', state.searchQuery, [...state.activeTags], state.activeCollection, offset, MEME_PAGE),
+        api('count_memes', state.searchQuery, [...state.activeTags], currentFolderScope(state.activeCollection)),
+        api('search_memes', state.searchQuery, [...state.activeTags], currentFolderScope(state.activeCollection), offset, MEME_PAGE),
       ])
       if (gen !== searchGen) return
       state.total = countResult || 0
@@ -113,6 +120,9 @@ export function useMemes() {
   async function addToFolder(memeId: number, folderId: number, mode: 'copy' | 'move') {
     return await api('add_to_folder', memeId, folderId, mode)
   }
+  async function batchAddToFolder(memeIds: Iterable<number>, folderId: number, mode: 'copy' | 'move') {
+    return await api('batch_add_to_folder', [...memeIds], folderId, mode)
+  }
   async function reorderMemes(orderedIds: number[]): Promise<boolean> {
     const collectionId = state.activeCollection && state.activeCollection > 0 ? state.activeCollection : null
     const result = collectionId
@@ -147,6 +157,7 @@ export function useMemes() {
     pasteMemeToChat,
     setTagbarCollapsed,
     addToFolder,
+    batchAddToFolder,
     reorderMemes,
     canReorder,
     startNativeDrag,

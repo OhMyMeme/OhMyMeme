@@ -80,6 +80,24 @@ async function importClipboard() {
   }
 }
 
+async function importPack() {
+  close()
+  if (pending.value) return
+  pending.value = true
+  try {
+    const result = await api('import_pack')
+    if (!result || result.cancelled) return
+    if (!result.ok) {
+      showToast(result.error || '分享包导入失败')
+      return
+    }
+    emit('imported')
+    showToast(appendRejected(`已导入分享包：${result.imported || 0} 张表情`, result.rejected))
+  } finally {
+    pending.value = false
+  }
+}
+
 function importQQ() {
   close()
   emit('imported')
@@ -107,6 +125,7 @@ defineExpose({ open, close })
       <button class="btn btn-primary btn-block" :disabled="pending" @click="importLocal">本地导入</button>
       <button class="btn btn-primary btn-block" :disabled="pending" @click="importFolder">导入文件夹</button>
       <button class="btn btn-primary btn-block" :disabled="pending" @click="importClipboard">从剪贴板导入</button>
+      <button class="btn btn-secondary btn-block" :disabled="pending" @click="importPack">导入 OhMyMeme 分享包</button>
       <button class="btn btn-secondary btn-block" @click="importQQ">从手机版 QQ 缓存获取</button>
       <label class="import-group-label">
         <input id="import-folder-group" type="checkbox" checked> 导入文件夹时自动创建分组
