@@ -69,7 +69,7 @@ class TestStateElapsed(unittest.TestCase):
         tg._reset_state()
 
     def test_elapsed_only_advances_while_running(self):
-        tg._TG_T0 = time.time() - 5
+        tg._TG_T0 = time.monotonic() - 5
         tg._update_tg(status="converting", progress=50, done=5, total=10)
         self.assertGreaterEqual(tg.get_tg_progress()["elapsed_s"], 4)
         # idle 时不再推进（_reset_state 置 None）
@@ -77,7 +77,7 @@ class TestStateElapsed(unittest.TestCase):
         self.assertEqual(tg.get_tg_progress()["elapsed_s"], 0)
 
     def test_elapsed_reset(self):
-        tg._TG_T0 = time.time() - 3  # 手动污染
+        tg._TG_T0 = time.monotonic() - 3  # 手动污染
         tg._reset_state()
         self.assertIsNone(tg._TG_T0)
         self.assertEqual(tg.get_tg_progress()["elapsed_s"], 0)

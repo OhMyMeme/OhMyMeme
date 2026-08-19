@@ -119,29 +119,71 @@ class TestCheckLatestCached(unittest.TestCase):
         """reset 后启动的在途后台任务，其结果不得覆盖 reset 状态（generation 防护）"""
         import threading as _threading
 
-        gate = _threading.Event()
+        started = _threading.Event()  # 后台任务真正进入 blocked 的信号
+        release = _threading.Event()  # 放行 blocked 任务
 
         def blocked():
-            gate.wait(3)  # 阻塞，模拟慢检查
+            started.set()
+            release.wait(3)
             return dict(_SLOW_RESULT)
 
         with mock.patch.object(updater, "check_latest", side_effect=blocked):
-            # 启动后台检查（正在跑）
             r = updater.check_latest_cached()
             self.assertIs(r.get("pending"), True)
             # 等待后台线程真正进入 blocked（确保 _check_running=True 且任务已启动）
-            time.sleep(0.2)
+            self.assertTrue(started.wait(2))
             # reset 清空缓存并推进 generation
             updater.reset_check_cache()
             self.assertIsNone(updater._check_result)
             # 放行旧任务，让其完成
-            gate.set()
-            time.sleep(0.5)
+            release.set()
+            # 等 worker 写完（若有的话），再断言旧结果未被缓存
+            deadline = time.time() + 2
+            while time.time() < deadline and updater._check_result is None:
+                time.sleep(0.02)
             # 旧任务完成，但因 generation 不匹配，不得写入缓存
             self.assertIsNone(updater._check_result)
             # reset 本身已把 _check_running 置 False，旧任务也不得改它
             with updater._check_lock:
                 self.assertFalse(updater._check_running)
+
+    def test_force_in_flight_nonforce_returns_pending(self):
+        """force 刷新的后台检查未完成时，非 force 调用必须返回 pending 而非命中旧缓存"""
+        import threading as _threading
+
+        started = _threading.Event()
+        release = _threading.Event()
+
+        def blocked():
+            started.set()
+            release.wait(3)
+            return dict(_SLOW_RESULT)
+
+        with mock.patch.object(updater, "check_latest", side_effect=blocked):
+            # 先完成一次检查，留下新鲜缓存
+            updater.reset_check_cache()
+            with updater._check_lock:
+                updater._check_result = dict(_SLOW_RESULT)
+                updater._check_result_at = time.time()
+            # 缓存新鲜：非 force 应命中缓存
+            fresh = updater.check_latest_cached()
+            self.assertIsNone(fresh.get("pending"))
+            self.assertEqual(fresh.get("latest"), "9.9.9")
+            # force 发起新检查（此时旧缓存仍在 _check_result，_check_running=True）
+            self.assertIs(updater.check_latest_cached(force=True).get("pending"), True)
+            self.assertTrue(started.wait(2))
+            # 检查进行中，非 force 调用不得命中旧缓存，必须 pending
+            r = updater.check_latest_cached()
+            self.assertIs(r.get("pending"), True)
+            # 放行，等后台完成
+            release.set()
+            deadline = time.time() + 2
+            while time.time() < deadline:
+                r2 = updater.check_latest_cached()
+                if not r2.get("pending"):
+                    break
+                time.sleep(0.05)
+            self.assertIsNone(r2.get("pending"))
 
 
 if __name__ == "__main__":

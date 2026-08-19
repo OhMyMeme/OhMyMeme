@@ -246,6 +246,10 @@ def _ensure_check_started(force=False):
     global _check_running, _check_result, _check_result_at, _check_generation
     now = time.time()
     with _check_lock:
+        # 已在跑（含 force 触发尚未完成）：无论缓存新鲜与否都返回 pending，
+        # 避免 force 刷新进行中仍命中旧的 _check_result
+        if _check_running:
+            return False, None
         # 非强制 + 缓存新鲜：直接返回缓存
         if (
             not force
@@ -254,9 +258,6 @@ def _ensure_check_started(force=False):
             and now - _check_result_at < _CHECK_TTL
         ):
             return True, _check_result
-        # 已在跑：返回 pending（无论是否 force 都不重复启动）
-        if _check_running:
-            return False, None
         _check_running = True
         gen = _check_generation
 

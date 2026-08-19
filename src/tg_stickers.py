@@ -52,7 +52,7 @@ def _refresh_tg_elapsed():
         "deduping",
         "importing",
     ):
-        _TG_STATE["elapsed_s"] = int(time.time() - _TG_T0)
+        _TG_STATE["elapsed_s"] = int(time.monotonic() - _TG_T0)
 
 
 def get_tg_progress():
@@ -330,6 +330,33 @@ def _check_ffmpeg():
     return shutil.which("ffmpeg") is not None
 
 
+def _reap_proc(proc, timeout=5):
+    """集中回收子进程：kill 后无条件 wait 回收，实际退出后才从活动集合移除"""
+    if proc is None:
+        return
+    if proc.poll() is None:
+        try:
+            proc.kill()
+        except Exception:
+            pass
+        # kill 后无条件 wait：真实子进程需 wait 才能回收（避免 zombie）
+        try:
+            proc.wait(timeout=timeout)
+        except subprocess.TimeoutExpired:
+            try:
+                proc.kill()  # 二次 SIGKILL 兜底，确保尽快退出
+            except Exception:
+                pass
+            try:
+                proc.wait(timeout=timeout)
+            except Exception:
+                pass
+    # 仅进程实际退出才从集合移除；未退出则保留（可被后续 cancel terminate）
+    if proc.poll() is not None:
+        with _TG_LOCK:
+            _TG_ACTIVE_PROC.discard(proc)
+
+
 def convert_webm_to_webp(webm_path, out_path, timeout=120):
     """webm 转 animated webp: 有损(q80), 保持宽高比, 最长边 512"""
     proc = None
@@ -361,23 +388,19 @@ def convert_webm_to_webp(webm_path, out_path, timeout=120):
         try:
             if _check_cancel():
                 proc.terminate()
-            _, _ = proc.communicate(timeout=timeout)
+            try:
+                _, _ = proc.communicate(timeout=timeout)
+            except subprocess.TimeoutExpired:
+                _reap_proc(proc)
+                raise
         finally:
-            with _TG_LOCK:
-                _TG_ACTIVE_PROC.discard(proc)
+            # 仅在进程实际退出后移除；未退出交由回收路径处理
+            if proc.poll() is not None:
+                with _TG_LOCK:
+                    _TG_ACTIVE_PROC.discard(proc)
         return proc.returncode == 0
     except Exception as e:
-        if proc is not None and proc.poll() is None:
-            try:
-                proc.kill()
-            except Exception:
-                pass
-            try:
-                proc.wait(timeout=5)
-            except Exception:
-                pass
-            with _TG_LOCK:
-                _TG_ACTIVE_PROC.discard(proc)
+        _reap_proc(proc)
         logger.warning(f"convert_webm_to_webp failed: {e}")
         return False
 
@@ -465,6 +488,8 @@ def start_tg_import(webui, tdata_path=None, passcode="", convert_webm=True):
         ):
             return False
         _reset_state()
+        # 锁内立即占位运行态，使并发调用在锁内看到 scanning 而拒绝，防止双 worker
+        _update_tg(status="scanning", message="正在检测 Telegram Desktop 数据目录...")
     threading.Thread(
         target=_tg_worker,
         args=(webui, tdata_path, passcode, convert_webm),
@@ -553,7 +578,7 @@ def _tg_worker(webui, tdata_path, passcode, convert_webm):
                     all_files.append(os.path.join(root, name))
         total_files = len(all_files)
         global _TG_T0
-        _TG_T0 = time.time()
+        _TG_T0 = time.monotonic()
         _update_tg(
             status="decrypting",
             message="正在解密缓存文件...",
