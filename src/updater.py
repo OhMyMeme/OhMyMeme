@@ -63,6 +63,11 @@ def _pick_asset_url(assets: list) -> str:
 _download_state = {"progress": 0, "status": "idle", "error": "", "path": None}
 _download_lock = threading.Lock()
 
+# 版本检查缓存：结果由后台线程填充，check_update 永远立即返回不阻塞
+_check_lock = threading.Lock()
+_check_result = None
+_check_running = False
+
 
 def _download_progress(block_count: int, block_size: int, total_size: int):
     with _download_lock:
@@ -230,6 +235,60 @@ def check_latest() -> dict:
         "notes": best_notes,
         "error": "",
     }
+
+
+def _ensure_check_started():
+    """确保后台版本检查在跑（幂等，非阻塞）。返回 (有缓存, 缓存内容)"""
+    global _check_running, _check_result
+    with _check_lock:
+        if _check_result is not None:
+            return True, _check_result
+        if _check_running:
+            return False, None
+        _check_running = True
+
+    def _task():
+        global _check_result, _check_running
+        try:
+            result = check_latest()
+        except Exception as e:  # 兜底，绝不让后台线程带异常退出
+            logger.warning("background check update failed: %s", e)
+            result = {
+                "latest": "",
+                "download_url": "",
+                "has_update": False,
+                "notes": "",
+                "error": str(e),
+            }
+        with _check_lock:
+            _check_result = result
+            _check_running = False
+
+    threading.Thread(target=_task, daemon=True).start()
+    return False, None
+
+
+def check_latest_cached():
+    """非阻塞版本检查：有缓存立即返回；无缓存触发后台检查并返回 pending"""
+    has, result = _ensure_check_started()
+    if has:
+        return dict(result)
+    return {
+        "latest": "",
+        "download_url": "",
+        "has_update": False,
+        "notes": "",
+        "error": "",
+        "pending": True,
+    }
+
+
+def reset_check_cache():
+    """清空版本检查缓存（强制下一次重新检查）"""
+    global _check_result, _check_running
+    with _check_lock:
+        _check_result = None
+        _check_running = False
 
 
 def _macos_arch() -> str:

@@ -1119,6 +1119,28 @@ function openTGImportDialog() {
   if (passcode) passcode.focus();
 }
 
+function formatDuration(sec) {
+  sec = Math.max(0, Math.round(sec || 0));
+  const m = Math.floor(sec / 60);
+  const s = sec % 60;
+  if (m > 0) return m + '分' + (s > 0 ? s + '秒' : '');
+  return s + '秒';
+}
+
+function updateTgEta(s) {
+  const el = document.getElementById('tg-import-eta');
+  if (!el || !s) return;
+  const prog = s.progress || 0;
+  const elapsed = s.elapsed_s || 0;
+  const terminal = ['done', 'error', 'cancelled'].includes(s.status);
+  if (prog <= 0 || elapsed <= 0 || terminal) {
+    el.textContent = elapsed > 0 ? '已用 ' + formatDuration(elapsed) : '';
+    return;
+  }
+  const remain = (100 - prog) / prog * elapsed;
+  el.textContent = '已用 ' + formatDuration(elapsed) + ' · 预计剩余 ' + formatDuration(remain);
+}
+
 function showTGOverlay() {
   document.getElementById('tg-config').style.display = 'none';
   document.getElementById('tg-progress').style.display = 'block';
@@ -1129,6 +1151,8 @@ function showTGOverlay() {
   document.getElementById('tg-import-msg').textContent = '准备中';
   document.getElementById('tg-import-bar').style.width = '0%';
   document.getElementById('tg-import-pct').textContent = '0%';
+  const etaEl = document.getElementById('tg-import-eta');
+  if (etaEl) etaEl.textContent = '';
   const closeBtn = document.getElementById('btn-tg-close');
   if (closeBtn) closeBtn.focus();
 }
@@ -1212,6 +1236,7 @@ async function startTGImport() {
       document.getElementById('tg-import-bar').style.width = (s.progress || 0) + '%';
       document.getElementById('tg-import-pct').textContent = (s.progress || 0) + '%';
       document.getElementById('tg-import-msg').textContent = s.message || '';
+      updateTgEta(s);
 
       if (s.status === 'done') {
         document.getElementById('tg-import-title').textContent = '导入完成';
@@ -1747,7 +1772,12 @@ async function checkUpdate() {
   const btn = document.getElementById('btn-check-update');
   const status = document.getElementById('s-update-status');
   btn.disabled = true; btn.textContent = '检查中...'; status.textContent = '';
-  const r = await api('check_update');
+  let r = await api('check_update');
+  // 后台检查未完成：非阻塞，短轮询直到出真实结果
+  if (r && r.pending) {
+    await new Promise(res => setTimeout(res, 1500));
+    r = await api('check_update');
+  }
   btn.disabled = false; btn.textContent = '检查更新';
   if (!r) { status.textContent = '检查失败'; return; }
   document.getElementById('s-ver-current').textContent = '当前版本: ' + (r.current || '--');

@@ -742,10 +742,10 @@ class JsApi:
         return True
 
     def check_update(self, debug: bool = False) -> dict:
-        """检查更新，返回版本信息 + 是否建议更新"""
+        """检查更新，非阻塞：有缓存立即返回，首次触发后台检查返回 pending"""
         from . import __version__ as cur_ver
 
-        info = updater.check_latest()
+        info = updater.check_latest_cached()
         info["current"] = cur_ver
         if debug or self._webui._update_debug:
             info["has_update"] = True
@@ -1992,7 +1992,7 @@ class SettingsApi:
     def check_update(self, debug: bool = False) -> dict:
         from . import __version__ as cur_ver
 
-        info = updater.check_latest()
+        info = updater.check_latest_cached()
         info["current"] = cur_ver
         if debug or self._webui._update_debug:
             info["has_update"] = True
