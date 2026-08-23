@@ -490,6 +490,7 @@ body {
   display: grid;
   gap: 10px;
   align-content: start;
+  grid-template-columns: repeat(auto-fill, minmax(112px, 1fr));
 }
 
 #meme-grid .meme-card {

@@ -92,8 +92,7 @@ onMounted(() => {
   window.refreshTags = refreshTags
   window.refreshCollections = refreshCollections
 })
-// 网格列数随侧边栏即时切换（实时感）；性能由卡片 content-visibility 保证
-const gridCols = computed(() => sidebarCollapsed.value ? 5 : 4)
+// 网格列数由 CSS repeat(auto-fill, minmax(112px, 1fr)) 随容器宽度自适应
 
 // 当前分组（正 ID）下的子分组列表，用于网格顶部显示文件夹卡片
 const folderCards = computed(() => {
@@ -883,7 +882,7 @@ onUnmounted(() => {
         </div>
 
         <div id="grid-wrap">
-          <div v-if="folderCards.length" class="meme-grid folder-grid" :style="{ gridTemplateColumns: `repeat(${gridCols}, 1fr)` }">
+          <div v-if="folderCards.length" class="meme-grid folder-grid">
             <div
               v-for="child in folderCards"
               :key="'folder-' + child.id"
@@ -918,7 +917,6 @@ onUnmounted(() => {
               name="meme-list"
               class="meme-grid"
               :class="{ 'sort-enabled': sortEnabled && canReorder(), 'select-enabled': selectMode }"
-              :style="{ gridTemplateColumns: `repeat(${gridCols}, 1fr)` }"
             >
               <drag-select-option
                 v-for="meme in state.memes"

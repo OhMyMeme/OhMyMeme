@@ -124,7 +124,7 @@ tests/
 - WebUI 维护非持久的快捷键显示会话状态：仅隐藏主窗口被全局快捷键显示后，成功复制或成功原生向外文件拖拽才会自动隐藏；任意 hide、普通/托盘显示、LAN/其他 show、内部排序拖拽及失败交互均不会触发该自动隐藏。
 
 ### 窗口
-- 主窗口 ~700×500 frameless, 设置窗口 460×560 frameless
+- 主窗口 ~960×640 frameless, 设置窗口 460×560 frameless
 - Windows 全局热键显示位置仅在隐藏到显示的转换时计算，使用鼠标所在显示器工作区；不改变托盘激活或其他窗口显示路径
 - 自定义 JS 拖拽: 鼠标事件 → `pywebview.api.move_window(dx, dy)`
 - 增量回退（Windows/macOS）用 `screenX/screenY`（**勿改 `clientX/clientY`** — clientX 是相对窗口坐标，窗口自身滞后位移会被下一次 mousemove 当作反向增量回传，形成反馈振荡导致高频抖动）；Linux 走合成器原生拖动不经过此路径
