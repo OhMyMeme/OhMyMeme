@@ -2436,6 +2436,11 @@ def _import_job_worker(webui, files, names, make_collection, folder_name, my_tok
         skipped_dup = r.get("skipped_dup", 0)
         with _IMPORT_JOB_LOCK:
             was_cancel = _IMPORT_JOB_CANCEL
+            is_current = _IMPORT_JOB_STATE.get("token") == my_token
+        if not is_current:
+            # 本任务已不是当前令牌（被新任务取代），立刻返回，
+            # 避免旧 worker 执行 create_collection/add_to_collection 等副作用污染新任务
+            return
         if not was_cancel:
             # 正常完成：进度满格、done 为全部
             _set_import_job_current(
