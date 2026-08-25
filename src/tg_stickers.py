@@ -768,6 +768,9 @@ def _tg_worker(webui, tdata_path, passcode, convert_webm):
                 done=min(i + batch, total),
             )
         imported = len(imported_ids)
+        if imported:
+            # 自动归入「Telegram」分组（同名复用）
+            webui.ensure_import_collection(imported_ids, "Telegram")
         msg = f"导入完成，共 {imported} 个表情"
         if convert_failed:
             msg += f"（{convert_failed} 个 WebM 转换失败已跳过）"

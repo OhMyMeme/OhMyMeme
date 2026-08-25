@@ -1646,6 +1646,11 @@ function toggleSidebar() {
       try {
         const r = await api('download_original_image', uri);
         if (r && r.ok) { location.reload(); return; }
+        if (r && r.similar_pending) {
+          showToast('该图片与库中已有图片内容近似，请在“拖拽排序关闭”的主界面重新导入以选择处理');
+          return;
+        }
+        if (r && r.error) showToast(r.error);
       } catch(_) {}
     }
     if (file) {
@@ -1674,18 +1679,30 @@ titlebar.addEventListener('mousedown', async (e) => {
   if (e.target.closest('.title-btn') || e.target.closest('.icon-btn')) return;
   const nativeDrag = await api('start_window_drag', e.button + 1, e.screenX, e.screenY);
   if (nativeDrag) return;   // Linux：交给合成器拖动
-  dragState = { sx: e.screenX, sy: e.screenY };
+  dragState = { sx: e.screenX, sy: e.screenY, px: 0, py: 0, raf: null };
   e.preventDefault();
 });
 document.addEventListener('mousemove', (e) => {
   if (!dragState) return;
-  const dx = e.screenX - dragState.sx, dy = e.screenY - dragState.sy;
-  if (dx !== 0 || dy !== 0) {
-    api('move_window', dx, dy);
-    dragState.sx = e.screenX; dragState.sy = e.screenY;
-  }
+  // 记录相对拖动起点的总偏移（屏幕坐标，自愈无累积滞后）
+  dragState.px = e.screenX - dragState.sx;
+  dragState.py = e.screenY - dragState.sy;
+  // rAF 合并每帧最新位置，避免高回报率鼠标消息风暴堵塞桥接
+  if (dragState.raf) return;
+  dragState.raf = requestAnimationFrame(() => {
+    if (!dragState) return;
+    dragState.raf = null;
+    const dx = dragState.px, dy = dragState.py;
+    if (dx !== 0 || dy !== 0) {
+      api('move_window', dx, dy);
+    }
+  });
 });
-document.addEventListener('mouseup', () => { dragState = null; });
+document.addEventListener('mouseup', () => {
+  if (dragState && dragState.raf) cancelAnimationFrame(dragState.raf);
+  api('stop_window_drag').catch(() => {});
+  dragState = null;
+});
 
 async function checkUpdateAndPrompt() {
   try {

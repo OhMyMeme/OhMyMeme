@@ -66,7 +66,7 @@ function trapSettingsFocus(box, e) {
   }
 }
 // 找当前可见覆盖层（静态 HTML + 动态创建的 update/confirm 弹窗）
-const _SETTINGS_OVERLAY_IDS = ['danger-overlay','sync-progress-overlay','sync-done-overlay','qq-import-overlay','qqnt-overlay','tg-import-overlay','dy-import-overlay','wechat-import-overlay','update-overlay'];
+const _SETTINGS_OVERLAY_IDS = ['danger-overlay','sync-progress-overlay','sync-done-overlay','storage-migrate-overlay','qq-import-overlay','qqnt-overlay','tg-import-overlay','dy-import-overlay','wechat-import-overlay','update-overlay'];
 function visibleSettingsOverlay() {
   for (const id of _SETTINGS_OVERLAY_IDS) {
     const el = document.getElementById(id);
@@ -403,6 +403,7 @@ function cancelStoragePick() {
   loadStorageInfo();
 }
 
+let storageMigrateTimer = null;
 async function applyStorageDir() {
   if (!pendingStorageDir) return;
   const moveEl = document.getElementById('s-move-files');
@@ -419,6 +420,11 @@ async function applyStorageDir() {
     }
     pendingStorageDir = null;
     if (pending) pending.style.display = 'none';
+    if (move && r.async) {
+      // 后台迁移：弹出进度覆盖层轮询
+      showStorageMigration();
+      return;
+    }
     const el = document.getElementById('s-cache-dir');
     if (el && r.cache_dir) el.value = r.cache_dir;
     let msg = '已应用新存储目录';
@@ -431,6 +437,65 @@ async function applyStorageDir() {
   } finally {
     if (btn) btn.disabled = false;
   }
+}
+
+function showStorageMigration() {
+  document.getElementById('storage-migrate-title').textContent = '正在迁移表情包...';
+  document.getElementById('storage-migrate-file').textContent = '准备中';
+  document.getElementById('storage-migrate-bar').style.width = '0%';
+  document.getElementById('storage-migrate-pct').textContent = '0%';
+  document.getElementById('storage-migrate-count').textContent = '';
+  const cancelBtn = document.getElementById('btn-storage-migrate-cancel');
+  if (cancelBtn) { cancelBtn.style.display = 'inline-block'; cancelBtn.disabled = false; }
+  rememberSettingsFocus();
+  document.getElementById('storage-migrate-overlay').style.display = 'flex';
+  if (storageMigrateTimer) clearInterval(storageMigrateTimer);
+  storageMigrateTimer = setInterval(pollStorageMigration, 300);
+  pollStorageMigration();
+}
+
+function hideStorageMigration(restore = true) {
+  if (storageMigrateTimer) { clearInterval(storageMigrateTimer); storageMigrateTimer = null; }
+  document.getElementById('storage-migrate-overlay').style.display = 'none';
+  if (restore) restoreSettingsFocus();
+}
+
+async function pollStorageMigration() {
+  let s = null;
+  try { s = await api('get_storage_migration_progress'); } catch (e) { s = null; }
+  if (!s) return;
+  const bar = document.getElementById('storage-migrate-bar');
+  const pct = document.getElementById('storage-migrate-pct');
+  const file = document.getElementById('storage-migrate-file');
+  const count = document.getElementById('storage-migrate-count');
+  if (bar) bar.style.width = (s.progress || 0) + '%';
+  if (pct) pct.textContent = (s.progress || 0) + '%';
+  if (file) file.textContent = s.current || s.message || '';
+  if (count) count.textContent = s.total > 0 ? ('已迁移 ' + (s.moved || 0) + ' / ' + s.total + ' 个') : '';
+  if (!s.status || s.status === 'idle' || s.status === 'running') return;
+  // 结束状态：done/error/cancelled
+  hideStorageMigration(false);
+  const status = document.getElementById('s-storage-status');
+  if (s.status === 'done') {
+    if (status) status.textContent = '迁移完成，新存储目录已生效（' + (s.total || 0) + ' 个文件）';
+    showToast('存储位置已更新');
+    location.reload();
+  } else if (s.status === 'cancelled') {
+    if (status) status.textContent = '迁移已取消，已回滚已移动文件（原存储目录未变）';
+    showToast('已取消迁移');
+  } else {
+    if (status) status.textContent = '迁移失败：' + (s.error || '未知错误') + '（已回滚，原存储目录未变）';
+    showToast('迁移失败');
+  }
+}
+
+function cancelStorageMigration() {
+  const btn = document.getElementById('btn-storage-migrate-cancel');
+  if (btn) btn.disabled = true;
+  const title = document.getElementById('storage-migrate-title');
+  if (title) title.textContent = '正在取消...';
+  api('cancel_storage_migration').catch(() => {});
+  // overlay 由 pollStorageMigration 收到 cancelled 后自动关闭
 }
 
 function toggleSyncType() {
@@ -1701,18 +1766,30 @@ titlebar.addEventListener('mousedown', async (e) => {
   if (e.target.closest('.title-btn')) return;
   const nativeDrag = await api('start_window_drag', e.button + 1, e.screenX, e.screenY);
   if (nativeDrag) return;   // Linux：交给合成器拖动
-  dragState = { sx: e.screenX, sy: e.screenY };
+  dragState = { sx: e.screenX, sy: e.screenY, px: 0, py: 0, raf: null };
   e.preventDefault();
 });
 document.addEventListener('mousemove', (e) => {
   if (!dragState) return;
-  const dx = e.screenX - dragState.sx, dy = e.screenY - dragState.sy;
-  if (dx !== 0 || dy !== 0) {
-    api('move_window', dx, dy);
-    dragState.sx = e.screenX; dragState.sy = e.screenY;
-  }
+  // 记录相对拖动起点的总偏移（屏幕坐标，自愈无累积滞后）
+  dragState.px = e.screenX - dragState.sx;
+  dragState.py = e.screenY - dragState.sy;
+  // rAF 合并每帧最新位置，避免高回报率鼠标消息风暴堵塞桥接
+  if (dragState.raf) return;
+  dragState.raf = requestAnimationFrame(() => {
+    if (!dragState) return;
+    dragState.raf = null;
+    const dx = dragState.px, dy = dragState.py;
+    if (dx !== 0 || dy !== 0) {
+      api('move_window', dx, dy);
+    }
+  });
 });
-document.addEventListener('mouseup', () => { dragState = null; });
+document.addEventListener('mouseup', () => {
+  if (dragState && dragState.raf) cancelAnimationFrame(dragState.raf);
+  api('stop_window_drag').catch(() => {});
+  dragState = null;
+});
 
 /* Keyboard shortcuts */
 document.addEventListener('keydown', (e) => {
@@ -1760,6 +1837,11 @@ document.addEventListener('keydown', (e) => {
     if (syncDoneOverlay && syncDoneOverlay.style.display === 'flex') {
       syncDoneOverlay.style.display = 'none';
       restoreSettingsFocus();
+      return;
+    }
+    const migrateOverlay = document.getElementById('storage-migrate-overlay');
+    if (migrateOverlay && migrateOverlay.style.display === 'flex') {
+      cancelStorageMigration();
       return;
     }
     closeSettings();

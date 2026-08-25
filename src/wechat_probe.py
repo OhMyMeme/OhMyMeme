@@ -950,6 +950,9 @@ def _wechat_worker(webui, user_root, download, account_path):
             result = webui._do_import(imported_paths)
             imported = len(result.get("ids", []))
             rejected = result.get("rejected", 0)
+            if imported:
+                # 自动归入「微信」分组（同名复用）
+                webui.ensure_import_collection(result.get("ids", []), "微信")
         else:
             imported = 0
             rejected = 0
