@@ -9,30 +9,51 @@ import CollectionBuilder from './components/CollectionBuilder.vue'
 import CollectionTreeNode from './components/CollectionTreeNode.vue'
 import ConfirmDialog from './components/ConfirmDialog.vue'
 import ImportMenu from './components/ImportMenu.vue'
+import ImportProgressOverlay from './components/ImportProgressOverlay.vue'
 import InputDialog from './components/InputDialog.vue'
 import Pager from './components/Pager.vue'
+import SimilarImportDialog from './components/SimilarImportDialog.vue'
 import SyncOverlay from './components/SyncOverlay.vue'
 import TagEditor from './components/TagEditor.vue'
 import UpdateDialog from './components/UpdateDialog.vue'
 import type { Meme } from './types'
 
-const { state, setMemes, search, goToPage, setSearch, toggleTag, setActiveCollection, refreshTags, refreshCollections, copyMeme, reorderMemes, canReorder, startNativeDrag, loadInitData } = useMemes()
+const { state, setMemes, search, goToPage, setSearch, toggleTag, setActiveCollection, refreshTags, refreshCollections, copyMeme, reorderMemes, canReorder, startNativeDrag, selectAllVisible, clearSelection, loadInitData } = useMemes()
 const ctx = useContextMenu()
 const cb = useCollectionBuilder()
 const tagEditor = ref<InstanceType<typeof TagEditor> | null>(null)
 const updateDialog = ref<InstanceType<typeof UpdateDialog> | null>(null)
 const inputDialog = ref<InstanceType<typeof InputDialog> | null>(null)
 const confirmDialog = ref<InstanceType<typeof ConfirmDialog> | null>(null)
+const similarImportDialog = ref<InstanceType<typeof SimilarImportDialog> | null>(null)
 
 // 统一确认对话框（替代原生 confirm，风格与重构主题一致）
 async function confirmAsk(title: string, message: string): Promise<boolean> {
   return !!(await confirmDialog.value?.open(title, message))
 }
 
-// 检查更新并弹窗（与原始实现一致）
+// 检查更新并弹窗：首次 force 发起后台检查；pending 时以非 force 轮询取结果
 async function checkUpdateAndPrompt() {
+  const upd = await window.pywebview?.api?.check_update(false, true)
+  if (upd && upd.pending) {
+    setTimeout(checkUpdateResult, 2000)
+  } else {
+    maybeShowUpdate(upd)
+  }
+}
+
+// 轮询最近一次后台检查结果（非 force，避免重复触发新检查造成永久 pending）
+async function checkUpdateResult() {
+  const upd = await window.pywebview?.api?.check_update(false, false)
+  if (upd && upd.pending) {
+    setTimeout(checkUpdateResult, 2000)
+  } else {
+    maybeShowUpdate(upd)
+  }
+}
+
+function maybeShowUpdate(upd) {
   try {
-    const upd = await window.pywebview?.api?.check_update()
     if (upd && upd.has_update) {
       updateDialog.value?.show(upd.current, upd.latest, upd.download_url, upd.notes)
     }
@@ -40,6 +61,7 @@ async function checkUpdateAndPrompt() {
 }
 
 const sortEnabled = ref(false)
+const selectMode = ref(false)
 const drag = useDragSort(
   () => state.memes,
   setMemes,
@@ -53,7 +75,8 @@ const sidebarCollapsed = ref(false)
 const dragOver = ref(false)
 let dragCounter = 0
 let nativeDragActive = false
-let dragState: { sx: number; sy: number } | null = null
+let dragGeneration = 0
+let dragState: { sx: number; sy: number; px: number; py: number; raf: number | null } | null = null
 let updateInterval: ReturnType<typeof setInterval> | null = null
 
 // 启动动画：仅页面首次加载（启动）时播放一次，快捷键呼出不重载页面故不重复播放
@@ -73,8 +96,7 @@ onMounted(() => {
   window.refreshTags = refreshTags
   window.refreshCollections = refreshCollections
 })
-// 网格列数随侧边栏即时切换（实时感）；性能由卡片 content-visibility 保证
-const gridCols = computed(() => sidebarCollapsed.value ? 5 : 4)
+// 网格列数由 CSS repeat(auto-fill, minmax(112px, 1fr)) 随容器宽度自适应
 
 // 当前分组（正 ID）下的子分组列表，用于网格顶部显示文件夹卡片
 const folderCards = computed(() => {
@@ -147,6 +169,8 @@ function onFolderCardContext(e: MouseEvent, childId: number, childName: string) 
 
 async function handleCopy(meme: Meme) {
   if (ignoreClick) { ignoreClick = false; return }
+  // 整理/多选模式：不复制（勾选由 drag-select 处理）
+  if (sortEnabled.value || selectMode.value) return
   const ok = await copyMeme(meme.id)
   if (ok) showToast(`${meme.name} 已复制`)
   else showToast('复制失败')
@@ -160,10 +184,29 @@ function showToast(msg: string) {
   setTimeout(() => el.classList.remove('show'), 1600)
 }
 
+// 卡片悬停快速收藏（右键菜单外的一键入口）
+async function quickFavorite(meme: Meme) {
+  if (sortEnabled.value || selectMode.value) return
+  const ok = await window.pywebview?.api?.toggle_favorite(meme.id)
+  if (ok === null || ok === undefined) return
+  meme.favorited = ok
+  await refreshCollections()
+  if (!ok && state.activeCollection === -2) {
+    const fav = state.collections.find((c: any) => c.id === -2)
+    if (!fav || fav.count === 0) setActiveCollection(-4)
+  }
+  showToast(ok ? '已收藏' : '已取消收藏')
+}
+
 function onSearchInput(e: Event) {
   const q = (e.target as HTMLInputElement).value
   setSearch(q)
   debounceSearch()
+}
+
+function clearSearch() {
+  setSearch('')
+  search()
 }
 
 let searchTimer: ReturnType<typeof setTimeout>
@@ -172,16 +215,27 @@ function debounceSearch() {
   searchTimer = setTimeout(() => search(), 300)
 }
 
-function openSettings() {
+async function openSettings() {
   try {
-    window.pywebview?.api?.open_settings()
-  } catch (_) {}
+    const ok = await window.pywebview?.api?.open_settings()
+    if (!ok) showToast('无法打开设置窗口')
+  } catch (_) {
+    showToast('无法打开设置窗口')
+  }
 }
 function toggleSidebar() { sidebarCollapsed.value = !sidebarCollapsed.value }
 
 function toggleSort() {
   sortEnabled.value = !sortEnabled.value
-  drag.toggle()
+  if (sortEnabled.value) { selectMode.value = false; drag.enable() }
+  else drag.disable()
+  if (!sortEnabled.value) clearSelection()
+}
+
+function toggleSelect() {
+  selectMode.value = !selectMode.value
+  if (selectMode.value) { sortEnabled.value = false; drag.disable() }
+  else clearSelection()
 }
 
 const importMenu = ref<InstanceType<typeof ImportMenu> | null>(null)
@@ -194,6 +248,12 @@ function onImportDone() {
   search()
   refreshTags()
   refreshCollections()
+}
+
+const importProgress = ref<InstanceType<typeof ImportProgressOverlay> | null>(null)
+
+function onImporting() {
+  importProgress.value?.start()
 }
 
 const syncOverlay = ref<InstanceType<typeof SyncOverlay> | null>(null)
@@ -226,25 +286,40 @@ async function onTitlebarMouseDown(e: MouseEvent) {
   if (e.button !== 0) return
   if ((e.target as HTMLElement).closest('.title-btn') || (e.target as HTMLElement).closest('.icon-btn') || (e.target as HTMLElement).closest('.sidebar-toggle')) return
   try {
+    const gen = dragGeneration
     const nativeDrag = await window.pywebview?.api?.start_window_drag(e.button + 1, e.screenX, e.screenY)
     if (nativeDrag) return
+    // await 期间可能已松开鼠标（onWindowMouseUp 已递增 generation）：此时不再启动拖动
+    if (gen !== dragGeneration) return
   } catch (_) {}
-  dragState = { sx: e.screenX, sy: e.screenY }
+  dragState = { sx: e.screenX, sy: e.screenY, px: 0, py: 0, raf: null }
   e.preventDefault()
 }
 
 function onWindowMouseMove(e: MouseEvent) {
   if (!dragState) return
-  const dx = e.screenX - dragState.sx
-  const dy = e.screenY - dragState.sy
-  if (dx !== 0 || dy !== 0) {
-    try { window.pywebview?.api?.move_window(dx, dy) } catch (_) {}
-    dragState.sx = e.screenX
-    dragState.sy = e.screenY
-  }
+  // 记录相对拖动起点的总偏移（屏幕坐标，自愈无累积滞后）
+  dragState.px = e.screenX - dragState.sx
+  dragState.py = e.screenY - dragState.sy
+  // rAF 合并每帧最新位置，避免高回报率鼠标消息风暴堵塞桥接
+  if (dragState.raf) return
+  dragState.raf = requestAnimationFrame(() => {
+    if (!dragState) return
+    dragState.raf = null
+    const dx = dragState.px
+    const dy = dragState.py
+    if (dx !== 0 || dy !== 0) {
+      try { window.pywebview?.api?.move_window(dx, dy) } catch (_) {}
+    }
+  })
 }
 
-function onWindowMouseUp() { dragState = null }
+function onWindowMouseUp() {
+  if (dragState?.raf) cancelAnimationFrame(dragState.raf)
+  try { window.pywebview?.api?.stop_window_drag() } catch (_) {}
+  dragState = null
+  dragGeneration++  // 使未完成的 mousedown await 失效，防止松手后仍启动拖动
+}
 
 function onMemeRightClick(e: MouseEvent, meme: Meme) {
   e.preventDefault()
@@ -422,6 +497,42 @@ async function onCtxAction(action: string) {
   }
 }
 
+// 批量删除选中的表情包（整理模式操作栏）
+async function batchDelete() {
+  const ids = [...state.selectedIds]
+  if (ids.length === 0) return
+  if (!await confirmAsk('批量删除', `确定删除选中的 ${ids.length} 个表情包吗？此操作不可恢复。`)) return
+  // 后端异常或 pywebview 不可用：报错即中止，不刷新以免 UI 与 DB 不一致
+  let result: any
+  try {
+    result = await window.pywebview?.api?.delete_memes(ids)
+  } catch {
+    showToast('批量删除失败')
+    return
+  }
+  if (!result?.ok) {
+    showToast('批量删除失败')
+    return
+  }
+  if (result.deleted === 0) {
+    // 后端一个都没删掉（所选 id 在库中已不存在），刷新以对齐 UI
+    showToast('没有删除任何表情包')
+    await search(false)
+    refreshCollections()
+    refreshTags()
+    return
+  }
+  showToast(`已删除 ${result.deleted ?? ids.length} 个表情包`)
+  await search(false) // search() 内已清空选择
+  // 当前页删空时钳回新末页，避免空页
+  if (state.memes.length === 0 && state.page > 1) {
+    state.page = Math.max(1, Math.min(state.page, state.pageCount))
+    await search(false)
+  }
+  refreshCollections()
+  refreshTags()
+}
+
 // 在 collections 树中查找 target 的父分组
 function findParentCollection(items: any[], target: number): any | null {
   for (const c of items) {
@@ -497,11 +608,11 @@ let ignoreClick = false
 
 function onCardPointerDown(e: PointerEvent, meme: Meme, card: HTMLElement) {
   ignoreClick = false
-  if (sortEnabled.value && canReorder()) {
+  if (sortEnabled.value && canReorder() && !selectMode.value) {
     drag.onPointerDown(e, meme.id, card)
     return
   }
-  if (e.button !== 0) return
+  if (e.button !== 0 || selectMode.value) return
   nativeDragStart = { x: e.clientX, y: e.clientY, memeId: meme.id }
 }
 
@@ -510,7 +621,7 @@ function onDocPointerMove(e: PointerEvent) {
     drag.onPointerMove(e)
     return
   }
-  if (!nativeDragStart || sortEnabled.value) return
+  if (!nativeDragStart || sortEnabled.value || selectMode.value) return
   const dist = Math.hypot(e.clientX - nativeDragStart.x, e.clientY - nativeDragStart.y)
   if (dist > 8) {
     const id = nativeDragStart.memeId
@@ -597,26 +708,71 @@ async function onDrop(e: DragEvent) {
     } catch (_) {}
   }
   if (uri) {
-    try { const r = await window.pywebview?.api?.download_original_image(uri); if (r?.ok) { showToast('导入成功'); search(); refreshCollections(); return } } catch (_) {}
+    try {
+      const r = await window.pywebview?.api?.download_original_image(uri)
+      if (r?.ok) { showToast('导入成功'); search(); refreshCollections(); return }
+      if (r?.duplicate) { showToast('该图片已存在'); return }
+      if (r?.similar_pending) {
+        const action = await similarImportDialog.value?.open(r.candidates || [])
+        if (action) {
+          const rr = await window.pywebview?.api?.resolve_similar_import(r.token, action)
+          if (rr?.ok && rr.imported) { showToast('导入成功'); search(); refreshCollections() }
+          else if (rr?.ok) { showToast('已跳过该图片') }
+          else { showToast(rr?.error || '处理失败') }
+        }
+        return
+      }
+      showToast(r?.error || '导入失败')
+      return
+    } catch (_) {
+      showToast('导入失败')
+      return
+    }
   }
   if (file) {
+    let b64: string
     try {
-      const b64 = await new Promise<string>((resolve, reject) => {
+      b64 = await new Promise<string>((resolve, reject) => {
         const reader = new FileReader()
         reader.onload = () => resolve((reader.result as string).split(',')[1])
         reader.onerror = () => reject(reader.error)
         reader.readAsDataURL(file!)
       })
+    } catch (_) {
+      showToast('导入失败：无法读取文件')
+      return
+    }
+    try {
       const res = await fetch('/api/upload/', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ files: [{ name: file.name, data: b64 }] }) })
-      if (res.ok) { showToast('导入成功'); search(); refreshCollections() }
-    } catch (_) {}
+      let j: any = null
+      try { j = await res.json() } catch (_) { j = null }
+      if (j?.similar_pending) {
+        const action = await similarImportDialog.value?.open(j.candidates || [])
+        if (action) {
+          const rr = await window.pywebview?.api?.resolve_similar_import(j.token, action)
+          if (rr?.ok && rr.imported) { showToast('导入成功'); search(); refreshCollections() }
+          else if (rr?.ok) { showToast('已跳过该图片') }
+          else { showToast(rr?.error || '处理失败') }
+        }
+        return
+      }
+      if (j?.duplicate) { showToast('该图片已存在'); return }
+      if (res.ok || j?.ok) { showToast('导入成功'); search(); refreshCollections() }
+      else { showToast(j?.error || '导入失败：服务器返回错误') }
+    } catch (_) {
+      showToast('导入失败：网络或服务异常')
+    }
+    return
   }
+  showToast('未识别到可导入的内容')
 }
 
-// ESC：有右键菜单时先关菜单，否则隐藏窗口
+// ESC：右键菜单 → 多选 → 整理模式 → 隐藏窗口
 function onDocKeydown(e: KeyboardEvent) {
   if (e.key !== 'Escape') return
   if (ctx.visible.value) { ctx.hide(); return }
+  if (selectMode.value) { toggleSelect(); return }
+  if (sortEnabled.value) { toggleSort(); return }
   hideWindow()
 }
 
@@ -662,7 +818,8 @@ onUnmounted(() => {
     await refreshTags()
     await refreshCollections()
   }
-  if (state.showStartupAnimation) {
+  const prefersReducedMotion = !!(window.matchMedia && window.matchMedia('(prefers-reduced-motion: reduce)').matches)
+  if (state.showStartupAnimation && !prefersReducedMotion) {
     // 启动遮罩背景贴合视频边缘色（含 html/body 首次渲染）
     document.documentElement.style.background = state.startupBgColor
     document.body.style.background = state.startupBgColor
@@ -686,19 +843,22 @@ onUnmounted(() => {
       </div>
       <span class="spacer"></span>
       <div class="titlebar__actions">
-        <button class="icon-btn" :class="{ 'sort-on': sortEnabled }" title="拖拽排序" @click="toggleSort">
-          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 6h18M3 12h18M3 18h18"/></svg>
+        <button class="icon-btn" :class="{ 'sort-on': sortEnabled }" title="拖拽排序" aria-label="拖拽排序" @click="toggleSort">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M7 10l5-5 5 5M7 14l5 5 5-5"/></svg>
         </button>
-        <button class="icon-btn" title="上传到远端" @click="syncUpload()">
+        <button class="icon-btn" :class="{ 'sort-on': selectMode }" title="多选" aria-label="多选" @click="toggleSelect">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M9 11l3 3L22 4"/><path d="M21 12v7a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11"/></svg>
+        </button>
+        <button class="icon-btn" title="上传到远端" aria-label="上传到远端" @click="syncUpload()">
           <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 19V5m-7 7l7-7 7 7"/></svg>
         </button>
-        <button class="icon-btn" title="从远端下载" @click="syncDownload()">
+        <button class="icon-btn" title="从远端下载" aria-label="从远端下载" @click="syncDownload()">
           <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 5v14m-7-7l7 7 7-7"/></svg>
         </button>
         <button class="title-btn" @click="showImportMenu()">导入</button>
         <button class="title-btn" @click="rescanCache()">刷新</button>
         <button class="title-btn" @click="openSettings()">设置</button>
-        <button class="title-btn close-btn" @click="hideWindow()">×</button>
+        <button class="title-btn close-btn" aria-label="隐藏窗口" @click="hideWindow()">×</button>
       </div>
     </header>
 
@@ -721,16 +881,28 @@ onUnmounted(() => {
 
       <div id="main">
         <div id="search-wrap">
-          <button class="sidebar-toggle" :class="{ collapsed: sidebarCollapsed }" @click="toggleSidebar" title="折叠/展开侧边栏">
+          <button class="sidebar-toggle" :class="{ collapsed: sidebarCollapsed }" @click="toggleSidebar" title="折叠/展开侧边栏" aria-label="折叠/展开侧边栏" :aria-expanded="!sidebarCollapsed">
             <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
               <line x1="3" y1="6" x2="21" y2="6"/><line x1="3" y1="12" x2="21" y2="12"/><line x1="3" y1="18" x2="21" y2="18"/>
             </svg>
           </button>
           <input id="search" type="text" placeholder="搜索表情包..." :value="state.searchQuery" @input="onSearchInput" autofocus spellcheck="false">
+          <button v-if="state.searchQuery" class="search-clear" title="清除搜索" aria-label="清除搜索" @click="clearSearch">×</button>
         </div>
 
         <div id="tagbar">
-          <span v-for="tag in state.allTags" :key="tag" class="tag" :class="{ active: state.activeTags.has(tag) }" @click="toggleTag(tag)">{{ tag }}</span>
+          <span
+            v-for="tag in state.allTags"
+            :key="tag"
+            class="tag"
+            :class="{ active: state.activeTags.has(tag) }"
+            role="button"
+            tabindex="0"
+            :aria-pressed="state.activeTags.has(tag)"
+            @click="toggleTag(tag)"
+            @keydown.enter.prevent="toggleTag(tag)"
+            @keydown.space.prevent="toggleTag(tag)"
+          >{{ tag }}</span>
         </div>
 
         <div v-if="breadcrumb.length > 1" id="breadcrumb">
@@ -751,15 +923,27 @@ onUnmounted(() => {
           @go="goToPage"
         />
 
+        <div v-if="selectMode" id="batch-bar">
+          <span class="count">已选 {{ state.selectedIds.size }} 项</span>
+          <button class="btn btn-sm" :disabled="state.memes.length === 0" @click="selectAllVisible">全选当前页</button>
+          <button class="btn btn-sm btn-secondary" :disabled="state.selectedIds.size === 0" @click="clearSelection">取消选择</button>
+          <button class="btn btn-sm btn-danger" :disabled="state.selectedIds.size === 0" @click="batchDelete">批量删除</button>
+        </div>
+
         <div id="grid-wrap">
-          <div v-if="folderCards.length" class="meme-grid folder-grid" :style="{ gridTemplateColumns: `repeat(${gridCols}, 1fr)` }">
+          <div v-if="folderCards.length" class="meme-grid folder-grid">
             <div
               v-for="child in folderCards"
               :key="'folder-' + child.id"
               class="meme-card folder-card"
               :data-folder-id="child.id"
+              role="button"
+              tabindex="0"
+              :aria-label="'打开分组 ' + child.name"
               @click="onFolderCardClick(child.id)"
               @contextmenu="onFolderCardContext($event, child.id, child.name)"
+              @keydown.enter.prevent="onFolderCardClick(child.id)"
+              @keydown.space.prevent="onFolderCardClick(child.id)"
             >
               <div class="folder-preview">
                 <svg viewBox="0 0 24 24" width="32" height="32" fill="none" stroke="var(--accent)" stroke-width="1.5"><path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"/></svg>
@@ -768,36 +952,69 @@ onUnmounted(() => {
             </div>
           </div>
 
-          <TransitionGroup
-            id="meme-grid"
-            tag="div"
-            name="meme-list"
-            class="meme-grid"
-            :class="{ 'sort-enabled': sortEnabled && canReorder() }"
-            :style="{ gridTemplateColumns: `repeat(${gridCols}, 1fr)` }"
+          <drag-select
+            v-model="state.selectedIds"
+            :disabled="!sortEnabled && !selectMode"
+            :multiple="true"
+            :click-option-to-select="selectMode"
+            :draggable-on-option="false"
+            :click-blank-to-clear="false"
           >
-            <div
-              v-for="meme in state.memes"
-              :key="meme.id"
-              class="meme-card"
-              :class="{ 'dragging': drag.dragState.active && drag.dragState.memeId === meme.id }"
-              :data-meme-id="meme.id"
-              @click="handleCopy(meme)"
-              @contextmenu="onMemeRightClick($event, meme)"
-              @pointerdown="onCardPointerDown($event, meme, $event.currentTarget as HTMLElement)"
-              @mouseenter="onCardMouseEnter(meme)"
-              @mouseleave="onCardMouseLeave(meme)"
+            <TransitionGroup
+              id="meme-grid"
+              tag="div"
+              name="meme-list"
+              class="meme-grid"
+              :class="{ 'sort-enabled': sortEnabled && canReorder(), 'select-enabled': selectMode }"
             >
-              <img :src="memeSrc(meme)" :alt="meme.name" loading="lazy">
-              <span v-if="meme.from_stego" class="gif-badge stego-badge">隐写导入</span>
-              <span v-else-if="meme.is_animated" class="gif-badge">{{ meme.is_gif ? 'GIF' : 'WebP' }}</span>
-              <span class="meme-name">{{ meme.name }}</span>
-            </div>
-          </TransitionGroup>
+              <drag-select-option
+                v-for="meme in state.memes"
+                :key="meme.id"
+                :value="meme.id"
+              >
+                <div
+                  class="meme-card"
+                  :class="{ 'dragging': drag.dragState.active && drag.dragState.memeId === meme.id, selected: state.selectedIds.has(meme.id) }"
+                  :data-meme-id="meme.id"
+                  role="button"
+                  tabindex="0"
+                  :aria-label="meme.name"
+                  @click="handleCopy(meme)"
+                  @contextmenu="onMemeRightClick($event, meme)"
+                  @pointerdown="onCardPointerDown($event, meme, $event.currentTarget as HTMLElement)"
+                  @mouseenter="onCardMouseEnter(meme)"
+                  @mouseleave="onCardMouseLeave(meme)"
+                  @keydown.enter.prevent="handleCopy(meme)"
+                  @keydown.space.prevent="handleCopy(meme)"
+                >
+                  <img :src="memeSrc(meme)" :alt="meme.name" loading="lazy">
+                  <span v-if="state.selectedIds.has(meme.id)" class="select-badge">✓</span>
+                  <button
+                    v-if="!selectMode && !sortEnabled"
+                    class="fav-btn"
+                    :class="{ active: meme.favorited }"
+                    :aria-label="meme.favorited ? '取消收藏' : '收藏'"
+                    :title="meme.favorited ? '取消收藏' : '收藏'"
+                    @click.stop="quickFavorite(meme)"
+                    @pointerdown.stop
+                  >
+                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M20.84 4.61a5.5 5.5 0 0 0-7.78 0L12 5.67l-1.06-1.06a5.5 5.5 0 0 0-7.78 7.78l1.06 1.06L12 21.23l7.78-7.78 1.06-1.06a5.5 5.5 0 0 0 0-7.78z"/></svg>
+                  </button>
+                  <span v-if="meme.from_stego" class="gif-badge stego-badge">隐写导入</span>
+                  <span v-else-if="meme.is_animated" class="gif-badge">{{ meme.is_gif ? 'GIF' : 'WebP' }}</span>
+                  <span class="meme-name">{{ meme.name }}</span>
+                </div>
+              </drag-select-option>
+            </TransitionGroup>
+          </drag-select>
 
           <div v-if="state.memes.length === 0 && !state.loading" id="empty">
-            <div class="icon">_(:3 」∠)_</div>
-            <div class="text">还没有表情包，点击「导入」添加</div>
+            <svg class="empty-svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+              <path d="M3 7a2 2 0 0 1 2-2h4l2 3h8a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V7z"/>
+              <path d="M8.5 13.5h7M8.5 16.5h4.5"/>
+            </svg>
+            <div class="text">还没有表情包</div>
+            <button class="btn btn-primary" @click="showImportMenu()">导入表情包</button>
           </div>
         </div>
       </div>
@@ -805,19 +1022,21 @@ onUnmounted(() => {
   </div>
 
   <CollectionBuilder />
-  <ImportMenu ref="importMenu" @imported="onImportDone" />
+  <ImportMenu ref="importMenu" @imported="onImportDone" @importing="onImporting" />
+  <ImportProgressOverlay ref="importProgress" @imported="onImportDone" />
   <SyncOverlay ref="syncOverlay" @synced="onSyncDone" />
   <TagEditor ref="tagEditor" />
   <UpdateDialog ref="updateDialog" />
   <InputDialog ref="inputDialog" />
   <ConfirmDialog ref="confirmDialog" />
+  <SimilarImportDialog ref="similarImportDialog" />
   <ContextMenu
     :visible="ctx.visible.value" :x="ctx.x.value" :y="ctx.y.value"
     :items="ctx.items.value" :trigger="ctx.trigger.value"
     :submenu-visible="ctx.submenuVisible.value" :submenu-items="ctx.submenuItems.value"
     :submenu-x="ctx.submenuX.value" :submenu-y="ctx.submenuY.value"
     @action="onCtxAction" @close="ctx.hide"
-    @show-submenu="onShowSubmenu"
+    @show-submenu="onShowSubmenu" @hide-submenu="ctx.hideSubmenu"
   />
 
   <div id="drop-overlay" :class="{ 'drag-over': dragOver }">
@@ -829,11 +1048,11 @@ onUnmounted(() => {
     </div>
   </div>
 
-  <div id="toast"></div>
-  <div id="loading"><div class="spinner"></div></div>
+  <div id="toast" role="status" aria-live="polite"></div>
+  <div id="loading" :class="{ show: state.loading }"><div class="spinner"></div></div>
 
   <Transition name="startup-fade">
-    <div v-if="startupAnim" id="startup-anim" :style="{ background: state.startupBgColor }">
+    <div v-if="startupAnim" id="startup-anim" :style="{ background: state.startupBgColor }" @click="dismissStartupAnim">
       <video v-if="startupVideoReady" :src="startupVideoSrc" autoplay muted playsinline @ended="dismissStartupAnim"></video>
     </div>
   </Transition>

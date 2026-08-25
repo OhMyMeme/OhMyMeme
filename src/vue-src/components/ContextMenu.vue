@@ -17,6 +17,7 @@ const props = defineProps<{
 const emit = defineEmits<{
   action: [action: string, trigger: MenuTrigger]
   'show-submenu': [items: MenuItem[], x: number, y: number]
+  'hide-submenu': []
   close: []
 }>()
 
@@ -55,14 +56,18 @@ watch(() => [props.submenuVisible, props.submenuItems, props.submenuX, props.sub
   }
 })
 
-function onClick(action: string) {
-  emit('action', action, {} as MenuTrigger)
-}
-
-function onSubmenuEnter(e: MouseEvent, action: string) {
-  if (action === 'add-to-subgroup') {
-    emit('show-submenu', [], e.clientX, e.clientY)
+// 点击子菜单项切换展开/收起；子菜单位于该项右缘，避免锚在鼠标点漂移
+function onItemClick(e: MouseEvent, item: MenuItem) {
+  if (item.action === 'add-to-subgroup') {
+    if (props.submenuVisible) {
+      emit('hide-submenu')
+    } else {
+      const r = (e.currentTarget as HTMLElement).getBoundingClientRect()
+      emit('show-submenu', [], r.right + 4, r.top)
+    }
+    return
   }
+  emit('action', item.action, {} as MenuTrigger)
 }
 </script>
 
@@ -73,10 +78,9 @@ function onSubmenuEnter(e: MouseEvent, action: string) {
         v-for="item in items"
         :key="item.action"
         class="ctx-item"
-        :class="{ danger: item.danger, disabled: item.disabled }"
+        :class="{ danger: item.danger, disabled: item.disabled, 'has-submenu': item.action === 'add-to-subgroup' }"
         :disabled="item.disabled"
-        @click.stop="onClick(item.action)"
-        @mouseenter="onSubmenuEnter($event, item.action)"
+        @click.stop="onItemClick($event, item)"
       >
         {{ item.label }}
       </button>
@@ -86,7 +90,7 @@ function onSubmenuEnter(e: MouseEvent, action: string) {
         v-for="item in submenuItems"
         :key="item.action"
         class="ctx-item"
-        @click.stop="onClick(item.action)"
+        @click.stop="onItemClick($event, item)"
       >
         {{ item.label }}
       </button>
@@ -142,6 +146,14 @@ function onSubmenuEnter(e: MouseEvent, action: string) {
 
 .ctx-item.danger:hover {
   background: rgba(239, 68, 68, 0.1);
+}
+
+.ctx-item.has-submenu::after {
+  content: '▸';
+  float: right;
+  color: var(--muted);
+  font-size: 11px;
+  margin-left: 12px;
 }
 
 .ctx-item.disabled {

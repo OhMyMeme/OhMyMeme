@@ -1,14 +1,23 @@
 <script setup lang="ts">
 import { useCollectionBuilder } from '../composables/useCollectionBuilder'
+import { trapTabFocus } from '../utils/api'
 
 const cb = useCollectionBuilder()
+
+function onBoxKeydown(e: KeyboardEvent) {
+  if (e.key === 'Escape') { e.stopPropagation(); cb.close() }
+  else if (e.key === 'Tab') {
+    const box = document.getElementById('cb-box')
+    if (box) trapTabFocus(box, e)
+  }
+}
 </script>
 
 <template>
   <div v-if="cb.visible.value" id="cb-overlay">
-    <div id="cb-box">
+    <div id="cb-box" role="dialog" aria-modal="true" aria-labelledby="cb-title" @keydown="onBoxKeydown">
       <div class="cb-header">
-        <h2>添加分组</h2>
+        <h2 id="cb-title">添加分组</h2>
         <div class="cb-name-wrap">
           <input
             id="cb-name"
@@ -60,7 +69,13 @@ const cb = useCollectionBuilder()
               :key="meme.id"
               class="cb-meme"
               :class="{ selected: cb.selectedIds.value.has(meme.id) }"
+              role="button"
+              tabindex="0"
+              :aria-pressed="cb.selectedIds.value.has(meme.id)"
+              :aria-label="meme.name || meme.original_name || meme.filename"
               @click="cb.toggleMeme(meme.id)"
+              @keydown.enter.prevent="cb.toggleMeme(meme.id)"
+              @keydown.space.prevent="cb.toggleMeme(meme.id)"
             >
               <img :src="`/api/thumb/${meme.id}/${encodeURIComponent(meme.filename)}`" :alt="meme.name || meme.original_name || meme.filename" loading="lazy">
               <div v-if="cb.selectedIds.value.has(meme.id)" class="cb-check">✓</div>
@@ -76,7 +91,12 @@ const cb = useCollectionBuilder()
               v-for="meme in cb.allMemes.value.filter(m => cb.selectedIds.value.has(m.id))"
               :key="meme.id"
               class="cb-meme selected"
+              role="button"
+              tabindex="0"
+              :aria-label="meme.name || meme.original_name || meme.filename"
               @click="cb.toggleMeme(meme.id)"
+              @keydown.enter.prevent="cb.toggleMeme(meme.id)"
+              @keydown.space.prevent="cb.toggleMeme(meme.id)"
             >
               <img :src="`/api/thumb/${meme.id}/${encodeURIComponent(meme.filename)}`" :alt="meme.name || meme.original_name || meme.filename" loading="lazy">
               <div class="cb-check">✓</div>
@@ -303,7 +323,7 @@ const cb = useCollectionBuilder()
   width: 18px;
   height: 18px;
   border-radius: 50%;
-  background: var(--primary);
+  background: var(--primary-strong);
   color: white;
   font-size: 10px;
   display: flex;

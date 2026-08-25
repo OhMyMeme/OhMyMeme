@@ -41,8 +41,63 @@ function renderMarkdown(md) {
   return s;
 }
 
+/* 覆盖层焦点管理（无障碍） */
+let _settingsFocusTarget = null;
+function rememberSettingsFocus() {
+  _settingsFocusTarget = document.activeElement instanceof HTMLElement ? document.activeElement : null;
+}
+function restoreSettingsFocus() {
+  const el = _settingsFocusTarget;
+  _settingsFocusTarget = null;
+  if (el && el.isConnected) el.focus();
+}
+// Tab 循环：把焦点限制在覆盖层 box 内
+function trapSettingsFocus(box, e) {
+  if (e.key !== 'Tab') return;
+  const items = box.querySelectorAll('button, input, select, textarea, [tabindex]:not([tabindex="-1"])');
+  if (!items.length) return;
+  const first = items[0];
+  const last = items[items.length - 1];
+  const active = document.activeElement;
+  if (e.shiftKey && (active === first || !box.contains(active))) {
+    e.preventDefault(); last.focus();
+  } else if (!e.shiftKey && (active === last || !box.contains(active))) {
+    e.preventDefault(); first.focus();
+  }
+}
+// 找当前可见覆盖层（静态 HTML + 动态创建的 update/confirm 弹窗）
+const _SETTINGS_OVERLAY_IDS = ['danger-overlay','sync-progress-overlay','sync-done-overlay','storage-migrate-overlay','qq-import-overlay','qqnt-overlay','tg-import-overlay','dy-import-overlay','wechat-import-overlay','update-overlay'];
+function visibleSettingsOverlay() {
+  for (const id of _SETTINGS_OVERLAY_IDS) {
+    const el = document.getElementById(id);
+    if (el && el.style.display !== 'none') {
+      return el.querySelector('[role="dialog"]') || el;
+    }
+  }
+  return null;
+}
+
 /* Close settings window */
-function closeSettings() {
+let _settingsDirty = false;
+function markSettingsDirty() { _settingsDirty = true; }
+
+// 收集表单输入，未保存的修改在关闭/按 Esc 时提示
+function initDirtyTracking() {
+  const root = document.getElementById('settings-content');
+  if (!root) return;
+  const track = (e) => {
+    const t = e.target;
+    if (t && t.matches && t.matches('input, select, textarea')) markSettingsDirty();
+  };
+  root.addEventListener('input', track);
+  root.addEventListener('change', track);
+}
+
+async function closeSettings() {
+  if (_settingsDirty) {
+    const ok = await showConfirm('有未保存的更改', '当前修改尚未保存，确定放弃并关闭设置窗口吗？');
+    if (!ok) return;
+  }
   try { pywebview.api.close_settings(); } catch(e) {}
 }
 
@@ -94,23 +149,33 @@ async function exportLogs() {
   showToast('日志已导出');
 }
 
-async function checkConnectivity() {  // DeepSeek V4 Flash
+// 网络/LAN 状态色：统一走 CSS token 类，不在 JS 里写死颜色
+function setStatusColor(el, mode) {
+  if (!el) return;
+  el.style.color = '';
+  el.classList.remove('status-ok', 'status-error');
+  if (mode === 'ok') el.classList.add('status-ok');
+  else if (mode === 'error') el.classList.add('status-error');
+}
+
+async function checkConnectivity() {
   const el = document.getElementById('s-net-status');
   if (!el) return;
   el.textContent = '正在检查网络...';
+  setStatusColor(el, '');
   el.style.color = 'var(--muted)';
   try {
     const r = await api('check_connectivity');
     if (r && r.ok) {
       el.innerHTML = '● 已连接 <span style="opacity:.6">(' + esc(r.latency || '') + ')</span>';
-      el.style.color = '#4caf50';
+      setStatusColor(el, 'ok');
     } else {
       el.textContent = '● 无网络连接';
-      el.style.color = '#f44336';
+      setStatusColor(el, 'error');
     }
   } catch(_) {
     el.textContent = '● 检查失败';
-    el.style.color = '#f44336';
+    setStatusColor(el, 'error');
   }
 }
 
@@ -131,12 +196,13 @@ function showConfirm(title, message) {
       + '<button id="sconfirm-cancel" class="btn btn-secondary">取消</button>'
       + '<button id="sconfirm-ok" class="btn btn-primary">确定</button></div>';
     overlay.appendChild(box);
+    rememberSettingsFocus();
     document.body.appendChild(overlay);
     document.getElementById('sconfirm-ok').focus();
-    const cleanup = () => { overlay.remove(); };
+    const cleanup = () => { overlay.remove(); restoreSettingsFocus(); };
     document.getElementById('sconfirm-ok').onclick = () => { cleanup(); resolve(true); };
     document.getElementById('sconfirm-cancel').onclick = () => { cleanup(); resolve(false); };
-    overlay.onkeydown = (e) => { if (e.key === 'Escape') { e.stopPropagation(); cleanup(); resolve(false); } };
+    overlay.onkeydown = (e) => { if (e.key === 'Escape') { e.stopPropagation(); cleanup(); resolve(false); } else trapSettingsFocus(box, e); };
   });
 }
 
@@ -179,12 +245,14 @@ async function refreshLanStatus() {
   if (cc && r) cc.checked = r.allow_secret_config === true;
   if (!r || r.status === 'stopped') {
     el.innerHTML = '● 已停止 <span style="opacity:.6">(端口 ' + (r ? r.port : 17852) + ')</span>';
+    setStatusColor(el, '');
     el.style.color = 'var(--muted)';
     if (lanPollTimer) { clearInterval(lanPollTimer); lanPollTimer = null; }
     return;
   }
   if (r.status === 'error') {
-    el.innerHTML = '● 启动失败 <span style="color:#ef4444">' + esc(r.last_error || '') + '</span>';
+    el.innerHTML = '● 启动失败 <span class="status-error">' + esc(r.last_error || '') + '</span>';
+    setStatusColor(el, '');
     el.style.color = 'var(--muted)';
     if (lanPollTimer) { clearInterval(lanPollTimer); lanPollTimer = null; }
     return;
@@ -194,7 +262,7 @@ async function refreshLanStatus() {
     html += '<br>已连接设备：' + r.clients.map(c => '<code>' + esc(c.addr) + '</code>').join('、');
   }
   el.innerHTML = html;
-  el.style.color = '#4caf50';
+  setStatusColor(el, 'ok');
   if (lanPollTimer) { clearInterval(lanPollTimer); }
   lanPollTimer = setInterval(async () => {
     const r2 = await api('lan_get_status');
@@ -285,6 +353,7 @@ async function getSettings() {
   checkConnectivity();  // DeepSeek V4 Flash
   loadStorageInfo();
   refreshLanStatus();
+  _settingsDirty = false;
   return true;
 }
 
@@ -334,6 +403,7 @@ function cancelStoragePick() {
   loadStorageInfo();
 }
 
+let storageMigrateTimer = null;
 async function applyStorageDir() {
   if (!pendingStorageDir) return;
   const moveEl = document.getElementById('s-move-files');
@@ -350,6 +420,11 @@ async function applyStorageDir() {
     }
     pendingStorageDir = null;
     if (pending) pending.style.display = 'none';
+    if (move && r.async) {
+      // 后台迁移：弹出进度覆盖层轮询
+      showStorageMigration();
+      return;
+    }
     const el = document.getElementById('s-cache-dir');
     if (el && r.cache_dir) el.value = r.cache_dir;
     let msg = '已应用新存储目录';
@@ -362,6 +437,67 @@ async function applyStorageDir() {
   } finally {
     if (btn) btn.disabled = false;
   }
+}
+
+function showStorageMigration() {
+  document.getElementById('storage-migrate-title').textContent = '正在迁移表情包...';
+  document.getElementById('storage-migrate-file').textContent = '准备中';
+  document.getElementById('storage-migrate-bar').style.width = '0%';
+  document.getElementById('storage-migrate-pct').textContent = '0%';
+  document.getElementById('storage-migrate-count').textContent = '';
+  const cancelBtn = document.getElementById('btn-storage-migrate-cancel');
+  if (cancelBtn) { cancelBtn.style.display = 'inline-block'; cancelBtn.disabled = false; }
+  rememberSettingsFocus();
+  document.getElementById('storage-migrate-overlay').style.display = 'flex';
+  if (storageMigrateTimer) clearInterval(storageMigrateTimer);
+  storageMigrateTimer = setInterval(pollStorageMigration, 300);
+  pollStorageMigration();
+}
+
+function hideStorageMigration(restore = true, clearTimer = true) {
+  // 后台运行时保留轮询（clearTimer=false），使完成/失败/取消状态仍可被观察到；
+  // 终态关闭才清 timer
+  if (clearTimer && storageMigrateTimer) { clearInterval(storageMigrateTimer); storageMigrateTimer = null; }
+  document.getElementById('storage-migrate-overlay').style.display = 'none';
+  if (restore) restoreSettingsFocus();
+}
+
+async function pollStorageMigration() {
+  let s = null;
+  try { s = await api('get_storage_migration_progress'); } catch (e) { s = null; }
+  if (!s) return;
+  const bar = document.getElementById('storage-migrate-bar');
+  const pct = document.getElementById('storage-migrate-pct');
+  const file = document.getElementById('storage-migrate-file');
+  const count = document.getElementById('storage-migrate-count');
+  if (bar) bar.style.width = (s.progress || 0) + '%';
+  if (pct) pct.textContent = (s.progress || 0) + '%';
+  if (file) file.textContent = s.current || s.message || '';
+  if (count) count.textContent = s.total > 0 ? ('已迁移 ' + (s.moved || 0) + ' / ' + s.total + ' 个') : '';
+  if (!s.status || s.status === 'idle' || s.status === 'running') return;
+  // 结束状态：done/error/cancelled
+  hideStorageMigration(false);
+  const status = document.getElementById('s-storage-status');
+  if (s.status === 'done') {
+    if (status) status.textContent = '迁移完成，新存储目录已生效（' + (s.total || 0) + ' 个文件）';
+    showToast('存储位置已更新');
+    location.reload();
+  } else if (s.status === 'cancelled') {
+    if (status) status.textContent = '迁移已取消，已回滚已移动文件（原存储目录未变）';
+    showToast('已取消迁移');
+  } else {
+    if (status) status.textContent = '迁移失败：' + (s.error || '未知错误') + '（已回滚，原存储目录未变）';
+    showToast('迁移失败');
+  }
+}
+
+function cancelStorageMigration() {
+  const btn = document.getElementById('btn-storage-migrate-cancel');
+  if (btn) btn.disabled = true;
+  const title = document.getElementById('storage-migrate-title');
+  if (title) title.textContent = '正在取消...';
+  api('cancel_storage_migration').catch(() => {});
+  // overlay 由 pollStorageMigration 收到 cancelled 后自动关闭
 }
 
 function toggleSyncType() {
@@ -480,6 +616,7 @@ async function saveSettings() {
     ...sync
   });
   showToast('设置已保存');
+  _settingsDirty = false;
 }
 
 async function resetSettings() {
@@ -561,6 +698,7 @@ async function resetSettings() {
     await api('lan_set_allow_secret_config', false);
     refreshLanStatus();
     showToast('已恢复默认设置');
+    _settingsDirty = false;
   }
 }
 
@@ -636,6 +774,8 @@ async function showUploadWarning() {
     overlay.style.cssText = 'position:fixed;inset:0;background:rgba(0,0,0,.55);display:flex;align-items:center;justify-content:center;z-index:200;animation:fadeIn .15s';
     overlay.onclick = (e) => { if (e.target === overlay) { overlay.remove(); resolve(false); } };
     const box = document.createElement('div');
+    box.setAttribute('role', 'dialog');
+    box.setAttribute('aria-modal', 'true');
     box.style.cssText = 'background:var(--surface);border-radius:var(--radius-lg);padding:24px 28px;width:380px;border:1px solid var(--border);box-shadow:var(--shadow-lg)';
     box.innerHTML = '<div style="margin-bottom:14px"><h2 style="font-size:15px;font-weight:600;color:var(--fg);margin-bottom:8px">上传确认</h2>'
       + '<p style="font-size:13px;color:var(--fg-secondary);line-height:1.6">上传会将本地的完整状态同步到远端，包括新增、更新和删除操作。远程文件将被覆盖，建议先下载备份。</p></div>'
@@ -645,16 +785,17 @@ async function showUploadWarning() {
       + '<button id="supload-modal-cancel" class="btn btn-secondary">取消</button>'
       + '<button id="supload-modal-confirm" class="btn btn-primary">继续上传</button></div>';
     overlay.appendChild(box);
+    rememberSettingsFocus();
     document.body.appendChild(overlay);
     document.getElementById('supload-modal-confirm').focus();
-    const cleanup = () => { overlay.remove(); };
+    const cleanup = () => { overlay.remove(); restoreSettingsFocus(); };
     document.getElementById('supload-modal-confirm').onclick = async () => {
       const hide = document.getElementById('supload-warn-hide').checked;
       if (hide) await api('save_settings', { sync_hide_upload_warning: true });
       cleanup(); resolve(true);
     };
     document.getElementById('supload-modal-cancel').onclick = () => { cleanup(); resolve(false); };
-    overlay.onkeydown = (e) => { if (e.key === 'Escape') { e.stopPropagation(); cleanup(); resolve(false); } };
+    overlay.onkeydown = (e) => { if (e.key === 'Escape') { e.stopPropagation(); cleanup(); resolve(false); } else trapSettingsFocus(box, e); };
   });
 }
 
@@ -664,11 +805,13 @@ let syncBg = false;
 function hideSyncProgress() {
   syncBg = true;
   document.getElementById('sync-progress-overlay').style.display = 'none';
+  restoreSettingsFocus();
   if (syncPollTimer) { clearInterval(syncPollTimer); syncPollTimer = null; }
 }
 
 function hideSyncDone() {
   document.getElementById('sync-done-overlay').style.display = 'none';
+  restoreSettingsFocus();
   location.reload();
 }
 
@@ -699,6 +842,7 @@ async function doSyncWithProgress(method, title, progressSetting, doneSetting, b
   syncBg = false;
 
   if (showProgress) {
+    rememberSettingsFocus();
     document.getElementById('sync-progress-title').textContent = title;
     document.getElementById('sync-progress-file').textContent = '准备中...';
     document.getElementById('sync-progress-bar').style.width = '0%';
@@ -726,6 +870,7 @@ async function doSyncWithProgress(method, title, progressSetting, doneSetting, b
 
   if (showProgress && !syncBg) {
     document.getElementById('sync-progress-overlay').style.display = 'none';
+    restoreSettingsFocus();
   }
 
   if (r && r.ok) {
@@ -735,9 +880,12 @@ async function doSyncWithProgress(method, title, progressSetting, doneSetting, b
     status.textContent = '完成: 成功 ' + uploaded + ', 跳过 ' + skipped + ', 错误 ' + errors;
 
     if (showDone) {
+      rememberSettingsFocus();
       document.getElementById('sync-done-title').textContent = title + '完成';
       document.getElementById('sync-done-detail').textContent = '成功 ' + uploaded + ' 个';
       document.getElementById('sync-done-overlay').style.display = 'flex';
+      const closeBtn = document.querySelector('#sync-done-overlay .btn');
+      if (closeBtn) closeBtn.focus();
     }
   } else {
     let msg = '失败: ' + ((r && r.error) || '未知错误');
@@ -776,6 +924,7 @@ async function syncPull() {
 let qqPollTimer = null;
 
 function showQQOverlay() {
+  rememberSettingsFocus();
   document.getElementById('qq-import-overlay').style.display = 'flex';
   document.getElementById('btn-qq-save').style.display = 'none';
   document.getElementById('qq-import-error').style.display = 'none';
@@ -784,6 +933,7 @@ function showQQOverlay() {
 
 function closeQQOverlay() {
   document.getElementById('qq-import-overlay').style.display = 'none';
+  restoreSettingsFocus();
   if (qqPollTimer) { clearInterval(qqPollTimer); qqPollTimer = null; }
   api('cancel_qq_import');
 }
@@ -888,6 +1038,7 @@ async function startImportFromZip() {
 let dyPollTimer = null;
 
 function openDYImportDialog() {
+  rememberSettingsFocus();
   document.getElementById('dy-import-overlay').style.display = 'flex';
   document.getElementById('dy-config').style.display = 'block';
   document.getElementById('dy-progress').style.display = 'none';
@@ -896,6 +1047,8 @@ function openDYImportDialog() {
   if (status) { status.textContent = ''; status.className = ''; }
   const btn = document.getElementById('btn-dy-start');
   if (btn) btn.disabled = false;
+  const firstInput = document.getElementById('s-dy-cookie');
+  if (firstInput) firstInput.focus();
 }
 
 function showDYOverlay() {
@@ -911,6 +1064,7 @@ function showDYOverlay() {
 
 function closeDYOverlay() {
   document.getElementById('dy-import-overlay').style.display = 'none';
+  restoreSettingsFocus();
   if (dyPollTimer) { clearInterval(dyPollTimer); dyPollTimer = null; }
   api('cancel_douyin_import');
 }
@@ -984,11 +1138,19 @@ async function startDYImport() {
       } else if (s.status === 'error') {
         document.getElementById('dy-import-title').textContent = '导入失败';
         if (dyPollTimer) { clearInterval(dyPollTimer); dyPollTimer = null; }
+        let hint = s.error || '未知错误';
+        if (s.error_code === 'login_failed') {
+          hint += '；请从浏览器抖音网页版重新复制 Cookie 后重试';
+        } else if (s.error_code === 'sign_failed') {
+          hint += '；请稍后重试，或更新 Cookie 后再试';
+        } else if (s.error_code === 'no_stickers') {
+          hint += '；请确认抖音收藏的自定义表情包存在';
+        }
         const el = document.getElementById('dy-status');
-        el.textContent = '导入失败: ' + (s.error || '');
+        el.textContent = '导入失败: ' + hint;
         el.className = 'error';
         document.getElementById('dy-import-error').style.display = '';
-        document.getElementById('dy-import-error').textContent = s.error || '未知错误';
+        document.getElementById('dy-import-error').textContent = hint;
         btn.disabled = false;
       } else if (s.status === 'cancelled') {
         document.getElementById('dy-import-title').textContent = '已取消';
@@ -1011,6 +1173,7 @@ async function startDYImport() {
 let tgPollTimer = null;
 
 function openTGImportDialog() {
+  rememberSettingsFocus();
   document.getElementById('tg-import-overlay').style.display = 'flex';
   document.getElementById('tg-config').style.display = 'block';
   document.getElementById('tg-progress').style.display = 'none';
@@ -1019,6 +1182,30 @@ function openTGImportDialog() {
   if (status) { status.textContent = ''; status.className = ''; }
   const btn = document.getElementById('btn-tg-start');
   if (btn) btn.disabled = false;
+  const passcode = document.getElementById('s-tg-passcode');
+  if (passcode) passcode.focus();
+}
+
+function formatDuration(sec) {
+  sec = Math.max(0, Math.round(sec || 0));
+  const m = Math.floor(sec / 60);
+  const s = sec % 60;
+  if (m > 0) return m + '分' + (s > 0 ? s + '秒' : '');
+  return s + '秒';
+}
+
+function updateTgEta(s) {
+  const el = document.getElementById('tg-import-eta');
+  if (!el || !s) return;
+  const prog = s.progress || 0;
+  const elapsed = s.elapsed_s || 0;
+  const terminal = ['done', 'error', 'cancelled'].includes(s.status);
+  if (prog <= 0 || elapsed <= 0 || terminal) {
+    el.textContent = elapsed > 0 ? '已用 ' + formatDuration(elapsed) : '';
+    return;
+  }
+  const remain = (100 - prog) / prog * elapsed;
+  el.textContent = '已用 ' + formatDuration(elapsed) + ' · 预计剩余 ' + formatDuration(remain);
 }
 
 function showTGOverlay() {
@@ -1031,10 +1218,15 @@ function showTGOverlay() {
   document.getElementById('tg-import-msg').textContent = '准备中';
   document.getElementById('tg-import-bar').style.width = '0%';
   document.getElementById('tg-import-pct').textContent = '0%';
+  const etaEl = document.getElementById('tg-import-eta');
+  if (etaEl) etaEl.textContent = '';
+  const closeBtn = document.getElementById('btn-tg-close');
+  if (closeBtn) closeBtn.focus();
 }
 
 function closeTGOverlay() {
   document.getElementById('tg-import-overlay').style.display = 'none';
+  restoreSettingsFocus();
   if (tgPollTimer) { clearInterval(tgPollTimer); tgPollTimer = null; }
   api('cancel_tg_import');
 }
@@ -1111,6 +1303,7 @@ async function startTGImport() {
       document.getElementById('tg-import-bar').style.width = (s.progress || 0) + '%';
       document.getElementById('tg-import-pct').textContent = (s.progress || 0) + '%';
       document.getElementById('tg-import-msg').textContent = s.message || '';
+      updateTgEta(s);
 
       if (s.status === 'done') {
         document.getElementById('tg-import-title').textContent = '导入完成';
@@ -1124,10 +1317,14 @@ async function startTGImport() {
         document.getElementById('tg-import-title').textContent = '导入失败';
         if (tgPollTimer) { clearInterval(tgPollTimer); tgPollTimer = null; }
         const el = document.getElementById('tg-status');
-        el.textContent = '导入失败: ' + (s.error || '');
+        let errMsg = s.error || '未知错误';
+        if (s.error_code === 'no_ffmpeg') {
+          errMsg += '；安装 ffmpeg 后可重试，或取消勾选「WebM 转 WebP」直接导入静态贴纸';
+        }
+        el.textContent = '导入失败: ' + errMsg;
         el.className = 'error';
         document.getElementById('tg-import-error').style.display = '';
-        document.getElementById('tg-import-error').textContent = s.error || '未知错误';
+        document.getElementById('tg-import-error').textContent = errMsg;
         if (['no_tdata', 'invalid_tdata', 'no_cache'].includes(s.error_code)) {
           document.getElementById('btn-tg-retry').style.display = '';
         }
@@ -1167,6 +1364,7 @@ function wechatSetCloseLabel(label) {
 }
 
 function openWechatImportDialog() {
+  rememberSettingsFocus();
   document.getElementById('wechat-import-overlay').style.display = 'flex';
   document.getElementById('wechat-config').style.display = 'block';
   document.getElementById('wechat-progress').style.display = 'none';
@@ -1176,6 +1374,8 @@ function openWechatImportDialog() {
   const btn = document.getElementById('btn-wechat-start');
   if (btn) btn.disabled = false;
   wechatSetCloseLabel('取消导入');
+  const pick = document.getElementById('btn-wechat-pick');
+  if (pick) pick.focus();
 }
 
 function showWechatOverlay() {
@@ -1188,10 +1388,13 @@ function showWechatOverlay() {
   document.getElementById('wechat-import-bar').style.width = '0%';
   document.getElementById('wechat-import-pct').textContent = '0%';
   wechatSetCloseLabel('取消导入');
+  const closeBtn = document.getElementById('btn-wechat-close');
+  if (closeBtn) closeBtn.focus();
 }
 
 function closeWechatOverlay() {
   document.getElementById('wechat-import-overlay').style.display = 'none';
+  restoreSettingsFocus();
   const btn = document.getElementById('btn-wechat-start');
   if (btn) btn.disabled = false;
   if (wechatPollTimer) {
@@ -1333,10 +1536,16 @@ async function startWechatImport() {
         if (wechatPollTimer) { clearInterval(wechatPollTimer); wechatPollTimer = null; }
         const el = document.getElementById('wechat-status');
         const errCode = s.error_code ? ' [' + s.error_code + ']' : '';
-        el.textContent = '导入失败: ' + (s.error || '未知错误') + errCode;
+        let errMsg = s.error || '未知错误';
+        if (s.error_code === 'no_binary') {
+          errMsg += '；请检查网络后重试（需从 GitHub 下载辅助工具）';
+        } else if (s.error_code === 'no_key') {
+          errMsg += '；请确认微信已登录且为支持的版本';
+        }
+        el.textContent = '导入失败: ' + errMsg + errCode;
         el.className = 'error';
         document.getElementById('wechat-import-error').style.display = '';
-        document.getElementById('wechat-import-error').textContent = (s.error || '未知错误') + errCode;
+        document.getElementById('wechat-import-error').textContent = errMsg + errCode;
         wechatSetCloseLabel('关闭');
         btn.disabled = false;
       } else if (s.status === 'cancelled') {
@@ -1375,12 +1584,14 @@ function qqntGo(step) {
 }
 
 function qqntShow() {
+  rememberSettingsFocus();
   document.getElementById('qqnt-overlay').style.display = 'flex';
   document.getElementById('qqnt-error').style.display = 'none';
 }
 
 function qqntClose() {
   document.getElementById('qqnt-overlay').style.display = 'none';
+  restoreSettingsFocus();
   if (qqntPollTimer) { clearInterval(qqntPollTimer); qqntPollTimer = null; }
   api('qqnt_cancel');
 }
@@ -1557,21 +1768,37 @@ titlebar.addEventListener('mousedown', async (e) => {
   if (e.target.closest('.title-btn')) return;
   const nativeDrag = await api('start_window_drag', e.button + 1, e.screenX, e.screenY);
   if (nativeDrag) return;   // Linux：交给合成器拖动
-  dragState = { sx: e.screenX, sy: e.screenY };
+  dragState = { sx: e.screenX, sy: e.screenY, px: 0, py: 0, raf: null };
   e.preventDefault();
 });
 document.addEventListener('mousemove', (e) => {
   if (!dragState) return;
-  const dx = e.screenX - dragState.sx, dy = e.screenY - dragState.sy;
-  if (dx !== 0 || dy !== 0) {
-    api('move_window', dx, dy);
-    dragState.sx = e.screenX; dragState.sy = e.screenY;
-  }
+  // 记录相对拖动起点的总偏移（屏幕坐标，自愈无累积滞后）
+  dragState.px = e.screenX - dragState.sx;
+  dragState.py = e.screenY - dragState.sy;
+  // rAF 合并每帧最新位置，避免高回报率鼠标消息风暴堵塞桥接
+  if (dragState.raf) return;
+  dragState.raf = requestAnimationFrame(() => {
+    if (!dragState) return;
+    dragState.raf = null;
+    const dx = dragState.px, dy = dragState.py;
+    if (dx !== 0 || dy !== 0) {
+      api('move_window', dx, dy);
+    }
+  });
 });
-document.addEventListener('mouseup', () => { dragState = null; });
+document.addEventListener('mouseup', () => {
+  if (dragState && dragState.raf) cancelAnimationFrame(dragState.raf);
+  api('stop_window_drag').catch(() => {});
+  dragState = null;
+});
 
 /* Keyboard shortcuts */
 document.addEventListener('keydown', (e) => {
+  if (e.key === 'Tab') {
+    const box = visibleSettingsOverlay();
+    if (box) { trapSettingsFocus(box, e); return; }
+  }
   if (e.key === 'Escape') {
     const dangerOverlay = document.getElementById('danger-overlay');
     if (dangerOverlay && dangerOverlay.style.display === 'flex') {
@@ -1600,7 +1827,7 @@ document.addEventListener('keydown', (e) => {
     }
     const qqntOverlay = document.getElementById('qqnt-overlay');
     if (qqntOverlay && qqntOverlay.style.display === 'flex') {
-      qqntOverlay.style.display = 'none';
+      qqntClose();
       return;
     }
     const syncOverlay = document.getElementById('sync-progress-overlay');
@@ -1611,6 +1838,12 @@ document.addEventListener('keydown', (e) => {
     const syncDoneOverlay = document.getElementById('sync-done-overlay');
     if (syncDoneOverlay && syncDoneOverlay.style.display === 'flex') {
       syncDoneOverlay.style.display = 'none';
+      restoreSettingsFocus();
+      return;
+    }
+    const migrateOverlay = document.getElementById('storage-migrate-overlay');
+    if (migrateOverlay && migrateOverlay.style.display === 'flex') {
+      cancelStorageMigration();
       return;
     }
     closeSettings();
@@ -1623,7 +1856,12 @@ async function checkUpdate() {
   const btn = document.getElementById('btn-check-update');
   const status = document.getElementById('s-update-status');
   btn.disabled = true; btn.textContent = '检查中...'; status.textContent = '';
-  const r = await api('check_update');
+  // 首次发起强制检查；后台未完成时用非 force 持续轮询直到拿到结果
+  let r = await api('check_update', false, true);
+  while (r && r.pending) {
+    await new Promise(res => setTimeout(res, 1500));
+    r = await api('check_update', false, false);
+  }
   btn.disabled = false; btn.textContent = '检查更新';
   if (!r) { status.textContent = '检查失败'; return; }
   document.getElementById('s-ver-current').textContent = '当前版本: ' + (r.current || '--');
@@ -1640,9 +1878,11 @@ function showUpdateDialog(current, latest, url, notes) {
   const overlay = document.createElement('div');
   overlay.id = 'update-overlay';
   overlay.style.cssText = 'position:fixed;inset:0;background:rgba(0,0,0,.55);display:flex;align-items:center;justify-content:center;z-index:300;animation:fadeIn .15s';
-  overlay.onclick = (e) => { if (e.target === overlay) overlay.remove(); };
+  overlay.onclick = (e) => { if (e.target === overlay) { e.stopPropagation(); updCleanup(); } };
   const box = document.createElement('div');
   box.className = 'upd-dialog';
+  box.setAttribute('role', 'dialog');
+  box.setAttribute('aria-modal', 'true');
   box.style.cssText = 'background:var(--surface);border-radius:var(--radius-lg);padding:24px 28px;width:440px;max-height:80vh;overflow-y:auto;border:1px solid var(--border);box-shadow:var(--shadow-lg)';
   box.innerHTML = '<div style="margin-bottom:16px"><h2 style="font-size:15px;font-weight:600;color:var(--fg);margin-bottom:8px">发现新版本</h2>'
     + '<p style="font-size:13px;color:var(--fg-secondary);line-height:1.6">当前版本: ' + esc(current) + '<br>最新版本: ' + esc(latest) + '</p></div>'
@@ -1653,8 +1893,10 @@ function showUpdateDialog(current, latest, url, notes) {
     + '<button id="upd-later" class="btn btn-secondary btn-flex">稍后提示</button>'
     + '</div></div>';
   overlay.appendChild(box);
+  rememberSettingsFocus();
   document.body.appendChild(overlay);
   document.getElementById('upd-update').focus();
+  const updCleanup = () => { overlay.remove(); restoreSettingsFocus(); };
 
    document.getElementById('upd-update').onclick = async () => {
     const btn = document.getElementById('upd-update');
@@ -1681,7 +1923,7 @@ function showUpdateDialog(current, latest, url, notes) {
         clearInterval(poll);
         document.getElementById('upd-progress-text').textContent = '下载完成，启动安装...';
         const r = await api('run_downloaded_installer');
-        overlay.remove();
+        updCleanup();
         if (r) {
           showToast('安装程序已启动，安装完成后将自动更新');
         } else {
@@ -1691,12 +1933,12 @@ function showUpdateDialog(current, latest, url, notes) {
         clearInterval(poll);
         document.getElementById('upd-progress-text').textContent = '下载失败: ' + (s.error || '未知错误');
         container.innerHTML += '<button id="upd-retry" class="btn btn-primary" style="width:100%;margin-top:8px">重试</button>';
-        document.getElementById('upd-retry').onclick = () => { overlay.remove(); showUpdateDialog(current, latest, url); };
+        document.getElementById('upd-retry').onclick = () => { updCleanup(); showUpdateDialog(current, latest, url); };
       }
     }, 500);
   };
-  document.getElementById('upd-later').onclick = () => { overlay.remove(); };
-  overlay.onkeydown = (e) => { if (e.key === 'Escape') overlay.remove(); };
+  document.getElementById('upd-later').onclick = () => { updCleanup(); };
+  overlay.onkeydown = (e) => { if (e.key === 'Escape') { e.stopPropagation(); updCleanup(); } else trapSettingsFocus(box, e); };
 }
 
 async function checkUpdateBackground() {
@@ -1721,6 +1963,7 @@ function showDangerConfirm(target) {
     title.textContent = '删除云端所有表情包';
     desc.textContent = '将永久删除远端服务器上的全部表情包文件，本地文件不受影响。';
   }
+  rememberSettingsFocus();
   document.getElementById('danger-overlay').style.display = 'flex';
   document.getElementById('danger-input-1').value = '';
   document.getElementById('danger-input-2').value = '';
@@ -1731,6 +1974,7 @@ function showDangerConfirm(target) {
 function dangerCancel() {
   document.getElementById('danger-overlay').style.display = 'none';
   dangerTarget = null;
+  restoreSettingsFocus();
 }
 
 document.getElementById('danger-input-1').addEventListener('input', checkDangerMatch);
@@ -1754,6 +1998,7 @@ async function dangerExec() {
   btn.textContent = '确认执行';
   document.getElementById('danger-overlay').style.display = 'none';
   dangerTarget = null;
+  restoreSettingsFocus();
   if (r && r.ok) {
     showToast('操作已完成');
   } else {
@@ -1801,4 +2046,5 @@ async function initVersion() {
 document.addEventListener('DOMContentLoaded', () => {
   initSettings();
   setTimeout(initVersion, 500);
+  initDirtyTracking();
 });

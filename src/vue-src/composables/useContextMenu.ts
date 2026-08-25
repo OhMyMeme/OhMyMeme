@@ -53,6 +53,10 @@ export function useContextMenu() {
     submenuVisible.value = true
   }
 
+  function hideSubmenu() {
+    submenuVisible.value = false
+  }
+
   return {
     visible,
     x,
@@ -66,5 +70,6 @@ export function useContextMenu() {
     show,
     hide,
     showSubmenu,
+    hideSubmenu,
   }
 }

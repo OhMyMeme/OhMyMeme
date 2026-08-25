@@ -52,7 +52,7 @@ function go(p: number) {
   align-items: center;
   justify-content: center;
   gap: 4px;
-  padding: 8px 10px;
+  padding: 5px 10px;
   border-bottom: 1px solid var(--border);
   flex-shrink: 0;
   flex-wrap: wrap;
@@ -78,9 +78,14 @@ function go(p: number) {
 }
 
 .pager-btn.active {
-  background: var(--primary);
-  border-color: var(--primary);
+  background: var(--primary-strong);
+  border-color: var(--primary-strong);
   color: #fff;
+}
+
+.pager-btn:focus-visible {
+  outline: 2px solid var(--primary);
+  outline-offset: 2px;
 }
 
 .pager-btn:disabled {

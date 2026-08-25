@@ -10,6 +10,8 @@ import subprocess
 import sys
 import tempfile
 import threading
+import time
+from concurrent.futures import ThreadPoolExecutor, as_completed
 
 logger = logging.getLogger(__name__)
 
@@ -25,25 +27,51 @@ _TG_STATE = {
     "rejected": 0,
     "convert_failed": 0,
     "skipped_static": 0,
+    "elapsed_s": 0,
 }
 
-_TG_LOCK = threading.Lock()
+_TG_LOCK = threading.RLock()
 _TG_CANCEL = False
+_TG_ACTIVE_PROC = set()
+_TG_T0 = None
 
 
 def _update_tg(**kw):
     with _TG_LOCK:
+        _refresh_tg_elapsed()
         _TG_STATE.update(**kw)
+
+
+# 按任务起点刷新已用秒数（仅运行中状态推进）
+def _refresh_tg_elapsed():
+    if _TG_T0 is not None and _TG_STATE.get("status") in (
+        "scanning",
+        "loading_key",
+        "decrypting",
+        "converting",
+        "deduping",
+        "importing",
+    ):
+        _TG_STATE["elapsed_s"] = int(time.monotonic() - _TG_T0)
 
 
 def get_tg_progress():
     with _TG_LOCK:
+        _refresh_tg_elapsed()
         return dict(_TG_STATE)
 
 
 def cancel_tg_import():
     global _TG_CANCEL
     _TG_CANCEL = True
+    with _TG_LOCK:
+        procs = list(_TG_ACTIVE_PROC)
+    for p in procs:
+        if p.poll() is None:
+            try:
+                p.terminate()
+            except Exception as e:
+                logger.warning(f"terminate tg process failed: {e}")
 
 
 def _check_cancel():
@@ -72,8 +100,17 @@ def _import_crypto():
 
 
 def _reset_state():
-    global _TG_CANCEL
+    global _TG_CANCEL, _TG_T0
     _TG_CANCEL = False
+    _TG_T0 = None
+    with _TG_LOCK:
+        for p in list(_TG_ACTIVE_PROC):
+            if p.poll() is None:
+                try:
+                    p.terminate()
+                except Exception:
+                    pass
+        _TG_ACTIVE_PROC.clear()
     _update_tg(
         status="idle",
         progress=0,
@@ -86,6 +123,7 @@ def _reset_state():
         rejected=0,
         convert_failed=0,
         skipped_static=0,
+        elapsed_s=0,
     )
 
 
@@ -292,8 +330,36 @@ def _check_ffmpeg():
     return shutil.which("ffmpeg") is not None
 
 
-def convert_webm_to_webp(webm_path, out_path):
-    """webm 转 animated webp: 无损(lossless 1), 保持宽高比, 最长边 512"""
+def _reap_proc(proc, timeout=5):
+    """集中回收子进程：kill 后无条件 wait 回收，实际退出后才从活动集合移除"""
+    if proc is None:
+        return
+    if proc.poll() is None:
+        try:
+            proc.kill()
+        except Exception:
+            pass
+        # kill 后无条件 wait：真实子进程需 wait 才能回收（避免 zombie）
+        try:
+            proc.wait(timeout=timeout)
+        except subprocess.TimeoutExpired:
+            try:
+                proc.kill()  # 二次 SIGKILL 兜底，确保尽快退出
+            except Exception:
+                pass
+            try:
+                proc.wait(timeout=timeout)
+            except Exception:
+                pass
+    # 仅进程实际退出才从集合移除；未退出则保留（可被后续 cancel terminate）
+    if proc.poll() is not None:
+        with _TG_LOCK:
+            _TG_ACTIVE_PROC.discard(proc)
+
+
+def convert_webm_to_webp(webm_path, out_path, timeout=120):
+    """webm 转 animated webp: 有损(q80), 保持宽高比, 最长边 512"""
+    proc = None
     try:
         cmd = [
             "ffmpeg",
@@ -303,22 +369,38 @@ def convert_webm_to_webp(webm_path, out_path):
             "-i",
             webm_path,
             "-loop",
-            "0",
-            "-lossless",
             "1",
+            "-lossless",
+            "0",
             "-quality",
-            "100",
+            "80",
             "-vf",
             "scale=512:512:force_original_aspect_ratio=decrease",
             "-an",
             out_path,
         ]
-        kw = {"capture_output": True, "timeout": 120}
+        kw = {"stdout": subprocess.PIPE, "stderr": subprocess.PIPE}
         if os.name == "nt" and getattr(sys, "frozen", False):
             kw["creationflags"] = subprocess.CREATE_NO_WINDOW
-        result = subprocess.run(cmd, **kw)
-        return result.returncode == 0
+        proc = subprocess.Popen(cmd, **kw)
+        with _TG_LOCK:
+            _TG_ACTIVE_PROC.add(proc)
+        try:
+            if _check_cancel():
+                proc.terminate()
+            try:
+                _, _ = proc.communicate(timeout=timeout)
+            except subprocess.TimeoutExpired:
+                _reap_proc(proc)
+                raise
+        finally:
+            # 仅在进程实际退出后移除；未退出交由回收路径处理
+            if proc.poll() is not None:
+                with _TG_LOCK:
+                    _TG_ACTIVE_PROC.discard(proc)
+        return proc.returncode == 0
     except Exception as e:
+        _reap_proc(proc)
         logger.warning(f"convert_webm_to_webp failed: {e}")
         return False
 
@@ -401,10 +483,13 @@ def start_tg_import(webui, tdata_path=None, passcode="", convert_webm=True):
             "loading_key",
             "decrypting",
             "converting",
+            "deduping",
             "importing",
         ):
             return False
         _reset_state()
+        # 锁内立即占位运行态，使并发调用在锁内看到 scanning 而拒绝，防止双 worker
+        _update_tg(status="scanning", message="正在检测 Telegram Desktop 数据目录...")
     threading.Thread(
         target=_tg_worker,
         args=(webui, tdata_path, passcode, convert_webm),
@@ -424,6 +509,7 @@ def _tg_worker(webui, tdata_path, passcode, convert_webm):
         if tdata_path:
             tdata = tdata_path
             if not is_valid_tdata(tdata):
+                logger.error("tg import: 无效 tdata 目录: %s", tdata)
                 _update_tg(
                     status="error",
                     error_code="invalid_tdata",
@@ -436,6 +522,7 @@ def _tg_worker(webui, tdata_path, passcode, convert_webm):
         else:
             tdata = find_tdata_path()
             if not tdata:
+                logger.error("tg import: 未检测到 tdata 目录")
                 _update_tg(
                     status="error",
                     error_code="no_tdata",
@@ -453,6 +540,7 @@ def _tg_worker(webui, tdata_path, passcode, convert_webm):
         if not os.path.exists(key_path):
             key_path = os.path.join(tdata, "key_data")
         if not os.path.exists(key_path):
+            logger.error("tg import: 未找到 key_datas 文件: %s", key_path)
             _update_tg(
                 status="error",
                 error_code="invalid_tdata",
@@ -462,6 +550,7 @@ def _tg_worker(webui, tdata_path, passcode, convert_webm):
         try:
             local_key = read_local_key(key_path, passcode)
         except Exception as e:
+            logger.error("tg import: 密钥加载失败: %s", e)
             _update_tg(
                 status="error",
                 error_code="bad_key",
@@ -477,6 +566,7 @@ def _tg_worker(webui, tdata_path, passcode, convert_webm):
             if os.path.isdir(p):
                 cache_dirs.append(p)
         if not cache_dirs:
+            logger.error("tg import: 未找到缓存目录: %s", tdata)
             _update_tg(status="error", error_code="no_cache", error="未找到缓存目录")
             return
         all_files = []
@@ -487,6 +577,8 @@ def _tg_worker(webui, tdata_path, passcode, convert_webm):
                         continue
                     all_files.append(os.path.join(root, name))
         total_files = len(all_files)
+        global _TG_T0
+        _TG_T0 = time.monotonic()
         _update_tg(
             status="decrypting",
             message="正在解密缓存文件...",
@@ -538,6 +630,7 @@ def _tg_worker(webui, tdata_path, passcode, convert_webm):
         if convert_webm:
             webm_count = sum(1 for p in decrypted_paths if p.endswith(".webm"))
             if webm_count and not _check_ffmpeg():
+                logger.error("tg import: 检测到 WebM 但未安装 ffmpeg")
                 _update_tg(
                     status="error",
                     error_code="no_ffmpeg",
@@ -558,31 +651,76 @@ def _tg_worker(webui, tdata_path, passcode, convert_webm):
                 _update_tg(status="cancelled", message="已取消")
                 return
             converted = []
-            for idx, fpath in enumerate(decrypted_paths):
-                if _check_cancel():
-                    _update_tg(status="cancelled", message="已取消")
-                    return
-                if fpath.endswith(".webm"):
-                    webp_path = fpath.replace(".webm", ".webp")
-                    if convert_webm_to_webp(fpath, webp_path):
-                        os.unlink(fpath)
-                        converted.append(webp_path)
+            total = len(decrypted_paths)
+            # 并行转换: 受控并发, 避免内存峰值与资源争用
+            workers = min(os.cpu_count() or 1, 4)
+            executor = ThreadPoolExecutor(max_workers=workers)
+            futures = {}
+            done_count = 0
+            fail_count = 0
+            try:
+                for fpath in decrypted_paths:
+                    if _check_cancel():
+                        break
+                    if fpath.endswith(".webm"):
+                        webp_path = fpath.replace(".webm", ".webp")
+                        fut = executor.submit(convert_webm_to_webp, fpath, webp_path)
+                        futures[fut] = (fpath, webp_path)
                     else:
-                        convert_failed += 1
-                else:
-                    converted.append(fpath)
-                total = len(decrypted_paths)
-                pct = int((idx + 1) / total * 100) if total else 100
-                _update_tg(
-                    progress=pct,
-                    done=idx + 1,
-                    convert_failed=convert_failed,
-                    message=f"正在转换: {idx + 1}/{total}",
-                )
+                        converted.append(fpath)
+                        with _TG_LOCK:
+                            done_count += 1
+                        pct = int(done_count / total * 100) if total else 100
+                        _update_tg(
+                            progress=pct,
+                            done=done_count,
+                            convert_failed=fail_count,
+                            message=f"正在转换: {done_count}/{total}",
+                        )
+                for fut in as_completed(futures):
+                    if _check_cancel():
+                        break
+                    fpath, webp_path = futures[fut]
+                    try:
+                        ok = fut.result()
+                    except Exception as e:
+                        logger.warning(f"convert failed {fpath}: {e}")
+                        ok = False
+                    with _TG_LOCK:
+                        done_count += 1
+                        if ok:
+                            try:
+                                os.unlink(fpath)
+                            except OSError:
+                                pass
+                            converted.append(webp_path)
+                        else:
+                            fail_count += 1
+                        pct = int(done_count / total * 100) if total else 100
+                        _update_tg(
+                            progress=pct,
+                            done=done_count,
+                            convert_failed=fail_count,
+                            message=f"正在转换: {done_count}/{total}",
+                        )
+            finally:
+                # 等已启动的转换 future 退出，避免与 temp_dir 清理/下次导入交错
+                executor.shutdown(wait=True, cancel_futures=True)
+            if _check_cancel():
+                _update_tg(status="cancelled", message="已取消")
+                return
+            convert_failed = fail_count
             decrypted_paths = converted
             _update_tg(status="converting", message="转换完成")
         skipped_static = 0
         if decrypted_paths:
+            _update_tg(
+                status="deduping",
+                message="正在去重动态表情的静态版本...",
+                progress=0,
+                done=0,
+                total=len(decrypted_paths),
+            )
             decrypted_paths, skipped_static = dedup_static_against_animated(
                 decrypted_paths
             )
@@ -611,9 +749,30 @@ def _tg_worker(webui, tdata_path, passcode, convert_webm):
         if _check_cancel():
             _update_tg(status="cancelled", message="已取消")
             return
-        result = webui._do_import(decrypted_paths)
-        imported = len(result.get("ids", []))
-        rejected = result.get("rejected", 0)
+        total = len(decrypted_paths)
+        imported_ids = []
+        rejected = 0
+        batch = 20
+        for i in range(0, total, batch):
+            if _check_cancel():
+                _update_tg(status="cancelled", message="已取消")
+                return
+            chunk = decrypted_paths[i : i + batch]
+            r = webui._do_import(chunk)
+            imported_ids.extend(r.get("ids", []))
+            rejected += r.get("rejected", 0)
+            _update_tg(
+                status="importing",
+                message=f"正在导入: {min(i + batch, total)}/{total}",
+                progress=int(min(i + batch, total) / total * 100),
+                done=min(i + batch, total),
+            )
+        imported = len(imported_ids)
+        if imported:
+            try:
+                webui.ensure_import_collection(imported_ids, "Telegram")
+            except Exception as e:
+                logger.error("tg 自动分组失败: %s", e)
         msg = f"导入完成，共 {imported} 个表情"
         if convert_failed:
             msg += f"（{convert_failed} 个 WebM 转换失败已跳过）"
@@ -623,7 +782,7 @@ def _tg_worker(webui, tdata_path, passcode, convert_webm):
             status="done",
             message=msg,
             progress=100,
-            done=len(decrypted_paths),
+            done=total,
             imported=imported,
             rejected=rejected,
             convert_failed=convert_failed,
