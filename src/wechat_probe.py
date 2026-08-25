@@ -951,8 +951,10 @@ def _wechat_worker(webui, user_root, download, account_path):
             imported = len(result.get("ids", []))
             rejected = result.get("rejected", 0)
             if imported:
-                # 自动归入「微信」分组（同名复用）
-                webui.ensure_import_collection(result.get("ids", []), "微信")
+                try:
+                    webui.ensure_import_collection(result.get("ids", []), "微信")
+                except Exception as e:
+                    logger.error("wechat 自动分组失败: %s", e)
         else:
             imported = 0
             rejected = 0

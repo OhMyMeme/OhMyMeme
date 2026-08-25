@@ -706,8 +706,9 @@ async function onDrop(e: DragEvent) {
     try {
       const r = await window.pywebview?.api?.download_original_image(uri)
       if (r?.ok) { showToast('导入成功'); search(); refreshCollections(); return }
+      if (r?.duplicate) { showToast('该图片已存在'); return }
       if (r?.similar_pending) {
-        const action = await similarImportDialog.value?.open(r.candidates || [], r.truncated, r.scan_limit)
+        const action = await similarImportDialog.value?.open(r.candidates || [])
         if (action) {
           const rr = await window.pywebview?.api?.resolve_similar_import(r.token, action)
           if (rr?.ok && rr.imported) { showToast('导入成功'); search(); refreshCollections() }
@@ -741,7 +742,7 @@ async function onDrop(e: DragEvent) {
       let j: any = null
       try { j = await res.json() } catch (_) { j = null }
       if (j?.similar_pending) {
-        const action = await similarImportDialog.value?.open(j.candidates || [], j.truncated, j.scan_limit)
+        const action = await similarImportDialog.value?.open(j.candidates || [])
         if (action) {
           const rr = await window.pywebview?.api?.resolve_similar_import(j.token, action)
           if (rr?.ok && rr.imported) { showToast('导入成功'); search(); refreshCollections() }

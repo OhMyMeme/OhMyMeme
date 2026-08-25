@@ -44,6 +44,7 @@ async function poll() {
   if (s.status === 'done') {
     finalMsg.value = '导入完成，共导入 ' + (s.imported || 0) + ' 个表情'
     if (s.rejected) finalMsg.value += '，跳过 ' + s.rejected + ' 个超限文件'
+    if (s.skipped_dup) finalMsg.value += '，' + s.skipped_dup + ' 个已存在（重复）'
     showToast('导入完成')
     emit('imported')
   } else if (s.status === 'cancelled') {

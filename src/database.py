@@ -141,7 +141,12 @@ class MemeDB:
     ) -> int:
         with self._lock:
             conn = self._get_conn()
-            ph_hex = hex(perceptual_hash) if perceptual_hash is not None else None
+            if perceptual_hash:
+                ph_hex = hex(perceptual_hash)
+            elif perceptual_hash == 0:
+                ph_hex = "0"  # 已计算但无感知内容：占位，避免反复回填
+            else:
+                ph_hex = None
             cur = conn.execute(
                 """INSERT INTO memes
                    (filename, file_hash, width, height,
@@ -602,7 +607,12 @@ class MemeDB:
 
     def set_perceptual_hash(self, meme_id: int, phash: int):
         """写入/更新某 meme 的感知哈希（hex 文本存储，惰性回填用）"""
-        ph_hex = hex(phash) if phash is not None else None
+        if phash:
+            ph_hex = hex(phash)
+        elif phash == 0:
+            ph_hex = "0"  # 已计算但无感知内容：占位，避免反复回填
+        else:
+            ph_hex = None
         with self._lock:
             conn = self._get_conn()
             conn.execute(

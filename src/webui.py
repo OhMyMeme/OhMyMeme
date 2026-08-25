@@ -234,6 +234,21 @@ def _find_hotkey_window_position(cursor, work_area, width, height):
     return None
 
 
+def _window_drag_update(win_x, win_y, origin, last_move, dx, dy):
+    """窗口拖动一步计算：返回 (origin, last_move, target)；target 为 None 时无需移动窗口
+
+    - origin 为空：记录拖动起点窗口位置并返回（本次不移动）
+    - 8ms 节流期内：丢弃（不移动）
+    - 否则按起点 + 总偏移移动到绝对目标（自愈，无累积滞后）
+    """
+    now = time.monotonic()
+    if origin is None:
+        return (win_x - dx, win_y - dy), now, None
+    if now - last_move < 0.008:
+        return origin, last_move, None
+    return origin, now, (origin[0] + dx, origin[1] + dy)
+
+
 class JsApi:
     """暴露给前端的 JS API"""
 
@@ -1195,31 +1210,21 @@ class JsApi:
         if not w:
             return
         try:
-            now = time.monotonic()
-            if not self._drag_origin:
-                # 新一轮拖动起点：窗口当前位置 + 前端传来的当帧总偏移
-                self._drag_origin = self._new_drag_origin(w.x, w.y, dx, dy)
-                self._drag_last_move = now
-                return
-            # 8ms 节流丢弃积压的中间消息，主线程只处理最新目标位置
-            if now - self._drag_last_move < 0.008:
-                return
-            self._drag_last_move = now
-            ox, oy = self._drag_origin
-            w.move(ox + dx, oy + dy)
+            origin, last, target = _window_drag_update(
+                w.x, w.y, self._drag_origin, self._drag_last_move, dx, dy
+            )
+            self._drag_origin, self._drag_last_move = origin, last
+            if target:
+                w.move(*target)
         except Exception:
             pass
-
-    def _new_drag_origin(self, wx: int, wy: int, dx: int, dy: int):
-        """记录起点窗口位置（前端传的是自拖start的总偏移，故目标=起点位置）"""
-        return (wx - dx, wy - dy)
 
     def stop_window_drag(self):
         self._drag_origin = None
 
     def start_window_drag(self, button: int, root_x: int, root_y: int) -> bool:
-        self._drag_origin = None
         """Linux 用 GTK begin_move_drag 合成器拖动；其他平台走增量回退"""
+        self._drag_origin = None
         if platform.system() != "Linux":
             return False
         w = self._webui._window
@@ -1451,16 +1456,17 @@ def _storage_migrate_worker(old: Path, new: Path):
         moved = 0
         for src, dst in plan:
             with _STORAGE_MIGRATE_LOCK:
-                if _STORAGE_MIGRATE_STATE["cancel_requested"]:
-                    for s, d in reversed(moved_pairs):
-                        try:
-                            shutil.move(str(d), s)
-                        except OSError:
-                            pass
-                    _set_storage_migrate(
-                        status="cancelled", message="已取消，已回滚已移动文件"
-                    )
-                    return
+                cancel_requested = _STORAGE_MIGRATE_STATE["cancel_requested"]
+            if cancel_requested:
+                for s, d in reversed(moved_pairs):
+                    try:
+                        shutil.move(str(d), s)
+                    except OSError:
+                        pass
+                _set_storage_migrate(
+                    status="cancelled", message="已取消，已回滚已移动文件"
+                )
+                return
             dst.parent.mkdir(parents=True, exist_ok=True)
             shutil.move(src, str(dst))
             moved_pairs.append((src, dst))
@@ -1481,7 +1487,7 @@ def _storage_migrate_worker(old: Path, new: Path):
                 webview.windows[0].evaluate_js("refreshMemes();")
         except Exception:
             pass
-    except OSError as e:
+    except Exception as e:
         logger.error("storage migrate error: %s", e)
         # 回滚已移动文件，保持旧目录完整
         for s, d in reversed(moved_pairs):
@@ -1690,17 +1696,12 @@ class SettingsApi:
         if not w:
             return
         try:
-            now = time.monotonic()
-            if not self._drag_origin:
-                self._drag_origin = (w.x - dx, w.y - dy)
-                self._drag_last_move = now
-                return
-            # 8ms 节流丢弃积压的中间消息，主线程只处理最新目标位置
-            if now - self._drag_last_move < 0.008:
-                return
-            self._drag_last_move = now
-            ox, oy = self._drag_origin
-            w.move(ox + dx, oy + dy)
+            origin, last, target = _window_drag_update(
+                w.x, w.y, self._drag_origin, self._drag_last_move, dx, dy
+            )
+            self._drag_origin, self._drag_last_move = origin, last
+            if target:
+                w.move(*target)
         except Exception:
             pass
 
@@ -1708,8 +1709,8 @@ class SettingsApi:
         self._drag_origin = None
 
     def start_window_drag(self, button: int, root_x: int, root_y: int) -> bool:
-        self._drag_origin = None
         """Linux 用 GTK begin_move_drag 合成器拖动；其他平台走增量回退"""
+        self._drag_origin = None
         if platform.system() != "Linux":
             return False
         w = self._webui._settings_window
@@ -2300,7 +2301,6 @@ def _file_sha256(path):
 
 # 感知哈希去重（pHash）：内容近似但 SHA-256 不同时，判定汉明距离阈值
 _PHASH_SIMILAR_DIST = 12  # 64 位感知哈希的汉明距离阈值，≤此值视为近似
-_PHASH_SCAN_LIMIT = 2000  # 全库扫描上限，防止超大库卡顿
 _PHASH_SYNC_BACKFILL_MAX = 5  # 缺失 phash 行数超过此值则后台异步回填，避免阻塞导入
 _PHASH_CACHE = {}  # 文件路径 → (mtime, size, hash)：避免对大库重复全解码
 _PHASH_CACHE_LOCK = threading.Lock()
@@ -2318,7 +2318,9 @@ _IMPORT_JOB_STATE = {
     "total": 0,
     "imported": 0,
     "rejected": 0,
+    "skipped_dup": 0,
     "error": "",
+    "token": None,  # 任务代次：旧 worker 令牌不匹配时不覆盖新任务状态
 }
 _IMPORT_JOB_LOCK = threading.Lock()
 _IMPORT_JOB_CANCEL = False
@@ -2328,6 +2330,15 @@ _ALLOWED_IMPORT_EXT = {".png", ".jpg", ".jpeg", ".gif", ".webp", ".bmp"}
 def _set_import_job(**kw):
     with _IMPORT_JOB_LOCK:
         _IMPORT_JOB_STATE.update(**kw)
+
+
+def _set_import_job_current(my_token, **kw):
+    """仅当 my_token 仍是当前任务令牌时更新状态（旧 worker 在开新任务后不再覆盖）"""
+    with _IMPORT_JOB_LOCK:
+        if _IMPORT_JOB_STATE.get("token") != my_token:
+            return False
+        _IMPORT_JOB_STATE.update(**kw)
+        return True
 
 
 def get_import_progress() -> dict:
@@ -2343,13 +2354,14 @@ def cancel_import_job():
     return {"ok": True}
 
 
-def _import_job_progress_cb(done, total, current):
-    """_do_import 逐文件回调：更新进度；取消时返回 False 中断导入"""
+def _import_job_progress_cb(my_token, done, total, current):
+    """_do_import 逐文件回调：更新进度（仅限当前任务令牌）；取消时返回 False 中断"""
     cancel = False
     with _IMPORT_JOB_LOCK:
         cancel = _IMPORT_JOB_CANCEL
     pct = int(done * 100 / total) if total else 100
-    _set_import_job(
+    _set_import_job_current(
+        my_token,
         progress=pct,
         done=done,
         total=total,
@@ -2360,33 +2372,42 @@ def _import_job_progress_cb(done, total, current):
     return False if cancel else None
 
 
-def _import_job_worker(webui, files, names, make_collection, folder_name):
+def _import_job_worker(webui, files, names, make_collection, folder_name, my_token):
     """后台执行交互式导入（folder/文件对话框/剪贴板），逐文件报进度"""
     global _IMPORT_JOB_CANCEL
     db = get_db()
+
+    def cb(done, total, current):
+        return _import_job_progress_cb(my_token, done, total, current)
+
     try:
         if _IMPORT_JOB_CANCEL:
-            _set_import_job(status="cancelled")
+            _set_import_job_current(my_token, status="cancelled")
             return
-        r = webui._do_import(files, names, _import_job_progress_cb)
+        r = webui._do_import(files, names, cb)
         ids = r.get("ids") or []
         imported = len(ids)
         rejected = r.get("rejected", 0)
+        skipped_dup = r.get("skipped_dup", 0)
         with _IMPORT_JOB_LOCK:
             was_cancel = _IMPORT_JOB_CANCEL
         if not was_cancel:
             # 正常完成：进度满格、done 为全部
-            _set_import_job(
+            _set_import_job_current(
+                my_token,
                 imported=imported,
                 rejected=rejected,
+                skipped_dup=skipped_dup,
                 progress=100,
                 done=len(files),
                 total=len(files),
             )
         else:
             # 取消：保留 progress_cb 已更新的实际 done/total，不强制 100%
-            _set_import_job(imported=imported, rejected=rejected)
-            _set_import_job(status="cancelled", message="导入已取消")
+            _set_import_job_current(
+                my_token, imported=imported, rejected=rejected, skipped_dup=skipped_dup
+            )
+            _set_import_job_current(my_token, status="cancelled", message="导入已取消")
             return
         collection_id = None
         if make_collection and ids and folder_name:
@@ -2397,7 +2418,8 @@ def _import_job_worker(webui, files, names, make_collection, folder_name):
                 from .manifest import build as build_manifest
 
                 build_manifest()
-        _set_import_job(
+        _set_import_job_current(
+            my_token,
             status="done",
             progress=100,
             message="导入完成",
@@ -2405,20 +2427,29 @@ def _import_job_worker(webui, files, names, make_collection, folder_name):
         )
     except Exception as e:
         logger.error("import job error: %s", e)
-        _set_import_job(status="error", error=str(e), message="导入失败")
+        _set_import_job_current(
+            my_token, status="error", error=str(e), message="导入失败"
+        )
     finally:
+        # 仅当仍是当前任务（token 匹配）时才重置取消标志；
+        # 旧 worker 收尾不清新任务的取消标志，保证 token 代次隔离
         with _IMPORT_JOB_LOCK:
-            _IMPORT_JOB_CANCEL = False
+            if _IMPORT_JOB_STATE.get("token") == my_token:
+                _IMPORT_JOB_CANCEL = False
 
 
 def start_import_job(webui, files, names, make_collection=False, folder_name=""):
     """启动后台导入，立即返回；前端轮询 get_import_progress()"""
+    import secrets
+
     global _IMPORT_JOB_CANCEL
     with _IMPORT_JOB_LOCK:
         if _IMPORT_JOB_STATE["status"] == "running":
             return False
+        token = secrets.token_hex(6)
         _IMPORT_JOB_CANCEL = False
         _IMPORT_JOB_STATE.update(
+            token=token,
             status="running",
             progress=0,
             message="开始导入",
@@ -2427,11 +2458,12 @@ def start_import_job(webui, files, names, make_collection=False, folder_name="")
             total=len(files),
             imported=0,
             rejected=0,
+            skipped_dup=0,
             error="",
         )
     threading.Thread(
         target=_import_job_worker,
-        args=(webui, files, names, make_collection, folder_name),
+        args=(webui, files, names, make_collection, folder_name, token),
         daemon=True,
     ).start()
     return True
@@ -2623,8 +2655,8 @@ def _backfill_phash_background(rows, index):
                 phash = _phash_path_cached(fpath)
             except Exception:
                 continue
-            if phash:
-                db.set_perceptual_hash(row["id"], phash)
+            # 无条件写入（set_perceptual_hash 内部处理 0→"0" 占位）
+            db.set_perceptual_hash(row["id"], phash)
     finally:
         with _PHASH_BACKFILL_LOCK:
             _PHASH_BACKFILLING = False
@@ -2653,15 +2685,15 @@ def _ensure_backfill_daemon(rows, index):
 def _find_similar_candidates(img_path):
     """基于 DB 感知哈希的全库比对：只解码新图，存量直接读 DB（微秒级）
 
-    返回 (候选列表, truncated)。phash 为空的旧库行惰性回填（算一次写回 DB）。
+    返回候选列表（全库比对，无截断）。phash 为空的旧库行惰性回填（算一次写回 DB）。
     """
     cfg = get_config()
     db = get_db()
     if not cfg.cache_dir or not HAS_PIL:
-        return [], False
+        return []
     target_hash = _phash_path_cached(img_path)
     if target_hash == 0:
-        return [], False
+        return []
     rows = db.get_all_phash()
     matches = []
     missing = [r for r in rows if not r.get("perceptual_hash")]
@@ -2679,14 +2711,13 @@ def _find_similar_candidates(img_path):
                         ph = _phash_path_cached(fpath)
                     except Exception:
                         ph = 0
-                    if ph:
-                        db.set_perceptual_hash(row["id"], ph)
+                    # 无条件写入（set_perceptual_hash 内部处理 0→"0" 占位）
+                    db.set_perceptual_hash(row["id"], ph)
+                    row["perceptual_hash"] = "0" if ph == 0 else hex(ph)
         else:
             _ensure_backfill_daemon(missing, idx)
     for row in rows:
         fname = row.get("filename")
-        if fname == os.path.basename(img_path):
-            continue
         phash = row.get("perceptual_hash")
         if not phash:
             continue  # 未回填（已交给后台），本次跳过
@@ -2694,6 +2725,8 @@ def _find_similar_candidates(img_path):
             phash = int(phash, 16)
         except (TypeError, ValueError):
             continue
+        if not phash:
+            continue  # 占位 "0"（无感知内容）跳过比较
         dist = _phash_hamming(target_hash, phash)
         if dist <= _PHASH_SIMILAR_DIST:
             matches.append(
@@ -2706,7 +2739,7 @@ def _find_similar_candidates(img_path):
             )
     matches.sort(key=lambda x: x["distance"])
     # DB 比对为微秒级整数运算，全库比对无截断漏检
-    return matches[:5], False
+    return matches[:5]
 
 
 def _prepare_image_import(path) -> dict:
@@ -2733,9 +2766,9 @@ def _prepare_image_import(path) -> dict:
             "hash": fhash,
             "existing_id": row["id"],
         }
-    candidates, truncated = _find_similar_candidates(path)
+    candidates = _find_similar_candidates(path)
     if candidates:
-        return {"status": "similar", "candidates": candidates, "truncated": truncated}
+        return {"status": "similar", "candidates": candidates}
     return {"status": "ok", "hash": fhash}
 
 
@@ -3033,9 +3066,11 @@ class WebUI:
         cache_dir = cfg.cache_dir
         imported = 0
         rejected = 0
+        skipped_dup = 0
         imported_ids = []
         total = len(file_paths)
         done = 0
+        stop_import = False
         for i, src in enumerate(file_paths):
             try:
                 base_name = (
@@ -3076,6 +3111,7 @@ class WebUI:
                     # 去重检查 + 落盘 + 入库 在同一临界区：并发导入同图时不产生重复记录
                     with _IMPORT_LOCK:
                         if db.get_by_hash(fhash):
+                            skipped_dup += 1
                             continue
                         dst = cache_dir / f"{fhash[:16]}{ext}"
                         shutil.copy2(path, dst)
@@ -3100,19 +3136,23 @@ class WebUI:
                         os.unlink(restored)
                     except OSError:
                         pass
+            except Exception as e:
+                logger.error(f"import {src}: {e}")
+            finally:
+                # 每个源文件无论 导入/去重跳过/拒绝/异常 都推进进度并检查取消
                 done += 1
                 if progress_cb:
                     try:
                         if progress_cb(done, total, os.path.basename(src)) is False:
-                            break  # 取消：progress_cb 返回 False 时中断导入
+                            stop_import = True
                     except Exception:
                         pass
-            except Exception as e:
-                logger.error(f"import {src}: {e}")
+            if stop_import:
+                break  # 取消：progress_cb 返回 False 时中断导入
         if imported:
             build_manifest()
         logger.info(f"导入完成: {imported} 个")
-        return {"ids": imported_ids, "rejected": rejected}
+        return {"ids": imported_ids, "rejected": rejected, "skipped_dup": skipped_dup}
 
     def _import_with_similar_decision(self, path, oname=""):
         """单图导入决策：哈希命中提示已存在；内容近似转相似（URL 拖放与文件上传复用）"""
@@ -3126,6 +3166,12 @@ class WebUI:
             ids = r.get("ids") or []
             if ids:
                 return {"ok": True, "id": ids[0]}
+            if r.get("skipped_dup"):
+                return {
+                    "ok": False,
+                    "duplicate": True,
+                    "error": "该图片已存在，无需重复导入",
+                }
             if r.get("rejected"):
                 return {
                     "ok": False,
@@ -3171,8 +3217,6 @@ class WebUI:
             "similar_pending": True,
             "token": token,
             "candidates": cands,
-            "truncated": bool(prep.get("truncated")),
-            "scan_limit": _PHASH_SCAN_LIMIT,
         }
 
     def ensure_import_collection(self, ids, group_name, parent_id=None):

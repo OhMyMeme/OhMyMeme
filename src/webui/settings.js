@@ -454,8 +454,10 @@ function showStorageMigration() {
   pollStorageMigration();
 }
 
-function hideStorageMigration(restore = true) {
-  if (storageMigrateTimer) { clearInterval(storageMigrateTimer); storageMigrateTimer = null; }
+function hideStorageMigration(restore = true, clearTimer = true) {
+  // 后台运行时保留轮询（clearTimer=false），使完成/失败/取消状态仍可被观察到；
+  // 终态关闭才清 timer
+  if (clearTimer && storageMigrateTimer) { clearInterval(storageMigrateTimer); storageMigrateTimer = null; }
   document.getElementById('storage-migrate-overlay').style.display = 'none';
   if (restore) restoreSettingsFocus();
 }

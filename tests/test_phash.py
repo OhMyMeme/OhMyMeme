@@ -70,8 +70,8 @@ class TestPerceptualHash:
 
     def test_light_backgrounds_still_distinct(self):
         # 浅色大底但内容不同的图（此前的误判样本类型，非纯色）应能区分
-        a = _textured(11)
-        # 把 a 抹成偏浅色，但保留纹理差异；再做一张纹理不同的浅色图
-        b = _textured(22)
+        # 把 a 调亮成偏浅色背景（保留纹理），与另一张纹理不同的浅色图对比
+        a = Image.eval(_textured(11), lambda v: min(255, int(v * 1.6) + 60))
+        b = Image.eval(_textured(22), lambda v: min(255, int(v * 1.6) + 60))
         da = _phash_hamming(_perceptual_hash(a), _perceptual_hash(b))
         assert da > _PHASH_SIMILAR_DIST
