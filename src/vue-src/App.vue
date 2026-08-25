@@ -75,6 +75,7 @@ const sidebarCollapsed = ref(false)
 const dragOver = ref(false)
 let dragCounter = 0
 let nativeDragActive = false
+let dragGeneration = 0
 let dragState: { sx: number; sy: number; px: number; py: number; raf: number | null } | null = null
 let updateInterval: ReturnType<typeof setInterval> | null = null
 
@@ -285,8 +286,11 @@ async function onTitlebarMouseDown(e: MouseEvent) {
   if (e.button !== 0) return
   if ((e.target as HTMLElement).closest('.title-btn') || (e.target as HTMLElement).closest('.icon-btn') || (e.target as HTMLElement).closest('.sidebar-toggle')) return
   try {
+    const gen = dragGeneration
     const nativeDrag = await window.pywebview?.api?.start_window_drag(e.button + 1, e.screenX, e.screenY)
     if (nativeDrag) return
+    // await 期间可能已松开鼠标（onWindowMouseUp 已递增 generation）：此时不再启动拖动
+    if (gen !== dragGeneration) return
   } catch (_) {}
   dragState = { sx: e.screenX, sy: e.screenY, px: 0, py: 0, raf: null }
   e.preventDefault()
@@ -314,6 +318,7 @@ function onWindowMouseUp() {
   if (dragState?.raf) cancelAnimationFrame(dragState.raf)
   try { window.pywebview?.api?.stop_window_drag() } catch (_) {}
   dragState = null
+  dragGeneration++  // 使未完成的 mousedown await 失效，防止松手后仍启动拖动
 }
 
 function onMemeRightClick(e: MouseEvent, meme: Meme) {

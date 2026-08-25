@@ -235,12 +235,9 @@ def _find_hotkey_window_position(cursor, work_area, width, height):
 
 
 def _window_drag_update(win_x, win_y, origin, last_move, dx, dy):
-    """窗口拖动一步计算：返回 (origin, last_move, target)；target 为 None 时无需移动窗口
-
-    - origin 为空：记录拖动起点窗口位置并返回（本次不移动）
-    - 8ms 节流期内：丢弃（不移动）
-    - 否则按起点 + 总偏移移动到绝对目标（自愈，无累积滞后）
-    """
+    # 窗口拖动一步计算：返回 (origin, last_move, target)。
+    # origin 为空时记录拖动起点并返回（本次不动）；8ms 节流期内丢弃；
+    # 否则按起点+总偏移移动到绝对目标（自愈，无累积滞后）。
     now = time.monotonic()
     if origin is None:
         return (win_x - dx, win_y - dy), now, None
@@ -881,19 +878,27 @@ class JsApi:
         return self._webui._import_with_similar_decision(path, oname)
 
     def resolve_similar_import(self, token: str, action: str) -> dict:
-        """响应用户对相似图导入的决策：keep_new|keep_both 导入，discard|keep_old 放弃"""
+        """响应用户对相似图导入的决策：
+        discard 丢弃新文件；keep_old 保留旧图且不导入新文件；
+        keep_new 导入新图并替换旧图；keep_both 同时保留并导入两者。
+        """
         item = _pop_pending_similar(token)
         if not item:
             return {"ok": False, "error": "决策已过期，请重新导入"}
         path = item["path"]
         action = action or "keep_new"
         if action in ("discard", "keep_old"):
+            # 丢弃/仅保留旧图：删掉待决策临时文件，不导入
             try:
                 os.unlink(path)
             except OSError:
                 pass
             return {"ok": True, "action": action, "imported": False}
-        # keep_new / keep_both：保留并导入新图（旧图自然继续留在库中）
+        # 取最相似候选（distance 最小）作为"旧图"，用于 keep_new 替换
+        cands = item.get("candidates") or []
+        best_id = (
+            min(cands, key=lambda c: c.get("distance", 99))["id"] if cands else None
+        )
         try:
             r = self._webui._do_import(
                 [path], [item.get("oname")] if item.get("oname") else None
@@ -908,7 +913,23 @@ class JsApi:
                 pass
         ids = r.get("ids") or []
         if ids:
-            return {"ok": True, "id": ids[0], "imported": True}
+            replaced = False
+            if action == "keep_new" and best_id:
+                # keep_new：导入新图并替换旧图（删除最相似旧图）
+                try:
+                    self._db.delete_meme(best_id)
+                    replaced = True  # 以删除成功为准
+                except Exception as e:
+                    logger.error("keep_new 替换旧图失败: %s", e)
+                from .manifest import build as build_manifest
+
+                build_manifest()
+            return {
+                "ok": True,
+                "id": ids[0],
+                "imported": True,
+                "replaced": replaced,
+            }
         if r.get("rejected"):
             return {"ok": False, "error": "文件超过大小/分辨率限制，已跳过"}
         return {"ok": False, "error": "导入失败"}
@@ -1468,7 +1489,36 @@ def _storage_migrate_worker(old: Path, new: Path):
                 )
                 return
             dst.parent.mkdir(parents=True, exist_ok=True)
-            shutil.move(src, str(dst))
+            # 排他创建目标（O_EXCL：目标已存在则抛 FileExistsError，
+            # 防 precheck→write 期间并发覆盖既有文件），成功后才删源
+            try:
+                fd = os.open(str(dst), os.O_CREAT | os.O_EXCL, 0o644)
+            except FileExistsError:
+                # 迁移期间目标被其他进程新建：并发冲突，整批回滚并报清晰错误
+                for s, d in reversed(moved_pairs):
+                    try:
+                        shutil.move(str(d), s)
+                    except OSError:
+                        pass
+                _set_storage_migrate(
+                    status="error",
+                    message="迁移失败：目标目录出现同名文件（与进程冲突），已回滚",
+                    error=f"目标已存在: {dst}",
+                )
+                return
+            try:
+                with os.fdopen(fd, "wb") as out_f, open(src, "rb") as in_f:
+                    shutil.copyfileobj(in_f, out_f)
+            except Exception:
+                try:
+                    os.unlink(str(dst))  # 清理复制中途失败留下的半写孤儿目标
+                except OSError:
+                    pass
+                raise
+            try:
+                os.unlink(src)
+            except OSError:
+                pass  # 源删除失败不阻断（目标已排他写入成功）
             moved_pairs.append((src, dst))
             moved += 1
             _set_storage_migrate(

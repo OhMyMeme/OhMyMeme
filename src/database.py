@@ -198,7 +198,7 @@ class MemeDB:
             "original_name",
             "stego_of_hash",
             "from_stego",
-            "perceptual_hash",
+            # perceptual_hash 不在此列：写统一走 set_perceptual_hash（hex 序列化）
         }
         sets = []
         vals = []
