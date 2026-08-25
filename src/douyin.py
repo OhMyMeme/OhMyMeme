@@ -377,6 +377,11 @@ def start_douyin_import(webui, cookie: str) -> bool:
                 result = webui._do_import(downloaded)
                 imported = len(result.get("ids", []))
                 rejected = result.get("rejected", 0)
+                if imported:
+                    try:
+                        webui.ensure_import_collection(result.get("ids", []), "抖音")
+                    except Exception as e:
+                        logger.error("douyin 自动分组失败: %s", e)
                 msg = f"导入完成：{imported} 个成功"
                 if rejected:
                     msg += f"，{rejected} 个跳过"

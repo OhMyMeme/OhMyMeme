@@ -4,6 +4,7 @@ import { api } from '../utils/api'
 
 const emit = defineEmits<{
   imported: []
+  importing: []
   error: [msg: string]
 }>()
 
@@ -29,10 +30,11 @@ async function importLocal() {
   try {
     const result = await api('import_memes')
     if (result?.ok) {
+      if (result.async) { emit('importing'); return }  // 后台导入，覆盖层轮询
       emit('imported')
-      showToast(appendRejected(result.imported > 0 ? '导入完成' : '未导入文件', result.rejected))
+      showToast(result.imported > 0 ? '导入完成' : '未导入文件')
     } else if (!result?.cancelled) {
-      showToast('导入失败')
+      showToast(result.error || '导入失败')
     }
   } finally {
     pending.value = false
@@ -52,10 +54,9 @@ async function importFolder() {
       showToast(r.error || '导入失败')
       return
     }
-    let msg = appendRejected(r.imported > 0 ? '导入完成，共 ' + r.imported + ' 个表情' : '未导入文件', r.rejected)
-    if (r.collection_name) msg += '，已加入分组「' + r.collection_name + '」'
+    if (r.async) { emit('importing'); return }  // 后台导入，覆盖层轮询
     emit('imported')
-    showToast(msg)
+    showToast(r.imported > 0 ? '导入完成，共 ' + r.imported + ' 个表情' : '未导入文件')
   } finally {
     pending.value = false
   }

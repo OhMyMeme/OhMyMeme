@@ -45,6 +45,7 @@ class MemeDB:
                 sort_order  INTEGER DEFAULT 0,
                 stego_of_hash TEXT DEFAULT NULL,
                 from_stego  INTEGER DEFAULT 0,
+                perceptual_hash TEXT DEFAULT NULL,
                 created_at  TEXT    NOT NULL DEFAULT (datetime('now','localtime')),
                 updated_at  TEXT    NOT NULL DEFAULT (datetime('now','localtime'))
             );
@@ -96,6 +97,7 @@ class MemeDB:
             ("memes", "sort_order", "INTEGER DEFAULT 0"),
             ("memes", "stego_of_hash", "TEXT DEFAULT NULL"),
             ("memes", "from_stego", "INTEGER DEFAULT 0"),
+            ("memes", "perceptual_hash", "TEXT DEFAULT NULL"),
             (
                 "collections",
                 "parent_id",
@@ -135,14 +137,22 @@ class MemeDB:
         tags: List[str] = None,
         stego_of_hash: str = None,
         from_stego: int = 0,
+        perceptual_hash: int = None,
     ) -> int:
         with self._lock:
             conn = self._get_conn()
+            if perceptual_hash:
+                ph_hex = hex(perceptual_hash)
+            elif perceptual_hash == 0:
+                ph_hex = "0"  # 已计算但无感知内容：占位，避免反复回填
+            else:
+                ph_hex = None
             cur = conn.execute(
                 """INSERT INTO memes
                    (filename, file_hash, width, height,
-                    file_size, mime_type, original_name, stego_of_hash, from_stego)
-                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                    file_size, mime_type, original_name, stego_of_hash, from_stego,
+                    perceptual_hash)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
                 (
                     filename,
                     file_hash,
@@ -153,6 +163,7 @@ class MemeDB:
                     original_name,
                     stego_of_hash,
                     from_stego,
+                    ph_hex,
                 ),
             )
             meme_id = cur.lastrowid
@@ -187,6 +198,7 @@ class MemeDB:
             "original_name",
             "stego_of_hash",
             "from_stego",
+            # perceptual_hash 不在此列：写统一走 set_perceptual_hash（hex 序列化）
         }
         sets = []
         vals = []
@@ -283,22 +295,30 @@ class MemeDB:
     # --- 收藏集 ---
 
     def create_collection(self, name: str, parent_id: int = None) -> int:
+        """创建分组；同名(parent_id)已存在则直接返回其 id（不产生重复空分组）"""
         with self._lock:
             conn = self._get_conn()
             if parent_id is not None:
+                row = conn.execute(
+                    "SELECT id FROM collections WHERE name=? AND parent_id=?",
+                    (name, parent_id),
+                ).fetchone()
+            else:
+                row = conn.execute(
+                    "SELECT id FROM collections WHERE name=? AND parent_id IS NULL",
+                    (name,),
+                ).fetchone()
+            if row:
+                return row[0]
+            if parent_id is not None:
                 conn.execute(
-                    "INSERT OR IGNORE INTO collections (name, parent_id) VALUES (?, ?)",
+                    "INSERT INTO collections (name, parent_id) VALUES (?, ?)",
                     (name, parent_id),
                 )
             else:
-                conn.execute(
-                    "INSERT OR IGNORE INTO collections (name) VALUES (?)", (name,)
-                )
+                conn.execute("INSERT INTO collections (name) VALUES (?)", (name,))
             conn.commit()
-            row = conn.execute(
-                "SELECT id FROM collections WHERE name=?", (name,)
-            ).fetchone()
-            return row[0] if row else -1
+            return conn.execute("SELECT last_insert_rowid()").fetchone()[0]
 
     def add_to_collection(self, meme_id: int, collection_id: int):
         with self._lock:
@@ -573,6 +593,32 @@ class MemeDB:
             (limit, offset),
         ).fetchall()
         return [dict(r) for r in rows]
+
+    def get_all_phash(self) -> List[dict]:
+        """返回所有可见 meme 的感知哈希快照，供全库相似度比对（排除隐写载体）"""
+        with self._lock:
+            conn = self._get_conn()
+            rows = conn.execute(
+                "SELECT id, filename, original_name, perceptual_hash, stego_of_hash "
+                "FROM memes WHERE (stego_of_hash IS NULL OR stego_of_hash = '') "
+                "ORDER BY sort_order ASC"
+            ).fetchall()
+            return [dict(r) for r in rows]
+
+    def set_perceptual_hash(self, meme_id: int, phash: int):
+        """写入/更新某 meme 的感知哈希（hex 文本存储，惰性回填用）"""
+        if phash:
+            ph_hex = hex(phash)
+        elif phash == 0:
+            ph_hex = "0"  # 已计算但无感知内容：占位，避免反复回填
+        else:
+            ph_hex = None
+        with self._lock:
+            conn = self._get_conn()
+            conn.execute(
+                "UPDATE memes SET perceptual_hash=? WHERE id=?", (ph_hex, meme_id)
+            )
+            conn.commit()
 
     def reorder_memes(self, meme_ids: List[int]):
         with self._lock:

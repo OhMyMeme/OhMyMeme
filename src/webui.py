@@ -2,6 +2,7 @@
 
 import io
 import logging
+import math
 import os
 import platform
 import socket
@@ -233,6 +234,18 @@ def _find_hotkey_window_position(cursor, work_area, width, height):
     return None
 
 
+def _window_drag_update(win_x, win_y, origin, last_move, dx, dy):
+    # 窗口拖动一步计算：返回 (origin, last_move, target)。
+    # origin 为空时记录拖动起点并返回（本次不动）；8ms 节流期内丢弃；
+    # 否则按起点+总偏移移动到绝对目标（自愈，无累积滞后）。
+    now = time.monotonic()
+    if origin is None:
+        return (win_x - dx, win_y - dy), now, None
+    if now - last_move < 0.008:
+        return origin, last_move, None
+    return origin, now, (origin[0] + dx, origin[1] + dy)
+
+
 class JsApi:
     """暴露给前端的 JS API"""
 
@@ -240,6 +253,8 @@ class JsApi:
         self._webui = webui
         self._cfg = get_config()
         self._db = get_db()
+        self._drag_origin = None
+        self._drag_last_move = 0.0
 
     def search_memes(
         self, keyword="", tags=None, collection_id=None, offset=0, limit=200
@@ -792,17 +807,9 @@ class JsApi:
             # Windows 裸路径: C:\Users\...
             local_path = s
         if local_path:
-            r = self._webui._do_import([local_path])
-            ids = r.get("ids") or []
-            if ids:
-                return {"ok": True, "id": ids[0]}
-            if r.get("rejected"):
-                return {
-                    "ok": False,
-                    "rejected": r["rejected"],
-                    "error": "文件超过大小/分辨率限制，已跳过",
-                }
-            return {"ok": False, "error": "导入失败"}
+            return self._import_with_similar_decision(
+                local_path, os.path.basename(local_path)
+            )
 
         clean_url = _strip_url_modifiers(s)
 
@@ -848,17 +855,10 @@ class JsApi:
             # 重命名为正确扩展名
             final_path = tmp_path + ext
             os.rename(tmp_path, final_path)
-            r = self._webui._do_import([final_path])
-            ids = r.get("ids") or []
-            if ids:
-                return {"ok": True, "id": ids[0]}
-            if r.get("rejected"):
-                return {
-                    "ok": False,
-                    "rejected": r["rejected"],
-                    "error": "文件超过大小/分辨率限制，已跳过",
-                }
-            return {"ok": False, "error": "导入失败"}
+            r = self._import_with_similar_decision(
+                final_path, os.path.splitext(os.path.basename(clean_url))[0] or None
+            )
+            return r
         except URLError as e:
             return {"ok": False, "error": f"下载失败: {e.reason}"}
         except Exception as e:
@@ -872,6 +872,60 @@ class JsApi:
                 os.unlink(tmp_path + ext)
             except Exception:
                 pass
+
+    def _import_with_similar_decision(self, path, oname=""):
+        """单图导入决策：哈希命中提示已存在；内容近似转相似（委托 WebUI 统一逻辑）"""
+        return self._webui._import_with_similar_decision(path, oname)
+
+    def resolve_similar_import(self, token: str, action: str) -> dict:
+        """响应用户对相似图的导入决策（action: discard/keep_old/keep_new/keep_both）"""
+        item = _pop_pending_similar(token)
+        if not item:
+            return {"ok": False, "error": "决策已过期，请重新导入"}
+        path = item["path"]
+        action = action or "keep_new"
+        if action in ("discard", "keep_old"):
+            # 丢弃/仅保留旧图：删掉待决策临时文件，不导入
+            try:
+                os.unlink(path)
+            except OSError:
+                pass
+            return {"ok": True, "action": action, "imported": False}
+        # 取最相似候选（distance 最小）作为"旧图"，用于 keep_new 替换
+        cands = item.get("candidates") or []
+        best_id = (
+            min(cands, key=lambda c: c.get("distance", 99))["id"] if cands else None
+        )
+        try:
+            r = self._webui._do_import(
+                [path], [item.get("oname")] if item.get("oname") else None
+            )
+        except Exception as e:
+            logger.error("resolve similar import error: %s", e)
+            return {"ok": False, "error": "导入失败"}
+        finally:
+            try:
+                os.unlink(path)  # 清理待决策临时文件
+            except OSError:
+                pass
+        ids = r.get("ids") or []
+        if ids:
+            replaced = False
+            if action == "keep_new" and best_id:
+                # keep_new：导入新图并替换旧图——完整删除链（文件+缩略图+缓存+DB）
+                try:
+                    replaced = self.delete_meme(best_id)
+                except Exception as e:
+                    logger.error("keep_new 替换旧图失败: %s", e)
+            return {
+                "ok": True,
+                "id": ids[0],
+                "imported": True,
+                "replaced": replaced,
+            }
+        if r.get("rejected"):
+            return {"ok": False, "error": "文件超过大小/分辨率限制，已跳过"}
+        return {"ok": False, "error": "导入失败"}
 
     def get_sync_progress(self) -> dict:
         return sync_module.get_sync_progress()
@@ -930,7 +984,7 @@ class JsApi:
             return str(e)
 
     def import_memes(self) -> bool:
-        # 通过系统文件对话框选择导入
+        # 通过系统文件对话框选择导入（后台执行，避免大数量导入阻塞界面）
         try:
             result = webview.windows[0].create_file_dialog(
                 webview.FileDialog.OPEN,
@@ -941,12 +995,10 @@ class JsApi:
             return {"ok": False}
         if not result:
             return {"ok": False, "cancelled": True}
-        r = self._webui._do_import(result)
-        return {
-            "ok": True,
-            "imported": len(r.get("ids") or []),
-            "rejected": r.get("rejected", 0),
-        }
+        paths = list(result)
+        if not start_import_job(self._webui, paths, None, False, ""):
+            return {"ok": False, "error": "已有导入在进行中"}
+        return {"ok": True, "async": True}
 
     def import_folder(self, make_collection=True) -> dict:
         """选择文件夹并导入其中全部图片；make_collection 时以文件夹名创建分组"""
@@ -960,41 +1012,34 @@ class JsApi:
             return {"ok": False, "cancelled": True}
         folder = result[0] if isinstance(result, (tuple, list)) else result
         try:
-            allowed = {".png", ".jpg", ".jpeg", ".gif", ".webp", ".bmp"}
             files = []
             names = []
             for root, _, fnames in os.walk(folder):
                 for fn in sorted(fnames):
                     ext = os.path.splitext(fn)[1].lower()
-                    if ext not in allowed:
+                    if ext not in _ALLOWED_IMPORT_EXT:
                         continue
                     files.append(os.path.join(root, fn))
                     names.append(os.path.splitext(fn)[0])
             if not files:
                 return {"ok": False, "error": "文件夹中没有支持的图片"}
-            r = self._webui._do_import(files, names)
-            ids = r.get("ids") or []
-            rejected = r.get("rejected", 0)
-            collection_id = None
             folder_name = os.path.basename(os.path.normpath(folder))
-            if make_collection and ids:
-                collection_id = self._db.create_collection(folder_name)
-                if collection_id > 0:
-                    for mid in ids:
-                        self._db.add_to_collection(mid, collection_id)
-                    from .manifest import build as build_manifest
-
-                    build_manifest()
-            return {
-                "ok": True,
-                "imported": len(ids),
-                "rejected": rejected,
-                "collection_id": collection_id,
-                "collection_name": folder_name if make_collection and ids else None,
-            }
+            if not start_import_job(
+                self._webui, files, names, make_collection, folder_name
+            ):
+                return {"ok": False, "error": "已有导入在进行中"}
+            return {"ok": True, "async": True, "total": len(files)}
         except Exception as e:
             logger.error(f"import_folder failed: {e}")
             return {"ok": False, "error": str(e)}
+
+    def get_import_progress(self):
+        # 后台导入进度快照（前端轮询用）
+        return get_import_progress()
+
+    def cancel_import_job(self):
+        # 请求取消当前后台导入
+        return cancel_import_job()
 
     def import_from_clipboard(self) -> dict:
         import hashlib
@@ -1178,14 +1223,24 @@ class JsApi:
 
     def move_window(self, dx: int, dy: int):
         w = self._webui._window
-        if w:
-            try:
-                w.move(w.x + dx, w.y + dy)
-            except Exception:
-                pass
+        if not w:
+            return
+        try:
+            origin, last, target = _window_drag_update(
+                w.x, w.y, self._drag_origin, self._drag_last_move, dx, dy
+            )
+            self._drag_origin, self._drag_last_move = origin, last
+            if target:
+                w.move(*target)
+        except Exception:
+            pass
+
+    def stop_window_drag(self):
+        self._drag_origin = None
 
     def start_window_drag(self, button: int, root_x: int, root_y: int) -> bool:
         """Linux 用 GTK begin_move_drag 合成器拖动；其他平台走增量回退"""
+        self._drag_origin = None
         if platform.system() != "Linux":
             return False
         w = self._webui._window
@@ -1316,12 +1371,186 @@ def _qqnt_worker(
         _set_qqnt(status="error", message="提取失败", error=str(e))
 
 
+# ─── 存储位置迁移进度（后台线程 + 轮询） ───
+_STORAGE_MIGRATE_STATE = {
+    "status": "idle",  # idle|running|done|error|cancelled
+    "progress": 0,
+    "message": "",
+    "current": "",
+    "moved": 0,
+    "total": 0,
+    "failed": [],
+    "error": "",
+    "cancel_requested": False,
+}
+_STORAGE_MIGRATE_LOCK = threading.Lock()
+_STORAGE_MIGRATE_THREAD = None
+
+
+def _set_storage_migrate(**kw):
+    with _STORAGE_MIGRATE_LOCK:
+        _STORAGE_MIGRATE_STATE.update(**kw)
+
+
+def get_storage_migration_progress() -> dict:
+    import copy
+
+    with _STORAGE_MIGRATE_LOCK:
+        return copy.deepcopy(_STORAGE_MIGRATE_STATE)
+
+
+def cancel_storage_migration():
+    with _STORAGE_MIGRATE_LOCK:
+        if _STORAGE_MIGRATE_STATE["status"] == "running":
+            _STORAGE_MIGRATE_STATE["cancel_requested"] = True
+    return {"ok": True}
+
+
+def start_storage_migration_thread(new_dir: Path):
+    """后台迁移 cache_dir 文件到 new_dir，避免阻塞桥接与 UI"""
+    global _STORAGE_MIGRATE_THREAD
+    old = get_config().cache_dir
+    with _STORAGE_MIGRATE_LOCK:
+        if _STORAGE_MIGRATE_STATE["status"] == "running":
+            return False
+        _STORAGE_MIGRATE_STATE.update(
+            status="running",
+            progress=0,
+            message="准备迁移",
+            current="",
+            moved=0,
+            total=0,
+            failed=[],
+            error="",
+            cancel_requested=False,
+        )
+    _STORAGE_MIGRATE_THREAD = threading.Thread(
+        target=_storage_migrate_worker,
+        args=(old, new_dir),
+        daemon=True,
+    )
+    _STORAGE_MIGRATE_THREAD.start()
+    return True
+
+
+def _storage_migrate_worker(old: Path, new: Path):
+    """两阶段迁移：预检冲突 → 逐文件移动（含取消支持）"""
+    import shutil
+
+    moved_pairs = []
+    try:
+        # 阶段一：扫描 + 预检冲突
+        plan = []
+        for root, dirs, files in os.walk(str(old)):
+            rel = os.path.relpath(root, str(old))
+            for d in list(dirs):
+                if d == "thumbnails":
+                    dirs.remove(d)
+            for name in files:
+                src = os.path.join(root, name)
+                dst = (new if rel == "." else new / rel) / name
+                plan.append((src, dst))
+        total = len(plan)
+        _set_storage_migrate(total=total, message="预检目标目录...")
+        if plan:
+            collisions = [
+                {
+                    "name": os.path.basename(src),
+                    "path": os.path.relpath(src, str(old)),
+                }
+                for src, dst in plan
+                if dst.exists()
+            ]
+            if collisions:
+                _set_storage_migrate(
+                    status="error",
+                    message="目标目录已存在同名文件，未迁移",
+                    error="目标目录已存在 %d 个同名文件" % len(collisions),
+                    failed=[],
+                )
+                return
+        moved = 0
+        for src, dst in plan:
+            with _STORAGE_MIGRATE_LOCK:
+                cancel_requested = _STORAGE_MIGRATE_STATE["cancel_requested"]
+            if cancel_requested:
+                for s, d in reversed(moved_pairs):
+                    try:
+                        shutil.move(str(d), s)
+                    except OSError:
+                        pass
+                _set_storage_migrate(
+                    status="cancelled", message="已取消，已回滚已移动文件"
+                )
+                return
+            dst.parent.mkdir(parents=True, exist_ok=True)
+            # 排他创建目标（O_EXCL：目标已存在则抛 FileExistsError，
+            # 防 precheck→write 期间并发覆盖既有文件），O_WRONLY 确保 fd 可写
+            try:
+                fd = os.open(str(dst), os.O_CREAT | os.O_WRONLY | os.O_EXCL, 0o644)
+            except FileExistsError:
+                # 迁移期间目标被其他进程新建：并发冲突，整批回滚并报清晰错误
+                for s, d in reversed(moved_pairs):
+                    try:
+                        shutil.move(str(d), s)
+                    except OSError:
+                        pass
+                _set_storage_migrate(
+                    status="error",
+                    message="迁移失败：目标目录出现同名文件（与进程冲突），已回滚",
+                    error=f"目标已存在: {dst}",
+                )
+                return
+            try:
+                with os.fdopen(fd, "wb") as out_f, open(src, "rb") as in_f:
+                    shutil.copyfileobj(in_f, out_f)
+            except Exception:
+                try:
+                    os.unlink(str(dst))  # 清理复制中途失败留下的半写孤儿目标
+                except OSError:
+                    pass
+                raise
+            try:
+                os.unlink(src)
+            except OSError:
+                pass  # 源删除失败不阻断（目标已排他写入成功）
+            moved_pairs.append((src, dst))
+            moved += 1
+            _set_storage_migrate(
+                progress=int(moved * 100 / total) if total else 100,
+                moved=moved,
+                current=os.path.basename(src),
+            )
+        # 迁移成功后写入新配置（回滚场景不写入，保持旧目录）
+        get_config().set("cache_dir", str(new))
+        get_config().save()
+        _set_storage_migrate(
+            status="done", progress=100, message="迁移完成", current=""
+        )
+        try:
+            if len(webview.windows) > 0:
+                webview.windows[0].evaluate_js("refreshMemes();")
+        except Exception:
+            pass
+    except Exception as e:
+        logger.error("storage migrate error: %s", e)
+        # 回滚已移动文件，保持旧目录完整
+        for s, d in reversed(moved_pairs):
+            try:
+                shutil.move(str(d), s)
+            except OSError:
+                pass
+        _set_storage_migrate(status="error", message="迁移失败", error=str(e))
+
+
 class SettingsApi:
     """暴露给设置窗口的 JS API（仅设置相关方法）"""
 
     def __init__(self, webui):
         self._webui = webui
         self._cfg = get_config()
+        self._drag_origin = None
+        self._drag_last_move = 0.0
 
     def check_connectivity(self) -> dict:
         return _check_connectivity()
@@ -1509,14 +1738,24 @@ class SettingsApi:
 
     def move_window(self, dx: int, dy: int):
         w = self._webui._settings_window
-        if w:
-            try:
-                w.move(w.x + dx, w.y + dy)
-            except Exception:
-                pass
+        if not w:
+            return
+        try:
+            origin, last, target = _window_drag_update(
+                w.x, w.y, self._drag_origin, self._drag_last_move, dx, dy
+            )
+            self._drag_origin, self._drag_last_move = origin, last
+            if target:
+                w.move(*target)
+        except Exception:
+            pass
+
+    def stop_window_drag(self):
+        self._drag_origin = None
 
     def start_window_drag(self, button: int, root_x: int, root_y: int) -> bool:
         """Linux 用 GTK begin_move_drag 合成器拖动；其他平台走增量回退"""
+        self._drag_origin = None
         if platform.system() != "Linux":
             return False
         w = self._webui._settings_window
@@ -1828,9 +2067,7 @@ class SettingsApi:
         return {"ok": True, "path": path}
 
     def apply_storage_dir(self, path, move_files=False):
-        """应用新的表情包存储目录；move_files=True 时把现有文件迁移过去"""
-        import shutil
-
+        """应用新的表情包存储目录；move_files=True 时后台迁移现有文件"""
         old = self._cfg.cache_dir
         protected = (self._cfg.data_dir, self._cfg.thumbnail_dir)
         ok, err = _storage_dir_validation(path, str(old), protected)
@@ -1843,67 +2080,18 @@ class SettingsApi:
             return {"ok": False, "error": f"创建目录失败: {e}"}
         if not os.access(new, os.W_OK):
             return {"ok": False, "error": "目标目录不可写"}
-        moved, failed = 0, []
-        if move_files:
-            plan = []
-            for root, dirs, files in os.walk(str(old)):
-                rel = os.path.relpath(root, str(old))
-                for d in list(dirs):
-                    if d == "thumbnails":
-                        dirs.remove(d)
-                for name in files:
-                    src = os.path.join(root, name)
-                    dst = (new if rel == "." else new / rel) / name
-                    plan.append((src, dst))
-            if plan:
-                collisions = [
-                    {
-                        "name": os.path.basename(src),
-                        "path": os.path.relpath(src, str(old)),
-                    }
-                    for src, dst in plan
-                    if dst.exists()
-                ]
-                if collisions:
-                    return {
-                        "ok": False,
-                        "error": f"目标目录已存在 {len(collisions)} 个同名文件，未迁移",
-                        "failed": [
-                            {
-                                "name": c["name"],
-                                "path": c["path"],
-                                "error": "目标目录已存在同名文件",
-                            }
-                            for c in collisions
-                        ],
-                    }
-                moved_pairs = []
-                for src, dst in plan:
-                    try:
-                        dst.parent.mkdir(parents=True, exist_ok=True)
-                        shutil.move(src, str(dst))
-                        moved_pairs.append((src, dst))
-                        moved += 1
-                    except OSError as e:
-                        for s, d in reversed(moved_pairs):
-                            try:
-                                shutil.move(str(d), s)
-                            except OSError:
-                                pass
-                        return {
-                            "ok": False,
-                            "error": f"迁移失败（{e}），已回滚已移动文件",
-                            "failed": [
-                                {
-                                    "name": os.path.basename(s),
-                                    "path": os.path.relpath(s, str(old)),
-                                    "error": str(e),
-                                }
-                                for s, _d in moved_pairs
-                            ],
-                        }
-        self._cfg.set("cache_dir", str(new))
-        self._cfg.save()
+        if not move_files:
+            self._cfg.set("cache_dir", str(new))
+            self._cfg.save()
+            self._invalidate_cache_refresh()
+            return {"ok": True, "cache_dir": str(new), "moved": 0, "failed": []}
+        started = start_storage_migration_thread(new)
+        if not started:
+            return {"ok": False, "error": "有迁移任务正在运行"}
+        # 后台迁移进行中，前端轮询 get_storage_migration_progress()
+        return {"ok": True, "async": True, "cache_dir": str(new)}
+
+    def _invalidate_cache_refresh(self):
         fc = getattr(self._webui, "_file_cache", None)
         if fc is not None:
             fc.clear()
@@ -1912,7 +2100,12 @@ class SettingsApi:
                 webview.windows[0].evaluate_js("refreshMemes();")
         except Exception:
             pass
-        return {"ok": True, "cache_dir": str(new), "moved": moved, "failed": failed}
+
+    def get_storage_migration_progress(self) -> dict:
+        return get_storage_migration_progress()
+
+    def cancel_storage_migration(self) -> dict:
+        return cancel_storage_migration()
 
     def qqnt_default_dir(self, base: str, qq_number: str) -> dict:
         """按账号生成默认输出目录（昵称+QQ号）"""
@@ -2149,6 +2342,484 @@ def _file_sha256(path):
         for chunk in iter(lambda: f.read(65536), b""):
             sha.update(chunk)
     return sha.hexdigest()
+
+
+# 感知哈希去重（pHash）：内容近似但 SHA-256 不同时，判定汉明距离阈值
+_PHASH_SIMILAR_DIST = 12  # 64 位感知哈希的汉明距离阈值，≤此值视为近似
+_PHASH_SYNC_BACKFILL_MAX = 5  # 缺失 phash 行数超过此值则后台异步回填，避免阻塞导入
+_PHASH_CACHE = {}  # 文件路径 → (mtime, size, hash)：避免对大库重复全解码
+_PHASH_CACHE_LOCK = threading.Lock()
+_PHASH_BACKFILL_LOCK = threading.Lock()
+_PHASH_BACKFILLING = False  # 当前是否有后台回填线程在跑（防重入）
+_IMPORT_LOCK = threading.Lock()  # 串行化 _do_import 关键区，防并发导入同图重复
+
+# 后台导入进度（文件夹/文件对话框/剪贴板等交互式多文件导入）
+_IMPORT_JOB_STATE = {
+    "status": "idle",  # idle|running|done|error|cancelled
+    "progress": 0,
+    "message": "",
+    "current": "",
+    "done": 0,
+    "total": 0,
+    "imported": 0,
+    "rejected": 0,
+    "skipped_dup": 0,
+    "error": "",
+    "token": None,  # 任务代次：旧 worker 令牌不匹配时不覆盖新任务状态
+}
+_IMPORT_JOB_LOCK = threading.Lock()
+_IMPORT_JOB_CANCEL = False
+_ALLOWED_IMPORT_EXT = {".png", ".jpg", ".jpeg", ".gif", ".webp", ".bmp"}
+
+
+def _set_import_job(**kw):
+    with _IMPORT_JOB_LOCK:
+        _IMPORT_JOB_STATE.update(**kw)
+
+
+def _set_import_job_current(my_token, **kw):
+    """仅当 my_token 仍是当前任务令牌时更新状态（旧 worker 在开新任务后不再覆盖）"""
+    with _IMPORT_JOB_LOCK:
+        if _IMPORT_JOB_STATE.get("token") != my_token:
+            return False
+        _IMPORT_JOB_STATE.update(**kw)
+        return True
+
+
+def get_import_progress() -> dict:
+    with _IMPORT_JOB_LOCK:
+        return dict(_IMPORT_JOB_STATE)
+
+
+def cancel_import_job():
+    global _IMPORT_JOB_CANCEL
+    with _IMPORT_JOB_LOCK:
+        if _IMPORT_JOB_STATE["status"] == "running":
+            _IMPORT_JOB_CANCEL = True
+    return {"ok": True}
+
+
+def _import_job_progress_cb(my_token, done, total, current):
+    """_do_import 逐文件回调：更新进度（仅限当前任务令牌）；取消时返回 False 中断"""
+    cancel = False
+    with _IMPORT_JOB_LOCK:
+        cancel = _IMPORT_JOB_CANCEL
+    pct = int(done * 100 / total) if total else 100
+    _set_import_job_current(
+        my_token,
+        progress=pct,
+        done=done,
+        total=total,
+        current=current,
+        message=f"导入中 {done}/{total}",
+        status="cancelled" if cancel else "running",
+    )
+    return False if cancel else None
+
+
+def _import_job_worker(webui, files, names, make_collection, folder_name, my_token):
+    """后台执行交互式导入（folder/文件对话框/剪贴板），逐文件报进度"""
+    global _IMPORT_JOB_CANCEL
+    db = get_db()
+
+    def cb(done, total, current):
+        return _import_job_progress_cb(my_token, done, total, current)
+
+    try:
+        if _IMPORT_JOB_CANCEL:
+            _set_import_job_current(my_token, status="cancelled")
+            return
+        r = webui._do_import(files, names, cb)
+        ids = r.get("ids") or []
+        imported = len(ids)
+        rejected = r.get("rejected", 0)
+        skipped_dup = r.get("skipped_dup", 0)
+        with _IMPORT_JOB_LOCK:
+            was_cancel = _IMPORT_JOB_CANCEL
+            is_current = _IMPORT_JOB_STATE.get("token") == my_token
+        if not is_current:
+            # 本任务已不是当前令牌（被新任务取代），立刻返回，
+            # 避免旧 worker 执行 create_collection/add_to_collection 等副作用污染新任务
+            return
+        if not was_cancel:
+            # 正常完成：进度满格、done 为全部
+            _set_import_job_current(
+                my_token,
+                imported=imported,
+                rejected=rejected,
+                skipped_dup=skipped_dup,
+                progress=100,
+                done=len(files),
+                total=len(files),
+            )
+        else:
+            # 取消：保留 progress_cb 已更新的实际 done/total，不强制 100%
+            _set_import_job_current(
+                my_token, imported=imported, rejected=rejected, skipped_dup=skipped_dup
+            )
+            _set_import_job_current(my_token, status="cancelled", message="导入已取消")
+            return
+        collection_id = None
+        if make_collection and ids and folder_name:
+            collection_id = db.create_collection(folder_name)
+            if collection_id > 0:
+                for mid in ids:
+                    db.add_to_collection(mid, collection_id)
+                from .manifest import build as build_manifest
+
+                build_manifest()
+        _set_import_job_current(
+            my_token,
+            status="done",
+            progress=100,
+            message="导入完成",
+            collection_id=collection_id,
+        )
+    except Exception as e:
+        logger.error("import job error: %s", e)
+        _set_import_job_current(
+            my_token, status="error", error=str(e), message="导入失败"
+        )
+    finally:
+        # 仅当仍是当前任务（token 匹配）时才重置取消标志；
+        # 旧 worker 收尾不清新任务的取消标志，保证 token 代次隔离
+        with _IMPORT_JOB_LOCK:
+            if _IMPORT_JOB_STATE.get("token") == my_token:
+                _IMPORT_JOB_CANCEL = False
+
+
+def start_import_job(webui, files, names, make_collection=False, folder_name=""):
+    """启动后台导入，立即返回；前端轮询 get_import_progress()"""
+    import secrets
+
+    global _IMPORT_JOB_CANCEL
+    with _IMPORT_JOB_LOCK:
+        if _IMPORT_JOB_STATE["status"] == "running":
+            return False
+        token = secrets.token_hex(6)
+        _IMPORT_JOB_CANCEL = False
+        _IMPORT_JOB_STATE.update(
+            token=token,
+            status="running",
+            progress=0,
+            message="开始导入",
+            current="",
+            done=0,
+            total=len(files),
+            imported=0,
+            rejected=0,
+            skipped_dup=0,
+            error="",
+        )
+    threading.Thread(
+        target=_import_job_worker,
+        args=(webui, files, names, make_collection, folder_name, token),
+        daemon=True,
+    ).start()
+    return True
+
+
+# pHash 的一次性 DCT 基（模块加载时预计算，跨图复用）：_PHASH_DCT_COS[k][x]、
+# _PHASH_DCT_NORM[k]（k=0 用 1.0，否则 sqrt(0.5)）
+_PHASH_DCT_COS = [
+    [math.cos((2 * x + 1) * k * math.pi / (2 * 32)) for x in range(32)]
+    for k in range(8)
+]
+_PHASH_DCT_NORM = [1.0 if k == 0 else math.sqrt(0.5) for k in range(8)]
+
+
+def _phash_path_cached(fpath):
+    """带 (mtime, size) 校验的 phash 缓存，文件未变时避免重复解码"""
+    try:
+        st = os.stat(fpath)
+        key = (st.st_mtime, st.st_size)
+    except OSError:
+        return 0
+    with _PHASH_CACHE_LOCK:
+        cached = _PHASH_CACHE.get(fpath)
+        if cached and cached[0] == key:
+            return cached[1]
+    h = _perceptual_hash_path(fpath)
+    if h:
+        with _PHASH_CACHE_LOCK:
+            if len(_PHASH_CACHE) >= 4096:
+                _PHASH_CACHE.clear()  # 简单防膨胀：超过容量整体清空重建
+            _PHASH_CACHE[fpath] = (key, h)
+    return h
+
+
+def _gray_pixels(img):
+    """取 32x32 灰度像素列表（兼容新旧 Pillow：get_flattened_data/getdata）"""
+    from PIL import Image
+
+    small = img.convert("L").resize((32, 32), Image.LANCZOS)
+    getter = getattr(small, "get_flattened_data", None)
+    if getter is not None:
+        return list(getter())
+    return list(small.getdata())
+
+
+def _perceptual_hash(img) -> int:
+    """计算 PIL 图像的 64 位感知哈希（pHash，8x8 可分离 DCT）；比均值哈希判别力更强"""
+    try:
+        px = _gray_pixels(img)
+        rows = [[0.0] * 32 for _ in range(8)]
+        for k in range(8):
+            ck = _PHASH_DCT_COS[k]
+            for x in range(32):
+                ckx = ck[x]
+                row = rows[k]
+                base = x * 32
+                for y in range(32):
+                    row[y] += px[base + y] * ckx
+        dct = [[0.0] * 8 for _ in range(8)]
+        for k in range(8):
+            ck = _PHASH_DCT_NORM[k]
+            for j in range(8):
+                s = 0.0
+                cl = _PHASH_DCT_COS[j]
+                for y in range(32):
+                    s += rows[k][y] * cl[y]
+                dct[k][j] = ck * _PHASH_DCT_NORM[j] * s / 4.0
+        coeffs = [dct[k][j] for k in range(8) for j in range(8)]
+        median = sorted(coeffs)[len(coeffs) // 2]
+        h = 0
+        for i, c in enumerate(coeffs):
+            if c > median:
+                h |= 1 << i
+        return h
+    except Exception:
+        return 0
+
+
+def _perceptual_hash_path(path) -> int:
+    """对图片文件计算感知哈希，失败返回 0（表示不可用）"""
+    if not HAS_PIL:
+        return 0
+    try:
+        with PILImage.open(path) as img:
+            # 动画取首帧
+            if getattr(img, "n_frames", 1) > 1:
+                img.seek(0)
+            return _perceptual_hash(img)
+    except Exception:
+        return 0
+
+
+def _phash_hamming(a: int, b: int) -> int:
+    """两个 64 位哈希的汉明距离"""
+    return bin(a ^ b).count("1")
+
+
+# 等待用户决策的相似图导入项（token → 待导入信息），避免 tmp 被清理
+_PENDING_SIMILAR = {}
+_PENDING_SIMILAR_LOCK = threading.Lock()
+_PENDING_SIMILAR_TTL = 300  # 秒，超时自动丢弃
+
+
+def _register_pending_similar(path: str, oname: str, candidates: list) -> str:
+    import secrets
+
+    token = secrets.token_hex(16)
+    with _PENDING_SIMILAR_LOCK:
+        _PENDING_SIMILAR[token] = {
+            "path": path,
+            "oname": oname,
+            "candidates": candidates,
+            "ts": time.time(),
+        }
+        # 清理过期项
+        now = time.time()
+        for k, v in list(_PENDING_SIMILAR.items()):
+            if now - v["ts"] > _PENDING_SIMILAR_TTL:
+                try:
+                    os.unlink(v["path"])
+                except OSError:
+                    pass
+                del _PENDING_SIMILAR[k]
+    return token
+
+
+def _pop_pending_similar(token: str) -> dict:
+    with _PENDING_SIMILAR_LOCK:
+        item = _PENDING_SIMILAR.pop(token, None)
+        if item and time.time() - item.get("ts", 0) > _PENDING_SIMILAR_TTL:
+            # 已过期：删除临时文件并视为不存在
+            try:
+                os.unlink(item["path"])
+            except OSError:
+                pass
+            item = None
+    return item
+
+
+def _iter_cache_images(cache_dir):
+    """遍历缓存目录下所有在库图片的 (filename, fullpath)，跳过 thumbnails 与子目录"""
+    try:
+        for root, dirs, files in os.walk(str(cache_dir)):
+            for d in list(dirs):
+                if d == "thumbnails":
+                    dirs.remove(d)
+            for name in files:
+                if _detect_image_ext(os.path.join(root, name)):
+                    yield name, os.path.join(root, name)
+    except OSError:
+        return
+
+
+def _build_cache_index():
+    """一次性构建 库中 filename → 绝对路径 映射（供批量回填，避免逐行 walk）"""
+    idx = {}
+    cfg = get_config()
+    for fname, fpath in _iter_cache_images(Path(str(cfg.cache_dir))):
+        idx[fname] = fpath
+    return idx
+
+
+def _resolve_cache_file(filename, index=None):
+    """根据 DB 中的 filename 定位缓存文件绝对路径（一级优先，退化用 index/遍历）"""
+    if index is not None:
+        return index.get(filename) or ""
+    cfg = get_config()
+    cache_dir = cfg.cache_dir
+    direct = cache_dir / filename
+    if direct.is_file():
+        return str(direct)
+    for _fname, fpath in _iter_cache_images(Path(str(cache_dir))):
+        if _fname == filename:
+            return fpath
+    return ""
+
+
+def _backfill_phash_background(rows, index):
+    """后台线程：为 phash 为空的旧库行补算并写回 DB（不阻塞导入）"""
+    global _PHASH_BACKFILLING
+    db = get_db()
+    try:
+        for row in rows:
+            fname = row.get("filename")
+            fpath = index.get(fname) if index else _resolve_cache_file(fname)
+            if not fpath:
+                continue
+            try:
+                phash = _phash_path_cached(fpath)
+            except Exception:
+                continue
+            # 无条件写入（set_perceptual_hash 内部处理 0→"0" 占位）
+            db.set_perceptual_hash(row["id"], phash)
+    finally:
+        with _PHASH_BACKFILL_LOCK:
+            _PHASH_BACKFILLING = False
+
+
+def _ensure_backfill_daemon(rows, index):
+    """若当前无后台回填在跑，启动一个（防重入）；已跑则跳过"""
+    global _PHASH_BACKFILLING
+    if not rows:
+        return
+    with _PHASH_BACKFILL_LOCK:
+        if _PHASH_BACKFILLING:
+            return
+        _PHASH_BACKFILLING = True
+    try:
+        threading.Thread(
+            target=_backfill_phash_background,
+            args=(rows, index),
+            daemon=True,
+        ).start()
+    except Exception:
+        with _PHASH_BACKFILL_LOCK:
+            _PHASH_BACKFILLING = False
+
+
+def _find_similar_candidates(img_path):
+    """基于 DB 感知哈希的全库比对：只解码新图，存量直接读 DB（微秒级）
+
+    返回候选列表（全库比对，无截断）。phash 为空的旧库行惰性回填（算一次写回 DB）。
+    """
+    cfg = get_config()
+    db = get_db()
+    if not cfg.cache_dir or not HAS_PIL:
+        return []
+    target_hash = _phash_path_cached(img_path)
+    if target_hash == 0:
+        return []
+    rows = db.get_all_phash()
+    matches = []
+    missing = [r for r in rows if not r.get("perceptual_hash")]
+    # 缺失行少：同步回填；缺失多：后台回填，本次只比对已填的（无缺失则不遍历目录）
+    if missing:
+        try:
+            idx = _build_cache_index()
+        except Exception:
+            idx = {}
+        if len(missing) <= _PHASH_SYNC_BACKFILL_MAX:
+            for row in missing:
+                fpath = idx.get(row.get("filename")) or ""
+                if fpath:
+                    try:
+                        ph = _phash_path_cached(fpath)
+                    except Exception:
+                        ph = 0
+                    # 无条件写入（set_perceptual_hash 内部处理 0→"0" 占位）
+                    db.set_perceptual_hash(row["id"], ph)
+                    row["perceptual_hash"] = "0" if ph == 0 else hex(ph)
+        else:
+            _ensure_backfill_daemon(missing, idx)
+    for row in rows:
+        fname = row.get("filename")
+        phash = row.get("perceptual_hash")
+        if not phash:
+            continue  # 未回填（已交给后台），本次跳过
+        try:
+            phash = int(phash, 16)
+        except (TypeError, ValueError):
+            continue
+        if not phash:
+            continue  # 占位 "0"（无感知内容）跳过比较
+        dist = _phash_hamming(target_hash, phash)
+        if dist <= _PHASH_SIMILAR_DIST:
+            matches.append(
+                {
+                    "id": row["id"],
+                    "filename": fname,
+                    "name": row.get("original_name") or fname,
+                    "distance": dist,
+                }
+            )
+    matches.sort(key=lambda x: x["distance"])
+    # DB 比对为微秒级整数运算，全库比对无截断漏检
+    return matches[:5]
+
+
+def _prepare_image_import(path) -> dict:
+    """单图导入前的去重决策：返回 hash_dup / similar / ok / rejected"""
+    db = get_db()
+    w = h = 0
+    try:
+        fsize = os.path.getsize(path)
+    except OSError:
+        fsize = 0
+    if HAS_PIL:
+        try:
+            with PILImage.open(path) as img:
+                w, h = img.size
+        except Exception:
+            pass
+    if fsize > _IMPORT_MAX_BYTES or max(w, h) > _IMPORT_MAX_PX:
+        return {"status": "rejected", "error": "文件超过大小/分辨率限制，已跳过"}
+    fhash = _file_sha256(path)
+    row = db.get_by_hash(fhash)
+    if row:
+        return {
+            "status": "hash_dup",
+            "hash": fhash,
+            "existing_id": row["id"],
+        }
+    candidates = _find_similar_candidates(path)
+    if candidates:
+        return {"status": "similar", "candidates": candidates}
+    return {"status": "ok", "hash": fhash}
 
 
 def _detect_image_ext(path):
@@ -2437,7 +3108,7 @@ class WebUI:
                 return full
         return ""
 
-    def _do_import(self, file_paths, names=None):
+    def _do_import(self, file_paths, names=None, progress_cb=None):
         import shutil
 
         cfg = get_config()
@@ -2445,7 +3116,11 @@ class WebUI:
         cache_dir = cfg.cache_dir
         imported = 0
         rejected = 0
+        skipped_dup = 0
         imported_ids = []
+        total = len(file_paths)
+        done = 0
+        stop_import = False
         for i, src in enumerate(file_paths):
             try:
                 base_name = (
@@ -2480,26 +3155,32 @@ class WebUI:
                         )
                         continue
                     fhash = _file_sha256(path)
-                    if db.get_by_hash(fhash):
-                        continue
                     ext = _detect_image_ext(path) or os.path.splitext(path)[1] or ".png"
-                    dst = cache_dir / f"{fhash[:16]}{ext}"
-                    shutil.copy2(path, dst)
-                    db.add_meme(
-                        filename=dst.name,
-                        file_hash=fhash,
-                        width=w,
-                        height=h,
-                        file_size=fsize,
-                        mime_type=f"image/{ext[1:]}" if ext else "image/png",
-                        original_name=oname,
-                        stego_of_hash=stego_of_hash,
-                        from_stego=from_stego,
-                    )
-                    row = db.get_by_hash(fhash)
-                    if row:
-                        imported_ids.append(row["id"])
-                    imported += 1
+                    # 感知哈希计算较重（解码+DCT），放锁外避免持锁阻塞其他导入
+                    src_phash = _perceptual_hash_path(path)
+                    # 去重检查 + 落盘 + 入库 在同一临界区：并发导入同图时不产生重复记录
+                    with _IMPORT_LOCK:
+                        if db.get_by_hash(fhash):
+                            skipped_dup += 1
+                            continue
+                        dst = cache_dir / f"{fhash[:16]}{ext}"
+                        shutil.copy2(path, dst)
+                        db.add_meme(
+                            filename=dst.name,
+                            file_hash=fhash,
+                            width=w,
+                            height=h,
+                            file_size=fsize,
+                            mime_type=f"image/{ext[1:]}" if ext else "image/png",
+                            original_name=oname,
+                            stego_of_hash=stego_of_hash,
+                            from_stego=from_stego,
+                            perceptual_hash=src_phash,
+                        )
+                        row = db.get_by_hash(fhash)
+                        if row:
+                            imported_ids.append(row["id"])
+                        imported += 1
                 if restored:
                     try:
                         os.unlink(restored)
@@ -2507,10 +3188,100 @@ class WebUI:
                         pass
             except Exception as e:
                 logger.error(f"import {src}: {e}")
+            finally:
+                # 每个源文件无论 导入/去重跳过/拒绝/异常 都推进进度并检查取消
+                done += 1
+                if progress_cb:
+                    try:
+                        if progress_cb(done, total, os.path.basename(src)) is False:
+                            stop_import = True
+                    except Exception:
+                        pass
+            if stop_import:
+                break  # 取消：progress_cb 返回 False 时中断导入
         if imported:
             build_manifest()
         logger.info(f"导入完成: {imported} 个")
-        return {"ids": imported_ids, "rejected": rejected}
+        return {"ids": imported_ids, "rejected": rejected, "skipped_dup": skipped_dup}
+
+    def _import_with_similar_decision(self, path, oname=""):
+        """单图导入决策：哈希命中提示已存在；内容近似转相似（URL 拖放与文件上传复用）"""
+        try:
+            prep = _prepare_image_import(path)
+        except Exception as e:
+            logger.error("import decision error: %s", e)
+            return {"ok": False, "error": "导入失败"}
+        if prep.get("status") == "ok":
+            r = self._do_import([path], [oname] if oname else None)
+            ids = r.get("ids") or []
+            if ids:
+                return {"ok": True, "id": ids[0]}
+            if r.get("skipped_dup"):
+                return {
+                    "ok": False,
+                    "duplicate": True,
+                    "error": "该图片已存在，无需重复导入",
+                }
+            if r.get("rejected"):
+                return {
+                    "ok": False,
+                    "rejected": r["rejected"],
+                    "error": "文件超过大小/分辨率限制，已跳过",
+                }
+            return {"ok": False, "error": "导入失败"}
+        if prep.get("status") == "rejected":
+            return {
+                "ok": False,
+                "rejected": 1,
+                "error": prep.get("error") or "导入失败",
+            }
+        if prep.get("status") == "hash_dup":
+            return {
+                "ok": False,
+                "duplicate": True,
+                "existing_id": prep.get("existing_id", 0),
+                "error": "该图片已存在，无需重复导入",
+            }
+        # similar：先把文件复制到独立临时目录，避免调用方 finally 清理源文件
+        import tempfile
+
+        cands = prep.get("candidates") or []
+        hold = None
+        try:
+            ext = os.path.splitext(path)[1] or ".png"
+            fd, hold = tempfile.mkstemp(prefix="ohmm_simil_", suffix=ext)
+            os.close(fd)
+            import shutil
+
+            shutil.copy2(path, hold)
+        except OSError:
+            if hold:
+                try:
+                    os.unlink(hold)
+                except OSError:
+                    pass
+            return {"ok": False, "error": "导入失败"}
+        token = _register_pending_similar(hold, oname, cands)
+        return {
+            "ok": False,
+            "similar_pending": True,
+            "token": token,
+            "candidates": cands,
+        }
+
+    def ensure_import_collection(self, ids, group_name, parent_id=None):
+        """把导入 ids 加入固定名分组（同名复用，不存在则建）；返回 collection_id"""
+        if not ids or not group_name:
+            return -1
+        db = get_db()
+        cid = db.create_collection(group_name, parent_id=parent_id)
+        if cid > 0:
+            for mid in ids:
+                db.add_to_collection(mid, cid)
+            from .manifest import build as build_manifest
+
+            build_manifest()
+        return cid
 
     def _on_hotkey_change(self, new_hotkey: str):
         if self._on_hotkey_change_cb:
@@ -2638,6 +3409,17 @@ class WebUI:
                     base = os.path.splitext(oname)[0]
                     names.append(base)
                 if paths:
+                    if len(paths) == 1:
+                        # 单张上传走相似/哈希决策，能触发重复与近似检测
+                        r = self._import_with_similar_decision(
+                            paths[0], names[0] if names else ""
+                        )
+                        for p in paths:
+                            try:
+                                os.unlink(p)
+                            except Exception:
+                                pass
+                        return r
                     self._do_import(paths, names)
                     for p in paths:
                         try:
@@ -2725,6 +3507,7 @@ class WebUI:
                         file_size=fsize,
                         mime_type=mime,
                         original_name=oname,
+                        perceptual_hash=_perceptual_hash_path(fpath),
                     )
                     added += 1
                 except Exception as e:

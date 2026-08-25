@@ -9,8 +9,10 @@ import CollectionBuilder from './components/CollectionBuilder.vue'
 import CollectionTreeNode from './components/CollectionTreeNode.vue'
 import ConfirmDialog from './components/ConfirmDialog.vue'
 import ImportMenu from './components/ImportMenu.vue'
+import ImportProgressOverlay from './components/ImportProgressOverlay.vue'
 import InputDialog from './components/InputDialog.vue'
 import Pager from './components/Pager.vue'
+import SimilarImportDialog from './components/SimilarImportDialog.vue'
 import SyncOverlay from './components/SyncOverlay.vue'
 import TagEditor from './components/TagEditor.vue'
 import UpdateDialog from './components/UpdateDialog.vue'
@@ -23,6 +25,7 @@ const tagEditor = ref<InstanceType<typeof TagEditor> | null>(null)
 const updateDialog = ref<InstanceType<typeof UpdateDialog> | null>(null)
 const inputDialog = ref<InstanceType<typeof InputDialog> | null>(null)
 const confirmDialog = ref<InstanceType<typeof ConfirmDialog> | null>(null)
+const similarImportDialog = ref<InstanceType<typeof SimilarImportDialog> | null>(null)
 
 // 统一确认对话框（替代原生 confirm，风格与重构主题一致）
 async function confirmAsk(title: string, message: string): Promise<boolean> {
@@ -72,7 +75,8 @@ const sidebarCollapsed = ref(false)
 const dragOver = ref(false)
 let dragCounter = 0
 let nativeDragActive = false
-let dragState: { sx: number; sy: number } | null = null
+let dragGeneration = 0
+let dragState: { sx: number; sy: number; px: number; py: number; raf: number | null } | null = null
 let updateInterval: ReturnType<typeof setInterval> | null = null
 
 // 启动动画：仅页面首次加载（启动）时播放一次，快捷键呼出不重载页面故不重复播放
@@ -246,6 +250,12 @@ function onImportDone() {
   refreshCollections()
 }
 
+const importProgress = ref<InstanceType<typeof ImportProgressOverlay> | null>(null)
+
+function onImporting() {
+  importProgress.value?.start()
+}
+
 const syncOverlay = ref<InstanceType<typeof SyncOverlay> | null>(null)
 
 function syncUpload() {
@@ -276,25 +286,40 @@ async function onTitlebarMouseDown(e: MouseEvent) {
   if (e.button !== 0) return
   if ((e.target as HTMLElement).closest('.title-btn') || (e.target as HTMLElement).closest('.icon-btn') || (e.target as HTMLElement).closest('.sidebar-toggle')) return
   try {
+    const gen = dragGeneration
     const nativeDrag = await window.pywebview?.api?.start_window_drag(e.button + 1, e.screenX, e.screenY)
     if (nativeDrag) return
+    // await 期间可能已松开鼠标（onWindowMouseUp 已递增 generation）：此时不再启动拖动
+    if (gen !== dragGeneration) return
   } catch (_) {}
-  dragState = { sx: e.screenX, sy: e.screenY }
+  dragState = { sx: e.screenX, sy: e.screenY, px: 0, py: 0, raf: null }
   e.preventDefault()
 }
 
 function onWindowMouseMove(e: MouseEvent) {
   if (!dragState) return
-  const dx = e.screenX - dragState.sx
-  const dy = e.screenY - dragState.sy
-  if (dx !== 0 || dy !== 0) {
-    try { window.pywebview?.api?.move_window(dx, dy) } catch (_) {}
-    dragState.sx = e.screenX
-    dragState.sy = e.screenY
-  }
+  // 记录相对拖动起点的总偏移（屏幕坐标，自愈无累积滞后）
+  dragState.px = e.screenX - dragState.sx
+  dragState.py = e.screenY - dragState.sy
+  // rAF 合并每帧最新位置，避免高回报率鼠标消息风暴堵塞桥接
+  if (dragState.raf) return
+  dragState.raf = requestAnimationFrame(() => {
+    if (!dragState) return
+    dragState.raf = null
+    const dx = dragState.px
+    const dy = dragState.py
+    if (dx !== 0 || dy !== 0) {
+      try { window.pywebview?.api?.move_window(dx, dy) } catch (_) {}
+    }
+  })
 }
 
-function onWindowMouseUp() { dragState = null }
+function onWindowMouseUp() {
+  if (dragState?.raf) cancelAnimationFrame(dragState.raf)
+  try { window.pywebview?.api?.stop_window_drag() } catch (_) {}
+  dragState = null
+  dragGeneration++  // 使未完成的 mousedown await 失效，防止松手后仍启动拖动
+}
 
 function onMemeRightClick(e: MouseEvent, meme: Meme) {
   e.preventDefault()
@@ -686,6 +711,17 @@ async function onDrop(e: DragEvent) {
     try {
       const r = await window.pywebview?.api?.download_original_image(uri)
       if (r?.ok) { showToast('导入成功'); search(); refreshCollections(); return }
+      if (r?.duplicate) { showToast('该图片已存在'); return }
+      if (r?.similar_pending) {
+        const action = await similarImportDialog.value?.open(r.candidates || [])
+        if (action) {
+          const rr = await window.pywebview?.api?.resolve_similar_import(r.token, action)
+          if (rr?.ok && rr.imported) { showToast('导入成功'); search(); refreshCollections() }
+          else if (rr?.ok) { showToast('已跳过该图片') }
+          else { showToast(rr?.error || '处理失败') }
+        }
+        return
+      }
       showToast(r?.error || '导入失败')
       return
     } catch (_) {
@@ -708,8 +744,21 @@ async function onDrop(e: DragEvent) {
     }
     try {
       const res = await fetch('/api/upload/', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ files: [{ name: file.name, data: b64 }] }) })
-      if (res.ok) { showToast('导入成功'); search(); refreshCollections() }
-      else { showToast('导入失败：服务器返回错误') }
+      let j: any = null
+      try { j = await res.json() } catch (_) { j = null }
+      if (j?.similar_pending) {
+        const action = await similarImportDialog.value?.open(j.candidates || [])
+        if (action) {
+          const rr = await window.pywebview?.api?.resolve_similar_import(j.token, action)
+          if (rr?.ok && rr.imported) { showToast('导入成功'); search(); refreshCollections() }
+          else if (rr?.ok) { showToast('已跳过该图片') }
+          else { showToast(rr?.error || '处理失败') }
+        }
+        return
+      }
+      if (j?.duplicate) { showToast('该图片已存在'); return }
+      if (res.ok || j?.ok) { showToast('导入成功'); search(); refreshCollections() }
+      else { showToast(j?.error || '导入失败：服务器返回错误') }
     } catch (_) {
       showToast('导入失败：网络或服务异常')
     }
@@ -973,12 +1022,14 @@ onUnmounted(() => {
   </div>
 
   <CollectionBuilder />
-  <ImportMenu ref="importMenu" @imported="onImportDone" />
+  <ImportMenu ref="importMenu" @imported="onImportDone" @importing="onImporting" />
+  <ImportProgressOverlay ref="importProgress" @imported="onImportDone" />
   <SyncOverlay ref="syncOverlay" @synced="onSyncDone" />
   <TagEditor ref="tagEditor" />
   <UpdateDialog ref="updateDialog" />
   <InputDialog ref="inputDialog" />
   <ConfirmDialog ref="confirmDialog" />
+  <SimilarImportDialog ref="similarImportDialog" />
   <ContextMenu
     :visible="ctx.visible.value" :x="ctx.x.value" :y="ctx.y.value"
     :items="ctx.items.value" :trigger="ctx.trigger.value"
