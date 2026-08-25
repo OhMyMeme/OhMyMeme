@@ -878,10 +878,7 @@ class JsApi:
         return self._webui._import_with_similar_decision(path, oname)
 
     def resolve_similar_import(self, token: str, action: str) -> dict:
-        """响应用户对相似图导入的决策：
-        discard 丢弃新文件；keep_old 保留旧图且不导入新文件；
-        keep_new 导入新图并替换旧图；keep_both 同时保留并导入两者。
-        """
+        """响应用户对相似图的导入决策（action: discard/keep_old/keep_new/keep_both）"""
         item = _pop_pending_similar(token)
         if not item:
             return {"ok": False, "error": "决策已过期，请重新导入"}
@@ -915,15 +912,11 @@ class JsApi:
         if ids:
             replaced = False
             if action == "keep_new" and best_id:
-                # keep_new：导入新图并替换旧图（删除最相似旧图）
+                # keep_new：导入新图并替换旧图——完整删除链（文件+缩略图+缓存+DB）
                 try:
-                    self._db.delete_meme(best_id)
-                    replaced = True  # 以删除成功为准
+                    replaced = self.delete_meme(best_id)
                 except Exception as e:
                     logger.error("keep_new 替换旧图失败: %s", e)
-                from .manifest import build as build_manifest
-
-                build_manifest()
             return {
                 "ok": True,
                 "id": ids[0],
@@ -1040,10 +1033,12 @@ class JsApi:
             logger.error(f"import_folder failed: {e}")
             return {"ok": False, "error": str(e)}
 
-    def get_import_progress(self) -> dict:
+    def get_import_progress(self):
+        # 后台导入进度快照（前端轮询用）
         return get_import_progress()
 
-    def cancel_import_job(self) -> dict:
+    def cancel_import_job(self):
+        # 请求取消当前后台导入
         return cancel_import_job()
 
     def import_from_clipboard(self) -> dict:
@@ -1490,9 +1485,9 @@ def _storage_migrate_worker(old: Path, new: Path):
                 return
             dst.parent.mkdir(parents=True, exist_ok=True)
             # 排他创建目标（O_EXCL：目标已存在则抛 FileExistsError，
-            # 防 precheck→write 期间并发覆盖既有文件），成功后才删源
+            # 防 precheck→write 期间并发覆盖既有文件），O_WRONLY 确保 fd 可写
             try:
-                fd = os.open(str(dst), os.O_CREAT | os.O_EXCL, 0o644)
+                fd = os.open(str(dst), os.O_CREAT | os.O_WRONLY | os.O_EXCL, 0o644)
             except FileExistsError:
                 # 迁移期间目标被其他进程新建：并发冲突，整批回滚并报清晰错误
                 for s, d in reversed(moved_pairs):
