@@ -1,4 +1,10 @@
+import io
 from pathlib import Path
+
+try:
+    from PIL import Image as PILImage
+except ImportError:
+    PILImage = None
 
 INDEX_FILENAME = "meme-index.json"
 RECOVERY_MARKER_FILENAME = ".import-recovery.json"
@@ -35,6 +41,24 @@ class AssetPaths:
     @property
     def recovery_marker_path(self):
         return self.data_dir / RECOVERY_MARKER_FILENAME
+
+    def thumbnail_path(self, original, meme_id, size=150):
+        """Return or create the cached PNG thumbnail for a media file."""
+        path = self.thumbnail_dir / f"{meme_id}_{size}.png"
+        if path.exists():
+            return str(path)
+        if PILImage is None:
+            return ""
+        try:
+            self.thumbnail_dir.mkdir(parents=True, exist_ok=True)
+            with PILImage.open(original) as image:
+                image.thumbnail((size, size), PILImage.LANCZOS)
+                buffer = io.BytesIO()
+                image.save(buffer, "PNG")
+            path.write_bytes(buffer.getvalue())
+            return str(path)
+        except OSError:
+            return ""
 
 
 class ResourceLocator:

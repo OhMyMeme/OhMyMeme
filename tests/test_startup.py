@@ -20,6 +20,121 @@ from ohmymeme.integrations.platform.tray import _create_default_icon
 ROOT = Path(__file__).resolve().parent.parent
 
 
+def test_webui_stop_releases_bottle_server_and_joins_thread(tmp_path):
+    from ohmymeme.app.container import Container
+
+    container = Container(tmp_path / "bottle-owner")
+    ui = container.create_webui()
+    events = []
+
+    class Server:
+        def shutdown(self):
+            events.append("shutdown")
+
+    class Thread:
+        def join(self, timeout):
+            events.append(("join", timeout))
+
+        def is_alive(self):
+            return False
+
+    ui._bottle_server = Server()
+    ui._bottle_thread = Thread()
+    ui.stop()
+    container.close()
+
+    assert events == ["shutdown", ("join", 1.0)]
+
+
+def test_webui_stop_waits_for_thread_after_first_join_budget(tmp_path):
+    from ohmymeme.app.container import Container
+
+    container = Container(tmp_path / "bottle-slow-owner")
+    ui = container.create_webui()
+
+    class Server:
+        def shutdown(self):
+            pass
+
+    class Thread:
+        def __init__(self):
+            self.alive = True
+            self.join_calls = 0
+
+        def join(self, timeout):
+            self.join_calls += 1
+            if self.join_calls == 2:
+                self.alive = False
+
+        def is_alive(self):
+            return self.alive
+
+    thread = Thread()
+    ui._bottle_server = Server()
+    ui._bottle_thread = thread
+
+    ui.stop()
+    container.close()
+
+    assert thread.join_calls == 2
+    assert not thread.is_alive()
+
+
+def test_qqnt_job_manager_preserves_terminal_error_and_single_flight(monkeypatch):
+    from ohmymeme.app.job_manager import JobManager
+    from ohmymeme.presentation.desktop import window_manager
+
+    entered = __import__("threading").Event()
+    release = __import__("threading").Event()
+
+    def extract(*_args, **kwargs):
+        entered.set()
+        release.wait(1)
+        raise RuntimeError("controlled qqnt failure")
+
+    monkeypatch.setattr(window_manager.qqnt, "extract_qq_emojis", extract)
+    manager = JobManager()
+    try:
+        assert window_manager.start_qqnt_extract("1", "out", job_manager=manager)
+        assert not window_manager.start_qqnt_extract("1", "out", job_manager=manager)
+        assert entered.wait(1)
+        job = manager.active("import.qqnt")
+        assert job is not None
+        release.set()
+        assert manager.wait(job.id, 1)
+        assert window_manager.get_qqnt_progress()["status"] == "error"
+        assert manager.get(job.id).status == "error"
+    finally:
+        manager.shutdown(1)
+
+
+def test_qqnt_job_manager_cancel_propagates_to_worker(monkeypatch):
+    from ohmymeme.app.job_manager import JobManager
+    from ohmymeme.presentation.desktop import window_manager
+
+    entered = __import__("threading").Event()
+
+    def extract(*_args, **kwargs):
+        entered.set()
+        while not kwargs["should_stop"]():
+            __import__("time").sleep(0.001)
+        return {"cancelled": True}
+
+    monkeypatch.setattr(window_manager.qqnt, "extract_qq_emojis", extract)
+    manager = JobManager()
+    try:
+        assert window_manager.start_qqnt_extract("1", "out", job_manager=manager)
+        assert entered.wait(1)
+        job = manager.active("import.qqnt")
+        assert job is not None
+        window_manager.cancel_qqnt_extract()
+        assert manager.wait(job.id, 1)
+        assert window_manager.get_qqnt_progress()["status"] == "cancelled"
+        assert manager.get(job.id).status == "cancelled"
+    finally:
+        manager.shutdown(1)
+
+
 class _FakeConfig:
     def __init__(self, hotkey_show_at_mouse):
         self.hotkey_show_at_mouse = hotkey_show_at_mouse
@@ -293,8 +408,7 @@ def test_successful_native_drag_requests_hide_only_for_hotkey_session(monkeypatc
     import ohmymeme.integrations.platform.native_drag as native_drag
 
     ui = _fake_webui(True)
-    ui._api._db = _FakeMemeDB()
-    monkeypatch.setattr(ui._api, "_find_meme_file", lambda filename: filename)
+    monkeypatch.setattr(ui._api._catalog, "get_meme_path", lambda meme_id: "meme-1.png")
     monkeypatch.setattr(native_drag, "start_native_drag", lambda path: True)
     monkeypatch.setattr(ui, "_run_on_gui", lambda delay, func: func())
 
@@ -312,8 +426,7 @@ def test_successful_copy_requests_hide_only_for_hotkey_session(monkeypatch):
     import ohmymeme.presentation.desktop.window_manager as webui_module
 
     ui = _fake_webui(True)
-    ui._api._db = _FakeMemeDB()
-    monkeypatch.setattr(ui._api, "_find_meme_file", lambda filename: filename)
+    monkeypatch.setattr(ui._api._catalog, "get_meme_path", lambda meme_id: "meme-1.png")
     monkeypatch.setattr(webui_module, "copy_image_to_clipboard", lambda path: True)
     monkeypatch.setattr(ui, "_run_on_gui", lambda delay, func: func())
 

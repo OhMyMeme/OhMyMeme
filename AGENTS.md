@@ -12,6 +12,12 @@ WebView 窗口 (pywebview) → Bottle HTTP 服务器 (localhost)
 JsApi / SettingsApi → SQLite (WAL) + 本地缓存 + 远端同步
 ```
 
+### 应用内部所有权
+- `Container` 是完整应用对象图的唯一创建点，并负责构造 `LocalLibraryService`；其他入口复用容器持有的本地库服务，不自行组装另一套本地写入链路。
+- `LocalLibraryService` 是本地库写入边界：导入、删除、重命名、排序等成功变更统一在此完成 manifest 投影；同步和局域网命令通过该边界应用本地变更。
+- `JobManager` 由 `Container` 持有并注册给更新服务；同一任务类型的活动任务 single-flight，取消使用协作事件，`shutdown()` 请求活动任务取消并在超时预算内等待，不强杀线程。
+- 以上是进程内对象所有权和生命周期约定，不是用户可见的数据格式、协议或配置语义。
+
 ## 技术栈
 - **Python 3.12** + **pywebview** (frameless 窗口) + **Bottle** (静态文件/缩略图路由)
 - **SQLite** (WAL, `threading.local()` 连接, `threading.Lock()` 写锁)
@@ -366,6 +372,16 @@ black src/        # 格式化
 python scripts/build.py  # PyInstaller + InnoSetup 完整构建
 python scripts/build.py --lang en  # 指定语言构建
 ```
+
+开发者验证优先使用 mise 管理的工具链：
+
+```bash
+mise exec -- python -m pytest tests/ -v
+mise exec -- ruff check src/
+mise exec -- black --check src/
+```
+
+变更涉及应用对象图、本地库边界或后台任务生命周期时，先运行 staged targeted 回归；随后串行运行配置、manifest、LAN 与 API legacy fixture，避免固定 LAN 测试端口被并行执行污染。记录命令输出和已知失败的直接证据，再运行完整测试与静态检查。
 - **构建自动编译 Vue 前端**: `build.py` 的 `ensure_vue_frontend()` 在打包前检查 `src/webui/dist/ohmymeme.js`（被 gitignore，CI 全新检出缺失），缺失时自动 `npm ci`（有 lockfile，否则 `npm install`）→ `npx vite build`，失败则中止构建；构建机需 node/npm（GitHub Actions runner 预装），dist 已存在时直接跳过
 - **Linux 打包（GTK）**: `--linux` 时 `build.py` 自动传 `--additional-hooks-dir scripts/hooks`（收集 WebKit2/Soup typelib）并 `--collect-all gi`，把 PyGObject/GTK 打进产物，脱离系统 python3-gi 运行；构建机需装 `python3-gi gir1.2-webkit2-4.1 libgirepository1.0-dev libgirepository-2.0-dev gobject-introspection` 并 `pip install PyGObject`（对应 `build.yml`/`nightly.yml` build-linux job）；**PyGObject ≥3.52 硬依赖 girepository-2.0**（Ubuntu 24.04 对应 `libgirepository-2.0-dev`），只装 1.0-dev 会在 meson 元数据阶段报 `Dependency 'girepository-2.0' is required but not found`；deb `Depends: python3-gi, gir1.2-webkit2-4.1 | gir1.2-webkit2-4.0`
 

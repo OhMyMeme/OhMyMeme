@@ -7,6 +7,7 @@ import os
 import socket
 import struct
 import sys
+import time
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
@@ -38,6 +39,7 @@ def test_lan_package_exports_public_server_api():
     )
 
     assert all(callable(getattr(lan_package, name, None)) for name in exports)
+
 
 # 1x1 透明 PNG（合法图片，PIL 可解码，宽高 1x1）
 TINY_PNG = bytes.fromhex(
@@ -516,6 +518,38 @@ def test_get_config_no_secrets(lan_env):
     sock.close()
 
 
+def test_get_config_filters_every_provider_secret(lan_env):
+    cfg, _, _ = lan_env
+    for key in (
+        "ftp_password",
+        "s3_access_key",
+        "s3_secret_key",
+        "r2_access_key_id",
+        "r2_secret_access_key",
+        "webdav_password",
+        "lan_secret",
+    ):
+        cfg.set(key, "secret")
+    sock = _connect()
+    key = _handshake(sock, "test-secret")
+    _send_frame(sock, key, {"cmd": "get_config"})
+    resp = _recv_frame(sock, key)
+    assert resp["ok"] is True
+    assert all(
+        secret not in resp["config"]
+        for secret in (
+            "ftp_password",
+            "s3_access_key",
+            "s3_secret_key",
+            "r2_access_key_id",
+            "r2_secret_access_key",
+            "webdav_password",
+            "lan_secret",
+        )
+    )
+    sock.close()
+
+
 def test_send_config_filters_secrets(lan_env):
     """allow_secret_config 关闭时 send_config 忽略密钥字段"""
     cfg, db, tmp = lan_env
@@ -647,6 +681,31 @@ def test_device_info_rejected(lan_env):
         assert resp["approved"] is False
         sock.close()
     finally:
+        lan.set_confirm_callback(old)
+
+
+def test_stop_unblocks_pending_device_confirmation(lan_env):
+    called = []
+
+    def cb(device):
+        called.append(device)
+
+    old = lan.set_confirm_callback(cb)
+    sock = None
+    try:
+        sock = _connect()
+        key = _handshake(sock, "test-secret")
+        _send_frame(sock, key, {"cmd": "device_info", "name": "Pending"})
+        deadline = time.monotonic() + 1
+        while not called and time.monotonic() < deadline:
+            time.sleep(0.01)
+        started = time.monotonic()
+        lan.stop()
+        assert time.monotonic() - started < 1.5
+        assert lan.get_status()["status"] == "stopped"
+    finally:
+        if sock:
+            sock.close()
         lan.set_confirm_callback(old)
 
 

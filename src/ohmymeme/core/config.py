@@ -16,15 +16,93 @@ APP_NAME = "OhMyMeme"
 _CONFIG_VERSION = __version__
 
 # ~~~ 加密字段列表 ~~~（写入前自动加密，读取时自动解密）
-_SECRET_KEYS = {
-    "s3_access_key",
-    "s3_secret_key",
-    "r2_access_key_id",
-    "r2_secret_access_key",
-    "ftp_password",
-    "webdav_password",
-    "lan_secret",
+PROVIDER_METADATA = {
+    "ftp": {
+        "defaults": {
+            "ftp_host": "",
+            "ftp_port": 21,
+            "ftp_user": "",
+            "ftp_password": "",
+            "ftp_path": "/",
+        },
+        "secret_keys": {"ftp_password"},
+        "lan_keys": {"ftp_host", "ftp_port", "ftp_user", "ftp_path"},
+        "capabilities": {"delete": True},
+    },
+    "s3": {
+        "defaults": {
+            "s3_endpoint": "",
+            "s3_region": "",
+            "s3_bucket": "",
+            "s3_access_key": "",
+            "s3_secret_key": "",
+            "s3_path": "",
+            "s3_addressing_style": "virtual",
+            "s3_signature_version": "s3",
+        },
+        "secret_keys": {"s3_access_key", "s3_secret_key"},
+        "lan_keys": {
+            "s3_endpoint",
+            "s3_region",
+            "s3_bucket",
+            "s3_path",
+            "s3_addressing_style",
+            "s3_signature_version",
+        },
+        "capabilities": {"delete": True},
+    },
+    "r2": {
+        "defaults": {
+            "r2_account_id": "",
+            "r2_access_key_id": "",
+            "r2_secret_access_key": "",
+            "r2_bucket": "",
+            "r2_path": "",
+        },
+        "secret_keys": {"r2_access_key_id", "r2_secret_access_key"},
+        "lan_keys": {"r2_account_id", "r2_bucket", "r2_path"},
+        "capabilities": {"delete": True},
+    },
+    "webdav": {
+        "defaults": {
+            "webdav_url": "",
+            "webdav_user": "",
+            "webdav_password": "",
+            "webdav_path": "",
+            "webdav_timeout": 30,
+        },
+        "secret_keys": {"webdav_password"},
+        "lan_keys": {"webdav_url", "webdav_user", "webdav_path", "webdav_timeout"},
+        "capabilities": {"delete": True},
+    },
 }
+
+_SECRET_KEYS = {"lan_secret"} | {
+    key for metadata in PROVIDER_METADATA.values() for key in metadata["secret_keys"]
+}
+
+
+def get_provider_metadata(sync_type):
+    """Return the internal metadata for a provider."""
+    return PROVIDER_METADATA.get(
+        sync_type,
+        {"defaults": {}, "secret_keys": set(), "lan_keys": set(), "capabilities": {}},
+    )
+
+
+def provider_supports(sync_type, capability):
+    """Return whether a provider supports a capability."""
+    return bool(get_provider_metadata(sync_type)["capabilities"].get(capability, False))
+
+
+def get_lan_secret_keys():
+    """Return fields excluded from LAN config transfer by default."""
+    return {"lan_secret"} | {
+        key
+        for metadata in PROVIDER_METADATA.values()
+        for key in metadata["secret_keys"]
+    }
+
 
 # ~~~ 导入限制 ~~~（超过限制的图片拒绝入库）
 _IMPORT_MAX_PX = 2560  # 最长边像素上限（超过 2K）
@@ -83,32 +161,14 @@ class Config:
         "show_download_progress": True,  # 下载时显示进度条
         "show_download_done": True,  # 下载完毕显示提示
         # FTP
-        "ftp_host": "",
-        "ftp_port": 21,
-        "ftp_user": "",
-        "ftp_password": "",
-        "ftp_path": "/",
+        **{
+            key: value
+            for metadata in PROVIDER_METADATA.values()
+            for key, value in metadata["defaults"].items()
+        },
         # S3
-        "s3_endpoint": "",
-        "s3_region": "",
-        "s3_bucket": "",
-        "s3_access_key": "",
-        "s3_secret_key": "",
-        "s3_path": "",
-        "s3_addressing_style": "virtual",
-        "s3_signature_version": "s3",
         # R2
-        "r2_account_id": "",
-        "r2_access_key_id": "",
-        "r2_secret_access_key": "",
-        "r2_bucket": "",
-        "r2_path": "",
         # WebDAV
-        "webdav_url": "",
-        "webdav_user": "",
-        "webdav_password": "",
-        "webdav_path": "",
-        "webdav_timeout": 30,  # WebDAV 请求超时（秒）
         # 复制设置
         "copy_resize_mode": 1,  # 0不处理；1webp缩放；2转gif；3转gif隐写原图
         "copy_resize_max": 200,  # 缩放后最长边像素

@@ -9,6 +9,8 @@ from ftplib import FTP, error_perm
 from pathlib import Path
 from urllib.parse import quote, unquote, urlparse
 
+from ohmymeme.core.config import get_provider_metadata
+
 logger = logging.getLogger(__name__)
 
 
@@ -605,16 +607,18 @@ class _WebDAVBackend(_SyncBackend):
 
 def get_backend(cfg):
     sync_type = cfg.get("sync_type", "")
-    if sync_type == "ftp":
-        return _FtpBackend(cfg)
-    elif sync_type == "s3":
-        return _S3Backend(cfg)
-    elif sync_type == "r2":
-        return _R2Backend(cfg)
-    elif sync_type == "webdav":
-        return _WebDAVBackend(cfg)
-    else:
+    backend_types = {
+        "ftp": _FtpBackend,
+        "s3": _S3Backend,
+        "r2": _R2Backend,
+        "webdav": _WebDAVBackend,
+    }
+    if (
+        sync_type not in backend_types
+        or not get_provider_metadata(sync_type)["defaults"]
+    ):
         raise SyncError("No sync type configured")
+    return backend_types[sync_type](cfg)
 
 
 def connect_ftp(cfg):

@@ -17,6 +17,7 @@ import json
 import shutil
 import sys
 import tempfile
+import threading
 import unittest
 from pathlib import Path
 from unittest.mock import patch
@@ -29,11 +30,112 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 from ohmymeme.core.config import Config
 from ohmymeme.core.manifest import INDEX_FILENAME
 from ohmymeme.services.sync import service as sync
+from ohmymeme.services.sync.backends import get_backend
 from ohmymeme.services.sync.service import (
     SyncError,
+    SyncService,
     cleanup_remote_orphans,
     get_sync_progress,
 )
+
+
+class TestSyncJobAdapter(unittest.TestCase):
+    def test_sync_service_uses_job_manager_single_flight(self):
+        from ohmymeme.app.job_manager import JobManager
+
+        manager = JobManager()
+        started = threading.Event()
+        release = threading.Event()
+        calls = []
+        service = SyncService(None, None, None, None, None, manager)
+
+        def blocked(*_args, **_kwargs):
+            calls.append(1)
+            started.set()
+            release.wait(2)
+            return {"uploaded": 1, "errors": 0}
+
+        with patch.object(sync, "push", side_effect=blocked):
+            try:
+                first = threading.Thread(target=service.push)
+                first.start()
+                self.assertTrue(started.wait(1))
+                with self.assertRaises(SyncError):
+                    service.push()
+                self.assertEqual(calls, [1])
+            finally:
+                release.set()
+                first.join(2)
+                manager.shutdown(2)
+
+
+class TestProviderMetadataFactory(unittest.TestCase):
+    def test_factory_selects_each_configured_provider(self):
+        expected = {
+            "ftp": "_FtpBackend",
+            "s3": "_S3Backend",
+            "r2": "_R2Backend",
+            "webdav": "_WebDAVBackend",
+        }
+        for sync_type, class_name in expected.items():
+            backend = get_backend(
+                type(
+                    "Config",
+                    (),
+                    {
+                        "get": lambda self, key, default=None, value=sync_type: (
+                            value if key == "sync_type" else default
+                        )
+                    },
+                )()
+            )
+            self.assertEqual(type(backend).__name__, class_name)
+
+    def test_unknown_provider_keeps_compatible_error(self):
+        with self.assertRaises(SyncError):
+            get_backend(
+                type(
+                    "Config",
+                    (),
+                    {
+                        "get": lambda self, key, default=None: (
+                            "unknown" if key == "sync_type" else default
+                        )
+                    },
+                )()
+            )
+
+    def test_delete_capability_guard_has_no_backend_side_effect(self):
+        with patch.object(sync, "get_config") as get_config, patch.object(
+            sync, "_get_backend"
+        ) as get_backend:
+            get_config.return_value.get.return_value = "unknown"
+            result = sync.delete_all_remote()
+        self.assertEqual(result["ok"], False)
+        get_backend.assert_not_called()
+
+    def test_sync_service_cancellation_reaches_operation(self):
+        from ohmymeme.app.job_manager import JobManager
+
+        manager = JobManager()
+        started = threading.Event()
+        service = SyncService(None, None, None, None, None, manager)
+
+        def blocked(*_args, cancellation=None, **_kwargs):
+            started.set()
+            cancellation.wait(2)
+            return {"cancelled": cancellation.is_set()}
+
+        with patch.object(sync, "push", side_effect=blocked):
+            result = {}
+            worker = threading.Thread(target=lambda: result.update(service.push()))
+            worker.start()
+            self.assertTrue(started.wait(1))
+            job = manager.active("sync")
+            self.assertIsNotNone(job)
+            self.assertTrue(manager.cancel(job.id))
+            worker.join(2)
+            self.assertEqual(result, {"cancelled": True})
 
 
 def _entry(fname, sha256, size=1):
@@ -594,6 +696,108 @@ class TestSyncPush(unittest.TestCase):
         collections.assert_not_called()
         order.assert_not_called()
         rebuild.assert_not_called()
+        self.assertEqual(
+            (self.data_dir / INDEX_FILENAME).read_bytes(), original_manifest
+        )
+
+    def test_pull_cancel_after_metadata_restores_manifest_and_local_state(self):
+        """Cancellation after publish preserves the old state."""
+        self._set_local_memes(
+            [
+                {"filename": "test.png", "sha256": "abc"},
+                {"filename": "old.png", "sha256": "old"},
+            ]
+        )
+        remote_data = {
+            "version": 3,
+            "memes": [_entry("test.png", "abc")],
+            "collections": [],
+        }
+        cancellation = threading.Event()
+        original_manifest = (self.data_dir / INDEX_FILENAME).read_bytes()
+
+        class _PullLibrary:
+            def __init__(self):
+                self._assets = type("Assets", (), {})()
+                self._assets.manifest_path = self_outer.data_dir / INDEX_FILENAME
+
+            def apply_remote_metadata(self, data):
+                self.fake_db.apply_remote_metadata(data)
+                cancellation.set()
+                return True
+
+            def replace_manifest(self, data):
+                self._assets.manifest_path.write_text(json.dumps(data))
+                return True
+
+            def delete_meme(self, meme_id):
+                path = (
+                    self_outer.data_dir
+                    / "cache"
+                    / self.fake_db.rows[meme_id - 1]["filename"]
+                )
+                path.unlink(missing_ok=True)
+                self.fake_db.delete_meme(meme_id)
+                return True
+
+            def restore_manifest(self, snapshot):
+                self._assets.manifest_path.write_bytes(snapshot)
+
+            def rollback_delete(self, meme_id):
+                return True
+
+        self_outer = self
+        library = _PullLibrary()
+        library.fake_db = self.fake_db
+        with patch.object(
+            sync, "download_index", return_value=remote_data
+        ), patch.object(sync, "_default_library", return_value=library):
+            with self.assertRaises(SyncError):
+                sync.pull(remove_local=True, cancellation=cancellation)
+
+        self.assertEqual(
+            (self.data_dir / INDEX_FILENAME).read_bytes(), original_manifest
+        )
+        self.assertIsNotNone(self.fake_db.get_by_filename("old.png"))
+        self.assertTrue((self.data_dir / "cache" / "old.png").exists())
+
+    def test_pull_cancel_during_delete_does_not_publish_or_succeed(self):
+        """Cancellation observed after deletion rolls back the local snapshot."""
+        cancellation = threading.Event()
+        original_manifest = (self.data_dir / INDEX_FILENAME).read_bytes()
+
+        class Library:
+            _assets = type(
+                "Assets", (), {"manifest_path": self.data_dir / INDEX_FILENAME}
+            )()
+
+            def delete_meme(self, meme_id):
+                self.fake_db.delete_meme(meme_id)
+                cancellation.set()
+                return True
+
+            def rollback_delete(self, meme_id):
+                return True
+
+            def restore_manifest(self, snapshot):
+                self._assets.manifest_path.write_bytes(snapshot)
+
+            def apply_remote_metadata(self, data):
+                return True
+
+            def replace_manifest(self, data):
+                self._assets.manifest_path.write_text(json.dumps(data))
+                return True
+
+        library = Library()
+        library.fake_db = self.fake_db
+        with patch.object(
+            sync,
+            "download_index",
+            return_value={"version": 3, "memes": [], "collections": []},
+        ):
+            with self.assertRaises(SyncError):
+                sync.pull(remove_local=True, library=library, cancellation=cancellation)
         self.assertEqual(
             (self.data_dir / INDEX_FILENAME).read_bytes(), original_manifest
         )

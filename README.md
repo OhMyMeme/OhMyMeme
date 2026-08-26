@@ -116,6 +116,8 @@ tests/                      单元、集成、协议与发布契约测试
 
 依赖方向从入口层流向 `core` 和服务层，平台集成与 UI 通过应用层调用核心能力。静态资源不作为 Python 模块导入。源码布局由 `mise.toml` 设置 `PYTHONPATH=src`，实际导入形式是 `ohmymeme.core...`，不是 `src.ohmymeme...`。源码启动命令固定为 `python -m ohmymeme`。
 
+应用内部所有权约定：`Container` 是完整应用对象图的创建点，并拥有 `LocalLibraryService` 的构造；本地库服务是导入、删除、重命名和排序等本地写入的统一边界，成功变更后负责生成当前 manifest 投影。后台任务由应用级 `JobManager` 持有：同一任务类型的活动任务 single-flight，取消通过协作事件传播，关闭时请求活动任务取消并在有界时间内等待，不强杀线程。这些是源码内部生命周期约定，不改变用户数据、协议或配置格式。
+
 主窗口启动时播放 `src/resources/OhMyMeme.mp4` 启动动画（全屏遮罩，视频结束或 6s 兜底后淡出），仅启动时播放一次，快捷键/托盘呼出不重播。设置页「显示启动动画」开关（配置 `show_startup_animation`，默认开）可关闭动画：关闭时不播放视频，降级为 300ms 延时后加载后续内容；开启时动画播放期间即并行加载（无 300ms 延时，动画天然覆盖桥接稳定时间）。
 
 可用调试参数：
@@ -289,12 +291,14 @@ python scripts/build.py --linux --installer-only --package appimage
 欢迎提交 Pull Request。提交前请确保通过以下检查：
 
 ```bash
-ruff check src/   # lint 检查
-black --check src/  # 格式检查（black 26.5.1, line-length 88）
-python -m pytest tests/ -v  # 测试
+mise exec -- ruff check src/   # lint 检查
+mise exec -- black --check src/  # 格式检查（black 26.5.1, line-length 88）
+mise exec -- python -m pytest tests/ -v  # 测试
 ```
 
 CI 会自动运行 lint+test。
+
+提交前可先分阶段运行兼容性回归，再运行上面的完整命令。应用对象图、本地库写入边界和后台任务生命周期的 targeted 回归至少覆盖 `tests/app/test_container.py`、`tests/application/test_local_library_service.py`、`tests/application/test_job_manager.py`；配置、manifest、LAN 与 API 兼容 fixture 使用 `tests/test_core.py`、`tests/test_sync.py`、`tests/test_lan.py` 和 `tests/presentation/test_bridge_compat.py`。回归只验证既有合同和内部所有权，不应据此修改外部格式或语义。
 
 网格拖拽槽位回归探针位于 `tests/fixtures/grid_slot_probe.cjs`。
 

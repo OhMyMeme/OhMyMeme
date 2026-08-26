@@ -12,7 +12,7 @@ from unittest.mock import patch
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from ohmymeme import __app_name__, __version__
-from ohmymeme.core.config import Config
+from ohmymeme.core.config import Config, get_provider_metadata
 from ohmymeme.core.crypto import decrypt_data, encrypt_data
 from ohmymeme.core.database import MemeDB
 
@@ -58,6 +58,53 @@ class TestConfig(unittest.TestCase):
         self.assertEqual(cfg.get("sync_type"), "")
         self.assertEqual(cfg.get("ftp_host"), "")
         self.assertEqual(cfg.get("cache_max_size_mb"), 500)
+
+    def test_provider_metadata_covers_defaults_secrets_lan_and_capabilities(self):
+        expected = {
+            "ftp": (
+                {"ftp_host", "ftp_port", "ftp_user", "ftp_password", "ftp_path"},
+                {"ftp_password"},
+            ),
+            "s3": (
+                {
+                    "s3_endpoint",
+                    "s3_region",
+                    "s3_bucket",
+                    "s3_access_key",
+                    "s3_secret_key",
+                    "s3_path",
+                    "s3_addressing_style",
+                    "s3_signature_version",
+                },
+                {"s3_access_key", "s3_secret_key"},
+            ),
+            "r2": (
+                {
+                    "r2_account_id",
+                    "r2_access_key_id",
+                    "r2_secret_access_key",
+                    "r2_bucket",
+                    "r2_path",
+                },
+                {"r2_access_key_id", "r2_secret_access_key"},
+            ),
+            "webdav": (
+                {
+                    "webdav_url",
+                    "webdav_user",
+                    "webdav_password",
+                    "webdav_path",
+                    "webdav_timeout",
+                },
+                {"webdav_password"},
+            ),
+        }
+        for provider, (keys, secrets) in expected.items():
+            metadata = get_provider_metadata(provider)
+            self.assertEqual(set(metadata["defaults"]), keys)
+            self.assertEqual(set(metadata["secret_keys"]), secrets)
+            self.assertEqual(set(metadata["lan_keys"]), keys - secrets)
+            self.assertIn("delete", metadata["capabilities"])
 
     def test_set_get(self):
         cfg = Config(self.config_path)
