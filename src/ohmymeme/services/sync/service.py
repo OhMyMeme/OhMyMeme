@@ -4,7 +4,6 @@ import hashlib
 import json
 import logging
 import os
-import shutil
 import tempfile
 import threading
 import time
@@ -12,13 +11,13 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 from typing import Optional
 
+from ohmymeme.app.local_library import LocalLibraryService
 from ohmymeme.core.assets import AssetPaths
-from ohmymeme.core.config import get_config
+from ohmymeme.core.config import get_config, provider_supports
 from ohmymeme.core.database import get_db
 from ohmymeme.core.imports import ImageImportService, ImportPath
-from ohmymeme.core.manifest import INDEX_FILENAME
-from ohmymeme.core.manifest import _write as write_manifest
-from ohmymeme.core.manifest import build as build_manifest
+from ohmymeme.core.manifest import INDEX_FILENAME, ManifestBuilder
+from ohmymeme.core.manifest import build as build_manifest  # noqa: F401
 from ohmymeme.core.manifest import load as load_manifest
 
 from . import planning
@@ -29,8 +28,142 @@ logger = logging.getLogger(__name__)
 REMOTE_INDEX = planning.REMOTE_INDEX
 REMOTE_MEME_DIR = planning.REMOTE_MEME_DIR
 
+
+class SyncService:
+    """同步用例的显式依赖适配器。"""
+
+    def __init__(self, config, db, assets, manifest, library=None, job_manager=None):
+        self.config = config
+        self.db = db
+        self.assets = assets
+        self.manifest = manifest
+        self.library = library
+        self.job_manager = job_manager
+        self._job_results = {}
+
+    def apply_remote_order(self, remote_data):
+        if self.library is None:
+            return False
+        return self.library.apply_remote_operation(
+            remote_data, lambda data: planning._apply_remote_order(data, self.db)
+        )
+
+    def apply_remote_collections(self, remote_data):
+        if self.library is None:
+            return False
+        return self.library.apply_remote_operation(
+            remote_data, lambda data: planning._apply_remote_collections(data, self.db)
+        )
+
+    def apply_remote_metadata(self, remote_data):
+        if self.library is not None:
+            return self.library.apply_remote_metadata(remote_data)
+        return planning._apply_remote_metadata(remote_data, self.db)
+
+    def register_existing_path(self, request):
+        if self.library is not None:
+            return self.library.register_existing_path(request, project=False)
+        from ohmymeme.core.imports import ImageImportService
+
+        importer = ImageImportService(self.db, self.assets, lambda: None)
+        return importer.register_existing_path(request)
+
+    def project_manifest(self):
+        return self.library._project_after_mutation()
+
+    def push(self, delete_remote=None):
+        if self.job_manager is None:
+            return push(delete_remote, self.library)
+        return self._run_job(
+            "sync",
+            lambda context: push(
+                delete_remote, self.library, cancellation=context.cancellation_event
+            ),
+        )
+
+    def pull(self, remove_local=None):
+        if self.job_manager is None:
+            return pull(remove_local, self.library)
+        return self._run_job(
+            "sync",
+            lambda context: pull(
+                remove_local, self.library, cancellation=context.cancellation_event
+            ),
+        )
+
+    def test_connection(self):
+        """测试当前配置的同步后端连接。"""
+        return sync_test()
+
+    def delete_all_remote(self):
+        """删除远端全部表情与索引。"""
+        return delete_all_remote()
+
+    def cleanup_remote_orphans(self, delete=False):
+        """扫描或删除远端孤儿文件。"""
+        return cleanup_remote_orphans(delete)
+
+    def auto_sync(self):
+        """按当前 Container 配置执行自动索引获取和同步。"""
+        result = {"fetched": False, "synced": False, "error": ""}
+        if not self.config.get("sync_type", ""):
+            return result
+        try:
+            if self.config.get("sync_auto_fetch_index", False):
+                result["fetched"] = download_index() is not None
+            if self.config.get("sync_auto_sync", False):
+                result["synced"] = self.pull().get("downloaded", 0) > 0
+        except Exception as error:
+            result["error"] = str(error)
+        return result
+
+    def get_status(self):
+        """比较远端索引与当前 Container 本地目录。"""
+        manifest = download_index()
+        if not manifest:
+            return {"ok": False, "error": "无法获取远端索引"}
+        local_rows = self.db.search(keyword="", tags=None, limit=999999)
+        local_filenames = {row["filename"] for row in local_rows}
+        remote_filenames = {meme["filename"] for meme in manifest.get("memes", [])}
+        local_count = len(local_rows)
+        remote_count = len(remote_filenames)
+        local_extra = local_filenames - remote_filenames
+        local_missing = remote_filenames - local_filenames
+        result = {
+            "ok": True,
+            "synced": not local_extra and not local_missing,
+            "local_count": local_count,
+            "remote_count": remote_count,
+        }
+        if local_extra or local_missing:
+            result.update(
+                local_extra=len(local_extra), local_missing=len(local_missing)
+            )
+        return result
+
+    def _run_job(self, task_type, target):
+        if self.job_manager.active(task_type) is not None:
+            raise SyncError("同步正在进行中")
+        result = {}
+        error = {}
+
+        def run(context):
+            try:
+                result.update(target(context))
+            except Exception as exc:
+                error["value"] = exc
+                raise
+
+        record = self.job_manager.start(task_type, run)
+        self.job_manager.wait(record.id)
+        if "value" in error:
+            raise error["value"]
+        return result
+
+
 _sync_lock = threading.Lock()
 _sync_run_lock = threading.Lock()  # 防止 push/pull 并发执行
+_pull_library = None
 
 # 同步进度状态（全局，供 JS 轮询）
 _sync_state = {
@@ -119,6 +252,17 @@ def _fetch_remote_memes(bk, remote_root):
     return planning._fetch_remote_memes(bk, remote_root, get_config())
 
 
+def _default_library():
+    config = get_config()
+    db = get_db()
+    assets = AssetPaths(config.data_dir, config.cache_dir)
+    manifest = ManifestBuilder(config, db, assets)
+    importer = ImageImportService(db, assets, manifest.build)
+    library = LocalLibraryService(db, assets, importer, manifest.build)
+    library._legacy_metadata = _apply_remote_metadata
+    return library
+
+
 def _apply_remote_collections(remote_data: dict):
     return planning._apply_remote_collections(remote_data, get_db())
 
@@ -138,13 +282,15 @@ def list_remote_orphans(bk, remote_root) -> list:
 # ─── 多线程工作函数 ───
 
 
-def _push_worker(entries, remote_root, cache_dir, remote_memes):
+def _push_worker(entries, remote_root, cache_dir, remote_memes, cancellation=None):
     """单线程批量上传一批文件"""
     bk = _get_backend()
     bk.connect()
     local_results = {"uploaded": 0, "skipped": 0, "errors": 0, "bytes": 0, "failed": []}
     try:
         for entry in entries:
+            if cancellation is not None and cancellation.is_set():
+                break
             fname = entry["filename"]
             local_file = cache_dir / fname
             fsize = local_file.stat().st_size if local_file.exists() else 0
@@ -203,6 +349,10 @@ def _push_worker(entries, remote_root, cache_dir, remote_memes):
 
 
 def _pull_worker(entries, remote_root, cache_dir, db):
+    return _pull_worker_core(entries, remote_root, cache_dir, db)
+
+
+def _pull_worker_core(entries, remote_root, cache_dir, db, cancellation=None):
     """单线程批量下载一批文件"""
     bk = _get_backend()
     bk.connect()
@@ -226,6 +376,8 @@ def _pull_worker(entries, remote_root, cache_dir, db):
         pass
     try:
         for fname, rentry in entries:
+            if cancellation is not None and cancellation.is_set():
+                break
             if not _safe_remote_fname(fname):
                 local_results["skipped"] += 1
                 _increment_sync_progress(files_add=1)
@@ -287,11 +439,21 @@ def _pull_worker(entries, remote_root, cache_dir, db):
                 if not row:
                     try:
                         oname = rentry.get("name", "") or os.path.splitext(fname)[0]
-                        imported = ImageImportService(
-                            db,
-                            AssetPaths(get_config().data_dir, cache_dir),
-                            lambda: None,
-                        ).register_existing_path(ImportPath(local_path, oname))
+                        if _pull_library is not None:
+                            imported = _pull_library.register_existing_path(
+                                ImportPath(local_path, oname), project=False
+                            )
+                        else:
+                            from ohmymeme.core.imports import ImageImportService
+
+                            importer = ImageImportService(
+                                db,
+                                AssetPaths(get_config().data_dir, cache_dir),
+                                lambda: None,
+                            )
+                            imported = importer.register_existing_path(
+                                ImportPath(local_path, oname)
+                            )
                         if imported.rejected:
                             logger.info(f"pull skip (invalid image): {fname}")
                             local_results["skipped"] += 1
@@ -358,15 +520,33 @@ def _pull_worker(entries, remote_root, cache_dir, db):
 
 
 def _rollback_pull_changes(db, aggregated):
+    library = _pull_library
+    success = True
     for meme_id in aggregated["created_meme_ids"]:
-        db.delete_meme(meme_id)
-    for path in aggregated["created_files"]:
-        if path.exists():
-            path.unlink()
+        if not library.rollback_delete(meme_id):
+            success = False
     for path, backup_path in aggregated["overwritten_files"]:
         if path.exists():
             path.unlink()
         os.replace(backup_path, path)
+    for snapshot in aggregated.get("removed_local", []):
+        row = snapshot["row"]
+        if row is None:
+            continue
+        if db.get_by_filename(row["filename"]):
+            continue
+        db.add_meme(
+            row["filename"],
+            file_hash=row.get("file_hash", ""),
+            width=row.get("width", 0),
+            height=row.get("height", 0),
+            file_size=row.get("file_size", 0),
+            mime_type=row.get("mime_type", "image/png"),
+            original_name=row.get("original_name", ""),
+        )
+        snapshot["path"].parent.mkdir(parents=True, exist_ok=True)
+        snapshot["path"].write_bytes(snapshot["data"])
+    return success
 
 
 def _discard_pull_backups(aggregated):
@@ -381,8 +561,12 @@ def _discard_pull_backups(aggregated):
 def upload_index(bk=None) -> bool:
     """上传本地 manifest 到远端"""
     cfg = get_config()
+    if not provider_supports(cfg.get("sync_type", ""), "delete"):
+        return {"ok": False, "error": "当前同步后端不支持删除远端文件"}
     remote_root = _remote_root(cfg)
-    build_manifest()
+    library = _default_library()
+    if not library._project_after_mutation():
+        return False
     local_index = cfg.data_dir / INDEX_FILENAME
     own_backend = bk is None
     if own_backend:
@@ -434,7 +618,7 @@ def download_index() -> Optional[dict]:
             tmp.unlink()
 
 
-def push(delete_remote: bool = None) -> dict:
+def push(delete_remote: bool = None, library=None, cancellation=None) -> dict:
     """本地 -> 远端：上传缺失/变更的表情包和清单（多线程）"""
     cfg = get_config()
     if delete_remote is None:
@@ -444,7 +628,13 @@ def push(delete_remote: bool = None) -> dict:
     max_workers = max(1, min(8, int(cfg.get("sync_threads", 3))))
     local = load_manifest()
     if not local.get("memes"):
-        build_manifest()
+        projected = (
+            library.project_manifest()
+            if library
+            else _default_library()._project_after_mutation()
+        )
+        if not projected:
+            raise SyncError("本地 manifest 生成失败")
         local = load_manifest()
         if not local.get("memes"):
             raise SyncError("local manifest is empty, nothing to push")
@@ -466,6 +656,14 @@ def push(delete_remote: bool = None) -> dict:
 
     bk = None
     try:
+        if cancellation is not None and cancellation.is_set():
+            return {
+                "uploaded": 0,
+                "skipped": 0,
+                "errors": 0,
+                "deleted": 0,
+                "failed_files": [],
+            }
         bk = _get_backend()
         bk.connect()
         bk.ensure_remote_dir(remote_root)
@@ -487,10 +685,20 @@ def push(delete_remote: bool = None) -> dict:
         }
         with ThreadPoolExecutor(max_workers=len(chunks)) as executor:
             futures = [
-                executor.submit(_push_worker, ch, remote_root, cache_dir, remote_memes)
+                executor.submit(
+                    _push_worker,
+                    ch,
+                    remote_root,
+                    cache_dir,
+                    remote_memes,
+                    cancellation,
+                )
                 for ch in chunks
             ]
             for future in as_completed(futures):
+                if cancellation is not None and cancellation.is_set():
+                    for pending in futures:
+                        pending.cancel()
                 r = future.result()
                 aggregated["uploaded"] += r["uploaded"]
                 aggregated["skipped"] += r["skipped"]
@@ -503,6 +711,8 @@ def push(delete_remote: bool = None) -> dict:
             msg = "%d 个文件上传失败，未更新远端 manifest" % aggregated["errors"]
             logger.warning("sync push aborted: %s", msg)
             raise SyncError(msg)
+        if cancellation is not None and cancellation.is_set():
+            raise SyncError("同步已取消")
 
         failed_files = list(aggregated["failed"])
         results = {
@@ -516,6 +726,8 @@ def push(delete_remote: bool = None) -> dict:
         deleted_fnames = set()
         if delete_remote:
             for fname in list(remote_memes.keys()):
+                if cancellation is not None and cancellation.is_set():
+                    raise SyncError("同步已取消")
                 if fname not in local_idx:
                     rem_path = (
                         remote_root.rstrip("/") + "/" + REMOTE_MEME_DIR + "/" + fname
@@ -548,7 +760,15 @@ def push(delete_remote: bool = None) -> dict:
                                     ),
                                 }
                             )
-        build_manifest()
+        projected = (
+            library.project_manifest()
+            if library
+            else _default_library()._project_after_mutation()
+        )
+        if not projected:
+            raise SyncError("本地 manifest 生成失败")
+        if cancellation is not None and cancellation.is_set():
+            raise SyncError("同步已取消")
         remote_manifest_path = remote_root.rstrip("/") + "/" + REMOTE_INDEX
         merged_file = None
         try:
@@ -613,14 +833,15 @@ def sync_test() -> str:
         return str(e)
 
 
-def pull(remove_local: bool = None) -> dict:
+def pull(remove_local: bool = None, library=None, cancellation=None) -> dict:
     """远端 -> 本地：下载缺失/变更的表情包和清单（多线程）"""
+    global _pull_library
+    _pull_library = library or _default_library()
     cfg = get_config()
     if remove_local is None:
         remove_local = cfg.get("sync_remove_local", False)
     remote_root = _remote_root(cfg)
     cache_dir = cfg.cache_dir
-    thumb_dir = cfg.thumbnail_dir
     max_workers = max(1, min(8, int(cfg.get("sync_threads", 3))))
     db = get_db()
 
@@ -628,12 +849,19 @@ def pull(remove_local: bool = None) -> dict:
         raise SyncError("同步正在进行中")
 
     try:
+        if cancellation is not None and cancellation.is_set():
+            raise SyncError("同步已取消")
         remote_data = download_index()
         if not remote_data:
             raise SyncError("no remote manifest available")
 
         remote_idx = {m["filename"]: m for m in remote_data.get("memes", [])}
         local_data = load_manifest()
+        manifest_snapshot = (
+            _pull_library._assets.manifest_path.read_bytes()
+            if _pull_library._assets.manifest_path.exists()
+            else None
+        )
         local_idx = {m["filename"]: m for m in local_data.get("memes", [])}
 
         files_total = len(remote_idx)
@@ -660,13 +888,20 @@ def pull(remove_local: bool = None) -> dict:
             "created_files": [],
             "created_meme_ids": [],
             "overwritten_files": [],
+            "removed_local": [],
         }
+        metadata_applied = False
         with ThreadPoolExecutor(max_workers=len(chunks)) as executor:
             futures = [
-                executor.submit(_pull_worker, ch, remote_root, cache_dir, db)
+                executor.submit(
+                    _pull_worker_core, ch, remote_root, cache_dir, db, cancellation
+                )
                 for ch in chunks
             ]
             for future in as_completed(futures):
+                if cancellation is not None and cancellation.is_set():
+                    for pending in futures:
+                        pending.cancel()
                 r = future.result()
                 aggregated["downloaded"] += r["downloaded"]
                 aggregated["skipped"] += r["skipped"]
@@ -686,60 +921,77 @@ def pull(remove_local: bool = None) -> dict:
         }
 
         if aggregated["errors"] > 0:
-            _rollback_pull_changes(db, aggregated)
+            rolled_back = _rollback_pull_changes(db, aggregated)
+            _pull_library.restore_manifest(manifest_snapshot)
+            if not rolled_back:
+                raise SyncError("本地回滚失败")
             _update_sync_state(failed_items=aggregated["failed"])
             msg = "%d 个文件下载失败，本地清单仅包含成功项" % aggregated["errors"]
             logger.warning("sync pull aborted: %s", msg)
             raise SyncError(msg)
-
-        manifest_path = cfg.data_dir / INDEX_FILENAME
-        manifest_backup = None
-        if manifest_path.exists():
-            fd, backup_name = tempfile.mkstemp(
-                prefix=".manifest.pull-", suffix=".bak", dir=str(cfg.data_dir)
-            )
-            os.close(fd)
-            manifest_backup = Path(backup_name)
-            shutil.copyfile(manifest_path, manifest_backup)
-        try:
-            write_manifest(remote_data)
-        except OSError:
-            if manifest_backup is not None:
-                shutil.copyfile(manifest_backup, manifest_path)
-                manifest_backup.unlink()
-            _rollback_pull_changes(db, aggregated)
-            raise
+        if cancellation is not None and cancellation.is_set():
+            rolled_back = _rollback_pull_changes(db, aggregated)
+            _pull_library.restore_manifest(manifest_snapshot)
+            _discard_pull_backups(aggregated)
+            raise SyncError("同步已取消")
 
         try:
-            _apply_remote_metadata(remote_data)
+            if remove_local:
+                for fname in list(local_idx.keys()):
+                    if fname not in remote_idx:
+                        row = db.get_by_filename(fname)
+                        if row:
+                            local_path = cache_dir / fname
+                            snapshot = {
+                                "row": dict(row),
+                                "path": local_path,
+                                "data": (
+                                    local_path.read_bytes()
+                                    if local_path.exists()
+                                    else b""
+                                ),
+                            }
+                            if _pull_library.delete_meme(row.get("id", 1)):
+                                aggregated["removed_local"].append(snapshot)
+                                results["removed_local"] += 1
+                        else:
+                            local_path = cache_dir / fname
+                            if local_path.exists():
+                                aggregated["removed_local"].append(
+                                    {
+                                        "row": None,
+                                        "path": local_path,
+                                        "data": local_path.read_bytes(),
+                                    }
+                                )
+                                local_path.unlink()
+                                results["removed_local"] += 1
+                    if cancellation is not None and cancellation.is_set():
+                        raise SyncError("同步已取消")
+
+            if hasattr(_pull_library, "_legacy_metadata"):
+                applied = _pull_library.apply_remote_metadata_with(
+                    remote_data, _pull_library._legacy_metadata
+                )
+            else:
+                applied = _pull_library.apply_remote_metadata(remote_data)
+            if not applied:
+                raise SyncError("本地远端元数据应用失败")
+            metadata_applied = True
+            if cancellation is not None and cancellation.is_set():
+                raise SyncError("同步已取消")
+            if not _pull_library.replace_manifest(remote_data):
+                raise SyncError("本地 manifest 写入失败")
+            if cancellation is not None and cancellation.is_set():
+                raise SyncError("同步已取消")
         except Exception:
-            if manifest_backup is not None:
-                shutil.copyfile(manifest_backup, manifest_path)
-                manifest_backup.unlink()
-            _rollback_pull_changes(db, aggregated)
+            if metadata_applied:
+                _pull_library.apply_remote_metadata(local_data)
+            rolled_back = _rollback_pull_changes(db, aggregated)
+            _pull_library.restore_manifest(manifest_snapshot)
+            if not rolled_back:
+                raise SyncError("本地回滚失败")
             raise
-        if manifest_backup is not None:
-            manifest_backup.unlink()
-
-        if remove_local:
-            for fname in list(local_idx.keys()):
-                if fname not in remote_idx:
-                    row = db.get_by_filename(fname)
-                    if row:
-                        db.delete_meme(row["id"])
-                    local_path = cache_dir / fname
-                    if local_path.exists():
-                        try:
-                            local_path.unlink()
-                            results["removed_local"] += 1
-                        except Exception:
-                            pass
-                    thumb_path = thumb_dir / fname
-                    if thumb_path.exists():
-                        try:
-                            thumb_path.unlink()
-                        except Exception:
-                            pass
 
         _discard_pull_backups(aggregated)
 
@@ -757,6 +1009,7 @@ def pull(remove_local: bool = None) -> dict:
         _update_sync_state(status="error", error=str(e))
         raise
     finally:
+        _pull_library = None
         _sync_run_lock.release()
 
 
@@ -765,6 +1018,8 @@ def delete_all_remote() -> dict:
     from ohmymeme.core.config import get_config
 
     cfg = get_config()
+    if not provider_supports(cfg.get("sync_type", ""), "delete"):
+        return {"ok": False, "error": "当前同步后端不支持删除远端文件"}
     remote_root = _remote_root(cfg)
     bk = _get_backend()
     bk.connect()
@@ -793,6 +1048,8 @@ def delete_all_remote() -> dict:
 def cleanup_remote_orphans(delete: bool = False) -> dict:
     """识别远端孤儿文件；delete=True 时物理删除，返回 {ok, orphans, removed}。"""
     cfg = get_config()
+    if delete and not provider_supports(cfg.get("sync_type", ""), "delete"):
+        return {"ok": False, "error": "当前同步后端不支持删除远端文件"}
     remote_root = _remote_root(cfg)
     bk = _get_backend()
     bk.connect()

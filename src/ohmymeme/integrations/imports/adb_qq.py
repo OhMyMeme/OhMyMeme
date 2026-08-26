@@ -36,6 +36,7 @@ _QQ_STATE = {
 
 _QQ_LOCK = threading.Lock()
 _QQ_CANCEL = False
+_QQ_JOB_CANCEL = None
 
 _ADB_DEBUG = False
 
@@ -226,6 +227,8 @@ def init_background():
 def cancel_qq_import():
     global _QQ_CANCEL
     _QQ_CANCEL = True
+    if _QQ_JOB_CANCEL is not None:
+        _QQ_JOB_CANCEL.set()
     _update_qq(status="cancelled")
 
 
@@ -334,16 +337,33 @@ def _resolve_adb(adb_path):
     return adb_path if adb_path != "adb" else "adb"
 
 
-def start_qq_import():
+def start_qq_import(job_manager=None):
     """后台启动 QQ 表情包导入流程"""
     global _QQ_CANCEL
+    if job_manager is not None and job_manager.active("import.adb_qq") is not None:
+        return False
     _QQ_CANCEL = False
-    threading.Thread(target=_qq_worker, daemon=True).start()
+    if job_manager is None:
+        threading.Thread(target=_qq_worker, daemon=True).start()
+    else:
+
+        def target(context):
+            global _QQ_JOB_CANCEL
+            _QQ_JOB_CANCEL = context.cancellation_event
+            try:
+                _qq_worker()
+                if _QQ_STATE["status"] == "error":
+                    raise RuntimeError(_QQ_STATE["error"])
+            finally:
+                _QQ_JOB_CANCEL = None
+
+        job_manager.start("import.adb_qq", target, resources=("adb",))
+    return True
 
 
 def _check_cancel():
     """检查是否取消，是则清理并返回 True"""
-    if _QQ_CANCEL:
+    if _QQ_CANCEL or (_QQ_JOB_CANCEL is not None and _QQ_JOB_CANCEL.is_set()):
         _update_qq(status="cancelled")
         return True
     return False

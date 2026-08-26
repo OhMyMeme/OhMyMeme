@@ -34,6 +34,7 @@ _TG_LOCK = threading.RLock()
 _TG_CANCEL = False
 _TG_ACTIVE_PROC = set()
 _TG_T0 = None
+_TG_JOB_CANCEL = None
 
 
 def _update_tg(**kw):
@@ -64,6 +65,8 @@ def get_tg_progress():
 def cancel_tg_import():
     global _TG_CANCEL
     _TG_CANCEL = True
+    if _TG_JOB_CANCEL is not None:
+        _TG_JOB_CANCEL.set()
     with _TG_LOCK:
         procs = list(_TG_ACTIVE_PROC)
     for p in procs:
@@ -75,7 +78,7 @@ def cancel_tg_import():
 
 
 def _check_cancel():
-    return _TG_CANCEL
+    return _TG_CANCEL or (_TG_JOB_CANCEL is not None and _TG_JOB_CANCEL.is_set())
 
 
 def _import_tgcrypto():
@@ -474,9 +477,17 @@ def dedup_static_against_animated(webp_paths, threshold=0.02):
     return keep, skipped
 
 
-def start_tg_import(import_callback, tdata_path=None, passcode="", convert_webm=True):
+def start_tg_import(
+    import_callback,
+    tdata_path=None,
+    passcode="",
+    convert_webm=True,
+    job_manager=None,
+):
     """后台启动 Telegram 表情包导入流程，已有任务时返回 False"""
     global _TG_CANCEL
+    if job_manager is not None and job_manager.active("import.telegram") is not None:
+        return False
     with _TG_LOCK:
         if _TG_STATE["status"] in (
             "scanning",
@@ -490,11 +501,25 @@ def start_tg_import(import_callback, tdata_path=None, passcode="", convert_webm=
         _reset_state()
         # 锁内立即占位运行态，使并发调用在锁内看到 scanning 而拒绝，防止双 worker
         _update_tg(status="scanning", message="正在检测 Telegram Desktop 数据目录...")
-    threading.Thread(
-        target=_tg_worker,
-        args=(import_callback, tdata_path, passcode, convert_webm),
-        daemon=True,
-    ).start()
+
+    def target(context):
+        global _TG_JOB_CANCEL
+        _TG_JOB_CANCEL = context.cancellation_event
+        try:
+            _tg_worker(import_callback, tdata_path, passcode, convert_webm)
+            if _TG_STATE["status"] == "error":
+                raise RuntimeError(f"{_TG_STATE['error_code']}: {_TG_STATE['error']}")
+        finally:
+            _TG_JOB_CANCEL = None
+
+    if job_manager is None:
+        threading.Thread(
+            target=_tg_worker,
+            args=(import_callback, tdata_path, passcode, convert_webm),
+            daemon=True,
+        ).start()
+    else:
+        job_manager.start("import.telegram", target, resources=("telegram",))
     return True
 
 
@@ -508,7 +533,13 @@ def _tg_worker(import_callback, tdata_path, passcode, convert_webm):
             return
         if tdata_path:
             tdata = tdata_path
+            if _check_cancel():
+                _update_tg(status="cancelled", message="已取消")
+                return
             if not is_valid_tdata(tdata):
+                if _check_cancel():
+                    _update_tg(status="cancelled", message="已取消")
+                    return
                 logger.error("tg import: 无效 tdata 目录: %s", tdata)
                 _update_tg(
                     status="error",

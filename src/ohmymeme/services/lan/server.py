@@ -82,12 +82,22 @@ __all__ = [
 class LanServer:
     """管理 LAN v1 的 UDP、TCP、会话及后台线程。"""
 
-    def __init__(self, sync_service=None):
+    def __init__(
+        self,
+        sync_service=None,
+        config=None,
+        db=None,
+        assets=None,
+        manifest=None,
+        library=None,
+    ):
         self._lock = threading.Lock()
         self._running = False
         self._udp_sock = None
         self._tcp_sock = None
         self._threads = []
+        self._threads_lock = threading.Lock()
+        self._connections = set()
         self._port = 0
         self._secret = ""
         self._clients = {}
@@ -97,7 +107,9 @@ class LanServer:
         self._replay_cache = set()
         self._replay_order = []
         self._logger = logger
-        self._commands = CommandHandlers(self, sync_service)
+        self._commands = CommandHandlers(
+            self, sync_service, config, db, assets, manifest, library
+        )
 
     def start(self, port: int, secret: str) -> bool:
         """绑定 UDP/TCP listener 并启动服务线程。"""
@@ -152,10 +164,24 @@ class LanServer:
             if not self._running:
                 return
             self._running = False
+        with _lan_lock:
+            pending = _lan_state.get("pending_confirm")
+            if pending:
+                pending["approved"] = False
+                pending["done"].set()
         self._cleanup_sockets()
-        for thread in self._threads:
-            thread.join(timeout=1)
-        self._threads.clear()
+        for conn in tuple(self._connections):
+            try:
+                conn.close()
+            except OSError:
+                pass
+        with self._threads_lock:
+            threads = tuple(self._threads)
+        deadline = time.monotonic() + 1.0
+        for thread in threads:
+            thread.join(max(0.0, deadline - time.monotonic()))
+        with self._threads_lock:
+            self._threads = [thread for thread in self._threads if thread.is_alive()]
         with _lan_lock:
             _lan_state["status"] = "stopped"
             _lan_state["port"] = 0
@@ -175,8 +201,12 @@ class LanServer:
 
     def _spawn_thread(self, target):
         thread = threading.Thread(target=target, daemon=True)
-        thread.start()
-        self._threads.append(thread)
+        with self._lock:
+            if not self._running:
+                return
+            thread.start()
+            with self._threads_lock:
+                self._threads.append(thread)
 
     def _udp_loop(self):
         while self._running:
@@ -287,6 +317,7 @@ class LanServer:
             )
 
     def _handle_conn(self, conn, addr):
+        self._connections.add(conn)
         try:
             conn.settimeout(_HANDSHAKE_TIMEOUT)
             key = self._handshake(conn)
@@ -308,6 +339,7 @@ class LanServer:
         except (InvalidTag, OSError, ValueError, json.JSONDecodeError) as error:
             logger.debug(f"LAN conn {addr}: {error}")
         finally:
+            self._connections.discard(conn)
             try:
                 conn.close()
             except OSError:
@@ -491,10 +523,15 @@ def start(port: int = 17852, secret: str = "") -> bool:
 
 def stop():
     """停止局域网服务。"""
+    global _server
     with _lan_lock:
-        if not _server:
+        server = _server
+        if not server:
             return
-    _server.stop()
+    server.stop()
+    with _lan_lock:
+        if _server is server:
+            _server = None
 
 
 def get_status() -> dict:

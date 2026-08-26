@@ -30,6 +30,7 @@ _DOUYIN_STATE = {
 
 _DOUYIN_LOCK = threading.Lock()
 _DOUYIN_CANCEL = False
+_DOUYIN_JOB_CANCEL = None
 
 API_STICKER = "https://www.douyin.com/aweme/v1/web/im/resource/list/aggregation"
 API_TTWID = "https://ttwid.bytedance.com/ttwid/union/register/"
@@ -62,10 +63,14 @@ def get_douyin_progress():
 def cancel_douyin_import():
     global _DOUYIN_CANCEL
     _DOUYIN_CANCEL = True
+    if _DOUYIN_JOB_CANCEL is not None:
+        _DOUYIN_JOB_CANCEL.set()
 
 
 def _check_cancel():
-    return _DOUYIN_CANCEL
+    return _DOUYIN_CANCEL or (
+        _DOUYIN_JOB_CANCEL is not None and _DOUYIN_JOB_CANCEL.is_set()
+    )
 
 
 def _reset_state():
@@ -274,10 +279,12 @@ def _download_sticker(url: str, tmp_dir: str, session, sticker_id: str = "") -> 
     return fpath
 
 
-def start_douyin_import(import_callback, cookie: str) -> bool:
+def start_douyin_import(import_callback, cookie: str, job_manager=None) -> bool:
     """启动抖音表情包下载导入（全部下载），后台线程执行"""
     global _DOUYIN_CANCEL
 
+    if job_manager is not None and job_manager.active("import.douyin") is not None:
+        return False
     with _DOUYIN_LOCK:
         if _DOUYIN_STATE["status"] == "running":
             return False
@@ -303,6 +310,9 @@ def start_douyin_import(import_callback, cookie: str) -> bool:
         try:
             _update_dy(message="初始化 Session...")
             session = _build_session(cookie)
+            if _check_cancel():
+                _update_dy(status="cancelled", message="已取消")
+                return
 
             _update_dy(message="检查登录状态...")
             if not _check_login(session):
@@ -412,5 +422,21 @@ def start_douyin_import(import_callback, cookie: str) -> bool:
             except Exception:
                 pass
 
-    threading.Thread(target=_run, daemon=True).start()
+    if job_manager is None:
+        threading.Thread(target=_run, daemon=True).start()
+    else:
+
+        def target(context):
+            global _DOUYIN_JOB_CANCEL
+            _DOUYIN_JOB_CANCEL = context.cancellation_event
+            try:
+                _run()
+                if _DOUYIN_STATE["status"] == "error":
+                    raise RuntimeError(
+                        f"{_DOUYIN_STATE['error_code']}: {_DOUYIN_STATE['error']}"
+                    )
+            finally:
+                _DOUYIN_JOB_CANCEL = None
+
+        job_manager.start("import.douyin", target, resources=("douyin",))
     return True

@@ -17,7 +17,6 @@ from ohmymeme.integrations.platform.system import (
     is_auto_start_enabled,
     set_auto_start,
 )
-from ohmymeme.services.lan import server as lan
 from ohmymeme.services.sync import cleanup_stale_temp_files
 
 from .container import Container
@@ -74,7 +73,8 @@ class OhMyMemeApp:
             self._cfg.set("auto_start", True)
         if getattr(sys, "frozen", False) and self._cfg.get("auto_start", False):
             set_auto_start(True)
-        threading.Thread(target=_adb_init, daemon=True).start()
+        self._adb_thread = threading.Thread(target=_adb_init, daemon=True)
+        self._adb_thread.start()
         logger.info("%s v%s 已启动", __app_name__, __version__)
         try:
             self._webui.start()
@@ -110,7 +110,19 @@ class OhMyMemeApp:
 
     def shutdown(self):
         self._running = False
-        self._container.close(self._hotkey, self._tray, lan.stop, self._webui)
+        thread = getattr(self, "_adb_thread", None)
+
+        def stop_adb():
+            if thread is not None:
+                thread.join(0.1)
+
+        self._container.close(
+            self._hotkey,
+            self._tray,
+            self._container.stop_lan,
+            self._webui,
+            external_stop=stop_adb,
+        )
 
 
 def main():

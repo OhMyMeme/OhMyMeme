@@ -7,6 +7,7 @@ import socket
 import threading
 import time
 from pathlib import Path
+from wsgiref.simple_server import make_server
 
 # WSL 环境强制软件渲染（必须在导入 webview/GUI 之前设置）
 if platform.system() == "Linux":
@@ -47,7 +48,7 @@ try:
 except ImportError:
     HAS_BOTTLE = False
 
-from ohmymeme.core.imports import ImportBytes, ImportPath
+from ohmymeme.core.imports import ImportBytes
 from ohmymeme.integrations.imports import adb_qq, qqnt, telegram
 from ohmymeme.integrations.platform.clipboard import (
     convert_image_mode_1,
@@ -60,7 +61,7 @@ from ohmymeme.services.sync import service as sync_module
 
 from .bottle_app import install_security_hooks
 from .import_workers import import_paths
-from .media import find_meme_file, thumbnail_path
+from .media import thumbnail_path
 from .routes.media import original_mime_type
 from .routes.pages import STATIC_MIME_TYPES, static_mime_type
 from .routes.upload import UPLOAD_BODY_LIMIT, read_upload_body
@@ -171,6 +172,16 @@ def _check_connectivity() -> dict:
     return {"ok": False, "latency": ""}
 
 
+def _import_result_payload(result):
+    """将应用导入结果适配为既有桥接字典。"""
+    if isinstance(result, dict):
+        return result
+    return {
+        "ids": list(result.imported_ids),
+        "rejected": result.rejected,
+    }
+
+
 def _storage_dir_validation(new_dir, old_dir, protected=()):
     # 校验自定义存储目录，返回 (ok, error)
     return storage_dir_validation(new_dir, old_dir, protected)
@@ -195,12 +206,13 @@ def _find_hotkey_window_position(cursor, work_area, width, height):
 class JsApi:
     """暴露给前端的 JS API"""
 
-    def __init__(self, webui, catalog, settings):
+    def __init__(self, webui, catalog, settings, library=None):
         self._webui = webui
         self._cfg = webui._cfg
         self._db = webui._db
         self._catalog = catalog
         self._settings = settings
+        self._library = library
 
     def search_memes(
         self, keyword="", tags=None, collection_id=None, offset=0, limit=200
@@ -218,21 +230,10 @@ class JsApi:
     def get_meme_tags(self, meme_id):
         """返回某表情的标签列表"""
         return self._catalog.get_meme_tags(meme_id)
-        try:
-            return self._db.get_meme_tags(meme_id) or []
-        except Exception as e:
-            logger.error(f"get_meme_tags error: {e}")
-            return []
 
     def set_meme_tags(self, meme_id, tags):
         """覆盖式设置某表情的标签"""
         return self._catalog.set_meme_tags(meme_id, tags)
-        try:
-            self._db.set_meme_tags(meme_id, tags or [])
-            return True
-        except Exception as e:
-            logger.error(f"set_meme_tags error: {e}")
-            return False
 
     def get_init_data(self) -> dict:
         """批返回初始化所需数据，减少 JS bridge 往返"""
@@ -240,31 +241,15 @@ class JsApi:
 
     def get_meme_path(self, meme_id: int) -> str:
         """返回表情本地文件路径（供拖拽到外部应用），不存在返回空串"""
-        row = self._db.get_by_id(meme_id)
-        if not row:
-            return ""
-        return self._find_meme_file(row["filename"])
+        return self._catalog.get_meme_path(meme_id)
 
     def get_meme_paths(self, meme_ids: list) -> dict:
         """批量返回表情本地文件路径 {id: path}，供拖拽到外部应用"""
-        out = {}
-        for mid in meme_ids:
-            try:
-                row = self._db.get_by_id(int(mid))
-                if row:
-                    p = self._find_meme_file(row["filename"])
-                    if p:
-                        out[int(mid)] = p
-            except Exception:
-                continue
-        return out
+        return self._catalog.get_meme_paths(meme_ids)
 
     def start_native_drag(self, meme_id: int) -> bool:
         """用 WinForms DoDragDrop 启动原生文件拖拽（QQ/微信可接收真实文件）"""
-        row = self._db.get_by_id(meme_id)
-        if not row:
-            return False
-        p = self._find_meme_file(row["filename"])
+        p = self._catalog.get_meme_path(meme_id)
         if not p:
             return False
         try:
@@ -281,10 +266,7 @@ class JsApi:
 
     def copy_meme(self, meme_id):
         # 复制表情到剪贴板；copy_resize_mode: 0不处理 1webp缩放 2转gif 3转gif隐写原图
-        row = self._db.get_by_id(meme_id)
-        if not row:
-            return {"ok": False, "status": "copy_failed"}
-        path = self._find_meme_file(row["filename"])
+        path = self._catalog.get_meme_path(meme_id)
         if not path:
             return {"ok": False, "status": "copy_failed"}
         resize_mode = int(self._cfg.get("copy_resize_mode", 1) or 0)
@@ -300,98 +282,52 @@ class JsApi:
         if not ok:
             return {"ok": False, "status": "copy_failed"}
         if self._cfg.get("record_recent_use", True):
-            self._db.record_use(meme_id)
+            try:
+                self._library.record_use(meme_id)
+            except Exception:
+                pass
         self._webui.schedule_hide()
         return {"ok": True, "status": "copied"}
 
     def toggle_favorite(self, meme_id: int) -> bool:
-        return self._catalog.toggle_favorite(meme_id)
+        return self._library.toggle_favorite(meme_id)
 
     def is_favorite(self, meme_id: int) -> bool:
-        return self._db.is_favorite(meme_id)
+        return self._library.is_favorite(meme_id)
 
     def rename_meme(self, meme_id: int, new_name: str) -> bool:
         if not new_name:
             return False
         try:
-            self._db.update_meme(meme_id, original_name=new_name)
-            self._webui._container.build_manifest()
-            return True
+            return self._library.rename_meme(meme_id, new_name)
         except Exception as e:
             logging.getLogger(__name__).error(f"rename error: {e}")
             return False
 
-    def _delete_meme_files(self, meme_id) -> bool:
-        """删除磁盘原图+缩略图+file_cache 条目；id 不存在返回 False"""
-        import os
-
-        row = self._db.get_by_id(meme_id)
-        if not row:
-            return False
-        file_path = self._find_meme_file(row["filename"])
-        if file_path:
-            try:
-                os.remove(file_path)
-            except Exception:
-                pass
-        thumb_dir = self._cfg.thumbnail_dir
-        for f in thumb_dir.glob(f"{meme_id}_*.png"):
-            try:
-                f.unlink()
-            except Exception:
-                pass
-        if hasattr(self._webui, "_file_cache"):
-            self._webui._file_cache.pop(row["filename"], None)
-        return True
-
     def delete_meme(self, meme_id: int) -> bool:
-        if not self._delete_meme_files(meme_id):
-            return False
-        self._db.delete_meme(meme_id)
-        self._webui._container.build_manifest()
-        return True
+        result = self._library.delete_meme(meme_id)
+        if result and hasattr(self._webui, "_file_cache"):
+            self._webui._file_cache.clear()
+        return result
 
     def delete_memes(self, meme_ids: list) -> dict:
         """批量删除，返回 {ok, deleted}"""
         ids = list(dict.fromkeys(int(x) for x in (meme_ids or [])))
-        deleted = 0
-        for mid in ids:
-            if self._delete_meme_files(mid):
-                deleted += 1
-        if deleted:
-            self._db.delete_memes(ids)
-            self._webui._container.build_manifest()  # 只重建一次 manifest
-        return {"ok": True, "deleted": deleted}
+        return self._library.delete_memes(ids)
 
     # 递归获取分组及其所有子分组的 ID 列表
     def _get_collection_ids_recursive(self, collection_id):
-        ids = [collection_id]
-        children = self._db.get_child_collections(collection_id)
-        for child in children:
-            ids.extend(self._get_collection_ids_recursive(child["id"]))
-        return ids
+        return self._catalog._collection_ids(collection_id)
 
     # 构建嵌套分组树并统计各分组成员数
     def _build_collection_tree(self, parent_id=None):
-        raw = self._db.get_collections()
-        result = []
-        for cid, name, pid, _ in raw:
-            if pid != parent_id:
-                continue
-            children = self._build_collection_tree(parent_id=cid)
-            all_ids = self._get_collection_ids_recursive(cid)
-            cnt = self._db.count(collection_id=all_ids)
-            item = {"id": cid, "name": name, "count": cnt}
-            if children:
-                item["children"] = children
-            result.append(item)
-        return result
+        return self._catalog.collection_tree()
 
     def get_collections(self) -> list:
         return self._catalog.get_collections()
 
     def get_child_collections(self, parent_id: int) -> list:
-        return self._db.get_child_collections(parent_id)
+        return self._catalog.get_child_collections(parent_id)
 
     def search_collections(self, keyword: str = "") -> list:
         """按名称搜索已有分组（顶层 + 子分组），供添加分组弹窗下拉框"""
@@ -407,7 +343,7 @@ class JsApi:
     def get_collection_members(self, collection_id: int) -> list:
         """返回分组内表情成员，供添加分组弹窗右侧栏展示"""
         try:
-            return self._db.search(collection_id=collection_id, limit=5000) or []
+            return self._catalog.get_collection_members(collection_id)
         except Exception:
             return []
 
@@ -426,41 +362,27 @@ class JsApi:
         return out
 
     def add_to_collection(self, meme_id: int, name: str) -> bool:
-        cid = self._db.create_collection(name)
+        cid = self._library.create_collection(name)
         if cid < 0:
             return False
-        self._db.add_to_collection(meme_id, cid)
-        return True
+        return self._library.add_to_collection(meme_id, cid)
 
     def add_to_existing_collection(self, meme_id: int, collection_id: int) -> bool:
         try:
-            self._db.add_to_collection(meme_id, collection_id)
-            return True
+            return self._library.add_to_collection(meme_id, collection_id)
         except Exception:
             return False
 
     def set_collection_members(self, collection_id: int, meme_ids: list) -> bool:
         """批量设置分组内成员（先清空再写入），供添加分组弹窗确定时保存右侧列表"""
         try:
-            self._db.set_collection_members(collection_id, meme_ids)
-            self._webui._container.build_manifest()
-            return True
+            return self._library.set_collection_members(collection_id, meme_ids)
         except Exception:
             return False
 
     def set_collection_members_new(self, name: str, meme_ids: list) -> dict:
         """创建新分组并批量设置成员，返回 {ok, id}"""
-        try:
-            if self._db.collection_exists(name):
-                return {"ok": False, "error": "同名分组已存在，请从下拉框选择已有分组"}
-            cid = self._db.create_collection(name)
-            if cid < 0:
-                return {"ok": False}
-            self._db.set_collection_members(cid, meme_ids)
-            self._webui._container.build_manifest()
-            return {"ok": True, "id": cid}
-        except Exception:
-            return {"ok": False}
+        return self._library.create_collection_with_members(name, meme_ids)
 
     def reorder_memes(self, meme_ids: list) -> bool:
         return self._catalog.reorder_memes(meme_ids)
@@ -473,8 +395,7 @@ class JsApi:
 
     def delete_collection(self, collection_id: int) -> bool:
         try:
-            self._db.delete_collection(collection_id)
-            return True
+            return self._library.delete_collection(collection_id)
         except Exception:
             return False
 
@@ -482,53 +403,49 @@ class JsApi:
         if not new_name:
             return False
         try:
-            self._db.rename_collection(collection_id, new_name)
-            self._webui._container.build_manifest()
-            return True
+            return self._library.rename_collection(collection_id, new_name)
         except Exception:
             return False
 
     def create_subcollection(self, name: str, parent_id: int) -> dict:
-        depth = self._db.get_collection_depth(parent_id)
+        depth = self._catalog.collection_depth(parent_id)
         if depth >= 1:
             return {"ok": False, "error": "最大支持1层小分组"}
-        cid = self._db.create_collection(name, parent_id=parent_id)
+        cid = self._library.create_collection(name, parent_id=parent_id)
         if cid < 0:
             return {"ok": False}
         return {"ok": True, "id": cid}
 
     def record_meme_use(self, meme_id: int) -> bool:
         try:
-            self._db.record_use(meme_id)
+            self._library.record_use(meme_id)
             return True
         except Exception:
             return False
 
     def remove_from_recent(self, meme_id: int) -> bool:
         try:
-            self._db.remove_from_recent(meme_id)
+            self._library.remove_from_recent(meme_id)
             return True
         except Exception:
             return False
 
     def clear_recent(self) -> bool:
         try:
-            self._db.clear_recent()
+            self._library.clear_recent()
             return True
         except Exception:
             return False
 
     def remove_from_collection(self, meme_id: int, collection_id: int) -> bool:
-        self._db.remove_from_collection(meme_id, collection_id)
-        return True
+        return self._library.remove_from_collection(meme_id, collection_id)
 
     def log(self, msg, level="info"):
         """供前端输出调试日志到终端"""
         getattr(logger, level, logger.info)(msg)
 
     def rescan_cache(self) -> bool:
-        self._webui.scan_cache()
-        return True
+        return self._catalog.rescan_cache(self._cfg.cache_dir)
 
     # 非阻塞检查更新：新鲜缓存即返，首次/过期/force 触发后台检查返回 pending
     def check_update(self, debug=False, force=False) -> dict:
@@ -581,7 +498,10 @@ class JsApi:
             # Windows 裸路径: C:\Users\...
             local_path = s
         if local_path:
-            r = self._webui._do_import([local_path])
+            try:
+                r = _import_result_payload(self._library.import_paths([local_path]))
+            except Exception as e:
+                return {"ok": False, "error": str(e)}
             ids = r.get("ids") or []
             if ids:
                 return {"ok": True, "id": ids[0]}
@@ -637,7 +557,7 @@ class JsApi:
             # 重命名为正确扩展名
             final_path = tmp_path + ext
             os.rename(tmp_path, final_path)
-            r = self._webui._do_import([final_path])
+            r = _import_result_payload(self._library.import_paths([final_path]))
             ids = r.get("ids") or []
             if ids:
                 return {"ok": True, "id": ids[0]}
@@ -667,7 +587,7 @@ class JsApi:
 
     def sync_push(self) -> dict:
         try:
-            r = sync_module.push()
+            r = self._webui._container.create_sync_service().push()
             r["ok"] = True
             return r
         except Exception as e:
@@ -679,7 +599,7 @@ class JsApi:
 
     def sync_pull(self) -> dict:
         try:
-            r = sync_module.pull()
+            r = self._webui._container.create_sync_service().pull()
             r["ok"] = True
             return r
         except Exception as e:
@@ -691,30 +611,14 @@ class JsApi:
 
     def run_auto_sync(self) -> dict:
         """启动时自动同步：根据配置拉取远端索引和/或全量同步"""
-        result = {"fetched": False, "synced": False, "error": ""}
-        sync_type = self._cfg.get("sync_type", "")
-        if not sync_type:
-            return result
         try:
-            if self._cfg.get("sync_auto_fetch_index", False):
-                from ohmymeme.services.sync.service import download_index
-
-                data = download_index()
-                result["fetched"] = data is not None
-            if self._cfg.get("sync_auto_sync", False):
-                from ohmymeme.services.sync.service import pull
-
-                r = pull()
-                result["synced"] = r.get("downloaded", 0) > 0
+            return self._webui._container.create_sync_service().auto_sync()
         except Exception as e:
-            result["error"] = str(e)
-        return result
+            return {"fetched": False, "synced": False, "error": str(e)}
 
     def sync_test(self) -> str:
         try:
-            from ohmymeme.services.sync.service import sync_test as _test
-
-            return _test()
+            return self._webui._container.create_sync_service().test_connection()
         except Exception as e:
             return str(e)
 
@@ -730,7 +634,7 @@ class JsApi:
             return {"ok": False}
         if not result:
             return {"ok": False, "cancelled": True}
-        r = self._webui._do_import(result)
+        r = self._catalog.import_paths(result)
         return {
             "ok": True,
             "imported": len(r.get("ids") or []),
@@ -761,17 +665,16 @@ class JsApi:
                     names.append(os.path.splitext(fn)[0])
             if not files:
                 return {"ok": False, "error": "文件夹中没有支持的图片"}
-            r = self._webui._do_import(files, names)
+            r = self._catalog.import_folder(
+                files,
+                names,
+                os.path.basename(os.path.normpath(folder)),
+                make_collection,
+            )
             ids = r.get("ids") or []
             rejected = r.get("rejected", 0)
-            collection_id = None
+            collection_id = r.get("collection_id")
             folder_name = os.path.basename(os.path.normpath(folder))
-            if make_collection and ids:
-                collection_id = self._db.create_collection(folder_name)
-                if collection_id > 0:
-                    for mid in ids:
-                        self._db.add_to_collection(mid, collection_id)
-                    self._webui._container.build_manifest()
             return {
                 "ok": True,
                 "imported": len(ids),
@@ -784,7 +687,6 @@ class JsApi:
             return {"ok": False, "error": str(e)}
 
     def import_from_clipboard(self) -> dict:
-        import hashlib
         import tempfile
 
         from PIL import ImageGrab
@@ -800,16 +702,17 @@ class JsApi:
                 paths = [p for p in clip if os.path.isfile(p)]
                 if not paths:
                     return {"ok": False, "error": "剪贴板中没有图片文件"}
-                r = self._webui._do_import(paths)
+                try:
+                    r = self._library.import_clipboard_paths(paths)
+                except Exception as e:
+                    return {"ok": False, "error": str(e)}
                 ids = r.get("ids") or []
                 rejected = r.get("rejected", 0)
                 if ids:
-                    row = self._db.get_by_id(ids[0])
-                    orig = row["original_name"] if row else ""
                     return {
                         "ok": True,
                         "id": ids[0],
-                        "name": orig or "未命名",
+                        "name": r.get("name") or "未命名",
                         "rejected": rejected,
                     }
                 return {"ok": True, "id": 0, "name": "未命名", "rejected": rejected}
@@ -819,22 +722,17 @@ class JsApi:
             tmp.close()
             try:
                 img.save(tmp_path, "PNG")
-                sha256 = hashlib.sha256()
-                with open(tmp_path, "rb") as f:
-                    for chunk in iter(lambda: f.read(65536), b""):
-                        sha256.update(chunk)
-                if self._db.get_by_hash(sha256.hexdigest()):
-                    return {"ok": False, "error": "该图片已存在"}
-                r = self._webui._do_import([tmp_path], [""])
+                try:
+                    r = self._library.import_clipboard_paths([tmp_path], [""])
+                except Exception as e:
+                    return {"ok": False, "error": str(e)}
                 ids = r.get("ids") or []
                 rejected = r.get("rejected", 0)
                 if ids:
-                    row = self._db.get_by_id(ids[0])
-                    orig = row["original_name"] if row else ""
                     return {
                         "ok": True,
                         "id": ids[0],
-                        "name": orig or "未命名",
+                        "name": "未命名",
                         "rejected": rejected,
                     }
                 return {"ok": True, "id": 0, "name": "未命名", "rejected": rejected}
@@ -901,13 +799,6 @@ class JsApi:
     def hide_window(self):
         self._webui.hide()
 
-    def _find_meme_file(self, filename: str) -> str:
-        cache_dir = self._cfg.cache_dir
-        for root, _, files in os.walk(cache_dir):
-            if filename in files:
-                return os.path.join(root, filename)
-        return ""
-
 
 # ─── QQNT 提取驱动（后台线程 + 状态，供设置页向导轮询） ───
 
@@ -921,6 +812,8 @@ _QQNT_STATE = {
 }
 _QQNT_LOCK = threading.Lock()
 _QQNT_CANCEL = False
+_QQNT_JOB_MANAGER = None
+_QQNT_JOB_ID = None
 
 
 def _set_qqnt(**kw):
@@ -941,6 +834,8 @@ def get_qqnt_progress() -> dict:
 def cancel_qqnt_extract():
     global _QQNT_CANCEL
     _QQNT_CANCEL = True
+    if _QQNT_JOB_MANAGER is not None and _QQNT_JOB_ID is not None:
+        _QQNT_JOB_MANAGER.cancel(_QQNT_JOB_ID)
 
 
 def start_qqnt_extract(
@@ -950,29 +845,52 @@ def start_qqnt_extract(
     overwrite: bool = False,
     ini_path: str = None,
     userdata_save_path: str = None,
+    job_manager=None,
 ) -> bool:
-    global _QQNT_CANCEL
+    global _QQNT_CANCEL, _QQNT_JOB_MANAGER, _QQNT_JOB_ID
+    if job_manager is not None and job_manager.active("import.qqnt") is not None:
+        return False
     _QQNT_CANCEL = False
     _set_qqnt(
         status="running", progress=0, message="准备中", error="", log=[], result=None
     )
-    threading.Thread(
-        target=_qqnt_worker,
-        args=(
-            qq_number,
-            output_dir,
-            image_only,
-            overwrite,
-            ini_path,
-            userdata_save_path,
-        ),
-        daemon=True,
-    ).start()
+    args = (
+        qq_number,
+        output_dir,
+        image_only,
+        overwrite,
+        ini_path,
+        userdata_save_path,
+    )
+    if job_manager is None:
+        threading.Thread(target=_qqnt_worker, args=args, daemon=True).start()
+    else:
+
+        def target(context):
+            global _QQNT_JOB_MANAGER, _QQNT_JOB_ID
+            _QQNT_JOB_MANAGER = job_manager
+            _QQNT_JOB_ID = context.job_id
+            try:
+                _qqnt_worker(*args, cancellation_event=context.cancellation_event)
+                if _QQNT_STATE["status"] == "error":
+                    raise RuntimeError(_QQNT_STATE["error"])
+            finally:
+                _QQNT_JOB_MANAGER = None
+                _QQNT_JOB_ID = None
+
+        record = job_manager.start("import.qqnt", target, resources=("qqnt",))
+        _QQNT_JOB_ID = record.id
     return True
 
 
 def _qqnt_worker(
-    qq_number, output_dir, image_only, overwrite, ini_path, userdata_save_path
+    qq_number,
+    output_dir,
+    image_only,
+    overwrite,
+    ini_path,
+    userdata_save_path,
+    cancellation_event=None,
 ):
     """后台执行 QQNT 表情提取并转发进度/错误到 _QQNT_STATE"""
 
@@ -994,12 +912,15 @@ def _qqnt_worker(
             ini_path=ini_path or qqnt.DEFAULT_INI_PATH,
             image_only=image_only,
             overwrite=overwrite,
-            should_stop=lambda: _QQNT_CANCEL,
+            should_stop=lambda: _QQNT_CANCEL
+            or (cancellation_event is not None and cancellation_event.is_set()),
             on_progress=on_progress,
             on_error=on_error,
             on_log=on_log,
         )
-        if _QQNT_CANCEL:
+        if _QQNT_CANCEL or (
+            cancellation_event is not None and cancellation_event.is_set()
+        ):
             _set_qqnt(status="cancelled", message="已取消", result=result)
         else:
             _set_qqnt(status="done", progress=100, message="提取完成", result=result)
@@ -1015,22 +936,23 @@ class SettingsApi:
         self._webui = webui
         self._cfg = webui._cfg
         self._settings = settings
+        self._library = webui._container.library
 
     def check_connectivity(self) -> dict:
         return _check_connectivity()
 
     def lan_start(self, port: int = None, secret: str = None) -> dict:
-        from ohmymeme.services import lan
-
         p = int(port or self._cfg.get("lan_port", 17852))
         s = secret if secret is not None else self._cfg.get("lan_secret", "")
-        ok = lan.start(p, s)
+        from ohmymeme.services import lan
+
+        ok = self._webui._container.start_lan(p, s)
         return {"ok": ok, "status": lan.get_status()}
 
     def lan_stop(self) -> dict:
         from ohmymeme.services import lan
 
-        lan.stop()
+        self._webui._container.stop_lan()
         return {"ok": True, "status": lan.get_status()}
 
     def lan_get_status(self) -> dict:
@@ -1117,8 +1039,8 @@ class SettingsApi:
             return False
 
     def start_qq_import(self) -> dict:
-        adb_qq.start_qq_import()
-        return {"ok": True}
+        started = adb_qq.start_qq_import(self._webui._container.job_manager)
+        return {"ok": started, **({} if started else {"error": "已有导入任务正在进行"})}
 
     def get_qq_import_progress(self) -> dict:
         return adb_qq.get_qq_progress()
@@ -1227,7 +1149,11 @@ class SettingsApi:
         if not tdata_path:
             tdata_path = self._cfg.get("tg_tdata_path", "") or None
         started = telegram.start_tg_import(
-            self._webui._do_import, tdata_path, passcode, convert_webm
+            self._webui._container.library.import_paths,
+            tdata_path,
+            passcode,
+            convert_webm,
+            self._webui._container.job_manager,
         )
         if not started:
             return {"ok": False, "error": "已有导入任务正在进行"}
@@ -1246,7 +1172,11 @@ class SettingsApi:
         except ImportError as e:
             return {"ok": False, "error": f"缺少依赖: {e}"}
 
-        started = douyin.start_douyin_import(self._webui._do_import, cookie)
+        started = douyin.start_douyin_import(
+            self._webui._container.library.import_paths,
+            cookie,
+            self._webui._container.job_manager,
+        )
         if not started:
             return {"ok": False, "error": "已有导入任务正在进行"}
         return {"ok": True}
@@ -1293,7 +1223,11 @@ class SettingsApi:
         from ohmymeme.integrations.imports import wechat
 
         started = wechat.start_wechat_import(
-            self._webui._do_import, user_root, download, account_path
+            self._webui._container.library.import_paths,
+            user_root,
+            download,
+            account_path,
+            self._webui._container.job_manager,
         )
         if not started:
             return {"ok": False, "error": "已有导入任务正在进行"}
@@ -1367,31 +1301,7 @@ class SettingsApi:
 
     def get_storage_info(self):
         """返回存储目录信息（供设置页展示）"""
-        cfg = self._cfg
-        cache = cfg.cache_dir
-        count = 0
-        total = 0
-        try:
-            if cache.exists():
-                for root, dirs, files in os.walk(str(cache)):
-                    for d in list(dirs):
-                        if d == "thumbnails":
-                            dirs.remove(d)
-                    for name in files:
-                        count += 1
-                        try:
-                            total += (Path(root) / name).stat().st_size
-                        except OSError:
-                            pass
-        except OSError:
-            pass
-        return {
-            "cache_dir": str(cache),
-            "data_dir": str(cfg.data_dir),
-            "custom": bool(cfg.get("cache_dir", "")),
-            "file_count": count,
-            "total_size": total,
-        }
+        return self._library.storage_info()
 
     def pick_storage_dir(self):
         """选择新的表情包存储目录（只返回路径，不立即生效）"""
@@ -1408,121 +1318,12 @@ class SettingsApi:
 
     def apply_storage_dir(self, path, move_files=False):
         """应用新的表情包存储目录；move_files=True 时把现有文件迁移过去"""
-        import shutil
-
-        old = self._cfg.cache_dir
-        protected = (self._cfg.data_dir, self._cfg.thumbnail_dir)
-        ok, err = _storage_dir_validation(path, str(old), protected)
-        if not ok:
-            return {"ok": False, "error": err}
-        new = Path(path).resolve()
         try:
-            new.mkdir(parents=True, exist_ok=True)
-        except OSError as e:
-            return {"ok": False, "error": f"创建目录失败: {e}"}
-        if not os.access(new, os.W_OK):
-            return {"ok": False, "error": "目标目录不可写"}
-        moved, failed = 0, []
-        moved_pairs = []
-        if move_files:
-            plan = []
-            for root, dirs, files in os.walk(str(old)):
-                rel = os.path.relpath(root, str(old))
-                for d in list(dirs):
-                    if d == "thumbnails":
-                        dirs.remove(d)
-                for name in files:
-                    src = os.path.join(root, name)
-                    dst = (new if rel == "." else new / rel) / name
-                    plan.append((src, dst))
-            if plan:
-                collisions = [
-                    {
-                        "name": os.path.basename(src),
-                        "path": os.path.relpath(src, str(old)),
-                    }
-                    for src, dst in plan
-                    if dst.exists()
-                ]
-                if collisions:
-                    return {
-                        "ok": False,
-                        "error": f"目标目录已存在 {len(collisions)} 个同名文件，未迁移",
-                        "failed": [
-                            {
-                                "name": c["name"],
-                                "path": c["path"],
-                                "error": "目标目录已存在同名文件",
-                            }
-                            for c in collisions
-                        ],
-                    }
-                for src, dst in plan:
-                    try:
-                        dst.parent.mkdir(parents=True, exist_ok=True)
-                        shutil.move(src, str(dst))
-                        moved_pairs.append((src, dst))
-                        moved += 1
-                    except OSError as e:
-                        rollback_failed = []
-                        for s, d in reversed(moved_pairs):
-                            try:
-                                shutil.move(str(d), s)
-                            except OSError as rollback_error:
-                                rollback_failed.append(
-                                    {
-                                        "name": os.path.basename(s),
-                                        "path": os.path.relpath(s, str(old)),
-                                        "error": str(rollback_error),
-                                    }
-                                )
-                        return {
-                            "ok": False,
-                            "error": (
-                                "迁移失败（%s），回滚失败 %d 个文件"
-                                % (e, len(rollback_failed))
-                                if rollback_failed
-                                else f"迁移失败（{e}），已回滚已移动文件"
-                            ),
-                            "failed": [
-                                {
-                                    "name": os.path.basename(s),
-                                    "path": os.path.relpath(s, str(old)),
-                                    "error": str(e),
-                                }
-                                for s, _d in moved_pairs
-                            ]
-                            + rollback_failed,
-                        }
-        previous_cache_dir = self._cfg.get("cache_dir", "")
-        previous_dirty = self._cfg._dirty
-        self._cfg.set("cache_dir", str(new))
-        try:
-            self._cfg.save()
-        except OSError as e:
-            self._cfg._data["cache_dir"] = previous_cache_dir
-            self._cfg._dirty = previous_dirty
-            rollback_failed = []
-            for src, dst in reversed(moved_pairs if move_files else []):
-                try:
-                    shutil.move(str(dst), src)
-                except OSError as rollback_error:
-                    rollback_failed.append(
-                        {
-                            "name": os.path.basename(src),
-                            "path": os.path.relpath(src, str(old)),
-                            "error": str(rollback_error),
-                        }
-                    )
-            return {
-                "ok": False,
-                "error": (
-                    f"保存配置失败: {e}；回滚失败 {len(rollback_failed)} 个文件"
-                    if rollback_failed
-                    else f"保存配置失败: {e}"
-                ),
-                "failed": rollback_failed,
-            }
+            result = self._library.apply_storage_dir(path, move_files)
+        except Exception as error:
+            return {"ok": False, "error": str(error)}
+        if not result.get("ok"):
+            return result
         fc = getattr(self._webui, "_file_cache", None)
         if fc is not None:
             fc.clear()
@@ -1531,7 +1332,7 @@ class SettingsApi:
                 webview.windows[0].evaluate_js("refreshMemes();")
         except Exception:
             pass
-        return {"ok": True, "cache_dir": str(new), "moved": moved, "failed": failed}
+        return result
 
     def qqnt_default_dir(self, base: str, qq_number: str) -> dict:
         """按账号生成默认输出目录（昵称+QQ号）"""
@@ -1555,6 +1356,7 @@ class SettingsApi:
             overwrite=overwrite,
             ini_path=self._cfg.get("qqnt_ini_path") or None,
             userdata_save_path=self._cfg.get("qqnt_userdata_path") or None,
+            job_manager=self._webui._container.job_manager,
         )
         return {"ok": ok}
 
@@ -1591,7 +1393,10 @@ class SettingsApi:
             return {"ok": False}
         if not result:
             return {"ok": False, "cancelled": True}
-        r = self._webui._do_import(result)
+        try:
+            r = _import_result_payload(self._library.import_paths(result))
+        except Exception as e:
+            return {"ok": False, "error": str(e)}
         return {
             "ok": True,
             "imported": len(r.get("ids") or []),
@@ -1640,7 +1445,9 @@ class SettingsApi:
 
     def sync_push(self, delete_remote: bool = None) -> dict:
         try:
-            r = sync_module.push(delete_remote=delete_remote)
+            r = self._webui._container.create_sync_service().push(
+                delete_remote=delete_remote
+            )
             r["ok"] = True
             return r
         except Exception as e:
@@ -1652,7 +1459,9 @@ class SettingsApi:
 
     def sync_pull(self, remove_local: bool = None) -> dict:
         try:
-            r = sync_module.pull(remove_local=remove_local)
+            r = self._webui._container.create_sync_service().pull(
+                remove_local=remove_local
+            )
             r["ok"] = True
             # 刷新主窗口数据
             try:
@@ -1672,28 +1481,15 @@ class SettingsApi:
 
     def sync_test(self) -> str:
         try:
-            from ohmymeme.services.sync.service import sync_test as _test
-
-            return _test()
+            return self._webui._container.create_sync_service().test_connection()
         except Exception as e:
             return str(e)
 
     def delete_all_local(self) -> dict:
         """删除本地所有表情包"""
         try:
-            db = self._webui._db
-            db.delete_all()
-            cache = self._cfg.cache_dir
-            if cache.exists():
-                for f in cache.iterdir():
-                    if f.is_file():
-                        f.unlink()
-            thumbs = self._cfg.thumbnail_dir
-            if thumbs.exists():
-                for f in thumbs.iterdir():
-                    if f.is_file():
-                        f.unlink()
-            self._webui._container.build_manifest()
+            if not self._library.delete_all():
+                return {"ok": False, "error": "删除本地表情失败"}
             try:
                 if len(webview.windows) > 0:
                     webview.windows[0].evaluate_js(
@@ -1708,49 +1504,26 @@ class SettingsApi:
     def delete_all_cloud(self) -> dict:
         """删除云端所有表情包"""
         try:
-            return sync_module.delete_all_remote()
+            return self._webui._container.create_sync_service().delete_all_remote()
         except Exception as e:
             return {"ok": False, "error": str(e)}
 
     def get_remote_orphans(self, delete: bool = False) -> dict:
         """扫描云端孤儿文件；delete=True 时物理删除"""
         try:
-            return sync_module.cleanup_remote_orphans(delete=delete)
+            return self._webui._container.create_sync_service().cleanup_remote_orphans(
+                delete=delete
+            )
         except Exception as e:
             return {"ok": False, "error": str(e)}
 
     def check_sync_status(self) -> dict:
         """比较本地与云端同步状态"""
         try:
-            from ohmymeme.services.sync.service import download_index
-
-            manifest = download_index()
-            if not manifest:
-                return {"ok": False, "error": "无法获取远端索引"}
-            db = self._webui._db
-            local_rows = db.search(keyword="", tags=None, limit=999999)
-            local_count = len(local_rows)
-            local_filenames = {r["filename"] for r in local_rows}
-            remote_memes = manifest.get("memes", [])
-            remote_count = len(remote_memes)
-            remote_filenames = {m["filename"] for m in remote_memes}
-            local_extra = local_filenames - remote_filenames
-            local_missing = remote_filenames - local_filenames
-            if not local_extra and not local_missing:
-                return {
-                    "ok": True,
-                    "synced": True,
-                    "local_count": local_count,
-                    "remote_count": remote_count,
-                }
-            return {
-                "ok": True,
-                "synced": False,
-                "local_count": local_count,
-                "remote_count": remote_count,
-                "local_extra": len(local_extra),
-                "local_missing": len(local_missing),
-            }
+            manifest = self._webui._container.create_sync_service().get_status()
+            return manifest
+        except AttributeError:
+            return {"ok": False, "error": "同步状态服务不可用"}
         except Exception as e:
             return {"ok": False, "error": str(e)}
 
@@ -1819,7 +1592,12 @@ class WebUI:
         self._settings_window = None
         self._port = self._find_free_port()
         self._bottle_thread = None
-        self._api = JsApi(self, container.catalog, container.settings)
+        self._bottle_server = None
+        self._bottle_lock = threading.Lock()
+        self._bottle_stopping = False
+        self._api = JsApi(
+            self, container.catalog, container.settings, container.library
+        )
         self._settings_api = SettingsApi(self, container.settings)
         self._visible = False
         self._started = False
@@ -1829,6 +1607,7 @@ class WebUI:
         self._update_debug = update_debug
         self._silent_start = silent_start
         self._decode_stego = _try_decode_stego
+        container.library.configure_stego_decoder(self._decode_stego)
 
     def _init_lan(self):
         from ohmymeme.services import lan
@@ -2023,9 +1802,6 @@ class WebUI:
     def _get_thumbnail_path(self, meme_id: int, filename: str, size: int = 150) -> str:
         return thumbnail_path(self, meme_id, filename, size)
 
-    def _find_meme_file(self, filename: str) -> str:
-        return find_meme_file(self, filename)
-
     def _do_import(self, file_paths, names=None):
         return import_paths(self, file_paths, names)
 
@@ -2090,7 +1866,7 @@ class WebUI:
 
         @app.route("/api/original/<meme_id>/<filename>")
         def serve_original(meme_id, filename):
-            path = self._find_meme_file(filename)
+            path = self._container.library.find_meme_file(filename)
             if path:
                 ext = os.path.splitext(filename)[1].lower()
                 ctype = original_mime_type(ext)
@@ -2134,9 +1910,7 @@ class WebUI:
                     raw = base64.b64decode(b64)
                     requests.append(ImportBytes(raw, oname))
                 if requests:
-                    self._container.create_import_service(
-                        _try_decode_stego
-                    ).import_batch(requests)
+                    self._container.library.import_batch(requests)
                 return {"ok": True}
             except Exception as e:
                 logger.error(f"upload error: {e}")
@@ -2162,43 +1936,24 @@ class WebUI:
                 )
             return bottle.static_file(filepath, root=str(self._html_dir))
 
-        bottle.run(app, host="127.0.0.1", port=self._port, quiet=True)
+        server = make_server("127.0.0.1", self._port, app)
+        with self._bottle_lock:
+            if self._bottle_stopping:
+                server.server_close()
+                return
+            self._bottle_server = server
+        try:
+            server.serve_forever()
+        finally:
+            server.server_close()
+            with self._bottle_lock:
+                if self._bottle_server is server:
+                    self._bottle_server = None
 
     # --- 缓存扫描 ---
 
     def scan_cache(self):
-        """扫描本地缓存目录，将已有文件自动注册到数据库"""
-        cache_dir = self._cfg.cache_dir
-        db = self._db
-        allowed_ext = {".png", ".jpg", ".jpeg", ".gif", ".webp", ".bmp"}
-        added = 0
-        if not cache_dir.exists():
-            logger.debug(f"scan_cache: cache dir not found {cache_dir}")
-            return
-        for root, _, files in os.walk(cache_dir):
-            for fname in files:
-                ext = os.path.splitext(fname)[1].lower()
-                if ext not in allowed_ext:
-                    continue
-                fpath = os.path.join(root, fname)
-                if "thumbnails" in fpath:
-                    continue
-                # 跳过由 WebP 动图自动生成的 GIF（同名 .webp 存在即为生成物）
-                stem = os.path.splitext(fname)[0]
-                if ext == ".gif" and os.path.isfile(os.path.join(root, stem + ".webp")):
-                    continue
-                if db.get_by_filename(fname):
-                    continue
-                try:
-                    result = self._container.create_import_service(
-                        self._decode_stego
-                    ).register_existing_path(ImportPath(Path(fpath), fname))
-                    added += len(result.imported_ids)
-                except Exception as e:
-                    logger.warning(f"scan_cache skip {fname}: {e}")
-        if added:
-            logger.info(f"缓存扫描完成: 新增 {added} 个文件")
-        self._container.build_manifest()
+        self._container.library.rescan_cache(self._cfg.cache_dir)
 
     # --- 启动 ---
 
@@ -2210,6 +1965,8 @@ class WebUI:
             logger.error("bottle not installed")
             return False
 
+        with self._bottle_lock:
+            self._bottle_stopping = False
         # 启动 Bottle 服务器
         self._bottle_thread = threading.Thread(target=self._setup_bottle, daemon=True)
         self._bottle_thread.start()
@@ -2278,9 +2035,7 @@ class WebUI:
             self._settings_window = None
         # 关闭设置页时自动停止局域网服务
         try:
-            from ohmymeme.services import lan
-
-            lan.stop()
+            self._webui._container.stop_lan()
         except Exception:
             pass
 
@@ -2294,8 +2049,25 @@ class WebUI:
         except Exception:
             pass
 
+    def _remember_window_position(self):
+        if not self._window:
+            return
+        self._cfg.set("window_x", self._window.x)
+        self._cfg.set("window_y", self._window.y)
+
     def stop(self):
-        self._save_window_position()
+        self._remember_window_position()
+        with self._bottle_lock:
+            self._bottle_stopping = True
+            server = self._bottle_server
+        if server is not None:
+            server.shutdown()
+        if self._bottle_thread is not None:
+            bottle_thread = self._bottle_thread
+            bottle_thread.join(1.0)
+            if bottle_thread.is_alive():
+                bottle_thread.join(1.0)
+            self._bottle_thread = None
         if self._window:
             try:
                 self._window.destroy()

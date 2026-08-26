@@ -7,11 +7,12 @@ import os
 from pathlib import Path
 
 from ohmymeme import __version__
+from ohmymeme.app.local_library import LocalLibraryService
 from ohmymeme.core.assets import AssetPaths
-from ohmymeme.core.config import _SECRET_KEYS, get_config
+from ohmymeme.core.config import get_config, get_lan_secret_keys
 from ohmymeme.core.database import get_db
 from ohmymeme.core.imports import ImageImportService, ImportBytes
-from ohmymeme.core.manifest import build as build_manifest
+from ohmymeme.core.manifest import ManifestBuilder
 
 MAX_FILE_SIZE = 64 * 1024 * 1024
 
@@ -28,9 +29,9 @@ def _safe_fname(name) -> bool:
     )
 
 
-def _find_meme_file(filename: str):
+def _find_meme_file(filename: str, assets=None):
     """在缓存目录递归查找表情文件。"""
-    cache_dir = get_config().cache_dir
+    cache_dir = assets.cache_dir if assets is not None else get_config().cache_dir
     direct = cache_dir / filename
     if direct.exists() and direct.is_file():
         return direct
@@ -46,9 +47,13 @@ def _import_bytes(data: bytes, filename: str) -> dict:
     """校验收到的图片字节并原子入库。"""
     try:
         config = get_config()
-        result = ImageImportService(
-            get_db(), AssetPaths(config.data_dir, config.cache_dir), build_manifest
-        ).import_bytes(ImportBytes(data, filename))
+        db = get_db()
+        assets = AssetPaths(config.data_dir, config.cache_dir)
+        manifest = ManifestBuilder(config, db, assets)
+        library = LocalLibraryService(
+            db, assets, ImageImportService(db, assets, manifest.build), manifest.build
+        )
+        result = library.import_bytes(ImportBytes(data, filename))
     except OSError:
         return {"ok": False, "error": "写入缓存失败"}
     if result.rejected:
@@ -77,9 +82,29 @@ def _detect_ext(data: bytes):
 class CommandHandlers:
     """处理已获授权的 LAN v1 应用命令。"""
 
-    def __init__(self, server, sync_service=None):
+    def __init__(
+        self,
+        server,
+        sync_service=None,
+        config=None,
+        db=None,
+        assets=None,
+        manifest=None,
+        library=None,
+    ):
         self._server = server
         self._sync_service = sync_service
+        self.config = config or get_config()
+        self.db = db or get_db()
+        self.assets = assets or AssetPaths(self.config.data_dir, self.config.cache_dir)
+        self.manifest = manifest or ManifestBuilder(self.config, self.db, self.assets)
+        self.library = library or LocalLibraryService(
+            self.db,
+            self.assets,
+            ImageImportService(self.db, self.assets, self.manifest.build),
+            self.manifest.build,
+        )
+        self.build_manifest = self.manifest.build
 
     def dispatch(self, msg: dict) -> dict:
         """分发 LAN v1 命令并保持既有响应形状。"""
@@ -102,21 +127,21 @@ class CommandHandlers:
 
     def _cmd_pull_manifest(self) -> dict:
         """返回本地清单。"""
-        from ohmymeme.core.manifest import load as load_manifest
-
-        build_manifest()
-        return {"ok": True, "manifest": load_manifest()}
+        if not self.library._project_after_mutation():
+            return {"ok": False, "error": "本地清单生成失败"}
+        return {"ok": True, "manifest": self.manifest.load()}
 
     def _cmd_push_manifest(self, manifest) -> dict:
         """合并远端清单的排序与分组。"""
         if not isinstance(manifest, dict):
             return {"ok": False, "error": "manifest 格式错误"}
         try:
-            self._apply_manifest(manifest)
+            if not self.library.apply_remote_metadata(manifest):
+                raise RuntimeError("本地清单应用失败")
         except Exception as error:
             self._server._logger.warning(f"push_manifest apply error: {error}")
-        build_manifest()
-        return {"ok": True, "local_count": get_db().count()}
+            return {"ok": False, "error": str(error)}
+        return {"ok": True, "local_count": self.db.count()}
 
     def _apply_manifest(self, manifest) -> None:
         """通过注入的同步服务应用 LAN 清单。"""
@@ -136,7 +161,7 @@ class CommandHandlers:
         """返回指定缓存文件的 base64 内容。"""
         if not _safe_fname(filename):
             return {"ok": False, "error": "非法文件名"}
-        path = _find_meme_file(filename)
+        path = _find_meme_file(filename, self.assets)
         if not path:
             return {"ok": False, "error": "文件不存在"}
         try:
@@ -168,13 +193,22 @@ class CommandHandlers:
             hashlib.sha256(data).hexdigest(), expected
         ):
             return {"ok": False, "error": "文件哈希不一致"}
-        return _import_bytes(data, filename)
+        try:
+            result = self.library.import_bytes(ImportBytes(data, filename))
+        except OSError:
+            return {"ok": False, "error": "写入缓存失败"}
+        if result.rejected:
+            return {"ok": False, "error": "图片解析失败或超过导入限制"}
+        if not result.imported_ids:
+            return {"ok": True, "dedup": True}
+        row = self.db.get_by_id(result.imported_ids[0])
+        return {"ok": True, "filename": row["filename"]}
 
     def _cmd_get_config(self) -> dict:
         """返回按当前密钥策略过滤的配置。"""
-        config = get_config().to_dict()
+        config = self.config.to_dict()
         if not self._server._allow_secret_config():
-            for key in _SECRET_KEYS:
+            for key in get_lan_secret_keys():
                 config.pop(key, None)
         return {"ok": True, "config": config}
 
@@ -184,9 +218,10 @@ class CommandHandlers:
             return {"ok": False, "error": "配置格式错误"}
         if not self._server._allow_secret_config():
             config = {
-                key: value for key, value in config.items() if key not in _SECRET_KEYS
+                key: value
+                for key, value in config.items()
+                if key not in get_lan_secret_keys()
             }
-        target = get_config()
-        target.update_from_dict(config)
-        target.save()
+        self.config.update_from_dict(config)
+        self.config.save()
         return {"ok": True}

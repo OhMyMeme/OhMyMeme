@@ -71,6 +71,13 @@ _check_result = None
 _check_result_at = None
 _check_running = False
 _check_generation = 0
+_job_manager = None
+
+
+def set_job_manager(job_manager):
+    """Set the application-owned background job manager."""
+    global _job_manager
+    _job_manager = job_manager
 
 
 def _download_progress(block_count: int, block_size: int, total_size: int):
@@ -100,12 +107,13 @@ def start_download(url: str) -> bool:
         _download_state["error"] = ""
         _download_state["path"] = None
 
-    def _task():
+    def _task(context=None):
         try:
             tmp = tempfile.gettempdir()
             fname = url.rstrip("/").split("/")[-1] or _default_asset_name()
             dest = os.path.join(tmp, fname)
-            _urlretrieve_mirror(url, dest, _download_progress)
+            cancellation = context.cancellation_event if context else None
+            _urlretrieve_mirror(url, dest, _download_progress, cancellation)
             with _download_lock:
                 _download_state["path"] = dest
                 _download_state["progress"] = 100
@@ -116,7 +124,10 @@ def start_download(url: str) -> bool:
                 _download_state["error"] = str(e)
                 _download_state["status"] = "error"
 
-    threading.Thread(target=_task, daemon=True).start()
+    if _job_manager is not None:
+        _job_manager.start("update-download", _task)
+    else:
+        threading.Thread(target=_task, daemon=True).start()
     return True
 
 
@@ -262,7 +273,7 @@ def _ensure_check_started(force=False):
         gen = _check_generation
 
     # 后台线程完成本次检查；仅当任务与启动时同一代（未被 reset 取代）才写结果
-    def _task(gen):
+    def _task(context):
         global _check_result, _check_result_at, _check_running
         try:
             result = check_latest()
@@ -282,7 +293,10 @@ def _ensure_check_started(force=False):
             _check_result_at = time.time()
             _check_running = False
 
-    threading.Thread(target=_task, args=(gen,), daemon=True).start()
+    if _job_manager is not None:
+        _job_manager.start(f"update-check-{gen}", lambda context: _task(context))
+    else:
+        threading.Thread(target=_task, args=(None,), daemon=True).start()
     return False, None
 
 
@@ -328,7 +342,7 @@ def _default_asset_name() -> str:
     return "OhMyMeme-setup.exe"
 
 
-def _try_download(url: str, dest: str, reporthook) -> str:
+def _try_download(url: str, dest: str, reporthook, cancellation=None) -> str:
     """下载单个 URL 到临时文件 dest，成功返回 dest"""
     req = urllib.request.Request(url, headers={"User-Agent": "OhMyMeme"})
     CHUNK = 8192
@@ -340,6 +354,8 @@ def _try_download(url: str, dest: str, reporthook) -> str:
                 chunk = src.read(CHUNK)
                 if not chunk:
                     break
+                if cancellation is not None and cancellation.is_set():
+                    raise RuntimeError("下载已取消")
                 f.write(chunk)
                 written += len(chunk)
                 if reporthook:
@@ -347,7 +363,7 @@ def _try_download(url: str, dest: str, reporthook) -> str:
     return dest
 
 
-def _urlretrieve_mirror(url: str, dest: str, reporthook=None):
+def _urlretrieve_mirror(url: str, dest: str, reporthook=None, cancellation=None):
     """并发尝试所有镜像+直连，第一个成功者写入最终 dest"""
     targets = [(m + url, f"mirror {i + 1}") for i, m in enumerate(_GH_MIRRORS)] + [
         (url, "direct")
@@ -359,11 +375,15 @@ def _urlretrieve_mirror(url: str, dest: str, reporthook=None):
     fut_info = {}
     for i, (u, label) in enumerate(targets):
         tmp_dest = os.path.join(base_dir, f".{base_name}.part{i}")
-        fut = pool.submit(_try_download, u, tmp_dest, reporthook)
+        fut = pool.submit(_try_download, u, tmp_dest, reporthook, cancellation)
         fut_info[fut] = (label, tmp_dest)
 
     last_err = None
     for f in as_completed(fut_info):
+        if cancellation is not None and cancellation.is_set():
+            for pending in fut_info:
+                pending.cancel()
+            raise RuntimeError("下载已取消")
         label, tmp_dest = fut_info[f]
         try:
             f.result()
