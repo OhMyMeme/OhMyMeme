@@ -1,0 +1,215 @@
+import pytest
+
+from ohmymeme.app.local_library import LocalLibraryService
+from ohmymeme.core.assets import AssetPaths
+from ohmymeme.core.imports import ImportBytes, ImportResult
+
+
+class FakeDb:
+    def __init__(self, fail_operation=None):
+        self.calls = []
+        self.fail_operation = fail_operation
+
+    def _record(self, call):
+        if call[0] == self.fail_operation:
+            raise OSError("database write failed")
+        self.calls.append(call)
+
+    def get_by_id(self, meme_id):
+        return {"id": meme_id, "filename": "example.png"}
+
+    def delete_meme(self, meme_id):
+        self._record(("delete_meme", meme_id))
+
+    def update_meme(self, meme_id, **values):
+        self._record(("update_meme", meme_id, values))
+
+    def reorder_memes(self, meme_ids):
+        self._record(("reorder_memes", tuple(meme_ids)))
+
+    def reorder_collections(self, collection_ids):
+        self._record(("reorder_collections", tuple(collection_ids)))
+
+    def reorder_collection_members(self, collection_id, meme_ids):
+        self._record(("reorder_collection_members", collection_id, tuple(meme_ids)))
+
+    def apply_remote_metadata(self, remote_data):
+        self._record(("apply_remote_metadata", remote_data))
+
+    def set_meme_tags(self, meme_id, tags):
+        self._record(("set_meme_tags", meme_id, tuple(tags)))
+
+    def set_collection_members(self, collection_id, meme_ids):
+        self._record(("set_collection_members", collection_id, tuple(meme_ids)))
+
+    def add_to_collection(self, meme_id, collection_id):
+        self._record(("add_to_collection", meme_id, collection_id))
+
+    def remove_from_collection(self, meme_id, collection_id):
+        self._record(("remove_from_collection", meme_id, collection_id))
+
+    def create_collection(self, name, parent_id=None):
+        self._record(("create_collection", name, parent_id))
+        return 4
+
+    def rename_collection(self, collection_id, name):
+        self._record(("rename_collection", collection_id, name))
+
+    def delete_collection(self, collection_id):
+        self._record(("delete_collection", collection_id))
+
+
+class FakeImporter:
+    def __init__(self):
+        self.calls = []
+
+    def import_bytes(self, request):
+        self.calls.append(("import_bytes", request))
+        return {"imported_ids": (7,)}
+
+
+def _service(tmp_path, project=None):
+    assets = AssetPaths(tmp_path, tmp_path / "cache")
+    assets.cache_dir.mkdir()
+    db = FakeDb()
+    importer = FakeImporter()
+    service = LocalLibraryService(
+        db,
+        assets,
+        importer,
+        project or (lambda: None),
+    )
+    return service, db, importer, assets
+
+
+def test_mutation_projects_only_after_database_commit(tmp_path):
+    events = []
+
+    def project():
+        events.append("project")
+
+    service, db, _, _ = _service(tmp_path, project)
+
+    assert service.rename_meme(3, "renamed") is True
+
+    assert db.calls == [("update_meme", 3, {"original_name": "renamed"})]
+    assert events == ["project"]
+
+
+def test_projection_failure_restores_previous_manifest_snapshot(tmp_path):
+    service, db, _, assets = _service(tmp_path)
+    manifest = assets.manifest_path
+    manifest.write_bytes(b'{"version":3,"memes":[{"filename":"old.png"}]}')
+
+    def fail_after_writing_new_projection():
+        manifest.write_text("new", encoding="utf-8")
+        raise OSError("projection failed")
+
+    service._project_manifest = fail_after_writing_new_projection
+
+    assert service.rename_meme(3, "renamed") is False
+
+    assert manifest.read_bytes() == b'{"version":3,"memes":[{"filename":"old.png"}]}'
+    assert db.calls == [("update_meme", 3, {"original_name": "renamed"})]
+
+
+def test_runtime_projection_failure_restores_previous_manifest_snapshot(tmp_path):
+    service, db, _, assets = _service(tmp_path)
+    manifest = assets.manifest_path
+    manifest.write_bytes(b"old")
+
+    def fail_after_writing_new_projection():
+        manifest.write_bytes(b"new")
+        raise RuntimeError("projection failed")
+
+    service._project_manifest = fail_after_writing_new_projection
+
+    assert service.rename_meme(3, "renamed") is False
+
+    assert manifest.read_bytes() == b"old"
+    assert db.calls == [("update_meme", 3, {"original_name": "renamed"})]
+
+
+def test_import_delegates_validation_and_deduplication_to_import_service(tmp_path):
+    service, db, importer, assets = _service(tmp_path)
+
+    result = service.import_bytes(ImportBytes(b"payload", "example.png"))
+
+    assert result == {"imported_ids": (7,)}
+    assert importer.calls == [("import_bytes", ImportBytes(b"payload", "example.png"))]
+    assert db.calls == []
+    assert not assets.manifest_path.exists()
+
+
+def test_import_paths_delegates_downloaded_files_to_import_service(tmp_path):
+    service, _, importer, _ = _service(tmp_path)
+    importer.import_batch = lambda requests: ImportResult((8,), 0)
+
+    result = service.import_paths((tmp_path / "telegram.webp",))
+
+    assert result == ImportResult((8,), 0)
+
+
+@pytest.mark.parametrize(
+    ("method", "args", "expected"),
+    (
+        ("delete_meme", (3,), True),
+        ("reorder_memes", ([3, 2],), True),
+        ("reorder_collections", ([4, 5],), True),
+        ("reorder_collection_members", (4, [3, 2]), True),
+        ("set_meme_tags", (3, ["funny"]), True),
+        ("set_collection_members", (4, [3]), True),
+        ("add_to_collection", (3, 4), True),
+        ("remove_from_collection", (3, 4), True),
+        ("rename_collection", (4, "renamed"), True),
+        ("delete_collection", (4,), True),
+        ("create_collection", ("new",), 4),
+        ("apply_remote_metadata", ({"memes": []},), True),
+    ),
+)
+def test_mutation_operations_project_after_success(tmp_path, method, args, expected):
+    service, db, _, _ = _service(tmp_path)
+
+    assert getattr(service, method)(*args) == expected
+
+    assert db.calls
+
+
+def test_database_failure_does_not_project_or_change_manifest(tmp_path):
+    events = []
+    service, db, _, assets = _service(
+        tmp_path,
+        lambda: events.append("project"),
+    )
+    db.fail_operation = "reorder_memes"
+    assets.manifest_path.write_bytes(b"old")
+
+    assert service.reorder_memes([3]) is False
+
+    assert events == []
+    assert assets.manifest_path.read_bytes() == b"old"
+
+
+def test_cache_failure_does_not_project_or_change_manifest(tmp_path, monkeypatch):
+    events = []
+    service, db, _, assets = _service(
+        tmp_path,
+        lambda: events.append("project"),
+    )
+    assets.manifest_path.write_bytes(b"old")
+    cache_path = assets.cache_dir / "example.png"
+    cache_path.write_bytes(b"image")
+    original_unlink = cache_path.unlink
+
+    def fail_cache_unlink(*args, **kwargs):
+        if cache_path == assets.cache_dir / "example.png":
+            raise OSError("cache write failed")
+        return original_unlink(*args, **kwargs)
+
+    monkeypatch.setattr(type(cache_path), "unlink", fail_cache_unlink)
+
+    assert service.delete_meme(3) is False
+
+    assert db.calls == []
+    assert events == []
+    assert assets.manifest_path.read_bytes() == b"old"

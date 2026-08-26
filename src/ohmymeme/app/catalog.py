@@ -1,17 +1,23 @@
 """表情目录应用用例。"""
 
 import os
+from pathlib import Path
+
+from ohmymeme.core.imports import ImportPath
 
 
 class Catalog:
     """协调目录查询和变更，不依赖桌面 UI。"""
 
-    def __init__(self, config, db, build_manifest, find_file=None, is_animated=None):
+    def __init__(
+        self, config, db, build_manifest, find_file=None, is_animated=None, library=None
+    ):
         self._config = config
         self._db = db
         self._build_manifest = build_manifest
         self._find_file = find_file
         self._is_animated = is_animated
+        self._library = library
 
     def search_memes(
         self, keyword="", tags=None, collection_id=None, offset=0, limit=200
@@ -65,16 +71,14 @@ class Catalog:
 
     def get_meme_tags(self, meme_id):
         try:
-            return self._db.get_meme_tags(meme_id) or []
+            return self._library.get_meme_tags(meme_id)
         except Exception:
             return []
 
     def set_meme_tags(self, meme_id, tags):
-        try:
-            self._db.set_meme_tags(meme_id, tags or [])
-            return True
-        except Exception:
+        if self._library is None:
             return False
+        return self._library.set_meme_tags(meme_id, tags)
 
     def get_collections(self):
         system = [
@@ -105,21 +109,69 @@ class Catalog:
         }
 
     def toggle_favorite(self, meme_id):
-        return self._db.toggle_favorite(meme_id)
+        return self._library.toggle_favorite(meme_id)
+
+    def get_meme_path(self, meme_id):
+        return self._library.get_meme_path(meme_id)
+
+    def get_meme_paths(self, meme_ids):
+        return self._library.get_meme_paths(meme_ids)
+
+    def get_collection_members(self, collection_id):
+        return self._db.search(collection_id=collection_id, limit=5000) or []
+
+    def get_child_collections(self, parent_id):
+        return self._db.get_child_collections(parent_id)
+
+    def collection_depth(self, parent_id):
+        return self._db.get_collection_depth(parent_id)
+
+    def collection_tree(self):
+        return self._collection_tree()
+
+    def import_paths(self, paths, names=None):
+        """通过本地库边界导入文件，并返回桥接所需的统计。"""
+        if self._library is None:
+            return {"ids": [], "rejected": 0}
+        names = names or [Path(path).stem for path in paths]
+        result = self._library.import_batch(
+            tuple(ImportPath(Path(path), name) for path, name in zip(paths, names))
+        )
+        return {"ids": list(result.imported_ids), "rejected": result.rejected}
+
+    def import_folder(self, paths, names, collection_name, make_collection=True):
+        """导入文件夹内容并在成功后创建同名分组。"""
+        result = self.import_paths(paths, names)
+        ids = result["ids"]
+        collection_id = None
+        if make_collection and ids and self._library is not None:
+            collection = self._library.create_collection(collection_name)
+            if collection > 0:
+                for meme_id in ids:
+                    self._library.add_to_collection(meme_id, collection)
+                collection_id = collection
+        result["collection_id"] = collection_id
+        result["collection_name"] = collection_name if collection_id else None
+        return result
+
+    def rescan_cache(self, cache_dir):
+        """扫描缓存目录并通过本地库边界注册新文件。"""
+        return self._library.rescan_cache(cache_dir)
 
     def reorder_memes(self, meme_ids):
-        return self._mutate_manifest(self._db.reorder_memes, meme_ids)
+        if self._library is not None:
+            return self._library.reorder_memes(meme_ids)
+        return False
 
     def reorder_collections(self, collection_ids):
-        return self._mutate_manifest(self._db.reorder_collections, collection_ids)
+        if self._library is not None:
+            return self._library.reorder_collections(collection_ids)
+        return False
 
     def reorder_collection_members(self, collection_id, meme_ids):
-        try:
-            self._db.reorder_collection_members(collection_id, meme_ids)
-            self._build_manifest()
-            return True
-        except Exception:
-            return False
+        if self._library is not None:
+            return self._library.reorder_collection_members(collection_id, meme_ids)
+        return False
 
     def _mutate_manifest(self, operation, values):
         try:
@@ -172,7 +224,7 @@ class Catalog:
             "mime_type": row.get("mime_type", ""),
             "is_gif": is_gif,
             "is_animated": animated,
-            "favorited": self._db.is_favorite(row["id"]),
+            "favorited": self._library.is_favorite(row["id"]),
             "auto_play_gif": self._config.get("auto_play_gif", True),
             "hover_to_play": self._config.get("hover_to_play", False),
         }
