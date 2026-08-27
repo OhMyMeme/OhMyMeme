@@ -19,6 +19,7 @@ import ohmymeme.core.config as config_module
 import ohmymeme.core.database as database
 import ohmymeme.services.lan as lan_package
 import ohmymeme.services.lan.server as lan
+import ohmymeme.services.sync.service as sync_module
 from ohmymeme.core.config import Config
 from ohmymeme.core.database import MemeDB
 
@@ -410,6 +411,69 @@ def test_pull_manifest_uses_public_library_projection_boundary(lan_env):
 
     # Then: projection failure keeps the established LAN error envelope
     assert response == {"ok": False, "error": "本地清单生成失败"}
+
+
+def test_legacy_manifest_apply_uses_public_library_boundary(lan_env, monkeypatch):
+    calls = []
+
+    class Library:
+        def apply_remote_metadata(self, manifest):
+            calls.append(manifest)
+            return True
+
+        def __getattr__(self, name):
+            if name == "_project_after_mutation":
+                raise AssertionError("private projection boundary bypass")
+            raise AttributeError(name)
+
+    def fail_private_helper(_manifest):
+        raise AssertionError("private sync helper bypass")
+
+    monkeypatch.setattr(sync_module, "_apply_remote_order", fail_private_helper)
+    monkeypatch.setattr(sync_module, "_apply_remote_collections", fail_private_helper)
+    server = lan.LanServer(library=Library())
+
+    # When: a legacy LAN manifest apply helper receives remote metadata
+    response = server._commands._apply_manifest({"version": 3, "memes": []})
+
+    # Then: the public library operation applies the manifest and reports success
+    assert response is True
+    assert calls == [{"version": 3, "memes": []}]
+
+
+def test_push_manifest_returns_compatible_success_and_failure_shapes(lan_env):
+    cfg, db, _ = lan_env
+    handlers = lan._server._commands
+
+    # When: a valid remote manifest is applied through the real LAN command handler
+    success = handlers._cmd_push_manifest(
+        {"version": 3, "memes": [], "collections": []}
+    )
+
+    # Then: success keeps the established count envelope
+    assert success == {"ok": True, "local_count": db.count()}
+
+    # When: malformed remote metadata is submitted to the same handler
+    malformed = handlers._cmd_push_manifest([])
+
+    # Then: malformed input keeps the established error envelope
+    assert malformed == {"ok": False, "error": "manifest 格式错误"}
+
+
+def test_push_manifest_projection_failure_returns_error_shape(lan_env):
+    class Library:
+        def apply_remote_metadata(self, _manifest):
+            return False
+
+    server = lan.LanServer(library=Library())
+
+    # When: the local public apply operation reports projection failure
+    response = server._commands._cmd_push_manifest(
+        {"version": 3, "memes": [], "collections": []}
+    )
+
+    # Then: LAN does not report a false success
+    assert response == {"ok": False, "error": "本地清单应用失败"}
 
 
 def test_push_pull_file(lan_env):

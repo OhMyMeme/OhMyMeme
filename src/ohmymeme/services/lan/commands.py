@@ -143,19 +143,9 @@ class CommandHandlers:
             return {"ok": False, "error": str(error)}
         return {"ok": True, "local_count": self.db.count()}
 
-    def _apply_manifest(self, manifest) -> None:
-        """通过注入的同步服务应用 LAN 清单。"""
-        if self._sync_service is None:
-            from ohmymeme.services.sync.service import (
-                _apply_remote_collections,
-                _apply_remote_order,
-            )
-
-            _apply_remote_order(manifest)
-            _apply_remote_collections(manifest)
-            return
-        self._sync_service.apply_remote_order(manifest)
-        self._sync_service.apply_remote_collections(manifest)
+    def _apply_manifest(self, manifest) -> bool:
+        """通过本地库公开边界应用 LAN 清单。"""
+        return self.library.apply_remote_metadata(manifest)
 
     def _cmd_pull_file(self, filename: str) -> dict:
         """返回指定缓存文件的 base64 内容。"""
