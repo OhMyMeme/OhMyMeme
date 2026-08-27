@@ -5,6 +5,7 @@ import shutil
 import subprocess
 import sys
 import tempfile
+import threading
 import time
 import unittest
 from pathlib import Path
@@ -214,6 +215,160 @@ class TestWorkerExecutorLifecycle(unittest.TestCase):
         self.assertEqual(executor_state["shutdown"], (True, True))
         self.assertEqual(len(submitted), 1)
         self.assertEqual(tg.get_tg_progress()["status"], "done")
+
+    def test_executor_waits_for_running_futures_and_cleans_temp_dir(self):
+        started = threading.Event()
+        release = threading.Event()
+        finished = threading.Event()
+        executor_state = {}
+
+        class Future:
+            def result(self):
+                release.wait(1)
+                finished.set()
+                return True
+
+        class Executor:
+            def __init__(self, max_workers):
+                executor_state["max_workers"] = max_workers
+
+            def submit(self, _function, *_args):
+                started.set()
+                return Future()
+
+            def shutdown(self, wait, cancel_futures):
+                executor_state["shutdown"] = (wait, cancel_futures)
+                assert wait is True
+                assert finished.wait(1)
+
+        tdata = Path(tempfile.mkdtemp(prefix="tg_executor_wait_"))
+        cache = tdata / "user_data" / "cache"
+        cache.mkdir(parents=True)
+        (tdata / "key_datas").write_bytes(b"key")
+        (cache / "encrypted").write_bytes(b"TDF$")
+
+        def convert(_source, _destination):
+            release.set()
+            return True
+
+        try:
+            with mock.patch.object(
+                tg, "ThreadPoolExecutor", Executor
+            ), mock.patch.object(
+                tg, "as_completed", lambda futures: list(futures)
+            ), mock.patch.object(
+                tg, "read_local_key", return_value=b"key"
+            ), mock.patch.object(
+                tg, "decrypt_tdf_file", return_value=b"\x1a\x45\xdf\xa3webm"
+            ), mock.patch.object(
+                tg, "_check_ffmpeg", return_value=True
+            ), mock.patch.object(
+                tg, "convert_webm_to_webp", convert
+            ):
+                tg._tg_worker(
+                    lambda _paths: {"ids": [], "rejected": 0}, str(tdata), "", True
+                )
+            self.assertTrue(started.is_set())
+            self.assertEqual(executor_state["shutdown"], (True, True))
+            self.assertTrue(finished.is_set())
+        finally:
+            shutil.rmtree(tdata, ignore_errors=True)
+
+    def test_real_executor_runs_multiple_conversions_concurrently(self):
+        entered = threading.Event()
+        release = threading.Event()
+        active_lock = threading.Lock()
+        active = 0
+        max_active = 0
+
+        def convert(_source, _destination):
+            nonlocal active, max_active
+            with active_lock:
+                active += 1
+                max_active = max(max_active, active)
+                if max_active >= 2:
+                    entered.set()
+            release.wait(1)
+            with active_lock:
+                active -= 1
+            return True
+
+        tdata = Path(tempfile.mkdtemp(prefix="tg_executor_real_"))
+        cache = tdata / "user_data" / "cache"
+        cache.mkdir(parents=True)
+        (tdata / "key_datas").write_bytes(b"key")
+        (cache / "first").write_bytes(b"TDF$")
+        (cache / "second").write_bytes(b"TDF$")
+        worker = threading.Thread(
+            target=tg._tg_worker,
+            args=(lambda _paths: {"ids": [], "rejected": 0}, str(tdata), "", True),
+        )
+        try:
+            with mock.patch.object(
+                tg, "read_local_key", return_value=b"key"
+            ), mock.patch.object(
+                tg, "decrypt_tdf_file", return_value=b"\x1a\x45\xdf\xa3webm"
+            ), mock.patch.object(
+                tg, "_check_ffmpeg", return_value=True
+            ), mock.patch.object(
+                tg, "convert_webm_to_webp", convert
+            ):
+                worker.start()
+                self.assertTrue(entered.wait(1))
+                release.set()
+                worker.join(1)
+            self.assertFalse(worker.is_alive())
+            self.assertGreaterEqual(max_active, 2)
+            self.assertEqual(tg.get_tg_progress()["status"], "done")
+        finally:
+            release.set()
+            worker.join(1)
+            shutil.rmtree(tdata, ignore_errors=True)
+
+    def test_executor_future_exception_still_shuts_down_and_cleans_temp_dir(self):
+        executor_state = {}
+
+        class Future:
+            def result(self):
+                raise RuntimeError("controlled conversion failure")
+
+        class Executor:
+            def __init__(self, max_workers):
+                executor_state["max_workers"] = max_workers
+
+            def submit(self, _function, *_args):
+                return Future()
+
+            def shutdown(self, wait, cancel_futures):
+                executor_state["shutdown"] = (wait, cancel_futures)
+
+        tdata = Path(tempfile.mkdtemp(prefix="tg_executor_error_"))
+        cache = tdata / "user_data" / "cache"
+        cache.mkdir(parents=True)
+        (tdata / "key_datas").write_bytes(b"key")
+        (cache / "encrypted").write_bytes(b"TDF$")
+        try:
+            with mock.patch.object(
+                tg, "ThreadPoolExecutor", Executor
+            ), mock.patch.object(
+                tg, "as_completed", lambda futures: list(futures)
+            ), mock.patch.object(
+                tg, "read_local_key", return_value=b"key"
+            ), mock.patch.object(
+                tg, "decrypt_tdf_file", return_value=b"\x1a\x45\xdf\xa3webm"
+            ), mock.patch.object(
+                tg, "_check_ffmpeg", return_value=True
+            ), mock.patch.object(
+                tg, "convert_webm_to_webp", return_value=True
+            ):
+                tg._tg_worker(
+                    lambda _paths: {"ids": [], "rejected": 0}, str(tdata), "", True
+                )
+            self.assertEqual(executor_state["shutdown"], (True, True))
+            self.assertEqual(tg.get_tg_progress()["status"], "done")
+            self.assertEqual(tg.get_tg_progress()["convert_failed"], 1)
+        finally:
+            shutil.rmtree(tdata, ignore_errors=True)
 
 
 class TestDedup(unittest.TestCase):

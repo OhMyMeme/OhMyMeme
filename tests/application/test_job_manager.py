@@ -52,9 +52,47 @@ def test_shutdown_is_bounded_and_does_not_force_kill_worker():
     try:
         assert manager.shutdown(0.01) is False
         assert manager.active("blocked") is not None
+        assert not release.is_set()
+        assert manager.get(next(iter(manager._records))).status == "running"
     finally:
         release.set()
         assert manager.shutdown(1) is True
+        assert manager.active("blocked") is None
+
+
+def test_shutdown_uses_one_shared_deadline_without_forcing_workers_to_exit():
+    manager = JobManager()
+    entered = [threading.Event(), threading.Event()]
+    release = [threading.Event(), threading.Event()]
+    continued = [threading.Event(), threading.Event()]
+
+    def make_job(index):
+        def job(_context):
+            entered[index].set()
+            release[index].wait(1)
+            continued[index].set()
+
+        return job
+
+    try:
+        records = [
+            manager.start(f"deadline-{index}", make_job(index)) for index in range(2)
+        ]
+        assert all(event.wait(1) for event in entered)
+        assert manager.shutdown(0.01) is False
+        assert all(not event.is_set() for event in continued)
+        assert all(manager.get(record.id).status == "running" for record in records)
+
+        for event in release:
+            event.set()
+        assert manager.wait(records[0].id, 1)
+        assert manager.wait(records[1].id, 1)
+        assert all(continued_event.is_set() for continued_event in continued)
+        assert all(manager.get(record.id).status == "cancelled" for record in records)
+    finally:
+        for event in release:
+            event.set()
+        manager.shutdown(1)
 
 
 def test_progress_cancel_error_and_terminal_snapshots():
@@ -196,6 +234,7 @@ def test_terminal_snapshot_rejects_late_worker_updates():
         )
         entered.set()
         release.wait(1)
+        context.complete()
         context.snapshot(
             phase="late",
             progress=0.99,
@@ -211,7 +250,6 @@ def test_terminal_snapshot_rejects_late_worker_updates():
         before_cancel = manager.get(record.id)
         assert before_cancel.phase == "importing"
         assert manager.cancel(record.id) is True
-        manager._finish(record.id, "cancelled")
         release.set()
         assert manager.wait(record.id, 1)
         terminal = manager.get(record.id)

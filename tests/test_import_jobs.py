@@ -338,6 +338,45 @@ def test_douyin_cancel_reclaims_worker_temp_dir(monkeypatch, tmp_path):
         douyin._reset_state()
 
 
+def test_douyin_cancel_then_restart_does_not_reuse_old_worker(monkeypatch):
+    entered = [threading.Event(), threading.Event()]
+    release = [threading.Event(), threading.Event()]
+    calls = []
+
+    def build_session(_cookie):
+        index = len(calls)
+        calls.append(index)
+        entered[index].set()
+        release[index].wait(1)
+        return None
+
+    monkeypatch.setattr(douyin, "_build_session", build_session)
+    manager = JobManager()
+    try:
+        assert douyin.start_douyin_import(lambda _paths: {}, "cookie", manager)
+        assert entered[0].wait(1)
+        first = _wait_for_job(manager, "import.douyin")
+        assert manager.cancel(first.id)
+        release[0].set()
+        assert manager.wait(first.id, 1)
+        assert manager.get(first.id).status == "cancelled"
+
+        monkeypatch.setattr(douyin, "_check_login", lambda _session: False)
+        assert douyin.start_douyin_import(lambda _paths: {}, "cookie", manager)
+        assert entered[1].wait(1)
+        second = _wait_for_job(manager, "import.douyin")
+        release[1].set()
+        assert manager.wait(second.id, 1)
+        assert second.id != first.id
+        assert manager.get(second.id).status == "error"
+        assert calls == [0, 1]
+    finally:
+        for event in release:
+            event.set()
+        manager.shutdown(1)
+        douyin._reset_state()
+
+
 def test_wechat_cancel_reclaims_worker_temp_dir(monkeypatch, tmp_path):
     entered = threading.Event()
     temp_dir = tmp_path / "wechat-worker"
