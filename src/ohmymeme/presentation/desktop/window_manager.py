@@ -818,8 +818,17 @@ _QQNT_JOB_SNAPSHOT = None
 
 
 def _bind_qqnt_job(manager, record, context):
-    global _QQNT_JOB_MANAGER, _QQNT_JOB_ID, _QQNT_JOB_SNAPSHOT
+    global _QQNT_CANCEL, _QQNT_JOB_MANAGER, _QQNT_JOB_ID, _QQNT_JOB_SNAPSHOT
     with _QQNT_LOCK:
+        _QQNT_CANCEL = False
+        _QQNT_STATE.update(
+            status="running",
+            progress=0,
+            message="准备中",
+            error="",
+            log=[],
+            result=None,
+        )
         _QQNT_JOB_MANAGER = manager
         _QQNT_JOB_ID = record.id
         _QQNT_JOB_SNAPSHOT = context.snapshot
@@ -873,15 +882,16 @@ def start_qqnt_extract(
     with _QQNT_LOCK:
         if job_manager is None and _QQNT_STATE["status"] == "running":
             return False
-        _QQNT_CANCEL = False
-        _QQNT_STATE.update(
-            status="running",
-            progress=0,
-            message="准备中",
-            error="",
-            log=[],
-            result=None,
-        )
+        if job_manager is None:
+            _QQNT_CANCEL = False
+            _QQNT_STATE.update(
+                status="running",
+                progress=0,
+                message="准备中",
+                error="",
+                log=[],
+                result=None,
+            )
     args = (
         qq_number,
         output_dir,
@@ -910,14 +920,29 @@ def start_qqnt_extract(
                         _QQNT_JOB_ID = None
                         _QQNT_JOB_SNAPSHOT = None
 
-        _, created = job_manager.try_start(
-            "import.qqnt",
-            target,
-            resources=("qqnt",),
-            on_admit=lambda record, context: _bind_qqnt_job(
-                job_manager, record, context
-            ),
-        )
+        try:
+            _, created = job_manager.try_start(
+                "import.qqnt",
+                target,
+                resources=("qqnt",),
+                on_admit=lambda record, context: _bind_qqnt_job(
+                    job_manager, record, context
+                ),
+            )
+        except BaseException:
+            with _QQNT_LOCK:
+                _QQNT_JOB_MANAGER = None
+                _QQNT_JOB_ID = None
+                _QQNT_JOB_SNAPSHOT = None
+                _QQNT_STATE.update(
+                    status="idle",
+                    progress=0,
+                    message="",
+                    error="",
+                    log=[],
+                    result=None,
+                )
+            raise
         if not created:
             return False
     return True
@@ -967,6 +992,20 @@ def _qqnt_worker(
     except Exception as e:
         logger.error("qqnt extract error: %s", e)
         _set_qqnt(status="error", message="提取失败", error=str(e))
+    except BaseException as e:
+        logger.error("qqnt extract worker terminated: %s", e)
+        cancelled = _QQNT_CANCEL or (
+            cancellation_event is not None and cancellation_event.is_set()
+        )
+        if cancelled:
+            _set_qqnt(status="cancelled", message="已取消")
+        else:
+            _set_qqnt(
+                status="error",
+                message="提取失败",
+                error=f"{type(e).__name__}: {e}",
+            )
+        raise
 
 
 class SettingsApi:

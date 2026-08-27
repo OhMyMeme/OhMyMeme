@@ -7,6 +7,8 @@ import sys
 from pathlib import Path
 from unittest.mock import patch
 
+import pytest
+
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 os.environ["OHMYMEME_TEST"] = "1"
 
@@ -133,6 +135,80 @@ def test_qqnt_job_manager_cancel_propagates_to_worker(monkeypatch):
         assert manager.get(job.id).status == "cancelled"
     finally:
         manager.shutdown(1)
+
+
+def test_qqnt_managed_keyboard_interrupt_reconciles_ui_and_job(monkeypatch):
+    from ohmymeme.app.job_manager import JobManager
+    from ohmymeme.presentation.desktop import window_manager
+
+    entered = __import__("threading").Event()
+    release = __import__("threading").Event()
+    error = "KeyboardInterrupt: controlled qqnt interrupt"
+
+    def extract(*_args, **_kwargs):
+        entered.set()
+        release.wait(1)
+        raise KeyboardInterrupt("controlled qqnt interrupt")
+
+    monkeypatch.setattr(window_manager.qqnt, "extract_qq_emojis", extract)
+    manager = JobManager()
+    window_manager._set_qqnt(
+        status="idle", progress=0, message="", error="", result=None
+    )
+    try:
+        assert window_manager.start_qqnt_extract("1", "out", job_manager=manager)
+        assert entered.wait(1)
+        record = manager.active("import.qqnt")
+        assert record is not None
+        release.set()
+        assert manager.wait(record.id, 1)
+
+        snapshot = manager.get(record.id)
+        state = window_manager.get_qqnt_progress()
+        assert snapshot.status == "error"
+        assert snapshot.error == error
+        assert state["status"] == "error"
+        assert state["error"] == error
+        assert manager.active("import.qqnt") is None
+        assert window_manager._QQNT_JOB_MANAGER is None
+        assert window_manager._QQNT_JOB_ID is None
+        assert window_manager._QQNT_JOB_SNAPSHOT is None
+    finally:
+        release.set()
+        manager.shutdown(1)
+        window_manager._set_qqnt(
+            status="idle", progress=0, message="", error="", result=None
+        )
+
+
+def test_qqnt_managed_start_rolls_back_after_manager_shutdown():
+    from ohmymeme.app.job_manager import JobManager
+    from ohmymeme.presentation.desktop import window_manager
+
+    manager = JobManager()
+    window_manager._set_qqnt(
+        status="idle", progress=0, message="", error="", result=None
+    )
+    with window_manager._QQNT_LOCK:
+        window_manager._QQNT_JOB_MANAGER = manager
+        window_manager._QQNT_JOB_ID = "stale-qqnt-job"
+        window_manager._QQNT_JOB_SNAPSHOT = None
+    manager.shutdown(1)
+    try:
+        with pytest.raises(RuntimeError, match="shut down"):
+            window_manager.start_qqnt_extract("1", "out", job_manager=manager)
+
+        state = window_manager.get_qqnt_progress()
+        assert state["status"] == "idle"
+        assert state["error"] == ""
+        assert manager.active("import.qqnt") is None
+        assert window_manager._QQNT_JOB_MANAGER is None
+        assert window_manager._QQNT_JOB_ID is None
+        assert window_manager._QQNT_JOB_SNAPSHOT is None
+    finally:
+        window_manager._set_qqnt(
+            status="idle", progress=0, message="", error="", result=None
+        )
 
 
 def test_qqnt_legacy_start_is_single_flight(monkeypatch):

@@ -391,6 +391,19 @@ def _run_qq_worker():
     except Exception as error:
         _update_qq(status="error", error=str(error))
         logger.error("qq import worker failed: %s", error)
+    except BaseException as error:
+        cancelled = _QQ_CANCEL or (
+            _QQ_JOB_CANCEL is not None and _QQ_JOB_CANCEL.is_set()
+        )
+        if cancelled:
+            _update_qq(status="cancelled", message="已取消")
+        else:
+            _update_qq(
+                status="error",
+                error=f"{type(error).__name__}: {error}",
+            )
+        logger.error("qq import worker terminated: %s", error)
+        raise
     finally:
         with _QQ_LOCK:
             tmp_dir = _QQ_TMP_DIR

@@ -262,3 +262,46 @@ def test_adb_worker_exception_cleans_owned_temp_dir(monkeypatch, tmp_path):
     finally:
         manager.shutdown(1)
         adb_qq.reset_qq_import()
+
+
+def test_adb_managed_keyboard_interrupt_reconciles_ui_job_and_temp_cleanup(
+    monkeypatch, tmp_path
+):
+    entered = threading.Event()
+    release = threading.Event()
+    temp_dir = tmp_path / "qq-interrupt"
+    error = "KeyboardInterrupt: controlled adb interrupt"
+
+    def fail_worker():
+        temp_dir.mkdir()
+        (temp_dir / "partial.bin").write_bytes(b"partial")
+        adb_qq._QQ_TMP_DIR = temp_dir
+        entered.set()
+        release.wait(1)
+        raise KeyboardInterrupt("controlled adb interrupt")
+
+    monkeypatch.setattr(adb_qq, "_qq_worker", fail_worker)
+    manager = JobManager()
+    adb_qq.reset_qq_import()
+    try:
+        assert adb_qq.start_qq_import(manager)
+        assert entered.wait(1)
+        job = _wait_for_job(manager, "import.adb_qq")
+        release.set()
+        assert manager.wait(job.id, 1)
+
+        snapshot = manager.get(job.id)
+        state = adb_qq.get_qq_progress()
+        assert snapshot.status == "error"
+        assert snapshot.error == error
+        assert state["status"] == "error"
+        assert state["error"] == error
+        assert manager.active("import.adb_qq") is None
+        assert not temp_dir.exists()
+        assert adb_qq._QQ_TMP_DIR is None
+        assert adb_qq._QQ_JOB_CANCEL is None
+        assert adb_qq._QQ_JOB_SNAPSHOT is None
+    finally:
+        release.set()
+        manager.shutdown(1)
+        adb_qq.reset_qq_import()
