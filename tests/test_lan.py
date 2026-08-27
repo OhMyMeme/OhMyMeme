@@ -24,6 +24,7 @@ from ohmymeme.app.local_library import LocalLibraryService
 from ohmymeme.core.assets import AssetPaths
 from ohmymeme.core.config import Config
 from ohmymeme.core.database import MemeDB
+from ohmymeme.core.imports import ImageImportService
 from ohmymeme.core.manifest import ManifestBuilder
 
 TEST_PORT = 0
@@ -128,13 +129,13 @@ def _free_port():
         return probe.getsockname()[1]
 
 
-def _start_test_server(secret):
+def _start_test_server(server, secret):
     global TEST_PORT
     for _ in range(10):
         TEST_PORT = _free_port()
-        if lan.start(TEST_PORT, secret):
+        if server.start(TEST_PORT, secret):
             return
-        lan.stop()
+        server.stop()
     pytest.fail("无法为 LAN 测试绑定临时端口")
 
 
@@ -152,6 +153,22 @@ def lan_env(tmp_path):
     cfg = Config(tmp_path / "config.json")
     cfg.set("cache_dir", str(tmp_path / "cache"))
     db = MemeDB(tmp_path / "test.db")
+    assets = AssetPaths(cfg.data_dir, cfg.cache_dir)
+    manifest = ManifestBuilder(cfg, db, assets)
+    library = LocalLibraryService(
+        db,
+        assets,
+        ImageImportService(db, assets, manifest.build),
+        manifest.build,
+        cfg,
+    )
+    server = lan.LanServer(
+        config=cfg,
+        db=db,
+        assets=assets,
+        manifest=manifest,
+        library=library,
+    )
 
     old_cfg = config_module._config
     old_db = database._db
@@ -162,7 +179,8 @@ def lan_env(tmp_path):
     try:
         lan.stop()
         lan.set_allow_secret_config(False)
-        _start_test_server("test-secret")
+        lan._server = server
+        _start_test_server(server, "test-secret")
         cfg.set("lan_port", TEST_PORT)
         yield cfg, db, tmp_path
     finally:
@@ -197,6 +215,12 @@ def test_lan_fixture_uses_a_private_ephemeral_port(lan_env):
     assert TEST_PORT > 0
     assert TEST_PORT != 17990
     assert cfg.get("lan_port") == TEST_PORT
+
+
+def test_lan_fixture_injects_config_into_owned_library(lan_env):
+    cfg, _, _ = lan_env
+
+    assert lan._server._commands.library._config is cfg
 
 
 def test_pktinfo_extract_linux_layout(monkeypatch):
@@ -536,10 +560,23 @@ def test_lan_command_handlers_reuse_explicit_application_graph(lan_env):
     ) == {"ok": True, "local_count": 0}
 
 
-def test_push_pull_file(lan_env):
+def test_push_pull_file(lan_env, monkeypatch):
     cfg, db, tmp = lan_env
     import base64
 
+    monkeypatch.setattr(
+        "ohmymeme.services.lan.commands.get_config",
+        lambda: (_ for _ in ()).throw(AssertionError("default config accessed")),
+    )
+    monkeypatch.setattr(
+        "ohmymeme.services.lan.commands.get_db",
+        lambda: (_ for _ in ()).throw(AssertionError("default db accessed")),
+    )
+    assert lan._server._commands.config is cfg
+    assert lan._server._commands.db is db
+    assert lan._server._commands.assets.cache_dir == cfg.cache_dir
+    assert lan._server._commands.manifest.config is cfg
+    assert lan._server._commands.library._config is cfg
     sock = _connect()
     key = _handshake(sock, "test-secret")
     png = _valid_png()
@@ -617,7 +654,7 @@ def test_push_file_oversize(lan_env):
     cfg, db, tmp = lan_env
     import base64
 
-    server = lan.LanServer()
+    server = lan._server
     big = b"\x00" * (lan.MAX_FILE_SIZE + 1)
     resp = server._cmd_push_file(
         {"filename": "big.png", "data": base64.b64encode(big).decode()}
@@ -887,10 +924,27 @@ def test_no_secret_server(tmp_path):
     old_cb = lan.set_confirm_callback(None)
     config_module._config = cfg
     database._db = db
+    assets = AssetPaths(cfg.data_dir, cfg.cache_dir)
+    manifest = ManifestBuilder(cfg, db, assets)
+    library = LocalLibraryService(
+        db,
+        assets,
+        ImageImportService(db, assets, manifest.build),
+        manifest.build,
+        cfg,
+    )
+    server = lan.LanServer(
+        config=cfg,
+        db=db,
+        assets=assets,
+        manifest=manifest,
+        library=library,
+    )
     port = _free_port()
     lan.stop()
     for _ in range(10):
-        if lan.start(port, ""):
+        lan._server = server
+        if server.start(port, ""):
             break
         lan.stop()
         port = _free_port()
@@ -919,4 +973,3 @@ def test_stop_status(lan_env):
     assert lan.get_status()["status"] == "running"
     lan.stop()
     assert lan.get_status()["status"] == "stopped"
-    lan.start(TEST_PORT, "test-secret")

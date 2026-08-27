@@ -10,8 +10,12 @@ import pytest
 import ohmymeme.core.config as config_module
 import ohmymeme.core.database as database
 import ohmymeme.services.lan.server as lan
+from ohmymeme.app.local_library import LocalLibraryService
+from ohmymeme.core.assets import AssetPaths
 from ohmymeme.core.config import Config
 from ohmymeme.core.database import MemeDB
+from ohmymeme.core.imports import ImageImportService
+from ohmymeme.core.manifest import ManifestBuilder
 
 TEST_PORT = 0
 
@@ -22,13 +26,13 @@ def free_port():
         return probe.getsockname()[1]
 
 
-def start_test_server(secret):
+def start_test_server(server, secret):
     global TEST_PORT
     for _ in range(10):
         TEST_PORT = free_port()
-        if lan.start(TEST_PORT, secret):
+        if server.start(TEST_PORT, secret):
             return
-        lan.stop()
+        server.stop()
     pytest.fail("无法为 LAN 集成测试绑定临时端口")
 
 
@@ -37,6 +41,22 @@ def lan_env(tmp_path):
     cfg = Config(tmp_path / "config.json")
     cfg.set("cache_dir", str(tmp_path / "cache"))
     db = MemeDB(tmp_path / "test.db")
+    assets = AssetPaths(cfg.data_dir, cfg.cache_dir)
+    manifest = ManifestBuilder(cfg, db, assets)
+    library = LocalLibraryService(
+        db,
+        assets,
+        ImageImportService(db, assets, manifest.build),
+        manifest.build,
+        cfg,
+    )
+    server = lan.LanServer(
+        config=cfg,
+        db=db,
+        assets=assets,
+        manifest=manifest,
+        library=library,
+    )
     old_cfg = config_module._config
     old_db = database._db
     old_callback = lan.set_confirm_callback(None)
@@ -45,7 +65,8 @@ def lan_env(tmp_path):
     try:
         lan.stop()
         lan.set_allow_secret_config(False)
-        start_test_server("test-secret")
+        lan._server = server
+        start_test_server(server, "test-secret")
         cfg.set("lan_port", TEST_PORT)
         yield cfg
     finally:
@@ -125,6 +146,10 @@ def test_rejected_connection_cannot_dispatch(lan_env):
 def test_lan_fixture_uses_a_private_ephemeral_port(lan_env):
     assert TEST_PORT > 0
     assert TEST_PORT != 17990
+
+
+def test_lan_fixture_injects_config_into_owned_library(lan_env):
+    assert lan._server._commands.library._config is lan_env
 
 
 def test_replayed_mutation_is_rejected_but_ping_remains_compatible(lan_env):
