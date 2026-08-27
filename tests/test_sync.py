@@ -27,8 +27,10 @@ from PIL import Image
 # 确保 src 在导入路径中
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
+from ohmymeme.core.assets import AssetPaths
 from ohmymeme.core.config import Config
-from ohmymeme.core.manifest import INDEX_FILENAME
+from ohmymeme.core.database import MemeDB
+from ohmymeme.core.manifest import INDEX_FILENAME, ManifestBuilder
 from ohmymeme.services.sync import service as sync
 from ohmymeme.services.sync.backends import get_backend
 from ohmymeme.services.sync.service import (
@@ -581,6 +583,60 @@ class TestSyncPush(unittest.TestCase):
     def _manifest_filenames(self):
         self.assertIsNotNone(self.fake_backend.manifest_payload)
         return {m["filename"] for m in self.fake_backend.manifest_payload["memes"]}
+
+    def test_pull_explicit_resources_library_none_does_not_access_singletons(self):
+        explicit_root = self.tmp_dir / "explicit-pull"
+        explicit_config = Config(explicit_root / "config.json")
+        explicit_config.set("sync_type", "ftp")
+        explicit_config.set("sync_threads", 1)
+        explicit_db = MemeDB(explicit_config.db_path)
+        explicit_assets = AssetPaths(
+            explicit_config.data_dir, explicit_config.cache_dir
+        )
+        explicit_manifest = ManifestBuilder(
+            explicit_config, explicit_db, explicit_assets
+        )
+        remote_entry = _entry("remote.png", REMOTE_PNG_HASH, len(REMOTE_PNG))
+        self.fake_backend.remote_memes = {"remote.png": remote_entry}
+        self.fake_backend.manifest_content = json.dumps(
+            {
+                "version": 3,
+                "memes": [remote_entry],
+                "collections": [{"name": "remote", "filenames": ["remote.png"]}],
+            }
+        )
+        self.addCleanup(explicit_db.close)
+
+        with patch.object(
+            sync,
+            "get_db",
+            side_effect=AssertionError("legacy singleton DB accessed"),
+        ), patch.object(
+            sync,
+            "get_config",
+            side_effect=AssertionError("legacy singleton config accessed"),
+        ), patch.object(
+            sync, "_get_backend", return_value=self.fake_backend
+        ):
+            result = sync.pull(
+                config=explicit_config,
+                db=explicit_db,
+                assets=explicit_assets,
+                manifest=explicit_manifest,
+                library=None,
+            )
+
+        self.assertEqual(result["downloaded"], 1)
+        self.assertEqual(result["errors"], 0)
+        self.assertIsNotNone(explicit_db.get_by_filename("remote.png"))
+        collection = explicit_db.get_collections()
+        self.assertEqual([row[1] for row in collection], ["remote"])
+        self.assertTrue(explicit_assets.manifest_path.exists())
+        projected = explicit_manifest.load()
+        self.assertEqual(
+            [meme["filename"] for meme in projected["memes"]], ["remote.png"]
+        )
+        self.assertEqual(projected["collections"][0]["name"], "remote")
 
     # ─── 既有用例（止血修复） ───
 

@@ -281,6 +281,9 @@ def _fetch_remote_memes(bk, remote_root, config=None):
 
 
 def _default_library(config=None, db=None, assets=None, manifest=None):
+    explicit_resources = any(
+        resource is not None for resource in (config, db, assets, manifest)
+    )
     config = config if config is not None else get_config()
     db = db if db is not None else get_db()
     assets = (
@@ -289,7 +292,12 @@ def _default_library(config=None, db=None, assets=None, manifest=None):
     manifest = manifest if manifest is not None else ManifestBuilder(config, db, assets)
     importer = ImageImportService(db, assets, manifest.build)
     library = LocalLibraryService(db, assets, importer, manifest.build, config)
-    library._legacy_metadata = _apply_remote_metadata
+    if explicit_resources:
+        library._legacy_metadata = lambda remote_data: planning._apply_remote_metadata(
+            remote_data, db
+        )
+    else:
+        library._legacy_metadata = _apply_remote_metadata
     return library
 
 
@@ -905,6 +913,9 @@ def pull(
     manifest=None,
 ) -> dict:
     """远端 -> 本地：下载缺失/变更的表情包和清单（多线程）"""
+    explicit_resources = any(
+        resource is not None for resource in (config, db, assets, manifest)
+    )
     cfg = config if config is not None else get_config()
     if remove_local is None:
         remove_local = cfg.get("sync_remove_local", False)
@@ -919,11 +930,15 @@ def pull(
     _pull_library = (
         library
         if library is not None
-        else _default_library(
-            config=cfg,
-            db=db,
-            assets=resolved_assets,
-            manifest=manifest,
+        else (
+            _default_library(
+                config=cfg,
+                db=db,
+                assets=resolved_assets,
+                manifest=manifest,
+            )
+            if explicit_resources
+            else _default_library()
         )
     )
     cache_dir = resolved_assets.cache_dir
