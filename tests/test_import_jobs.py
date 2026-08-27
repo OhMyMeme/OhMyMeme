@@ -536,3 +536,50 @@ def test_telegram_cancel_then_restart_isolates_old_snapshot_callback(monkeypatch
             event.set()
         manager.shutdown(1)
         telegram._reset_state()
+
+
+def test_legacy_telegram_cancel_restart_rejects_old_worker_update(monkeypatch):
+    entered = [threading.Event(), threading.Event()]
+    release = [threading.Event(), threading.Event()]
+    late = threading.Event()
+    current_done = threading.Event()
+    cancelled = threading.Event()
+    calls = []
+
+    def worker(*_args):
+        index = len(calls)
+        calls.append(index)
+        entered[index].set()
+        release[index].wait(1)
+        if index == 0:
+            telegram._update_tg(status="cancelled", message="cancelled")
+            cancelled.set()
+            late.wait(1)
+            telegram._update_tg(status="error", message="old-late")
+        else:
+            telegram._update_tg(status="done", message="current")
+            current_done.set()
+
+    monkeypatch.setattr(telegram, "_tg_worker", worker)
+    try:
+        telegram._reset_state()
+        assert telegram.start_tg_import(lambda _paths: {}, "first")
+        assert entered[0].wait(1)
+        telegram.cancel_tg_import()
+        release[0].set()
+        assert cancelled.wait(1)
+        assert telegram.start_tg_import(lambda _paths: {}, "second")
+        assert entered[1].wait(1)
+        telegram._update_tg(status="running", message="current")
+        late.set()
+        assert telegram.get_tg_progress()["message"] == "current"
+        release[1].set()
+        release[0].set()
+        assert current_done.wait(1)
+        assert calls == [0, 1]
+        assert telegram.get_tg_progress()["message"] == "current"
+        assert telegram.get_tg_progress()["status"] == "done"
+    finally:
+        for event in release:
+            event.set()
+        telegram._reset_state()

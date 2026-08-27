@@ -36,6 +36,8 @@ _TG_ACTIVE_PROC = set()
 _TG_T0 = None
 _TG_JOB_CANCEL = None
 _TG_JOB_SNAPSHOT = None
+_TG_GENERATION = 0
+_TG_WORKER = threading.local()
 
 
 def _bind_tg_job(_manager, record, context):
@@ -47,6 +49,9 @@ def _bind_tg_job(_manager, record, context):
 def _update_tg(**kw):
     global _TG_JOB_SNAPSHOT
     with _TG_LOCK:
+        worker_generation = getattr(_TG_WORKER, "generation", None)
+        if worker_generation is not None and worker_generation != _TG_GENERATION:
+            return
         _refresh_tg_elapsed()
         _TG_STATE.update(**kw)
         snapshot = _TG_JOB_SNAPSHOT
@@ -503,7 +508,7 @@ def start_tg_import(
     job_manager=None,
 ):
     """后台启动 Telegram 表情包导入流程，已有任务时返回 False"""
-    global _TG_CANCEL
+    global _TG_CANCEL, _TG_GENERATION
     if job_manager is not None and job_manager.active("import.telegram") is not None:
         return False
     with _TG_LOCK:
@@ -516,11 +521,14 @@ def start_tg_import(
             "importing",
         ):
             return False
+        _TG_GENERATION += 1
+        generation = _TG_GENERATION
         _reset_state()
         # 锁内立即占位运行态，使并发调用在锁内看到 scanning 而拒绝，防止双 worker
         _update_tg(status="scanning", message="正在检测 Telegram Desktop 数据目录...")
 
     def target(context):
+        _TG_WORKER.generation = generation
         global _TG_JOB_CANCEL, _TG_JOB_SNAPSHOT
         try:
             _tg_worker(import_callback, tdata_path, passcode, convert_webm)
@@ -531,8 +539,13 @@ def start_tg_import(
             _TG_JOB_SNAPSHOT = None
 
     if job_manager is None:
+
+        def legacy_target(*_args):
+            _TG_WORKER.generation = generation
+            _tg_worker(import_callback, tdata_path, passcode, convert_webm)
+
         threading.Thread(
-            target=_tg_worker,
+            target=legacy_target,
             args=(import_callback, tdata_path, passcode, convert_webm),
             daemon=True,
         ).start()
