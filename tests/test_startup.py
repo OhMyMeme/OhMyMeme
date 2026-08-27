@@ -650,12 +650,21 @@ def test_native_drag_dotnet_import_failure_does_not_schedule_hide(
 
 
 def test_missing_bridge_method_keeps_null_failure_shape():
-    # Given: the settings-window runtime receives an API object without a method.
-    api = SimpleNamespace(existing=lambda: {"ok": True})
+    # Given: the actual production settings façade has no requested method.
+    from ohmymeme.presentation.desktop.window_manager import SettingsApi
 
-    # When: the legacy dynamic lookup asks for a missing method.
-    method = getattr(api, "missing_method", None)
-    result = None if not callable(method) else method()
+    webui = _fake_webui(False)
+    api = SettingsApi(
+        webui,
+        SimpleNamespace(
+            get_settings=lambda: {},
+            save_settings=lambda _: None,
+            reset_settings=lambda: {"hotkey": "Ctrl+Alt+N"},
+        ),
+    )
+
+    # When: the dynamic bridge lookup asks the production façade for a missing method.
+    result = getattr(api, "missing_method", None)
 
     # Then: missing methods remain the established null failure shape.
     assert result is None

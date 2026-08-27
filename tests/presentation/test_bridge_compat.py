@@ -174,6 +174,7 @@ class FakeLibrary:
 def test_js_business_paths_delegate_without_db_access():
     # Given: application services and a DB that the bridge must not touch.
     webui = FakeWebUI()
+    webui._window = None
     webui._db = SimpleNamespace(
         get_by_id=lambda *_: (_ for _ in ()).throw(AssertionError("DB bypass")),
         is_favorite=lambda *_: (_ for _ in ()).throw(AssertionError("DB bypass")),
@@ -508,21 +509,25 @@ def test_js_facade_routes_named_sync_import_update_and_window_abi():
         for name in ("meme", "import", "sync", "update", "window_settings")
     }
     handlers["meme"].values.update({"get_init_data": {"startup_bg_color": "#000000"}})
+    handlers["import"].values.update({"import_memes": True})
     handlers["update"].values.update({"download_progress": {"status": "idle"}})
+    handlers["update"].values.update({"start_download": True})
     handlers["sync"].values.update({"progress": {"progress": 0}})
+    handlers["sync"].values.update({"test_connection": "连接成功"})
     api._handlers = handlers
 
     # When: every dynamic caller-facing operation is invoked through the façade.
-    assert isinstance(api.search_memes("q", ["tag"], 7, 2, 3), dict)
+    handlers["meme"].values["search_memes"] = []
+    assert isinstance(api.search_memes("q", ["tag"], 7, 2, 3), list)
     assert isinstance(api.check_update(False, True), dict)
-    assert isinstance(api.start_download("https://example.test/a"), dict)
+    assert api.start_download("https://example.test/a") is True
     assert isinstance(api.get_download_progress(), dict)
     assert isinstance(api.get_sync_progress(), dict)
     assert isinstance(api.sync_push(), dict)
     assert isinstance(api.sync_pull(), dict)
     assert isinstance(api.run_auto_sync(), dict)
-    assert isinstance(api.sync_test(), dict)
-    assert isinstance(api.import_memes(), dict)
+    assert api.sync_test() == "连接成功"
+    assert api.import_memes() is True
     assert isinstance(api.import_folder(False), dict)
     assert isinstance(api.import_from_clipboard(), dict)
     assert isinstance(api.get_settings(), dict)
@@ -548,6 +553,73 @@ def test_js_facade_routes_named_sync_import_update_and_window_abi():
         "window_settings"
     ].calls
     assert ("move_main_window", (4, -3), {}) in handlers["window_settings"].calls
+
+
+def test_main_facade_preserves_sync_import_update_and_window_failure_envelopes(
+    monkeypatch,
+):
+    # Given: production handlers are wired to deterministic failing boundaries.
+    webui = FakeWebUI()
+    webui._window = None
+    webui._schedule_quit = lambda: None
+    api = JsApi(webui, FakeCatalog({}), FakeSettings(None), FakeLibrary())
+    api._handlers["sync"].service = lambda: (_ for _ in ()).throw(
+        RuntimeError("sync failed")
+    )
+    monkeypatch.setattr(
+        "ohmymeme.presentation.desktop.window_manager.webview",
+        SimpleNamespace(
+            windows=[
+                SimpleNamespace(
+                    create_file_dialog=lambda *_args, **_kwargs: (_ for _ in ()).throw(
+                        RuntimeError("dialog failed")
+                    )
+                )
+            ],
+            FileDialog=SimpleNamespace(OPEN="open"),
+        ),
+    )
+    from ohmymeme.services import updates
+
+    monkeypatch.setattr(updates, "download_release", lambda _url: None)
+
+    # When: representative main-window operations cross their production handlers.
+    sync_result = api.sync_push()
+    import_result = api.import_memes()
+    update_result = api.download_update("https://example.test/a")
+    move_result = api.move_window(1, 2)
+
+    # Then: each failure/void shape remains the public ABI.
+    assert sync_result == {"ok": False, "error": "sync failed", "failed_files": []}
+    assert import_result == {"ok": False}
+    assert update_result == {"ok": False, "error": "download failed"}
+    assert move_result is None
+
+
+def test_settings_facade_preserves_failure_envelopes_and_primitive_types():
+    # Given: production settings handlers return their documented failure shapes.
+    webui = FakeWebUI()
+    webui._container.library = FakeLibrary()
+    api = SettingsApi(webui, FakeSettings(None))
+    api._handlers["window_settings"].apply_storage_dir = lambda *_args: {
+        "ok": False,
+        "error": "storage failed",
+    }
+    api._handlers["window_settings"].start_lan = lambda *_args: {
+        "ok": False,
+        "status": {"running": False},
+    }
+    api._handlers["update"].start_download = lambda _url: False
+
+    # When: settings-window failure and update operations are invoked.
+    storage_result = api.apply_storage_dir("C:/cache", False)
+    lan_result = api.lan_start(17852, "secret")
+    download_result = api.start_download("https://example.test/a")
+
+    # Then: error fields and primitive return types remain exact.
+    assert storage_result == {"ok": False, "error": "storage failed"}
+    assert lan_result == {"ok": False, "status": {"running": False}}
+    assert download_result is False
 
 
 def test_settings_facade_routes_import_sync_update_and_refresh_abi(monkeypatch):
