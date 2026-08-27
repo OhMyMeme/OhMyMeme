@@ -220,21 +220,12 @@ def test_try_start_rolls_back_when_admission_callback_fails():
 
 def test_try_start_rolls_back_when_thread_start_fails(monkeypatch):
     manager = JobManager()
+    real_thread = threading.Thread
 
-    class FailingThread:
-        def __init__(self, *args, **kwargs):
-            pass
+    def fail_start(self):
+        raise RuntimeError("thread start boom")
 
-        def start(self):
-            raise RuntimeError("thread start boom")
-
-        def join(self, _timeout=None):
-            return None
-
-        def is_alive(self):
-            return False
-
-    monkeypatch.setattr("ohmymeme.app.job_manager.Thread", FailingThread)
+    monkeypatch.setattr(real_thread, "start", fail_start)
     try:
         with pytest.raises(RuntimeError, match="thread start boom"):
             manager.try_start("thread-failure", lambda _context: None)
@@ -243,6 +234,7 @@ def test_try_start_rolls_back_when_thread_start_fails(monkeypatch):
         assert record.error == "RuntimeError: thread start boom"
         assert manager.wait(record.id, 1)
         assert manager.active("thread-failure") is None
+        manager.shutdown(1)
     finally:
         manager.shutdown(1)
 

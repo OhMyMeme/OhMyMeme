@@ -141,11 +141,13 @@ class JobManager:
                 self._threads[record_id] = thread
                 thread.start()
             except Exception as error:
+                self._threads.pop(record_id, None)
                 self._finish_locked(
                     record_id, "error", f"{type(error).__name__}: {error}"
                 )
                 raise
             except BaseException as error:  # noqa: BLE001, BROAD_EXCEPT_OK
+                self._threads.pop(record_id, None)
                 status = "cancelled" if cancellation_event.is_set() else "error"
                 self._finish_locked(
                     record_id, status, f"{type(error).__name__}: {error}"
