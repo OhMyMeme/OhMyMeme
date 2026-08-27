@@ -239,6 +239,27 @@ def test_try_start_rolls_back_when_thread_start_fails(monkeypatch):
         manager.shutdown(1)
 
 
+def test_legacy_start_uses_admission_rollback_for_real_thread_failure(monkeypatch):
+    manager = JobManager()
+    real_thread = threading.Thread
+
+    def fail_start(self):
+        raise RuntimeError("legacy thread start boom")
+
+    monkeypatch.setattr(real_thread, "start", fail_start)
+    try:
+        with pytest.raises(RuntimeError, match="legacy thread start boom"):
+            manager.start("legacy-thread-failure", lambda _context: None)
+        record = manager.get(next(iter(manager._records)))
+        assert record.status == "error"
+        assert record.error == "RuntimeError: legacy thread start boom"
+        assert manager.active("legacy-thread-failure") is None
+        assert manager.wait(record.id, 0)
+        assert manager.shutdown(1)
+    finally:
+        manager.shutdown(1)
+
+
 @pytest.mark.parametrize("failure_stage", ("admit", "thread"))
 def test_try_start_finalizes_arbitrary_base_exception(failure_stage, monkeypatch):
     class ControlledBaseException(BaseException):

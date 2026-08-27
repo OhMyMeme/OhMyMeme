@@ -77,34 +77,8 @@ class JobManager:
 
     def start(self, task_type, target, resources=()):
         """启动任务；同类型活动任务只返回其当前快照。"""
-        with self._lock:
-            active_id = self._active.get(task_type)
-            if active_id is not None:
-                return self._snapshot_locked(active_id)
-            if self._closed:
-                raise RuntimeError("job manager is shut down")
-            record_id = uuid4().hex
-            cancellation_event = Event()
-            record = JobRecord(
-                task_type,
-                record_id,
-                "running",
-                0.0,
-                None,
-                cancellation_event,
-                tuple(resources),
-            )
-            self._records[record_id] = record
-            self._active[task_type] = record_id
-            thread = Thread(
-                target=self._run,
-                args=(record, target),
-                name=f"ohmymeme-job-{task_type}",
-                daemon=True,
-            )
-            self._threads[record_id] = thread
-            thread.start()
-            return record
+        record, _created = self.try_start(task_type, target, resources)
+        return record
 
     def try_start(self, task_type, target, resources=(), on_admit=None):
         """原子启动任务，返回 (快照, 是否由本次调用创建)。"""
