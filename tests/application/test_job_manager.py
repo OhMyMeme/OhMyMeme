@@ -160,6 +160,147 @@ def test_cancel_request_wins_over_late_context_complete():
         manager.shutdown(1)
 
 
+def test_shutdown_requests_cooperative_cancel_and_releases_active_slot():
+    manager = JobManager()
+    entered = threading.Event()
+    cancelled = threading.Event()
+
+    def job(context):
+        entered.set()
+        if context.cancellation_event.wait(1):
+            cancelled.set()
+
+    try:
+        record = manager.start("shutdown-cancel", job)
+        assert entered.wait(1)
+        assert manager.shutdown(1) is True
+        assert cancelled.is_set()
+        assert manager.get(record.id).status == "cancelled"
+        assert manager.active("shutdown-cancel") is None
+    finally:
+        manager.shutdown(1)
+
+
+def test_terminal_snapshot_rejects_late_worker_updates():
+    manager = JobManager()
+    entered = threading.Event()
+    release = threading.Event()
+
+    def job(context):
+        context.snapshot(
+            phase="importing",
+            progress=0.75,
+            message="stable",
+            error_code="source",
+            error="source detail",
+        )
+        entered.set()
+        release.wait(1)
+        context.snapshot(
+            phase="late",
+            progress=0.99,
+            message="late update",
+            error_code="late",
+            error="late detail",
+        )
+        context.complete()
+
+    try:
+        record = manager.start("terminal-snapshot", job)
+        assert entered.wait(1)
+        before_cancel = manager.get(record.id)
+        assert before_cancel.phase == "importing"
+        assert manager.cancel(record.id) is True
+        manager._finish(record.id, "cancelled")
+        release.set()
+        assert manager.wait(record.id, 1)
+        terminal = manager.get(record.id)
+        assert terminal.status == "cancelled"
+        assert terminal.progress == 0.75
+        assert terminal.phase == "importing"
+        assert terminal.message == "stable"
+        assert terminal.error_code == "source"
+        assert terminal.error is None
+    finally:
+        release.set()
+        manager.shutdown(1)
+
+
+def test_terminal_task_can_restart_with_a_new_snapshot():
+    manager = JobManager()
+    calls = []
+
+    def job(context):
+        calls.append(context.job_id)
+
+    try:
+        first = manager.start("restartable", job, resources=("first",))
+        assert manager.wait(first.id, 1)
+        assert manager.get(first.id).status == "completed"
+
+        second = manager.start("restartable", job, resources=("second",))
+        assert second.id != first.id
+        assert manager.wait(second.id, 1)
+        assert manager.get(second.id).resources == ("second",)
+        assert calls == [first.id, second.id]
+    finally:
+        manager.shutdown(1)
+
+
+def test_concurrent_try_start_admits_one_worker():
+    manager = JobManager()
+    callers_ready = threading.Barrier(2)
+    worker_started = threading.Event()
+    release = threading.Event()
+    results = []
+
+    def job(_context):
+        worker_started.set()
+        release.wait(1)
+
+    def admit(resources):
+        callers_ready.wait()
+        results.append(manager.try_start("concurrent", job, resources=resources))
+
+    workers = [
+        threading.Thread(target=admit, args=(("one",),)),
+        threading.Thread(target=admit, args=(("two",),)),
+    ]
+    try:
+        for worker in workers:
+            worker.start()
+        for worker in workers:
+            worker.join(1)
+        assert all(not worker.is_alive() for worker in workers)
+        assert worker_started.wait(1)
+        assert sum(created for _record, created in results) == 1
+        assert len({record.id for record, _created in results}) == 1
+        assert manager.active("concurrent").resources in (("one",), ("two",))
+    finally:
+        release.set()
+        manager.shutdown(1)
+
+
+def test_closed_manager_rejects_new_admission_without_running_callbacks():
+    manager = JobManager()
+    admitted = threading.Event()
+    ran = threading.Event()
+    manager.shutdown(1)
+
+    def on_admit(_record, _context):
+        admitted.set()
+
+    def job(_context):
+        ran.set()
+
+    with pytest.raises(RuntimeError, match="shut down"):
+        manager.try_start("closed", job, on_admit=on_admit)
+
+    assert not admitted.is_set()
+    assert not ran.is_set()
+    assert manager.active("closed") is None
+
+
 @pytest.mark.parametrize("base_error", (KeyboardInterrupt, SystemExit))
 def test_base_exception_worker_is_finalized_and_releases_active_slot(base_error):
     manager = JobManager()

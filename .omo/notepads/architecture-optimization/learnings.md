@@ -55,3 +55,9 @@ Conventions and successful approaches discovered during work on this plan.
 - Importer-local UI dictionaries must be finalized at the adapter worker boundary before JobManager handles an escaping `BaseException`; otherwise the external snapshot becomes `error` while the bridge still reports an active phase.
 - Managed admission is the QQNT UI commit point. Publishing `running` before `try_start()` lets a closed manager leave stale UI and binding state; binding and initialization inside `on_admit`, with rollback around admission, preserves legacy state while making failed admission inert.
 - Re-raising the adapter `BaseException` after UI reconciliation preserves JobManager's typed terminal snapshot and active-slot release; the adapter supplies only the compatibility projection.
+
+## 2026-08-27 task lifecycle regression coverage
+
+- Deterministic JobManager coverage uses barriers for concurrent admission and events for worker release, cancellation observation, terminal snapshot retention, closed-manager rejection, and post-terminal restart; no wall-clock sleeps are needed in the new lifecycle cases.
+- Telegram conversion lifecycle coverage locks the bounded `min(cpu_count, 4)` executor and requires `shutdown(wait=True, cancel_futures=True)`. The process reap regression also proves a still-running process remains registered after bounded kill/wait attempts, preventing premature resource loss.
+- Douyin and WeChat managed cancellation tests create partial worker directories through their real worker entrypoints, signal cancellation at the controlled boundary, wait for worker termination, and assert the temporary roots are reclaimed.

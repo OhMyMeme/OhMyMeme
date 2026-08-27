@@ -305,3 +305,83 @@ def test_adb_managed_keyboard_interrupt_reconciles_ui_job_and_temp_cleanup(
         release.set()
         manager.shutdown(1)
         adb_qq.reset_qq_import()
+
+
+def test_douyin_cancel_reclaims_worker_temp_dir(monkeypatch, tmp_path):
+    entered = threading.Event()
+    temp_dir = tmp_path / "douyin-worker"
+
+    def build_session(_cookie):
+        temp_dir.mkdir()
+        (temp_dir / "partial.webp").write_bytes(b"partial")
+        entered.set()
+        douyin.cancel_douyin_import()
+        return "cancelled-session"
+
+    monkeypatch.setattr(
+        douyin,
+        "tempfile",
+        type("Temp", (), {"mkdtemp": lambda **_kwargs: str(temp_dir)}),
+    )
+    monkeypatch.setattr(douyin, "_build_session", build_session)
+    manager = JobManager()
+    try:
+        assert douyin.start_douyin_import(lambda _paths: {}, "cookie", manager)
+        assert entered.wait(1)
+        job = _wait_for_job(manager, "import.douyin")
+        douyin.cancel_douyin_import()
+        assert manager.wait(job.id, 1)
+        assert douyin.get_douyin_progress()["status"] == "cancelled"
+        assert not temp_dir.exists()
+    finally:
+        manager.shutdown(1)
+        douyin._reset_state()
+
+
+def test_wechat_cancel_reclaims_worker_temp_dir(monkeypatch, tmp_path):
+    entered = threading.Event()
+    temp_dir = tmp_path / "wechat-worker"
+
+    monkeypatch.setattr(
+        wechat,
+        "inspect_wechat_environment",
+        lambda _root: {
+            "status": "supported",
+            "accounts": [
+                {
+                    "id": "wxid",
+                    "path": "root",
+                    "db_path": "db",
+                    "status": "supported",
+                }
+            ],
+            "account_directory_count": 1,
+        },
+    )
+    monkeypatch.setattr(
+        wechat,
+        "_read_plaintext_metadata",
+        lambda _path: [{"url": "url", "md5": "md5"}],
+    )
+    monkeypatch.setattr(wechat.tempfile, "mkdtemp", lambda **_kwargs: str(temp_dir))
+
+    def download(_url, _key):
+        temp_dir.mkdir()
+        (temp_dir / "partial.png").write_bytes(b"partial")
+        entered.set()
+        wechat.cancel_wechat_import()
+        return None
+
+    monkeypatch.setattr(wechat, "_download_sticker", download)
+    manager = JobManager()
+    try:
+        assert wechat.start_wechat_import(lambda _paths: {}, job_manager=manager)
+        assert entered.wait(1)
+        job = _wait_for_job(manager, "import.wechat")
+        wechat.cancel_wechat_import()
+        assert manager.wait(job.id, 1)
+        assert wechat.get_wechat_progress()["status"] == "cancelled"
+        assert not temp_dir.exists()
+    finally:
+        manager.shutdown(1)
+        wechat._reset_state()

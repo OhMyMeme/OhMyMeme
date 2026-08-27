@@ -1,5 +1,8 @@
 """tg_stickers 模块单测：解密/转换/取消/进度原子性"""
 
+import os
+import shutil
+import subprocess
 import sys
 import tempfile
 import time
@@ -126,6 +129,91 @@ class TestConvertProcessLifecycle(unittest.TestCase):
         self.assertTrue(proc.terminated)
         # 已终止进程从集合保留（由 convert/discard 清理），这里验证终止被调用即可
         tg._reset_state()
+
+    def test_reap_keeps_process_registered_until_it_exits(self):
+        class StillRunningProc(DummyProc):
+            def __init__(self):
+                super().__init__()
+                self.wait_calls = 0
+
+            def kill(self):
+                self.killed = True
+
+            def wait(self, timeout=None):
+                self.wait_calls += 1
+                if self.wait_calls == 1:
+                    raise subprocess.TimeoutExpired("ffmpeg", timeout)
+                return None
+
+        proc = StillRunningProc()
+        with tg._TG_LOCK:
+            tg._TG_ACTIVE_PROC.add(proc)
+        tg._reap_proc(proc, timeout=0)
+        self.assertTrue(proc.killed)
+        self.assertEqual(proc.wait_calls, 2)
+        with tg._TG_LOCK:
+            self.assertIn(proc, tg._TG_ACTIVE_PROC)
+
+
+class TestWorkerExecutorLifecycle(unittest.TestCase):
+    def setUp(self):
+        tg._reset_state()
+
+    def tearDown(self):
+        tg._reset_state()
+
+    def test_conversion_executor_is_bounded_and_shutdown_waits(self):
+        submitted = []
+        executor_state = {}
+
+        class Future:
+            def result(self):
+                return True
+
+        class Executor:
+            def __init__(self, max_workers):
+                executor_state["max_workers"] = max_workers
+
+            def submit(self, function, *args):
+                submitted.append((function, args))
+                return Future()
+
+            def shutdown(self, wait, cancel_futures):
+                executor_state["shutdown"] = (wait, cancel_futures)
+
+        tdata = Path(tempfile.mkdtemp(prefix="tg_executor_"))
+        cache = tdata / "user_data" / "cache"
+        cache.mkdir(parents=True)
+        (tdata / "key_datas").write_bytes(b"key")
+        (cache / "encrypted").write_bytes(b"TDF$")
+
+        def fake_as_completed(futures):
+            return list(futures)
+
+        try:
+            with mock.patch.object(
+                tg, "ThreadPoolExecutor", Executor
+            ), mock.patch.object(
+                tg, "as_completed", fake_as_completed
+            ), mock.patch.object(
+                tg, "read_local_key", return_value=b"key"
+            ), mock.patch.object(
+                tg, "decrypt_tdf_file", return_value=b"\x1a\x45\xdf\xa3webm"
+            ), mock.patch.object(
+                tg, "_check_ffmpeg", return_value=True
+            ), mock.patch.object(
+                tg, "convert_webm_to_webp", return_value=True
+            ):
+                tg._tg_worker(
+                    lambda _paths: {"ids": [], "rejected": 0}, str(tdata), "", True
+                )
+        finally:
+            shutil.rmtree(tdata, ignore_errors=True)
+
+        self.assertEqual(executor_state["max_workers"], min(os.cpu_count() or 1, 4))
+        self.assertEqual(executor_state["shutdown"], (True, True))
+        self.assertEqual(len(submitted), 1)
+        self.assertEqual(tg.get_tg_progress()["status"], "done")
 
 
 class TestDedup(unittest.TestCase):
