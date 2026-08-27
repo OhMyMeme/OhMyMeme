@@ -30,8 +30,10 @@ _QQ_STATE = {
     "progress": 0,
     "message": "",
     "error": "",
+    "error_code": "",
     "zip_path": "",
     "dl_progress": 0,
+    "total": 0,
 }
 
 _QQ_LOCK = threading.Lock()
@@ -285,8 +287,10 @@ def reset_qq_import():
                 "progress": 0,
                 "message": "",
                 "error": "",
+                "error_code": "",
                 "zip_path": "",
                 "dl_progress": 0,
+                "total": 0,
             }
         )
 
@@ -620,6 +624,7 @@ def _qq_worker():
                 if ext:
                     f.rename(f.with_suffix(ext))
             count += 1
+    _update_qq(total=count)
     if _check_cancel():
         shutil.rmtree(tmp_dir, ignore_errors=True)
         return
