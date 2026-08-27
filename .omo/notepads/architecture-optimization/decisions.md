@@ -17,3 +17,7 @@ Architectural choices and rationales discovered during work on this plan.
 ## 2026-08-27 explicit pull metadata boundary
 
 - Keep `_legacy_metadata` as the compatibility seam, but bind it to the explicit DB only when `pull()` was called with at least one explicit owned resource. This is the smallest change that prevents singleton access without changing public signatures, worker ABI, manifest v3, or legacy no-argument behavior.
+
+## 2026-08-28 importer ownership
+
+- `SettingsApi.qqnt_start` is the ownership handoff point: QQNT owns user output creation and retention, while `LocalLibraryService.import_paths` owns application cache/DB/manifest projection. No QQNT output directory cleanup is delegated to the application worker.

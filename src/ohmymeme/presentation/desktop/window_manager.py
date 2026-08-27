@@ -875,6 +875,7 @@ def start_qqnt_extract(
     ini_path: str = None,
     userdata_save_path: str = None,
     job_manager=None,
+    import_callback=None,
 ) -> bool:
     global _QQNT_CANCEL, _QQNT_JOB_MANAGER, _QQNT_JOB_ID
     if job_manager is not None and job_manager.active("import.qqnt") is not None:
@@ -901,13 +902,22 @@ def start_qqnt_extract(
         userdata_save_path,
     )
     if job_manager is None:
-        threading.Thread(target=_qqnt_worker, args=args, daemon=True).start()
+        threading.Thread(
+            target=_qqnt_worker,
+            args=args,
+            kwargs={"import_callback": import_callback},
+            daemon=True,
+        ).start()
     else:
 
         def target(context):
             global _QQNT_JOB_MANAGER, _QQNT_JOB_ID, _QQNT_JOB_SNAPSHOT
             try:
-                _qqnt_worker(*args, cancellation_event=context.cancellation_event)
+                _qqnt_worker(
+                    *args,
+                    cancellation_event=context.cancellation_event,
+                    import_callback=import_callback,
+                )
                 if _QQNT_STATE["status"] == "error":
                     raise RuntimeError(_QQNT_STATE["error"])
             finally:
@@ -956,6 +966,7 @@ def _qqnt_worker(
     ini_path,
     userdata_save_path,
     cancellation_event=None,
+    import_callback=None,
 ):
     """后台执行 QQNT 表情提取并转发进度/错误到 _QQNT_STATE"""
 
@@ -983,6 +994,27 @@ def _qqnt_worker(
             on_error=on_error,
             on_log=on_log,
         )
+        if import_callback and not (
+            _QQNT_CANCEL
+            or (cancellation_event is not None and cancellation_event.is_set())
+        ):
+            output = Path(output_dir)
+            paths = [
+                str(path)
+                for path in output.rglob("*")
+                if path.is_file()
+                and path.suffix.lower()
+                in {
+                    ".png",
+                    ".jpg",
+                    ".jpeg",
+                    ".gif",
+                    ".webp",
+                    ".bmp",
+                }
+            ]
+            if paths:
+                import_callback(paths)
         if _QQNT_CANCEL or (
             cancellation_event is not None and cancellation_event.is_set()
         ):
@@ -1436,6 +1468,7 @@ class SettingsApi:
             ini_path=self._cfg.get("qqnt_ini_path") or None,
             userdata_save_path=self._cfg.get("qqnt_userdata_path") or None,
             job_manager=self._webui._container.job_manager,
+            import_callback=self._webui._container.library.import_paths,
         )
         return {"ok": ok}
 

@@ -187,6 +187,54 @@ def test_js_business_paths_delegate_without_db_access():
     assert ("toggle_favorite", 1) in library.calls
 
 
+def test_qqnt_output_is_user_owned_and_projected_through_library(monkeypatch, tmp_path):
+    # Given: QQNT writes a valid image into the user-selected output directory.
+    import threading
+
+    from ohmymeme.presentation.desktop import window_manager
+
+    output_dir = tmp_path / "qqnt-output"
+    output_dir.mkdir()
+    image_path = output_dir / "sticker.png"
+    image_path.write_bytes(
+        b"\x89PNG\r\n\x1a\n\x00\x00\x00\rIHDR\x00\x00\x00\x01"
+        b"\x00\x00\x00\x01\x08\x06\x00\x00\x00\x1f\x15\xc4\x89"
+        b"\x00\x00\x00\x0dIDAT\x08\xd7c\xf8\xcf\xc0\xf0\x1f\x00\x05\x00\x01\xff"
+        b"\x89\x99=\x1d\x00\x00\x00\x00IEND\xaeB`\x82"
+    )
+    library = FakeLibrary(SimpleNamespace(imported_ids=(11,), rejected=0))
+    imported = threading.Event()
+    original_import_paths = library.import_paths
+    webui = FakeWebUI()
+    webui._container.library = library
+    webui._container.job_manager = None
+    settings = SettingsApi(webui, FakeSettings(None))
+
+    def extract(_qq_number, destination, **_kwargs):
+        Path(destination).mkdir(parents=True, exist_ok=True)
+        image_path.touch()
+        return {"output_dir": destination, "copied": 1}
+
+    def import_paths(paths, names=None):
+        result = original_import_paths(paths, names)
+        imported.set()
+        return result
+
+    monkeypatch.setattr(window_manager.qqnt, "extract_qq_emojis", extract)
+    webui._container.library.import_paths = import_paths
+
+    # When: the bridge starts QQNT extraction and the worker completes.
+    assert settings.qqnt_start("123", str(output_dir))["ok"] is True
+    assert imported.wait(1)
+    window_manager._QQNT_JOB_MANAGER = None
+    window_manager._QQNT_JOB_ID = None
+    window_manager._QQNT_JOB_SNAPSHOT = None
+
+    # Then: the user output remains, while the application library owns projection.
+    assert image_path.exists()
+    assert library.calls == [([str(image_path)], None)]
+
+
 def test_js_import_memes_delegates_import_and_preserves_failure_shape(monkeypatch):
     # Given: the dialog returns files and the application import fails.
     webui = FakeWebUI()

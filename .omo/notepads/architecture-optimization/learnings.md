@@ -61,3 +61,8 @@ Conventions and successful approaches discovered during work on this plan.
 - Deterministic JobManager coverage uses barriers for concurrent admission and events for worker release, cancellation observation, terminal snapshot retention, closed-manager rejection, and post-terminal restart; no wall-clock sleeps are needed in the new lifecycle cases.
 - Telegram conversion lifecycle coverage locks the bounded `min(cpu_count, 4)` executor and requires `shutdown(wait=True, cancel_futures=True)`. The process reap regression also proves a still-running process remains registered after bounded kill/wait attempts, preventing premature resource loss.
 - Douyin and WeChat managed cancellation tests create partial worker directories through their real worker entrypoints, signal cancellation at the controlled boundary, wait for worker termination, and assert the temporary roots are reclaimed.
+
+## 2026-08-28 importer ownership
+
+- QQNT extraction keeps the user-selected output directory user-owned: the desktop worker never deletes or rescans it as application cache. After extraction succeeds, the bridge passes supported files once to the Container-owned library import boundary, which owns cache, SQLite, and manifest projection.
+- Telegram, Douyin, WeChat, and mobile QQ retain importer-owned temporary decrypt/download/pull directories until their worker reaches its terminal cleanup boundary; existing lifecycle tests cover cancellation and worker exceptions without changing bridge shapes.
