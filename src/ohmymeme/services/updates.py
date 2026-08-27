@@ -125,7 +125,12 @@ def start_download(url: str) -> bool:
                 _download_state["status"] = "error"
 
     if _job_manager is not None:
-        _job_manager.start("update-download", _task)
+        try:
+            _job_manager.start("update-download", _task)
+        except BaseException:
+            with _download_lock:
+                _download_state.update(progress=0, status="idle", error="", path=None)
+            raise
     else:
         threading.Thread(target=_task, daemon=True).start()
     return True

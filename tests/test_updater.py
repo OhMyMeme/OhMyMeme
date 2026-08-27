@@ -29,6 +29,31 @@ class TestCheckLatestCached(unittest.TestCase):
     def tearDown(self):
         updater.reset_check_cache()
 
+    def test_closed_job_manager_rolls_back_download_admission(self):
+        manager = JobManager()
+        manager.shutdown(1)
+        old_manager = updater._job_manager
+        updater.set_job_manager(manager)
+        with updater._download_lock:
+            updater._download_state.update(
+                progress=0, status="idle", error="", path=None
+            )
+        try:
+            with self.assertRaisesRegex(RuntimeError, "job manager is shut down"):
+                updater.start_download("https://example.invalid/file.exe")
+            state = updater.get_download_progress()
+            self.assertEqual(state["status"], "idle")
+            self.assertEqual(state["progress"], 0)
+            self.assertEqual(state["error"], "")
+            self.assertIsNone(state["path"])
+            self.assertIsNone(manager.active("update-download"))
+        finally:
+            updater.set_job_manager(old_manager)
+            with updater._download_lock:
+                updater._download_state.update(
+                    progress=0, status="idle", error="", path=None
+                )
+
     # 首次调用触发后台检查，立即返回 pending 不阻塞
     def test_first_call_returns_pending_without_blocking(self):
 
