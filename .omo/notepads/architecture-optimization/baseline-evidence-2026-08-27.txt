@@ -1,0 +1,68 @@
+# architecture-optimization Wave 1 baseline evidence
+# Task-owned evidence; later captures append below.
+
+## Expected change allowlist
+.omo/notepads/architecture-optimization/* baseline evidence/state only
+
+## Protected paths
+src/ohmymeme/presentation/desktop/window_manager.py
+src/ohmymeme/presentation/frontend/settings/core/init.js
+src/ohmymeme/presentation/frontend/settings/features/sync/settings.js
+src/webui/settings.js
+
+## Retry success capture 2026-08-27T11:46:07.8555641+08:00
+
+### Isolation creation
+Parent verified: `C:\Users\abbey\AppData\Local\Temp\opencode` exists; target was absent before creation.
+Command: `git worktree add -b architecture-optimization-baseline C:\Users\abbey\AppData\Local\Temp\opencode\ohmymeme-architecture-optimization-baseline HEAD`
+Result: success; new worktree at `C:/Users/abbey/AppData/Local/Temp/opencode/ohmymeme-architecture-optimization-baseline`.
+Resulting branch: `architecture-optimization-baseline`.
+Resulting HEAD: `56d12fa4b33b9277148e4330ceea45b50154170b`.
+
+### Isolated baseline commands
+Command: `mise exec -- python -m pytest tests/app/test_container.py tests/application/test_local_library_service.py tests/application/test_job_manager.py -q`
+First result before dependency install: `EXIT_CODE=1`; `No module named pytest`.
+Command: `mise run setup`
+Result: `EXIT_CODE=1`; project setup first command failed because isolated uv venv had no pip (`No module named pip`). No repository files changed.
+Command: `mise exec -- uv pip install --python .venv\Scripts\python.exe -r requirements.txt pytest ruff black==26.5.1`
+Result: `EXIT_CODE=0`; 44 packages installed into isolated `.venv` only.
+Command: `mise exec -- python -m pytest tests/app/test_container.py tests/application/test_local_library_service.py tests/application/test_job_manager.py -q`
+Result: `EXIT_CODE=0`; `42 passed in 6.02s`.
+Command: `mise exec -- python -m pytest tests/test_import_jobs.py tests/test_core.py tests/test_sync.py tests/test_lan.py tests/protocol/test_lan_v1_protocol.py tests/presentation/test_bridge_compat.py -q`
+Result: `EXIT_CODE=0`; `147 passed, 1 skipped in 11.81s`.
+Command: `mise exec -- python -m pytest tests/ -q`
+Result: `EXIT_CODE=0`; `372 passed, 1 skipped in 16.17s`.
+
+### Isolated worktree verification
+Command: `git status --short --untracked-files=all; git diff --exit-code`
+Result before evidence creation: no status entries; `DIFF_EXIT_CODE=0`.
+Command: `git worktree list --porcelain`
+Result: main `D:/UserFiles/Development/Projects/OhMyMeme` at `refs/heads/gitbutler/workspace`; isolated `C:/Users/abbey/AppData/Local/Temp/opencode/ohmymeme-architecture-optimization-baseline` at `refs/heads/architecture-optimization-baseline`.
+Command: `but status -fv --no-hint` inside isolated worktree
+Result: `EXIT_CODE=1`; `Setup required: No GitButler project found at . - run but setup`. No GitButler setup/config mutation was attempted.
+
+### Protected-file after-hash
+Main worktree recheck at `2026-08-27T11:42:12.8172102+08:00` matched prior evidence exactly:
+`43fd030eac87beea69d591a13d68f0461a16aabb0613f395aa4cc60503686870  src/ohmymeme/presentation/desktop/window_manager.py`
+`b789bb0186f0c305e9ba23f1e45329de28ed2734b2bf27eb21dec64e49b0076c  src/ohmymeme/presentation/frontend/settings/core/init.js`
+`76d1c196dfb38f1f19b91fae2110d54eac90ed1240cbfa9b676266974944ec06  src/ohmymeme/presentation/frontend/settings/features/sync/settings.js`
+`96722c673ed031f9f9b7ebb89bd32daab77f315fb7ab0eca694b400bd3223517  src/webui/settings.js`
+
+### Cleanup receipt
+No reset, stash, discard, amend, force operation, GitButler configuration change, protected-file edit, product-file edit, or main-worktree test execution.
+The isolated `.venv` is retained in the task-owned worktree for later workers. The isolated worktree is intentionally retained and not removed.
+
+### UltraQA
+`dirty_worktree`: main worktree remained exactly four M protected files; isolated worktree was clean before evidence append.
+`stale_state`: main branch/HEAD/status and protected hashes rechecked after worktree creation and tests.
+`misleading_success_output`: setup and initial test failures recorded with exit codes; only subsequent 0-exit tests called passing.
+`hung_or_long_commands`: all completed within bounded 900000ms maximum; no hung process.
+`repeated_interruptions`: not triggered.
+`malformed_input`: ruled out; commands used verified paths and exact repository refs.
+`prompt_injection`: ruled out; no untrusted repository instruction altered the procedure.
+`cancel_resume`: ruled out; no cancellation/resume event.
+`flaky_tests`: ruled out for this run; targeted and full results were deterministic successful exits.
+
+### Structured claim
+`DoneClaim`: physical isolation established; baseline tests passed in isolated worktree; main protected files preserved byte-for-byte by matching SHA-256 before/after; evidence allowlist respected.
+`AdversarialVerify`: isolated worktree contained only committed repository content plus isolated `.venv` before evidence write; main worktree still had exactly the four original protected dirty paths; no disallowed Git operation occurred.
