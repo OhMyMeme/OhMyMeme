@@ -32,6 +32,7 @@ Conventions and successful approaches discovered during work on this plan.
 - Importer entrypoints keep their existing module progress dictionaries as the UI compatibility layer, while `JobManager` owns the external task snapshot. `JobContext.snapshot()` projects phase, normalized 0-1 progress, message, error code, and error without exposing subprocesses, executors, or temporary paths.
 - `JobManager.try_start()` supplies atomic admission without changing legacy `start()` duplicate-return semantics. Telegram, Douyin, WeChat, mobile QQ ADB, and QQNT declare stable `import.*` task types and one resource tuple each; `job_manager=None` continues to use the original daemon-thread path.
 - Cancellation is a terminal precedence rule: once a JobManager cancellation event is set, a late explicit completion cannot publish `completed`. BaseException handling is limited to `KeyboardInterrupt` and `SystemExit` at the worker boundary so the active slot is always released without broad exception swallowing. ADB's public cancel operation only transitions active phases and returns false for terminal/repeated cancellation.
+- Legacy ADB admission must reserve the module-level active phase while holding `_QQ_LOCK`, before creating its daemon thread. This preserves the old no-manager ABI while preventing two workers from sharing `_QQ_STATE` and `_QQ_CANCEL`.
 
 ## 2026-08-27 explicit pull metadata boundary
 
