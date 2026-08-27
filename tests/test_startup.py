@@ -204,33 +204,20 @@ def test_qqnt_managed_binding_does_not_replace_current_task_id(monkeypatch):
         manager.shutdown(1)
 
 
-def test_qqnt_managed_binding_requires_current_active_job(monkeypatch):
-    from types import SimpleNamespace
-
+def test_qqnt_managed_binding_is_created_by_admission(monkeypatch):
     from ohmymeme.app.job_manager import JobManager
     from ohmymeme.presentation.desktop import window_manager
-
-    active_calls = 0
 
     def worker(*_args, **_kwargs):
         pass
 
-    def active(task_type):
-        nonlocal active_calls
-        active_calls += 1
-        if active_calls == 1:
-            return None
-        return SimpleNamespace(id="task-b")
-
     monkeypatch.setattr(window_manager, "_qqnt_worker", worker)
     manager = JobManager()
-    monkeypatch.setattr(manager, "active", active)
     try:
         assert window_manager.start_qqnt_extract("a", "out", job_manager=manager)
         record = manager.get(next(iter(manager._records)))
         assert record is not None
         assert manager.wait(record.id, 1)
-        assert active_calls == 2
         assert window_manager._QQNT_JOB_ID is None
     finally:
         manager.shutdown(1)

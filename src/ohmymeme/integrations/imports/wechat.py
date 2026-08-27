@@ -64,6 +64,13 @@ _WECHAT_CANCEL = False
 _WECHAT_JOB_CANCEL = None
 _WECHAT_JOB_SNAPSHOT = None
 
+
+def _bind_wechat_job(_manager, record, context):
+    global _WECHAT_JOB_CANCEL, _WECHAT_JOB_SNAPSHOT
+    _WECHAT_JOB_CANCEL = record.cancellation_event
+    _WECHAT_JOB_SNAPSHOT = context.snapshot
+
+
 _MAX_DOWNLOAD = 20 * 1024 * 1024
 
 
@@ -820,8 +827,6 @@ def start_wechat_import(
 
         def target(context):
             global _WECHAT_JOB_CANCEL, _WECHAT_JOB_SNAPSHOT
-            _WECHAT_JOB_CANCEL = context.cancellation_event
-            _WECHAT_JOB_SNAPSHOT = context.snapshot
             try:
                 _wechat_worker(import_callback, user_root, download, account_path)
                 if _WECHAT_STATE["status"] == "error":
@@ -833,7 +838,12 @@ def start_wechat_import(
                 _WECHAT_JOB_SNAPSHOT = None
 
         _, created = job_manager.try_start(
-            "import.wechat", target, resources=("wechat",)
+            "import.wechat",
+            target,
+            resources=("wechat",),
+            on_admit=lambda record, context: _bind_wechat_job(
+                job_manager, record, context
+            ),
         )
         if not created:
             return False

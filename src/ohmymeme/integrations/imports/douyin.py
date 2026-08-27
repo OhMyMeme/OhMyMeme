@@ -33,6 +33,13 @@ _DOUYIN_CANCEL = False
 _DOUYIN_JOB_CANCEL = None
 _DOUYIN_JOB_SNAPSHOT = None
 
+
+def _bind_douyin_job(_manager, record, context):
+    global _DOUYIN_JOB_CANCEL, _DOUYIN_JOB_SNAPSHOT
+    _DOUYIN_JOB_CANCEL = record.cancellation_event
+    _DOUYIN_JOB_SNAPSHOT = context.snapshot
+
+
 API_STICKER = "https://www.douyin.com/aweme/v1/web/im/resource/list/aggregation"
 API_TTWID = "https://ttwid.bytedance.com/ttwid/union/register/"
 API_SELF = "https://www.douyin.com/aweme/v1/web/user/profile/self/"
@@ -440,8 +447,6 @@ def start_douyin_import(import_callback, cookie: str, job_manager=None) -> bool:
 
         def target(context):
             global _DOUYIN_JOB_CANCEL, _DOUYIN_JOB_SNAPSHOT
-            _DOUYIN_JOB_CANCEL = context.cancellation_event
-            _DOUYIN_JOB_SNAPSHOT = context.snapshot
             try:
                 _run()
                 if _DOUYIN_STATE["status"] == "error":
@@ -453,7 +458,12 @@ def start_douyin_import(import_callback, cookie: str, job_manager=None) -> bool:
                 _DOUYIN_JOB_SNAPSHOT = None
 
         _, created = job_manager.try_start(
-            "import.douyin", target, resources=("douyin",)
+            "import.douyin",
+            target,
+            resources=("douyin",),
+            on_admit=lambda record, context: _bind_douyin_job(
+                job_manager, record, context
+            ),
         )
         if not created:
             return False

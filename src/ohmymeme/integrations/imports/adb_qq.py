@@ -47,6 +47,13 @@ _QQ_ACTIVE = (
     "processing",
 )
 
+
+def _bind_qq_job(_manager, record, context):
+    global _QQ_JOB_CANCEL, _QQ_JOB_SNAPSHOT
+    _QQ_JOB_CANCEL = record.cancellation_event
+    _QQ_JOB_SNAPSHOT = context.snapshot
+
+
 _ADB_DEBUG = False
 
 
@@ -402,8 +409,6 @@ def start_qq_import(job_manager=None):
 
         def target(context):
             global _QQ_JOB_CANCEL, _QQ_JOB_SNAPSHOT
-            _QQ_JOB_CANCEL = context.cancellation_event
-            _QQ_JOB_SNAPSHOT = context.snapshot
             try:
                 _run_qq_worker()
                 if _QQ_STATE["status"] == "error":
@@ -412,7 +417,12 @@ def start_qq_import(job_manager=None):
                 _QQ_JOB_CANCEL = None
                 _QQ_JOB_SNAPSHOT = None
 
-        _, created = job_manager.try_start("import.adb_qq", target, resources=("adb",))
+        _, created = job_manager.try_start(
+            "import.adb_qq",
+            target,
+            resources=("adb",),
+            on_admit=lambda record, context: _bind_qq_job(job_manager, record, context),
+        )
         if not created:
             return False
     return True

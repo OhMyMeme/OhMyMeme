@@ -106,7 +106,7 @@ class JobManager:
             thread.start()
             return record
 
-    def try_start(self, task_type, target, resources=()):
+    def try_start(self, task_type, target, resources=(), on_admit=None):
         """原子启动任务，返回 (快照, 是否由本次调用创建)。"""
         with self._lock:
             active_id = self._active.get(task_type)
@@ -127,6 +127,8 @@ class JobManager:
             )
             self._records[record_id] = record
             self._active[task_type] = record_id
+            if on_admit is not None:
+                on_admit(record, JobContext(self, record.id, record.cancellation_event))
             thread = Thread(
                 target=self._run,
                 args=(record, target),

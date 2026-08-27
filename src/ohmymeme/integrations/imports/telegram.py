@@ -38,6 +38,12 @@ _TG_JOB_CANCEL = None
 _TG_JOB_SNAPSHOT = None
 
 
+def _bind_tg_job(_manager, record, context):
+    global _TG_JOB_CANCEL, _TG_JOB_SNAPSHOT
+    _TG_JOB_CANCEL = record.cancellation_event
+    _TG_JOB_SNAPSHOT = context.snapshot
+
+
 def _update_tg(**kw):
     global _TG_JOB_SNAPSHOT
     with _TG_LOCK:
@@ -516,8 +522,6 @@ def start_tg_import(
 
     def target(context):
         global _TG_JOB_CANCEL, _TG_JOB_SNAPSHOT
-        _TG_JOB_CANCEL = context.cancellation_event
-        _TG_JOB_SNAPSHOT = context.snapshot
         try:
             _tg_worker(import_callback, tdata_path, passcode, convert_webm)
             if _TG_STATE["status"] == "error":
@@ -534,7 +538,10 @@ def start_tg_import(
         ).start()
     else:
         _, created = job_manager.try_start(
-            "import.telegram", target, resources=("telegram",)
+            "import.telegram",
+            target,
+            resources=("telegram",),
+            on_admit=lambda record, context: _bind_tg_job(job_manager, record, context),
         )
         if not created:
             return False
