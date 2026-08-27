@@ -33,6 +33,7 @@ Conventions and successful approaches discovered during work on this plan.
 - `JobManager.try_start()` supplies atomic admission without changing legacy `start()` duplicate-return semantics. Telegram, Douyin, WeChat, mobile QQ ADB, and QQNT declare stable `import.*` task types and one resource tuple each; `job_manager=None` continues to use the original daemon-thread path.
 - Cancellation is a terminal precedence rule: once a JobManager cancellation event is set, a late explicit completion cannot publish `completed`. BaseException handling is limited to `KeyboardInterrupt` and `SystemExit` at the worker boundary so the active slot is always released without broad exception swallowing. ADB's public cancel operation only transitions active phases and returns false for terminal/repeated cancellation.
 - Legacy ADB admission must reserve the module-level active phase while holding `_QQ_LOCK`, before creating its daemon thread. This preserves the old no-manager ABI while preventing two workers from sharing `_QQ_STATE` and `_QQ_CANCEL`.
+- A JobManager thread is an isolated task boundary: ordinary `Exception` keeps its historical `str(error)` mapping, while any `BaseException` escaping the worker is finalized there so thread exit cannot orphan an active slot. Cancellation event state determines whether that exceptional exit is externally `cancelled` or `error`.
 
 ## 2026-08-27 explicit pull metadata boundary
 
