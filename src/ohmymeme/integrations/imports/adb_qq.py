@@ -38,6 +38,7 @@ _QQ_LOCK = threading.Lock()
 _QQ_CANCEL = False
 _QQ_JOB_CANCEL = None
 _QQ_JOB_SNAPSHOT = None
+_QQ_TMP_DIR = None
 _QQ_ACTIVE = (
     "downloading_adb",
     "starting_adb",
@@ -361,6 +362,22 @@ def _resolve_adb(adb_path):
     return adb_path if adb_path != "adb" else "adb"
 
 
+def _run_qq_worker():
+    """执行 QQ worker 并把未预期异常映射为终态错误。"""
+    global _QQ_TMP_DIR
+    try:
+        _qq_worker()
+    except Exception as error:
+        _update_qq(status="error", error=str(error))
+        logger.error("qq import worker failed: %s", error)
+    finally:
+        with _QQ_LOCK:
+            tmp_dir = _QQ_TMP_DIR
+            _QQ_TMP_DIR = None
+        if tmp_dir is not None:
+            shutil.rmtree(tmp_dir, ignore_errors=True)
+
+
 def start_qq_import(job_manager=None):
     """后台启动 QQ 表情包导入流程"""
     global _QQ_CANCEL
@@ -379,7 +396,7 @@ def start_qq_import(job_manager=None):
                 zip_path="",
                 dl_progress=0,
             )
-        threading.Thread(target=_qq_worker, daemon=True).start()
+        threading.Thread(target=_run_qq_worker, daemon=True).start()
     else:
         _QQ_CANCEL = False
 
@@ -388,7 +405,7 @@ def start_qq_import(job_manager=None):
             _QQ_JOB_CANCEL = context.cancellation_event
             _QQ_JOB_SNAPSHOT = context.snapshot
             try:
-                _qq_worker()
+                _run_qq_worker()
                 if _QQ_STATE["status"] == "error":
                     raise RuntimeError(_QQ_STATE["error"])
             finally:
@@ -461,7 +478,12 @@ def _find_qq_favorite_dir(adb_path):
 def _qq_worker():
     """后台执行 QQ 表情包导入：检测/下载 ADB → 连接设备 → 拉取缓存 → 打包 ZIP"""
     _update_qq(status="downloading_adb", progress=0, message="检查 ADB...", error="")
-    adb_path = detect_adb()
+    try:
+        adb_path = detect_adb()
+    except Exception as error:
+        _update_qq(status="error", error=str(error))
+        logger.error("qq import worker failed: %s", error)
+        return
     if _check_cancel():
         return
     if not adb_path:
@@ -515,6 +537,9 @@ def _qq_worker():
         return
     _update_qq(status="pulling", progress=30, message="正在拉取 QQ 缓存文件...")
     tmp_dir = Path(tempfile.mkdtemp(prefix="ohmymeme-qq-"))
+    global _QQ_TMP_DIR
+    with _QQ_LOCK:
+        _QQ_TMP_DIR = tmp_dir
     try:
         remote = _find_qq_favorite_dir(adb_path)
     except subprocess.TimeoutExpired:

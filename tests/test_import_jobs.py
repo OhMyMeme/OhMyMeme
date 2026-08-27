@@ -212,3 +212,53 @@ def test_adb_legacy_start_is_single_flight(monkeypatch):
         release.set()
         assert adb_qq.get_qq_progress()["status"] == "cancelled"
         adb_qq.reset_qq_import()
+
+
+def test_adb_worker_exception_maps_to_terminal_error(monkeypatch):
+    def fail_detect():
+        raise ValueError("unexpected detect failure")
+
+    monkeypatch.setattr(
+        adb_qq,
+        "detect_adb",
+        fail_detect,
+    )
+    manager = JobManager()
+    adb_qq.reset_qq_import()
+    try:
+        assert adb_qq.start_qq_import(manager)
+        job = _wait_for_job(manager, "import.adb_qq")
+        assert manager.wait(job.id, 1)
+        state = adb_qq.get_qq_progress()
+        assert state["status"] == "error"
+        assert "unexpected detect failure" in state["error"]
+        assert manager.get(job.id).status == "error"
+        assert manager.active("import.adb_qq") is None
+    finally:
+        manager.shutdown(1)
+        adb_qq.reset_qq_import()
+
+
+def test_adb_worker_exception_cleans_owned_temp_dir(monkeypatch, tmp_path):
+    temp_dir = tmp_path / "qq-worker"
+
+    def fail_worker():
+        temp_dir.mkdir()
+        (temp_dir / "partial.bin").write_bytes(b"partial")
+        adb_qq._QQ_TMP_DIR = temp_dir
+        raise ValueError("unexpected processing failure")
+
+    monkeypatch.setattr(adb_qq, "_qq_worker", fail_worker)
+    manager = JobManager()
+    adb_qq.reset_qq_import()
+    try:
+        assert adb_qq.start_qq_import(manager)
+        job = _wait_for_job(manager, "import.adb_qq")
+        assert manager.wait(job.id, 1)
+        assert adb_qq.get_qq_progress()["status"] == "error"
+        assert not temp_dir.exists()
+        assert adb_qq._QQ_TMP_DIR is None
+        assert manager.active("import.adb_qq") is None
+    finally:
+        manager.shutdown(1)
+        adb_qq.reset_qq_import()
