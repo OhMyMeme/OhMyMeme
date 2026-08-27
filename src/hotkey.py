@@ -7,6 +7,59 @@ import time
 
 logger = logging.getLogger(__name__)
 
+# keyboard 库监听线程存活检查周期（秒）
+KEYBOARD_WATCH_INTERVAL = 5.0
+
+# 独立的热键事件日志（追加到 data_dir/hotkey.log，便于日后排查热键失效/自愈）
+_file_logger = None
+_file_logger_tried = False
+_file_logger_lock = threading.Lock()
+
+
+def _get_file_logger():
+    """延迟初始化并返回写 hotkey.log 的独立 logger。
+
+    日志路径来自 Config.data_dir；惰性创建，失败（无 config/路径不可写）则降级
+    为普通 logger，绝不影响运行。
+    """
+    global _file_logger, _file_logger_tried
+    if _file_logger is not None:
+        return _file_logger
+    if _file_logger_tried:
+        return logger
+    with _file_logger_lock:
+        if _file_logger is not None:
+            return _file_logger
+        _file_logger_tried = True
+        try:
+            from .config import get_config
+
+            cfg = get_config()
+            data_dir = cfg.data_dir
+            data_dir.mkdir(parents=True, exist_ok=True)
+            path = data_dir / "hotkey.log"
+            fl = logging.getLogger("ohmymeme.hotkey.file")
+            fl.setLevel(logging.INFO)
+            fl.propagate = False
+            handler = logging.FileHandler(str(path), encoding="utf-8")
+            handler.setFormatter(
+                logging.Formatter("%(asctime)s %(levelname)s %(message)s")
+            )
+            fl.addHandler(handler)
+            _file_logger = fl
+            logger.info("热键事件日志将写入 %s", path)
+            return fl
+        except Exception as e:
+            logger.warning("热键事件日志初始化失败（忽略）: %s", e)
+            return logger
+
+
+def _log_hotkey_event(level, msg):
+    """写一条热键事件到文件日志，并同步到常规日志（控制台）。"""
+    target = _get_file_logger()
+    getattr(target, level)(msg)
+    getattr(logger, level)(msg)
+
 
 class GlobalHotkey:
     """全局快捷键管理器，自动尝试多种后端"""
@@ -19,6 +72,8 @@ class GlobalHotkey:
         self._hotkey = None
         self._backend = None
         self._polling = False
+        self._watchdog_stop = None
+        self._safe_callback = None
 
     def register(self, hotkey: str, callback) -> bool:
         """注册全局快捷键，自动尝试 keyboard → pynput → 轮询降级"""
@@ -45,17 +100,101 @@ class GlobalHotkey:
         try:
             import keyboard
 
+            def make_safe(fn):
+                def _safe_callback():
+                    # keyboard 在处理线程调用该回调；若此处抛异常，keyboard 的
+                    # processing_thread（pre_process_event 无保护）会崩溃退出，
+                    # 导致所有热键在运行期永久失效（进程仍存活、需重启软件恢复）。
+                    try:
+                        fn()
+                    except Exception:
+                        logger.exception("全局快捷键回调异常（已吞掉避免杀死处理线程）")
+                        _log_hotkey_event(
+                            "error", "热键回调异常（已吞掉，未杀死处理线程）"
+                        )
+
+                return _safe_callback
+
+            self._safe_callback = make_safe(callback)
+
             # suppress=True 会安装 WH_KEYBOARD_LL 状态机，吞掉按键事件
-            keyboard.add_hotkey(hotkey, callback, suppress=False)
+            keyboard.add_hotkey(hotkey, self._safe_callback, suppress=False)
             self._backend = "keyboard"
             self._active = True
+            self._start_keyboard_watchdog()
             logger.info(f"全局快捷键已注册 (keyboard): {hotkey}")
+            _log_hotkey_event("info", "热键已注册 (keyboard): %s" % hotkey)
             return True
         except ImportError:
             return False
         except Exception as e:
             logger.warning(f"keyboard 库注册失败: {e}")
             return False
+
+    def _start_keyboard_watchdog(self):
+        """启动监听线程存活守护：检测 keyboard 内部监听/处理线程死亡并自动重注册。
+
+        keyboard 0.13.5 的 GenericListener 处理线程一旦因未捕获异常崩溃即永久失效
+        （进程仍存活、界面正常，但热键无响应，需重启软件才能恢复）。此守护周期性
+        检查两个内部线程存活，死后自动重新注册热键，避免用户手动重启。
+        """
+        if self._watchdog_stop is not None:
+            return  # 已在监控运行，避免重复
+        stop = threading.Event()
+        self._watchdog_stop = stop
+
+        def watch():
+            while not stop.wait(KEYBOARD_WATCH_INTERVAL):
+                try:
+                    import keyboard
+
+                    listener = getattr(keyboard, "_listener", None)
+                    if listener is None:
+                        continue
+                    lt = getattr(listener, "listening_thread", None)
+                    pt = getattr(listener, "processing_thread", None)
+                    dead = (lt is not None and not lt.is_alive()) or (
+                        pt is not None and not pt.is_alive()
+                    )
+                    if dead and self._backend == "keyboard" and self._safe_callback:
+                        logger.error(
+                            "全局快捷键监听/处理线程已退出，尝试自动重新注册热键"
+                        )
+                        _log_hotkey_event(
+                            "error", "监听/处理线程已退出，尝试自动重新注册热键"
+                        )
+                        self._reregister_keyboard(listener)
+                except Exception:
+                    logger.exception("快捷键守护线程检查异常")
+
+        t = threading.Thread(target=watch, daemon=True)
+        t.start()
+
+    def _reregister_keyboard(self, listener):
+        """重置 keyboard 监听状态并重新注册热键（尽力而为，失败则下周期再试）。"""
+        try:
+            import keyboard
+
+            if self._hotkey and self._safe_callback:
+                try:
+                    keyboard.remove_hotkey(self._hotkey)
+                except Exception:
+                    pass
+            # 线程崩溃后 listening 标志仍为 True，需重置才能重启线程
+            try:
+                listener.listening = False
+                listener.start_if_necessary()
+            except Exception as e:
+                logger.warning(f"keyboard 监听可能无法直接重启，改用重新 add: {e}")
+            try:
+                keyboard.add_hotkey(self._hotkey, self._safe_callback, suppress=False)
+            except Exception as e:
+                logger.warning(f"自动重新注册快捷键失败: {e}")
+                _log_hotkey_event("error", "自动重新注册快捷键失败: %s" % e)
+            logger.info(f"全局快捷键已自动重新注册: {self._hotkey}")
+            _log_hotkey_event("info", "热键已自动重新注册: %s" % self._hotkey)
+        except Exception:
+            logger.exception("自动重新注册快捷键失败")
 
     def _try_pynput(self, hotkey: str, callback) -> bool:
         try:
@@ -107,6 +246,7 @@ class GlobalHotkey:
             self._backend = "pynput"
             self._active = True
             logger.info(f"全局快捷键已注册 (pynput): {hotkey}")
+            _log_hotkey_event("info", "热键已注册 (pynput): %s" % hotkey)
             return True
         except ImportError:
             return False
@@ -153,9 +293,14 @@ class GlobalHotkey:
         self._thread = threading.Thread(target=poll, daemon=True)
         self._thread.start()
         logger.info(f"全局快捷键轮询模式已启动: {hotkey}")
+        _log_hotkey_event("info", "热键轮询降级模式已启动: %s" % hotkey)
 
     def unregister(self):
         """注销全局快捷键"""
+        # 先停止守护线程，避免注销后又被自动重挂
+        if self._watchdog_stop is not None:
+            self._watchdog_stop.set()
+            self._watchdog_stop = None
         if self._backend == "keyboard":
             try:
                 import keyboard
@@ -176,6 +321,7 @@ class GlobalHotkey:
             if self._thread:
                 self._thread = None
         self._active = False
+        self._safe_callback = None
 
     def __del__(self):
         self.unregister()

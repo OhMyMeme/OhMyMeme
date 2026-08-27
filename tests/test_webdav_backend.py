@@ -284,11 +284,25 @@ class TestWebDAVList(unittest.TestCase):
 
 
 class TestWebDAVEnsureDir(unittest.TestCase):
+    def setUp(self):
+        # 进程级 `_dav_dirs` 目录缓存会跨测试残留，逐个测试清空以保证独立
+        sync._dav_dirs.clear()
+
     @patch("src.sync.urllib.request.urlopen")
     def test_405_ok(self, urlopen):
         urlopen.side_effect = urllib.error.HTTPError("u", 405, "exists", {}, None)
         bk = _make_backend()
         self.assertTrue(bk.ensure_remote_dir("memes"))
+
+    @patch("src.sync.urllib.request.urlopen")
+    def test_second_call_skips_mkcol(self, urlopen):
+        urlopen.side_effect = urllib.error.HTTPError("u", 405, "exists", {}, None)
+        bk = _make_backend()
+        self.assertTrue(bk.ensure_remote_dir("memes"))
+        self.assertEqual(urlopen.call_count, 1)
+        # 目录已缓存存在，第二次调用不再发 MKCOL（避免触发远端锁）
+        self.assertTrue(bk.ensure_remote_dir("memes"))
+        self.assertEqual(urlopen.call_count, 1)
 
     @patch("src.sync.urllib.request.urlopen")
     def test_301_existing_collection_ok(self, urlopen):

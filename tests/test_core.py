@@ -4,6 +4,7 @@ import re
 import sys
 import tempfile
 import unittest
+import unittest.mock as mock
 from pathlib import Path
 
 # 确保 src 在导入路径中
@@ -291,6 +292,78 @@ class TestDatabase(unittest.TestCase):
         results = self.db.search()
         self.assertEqual(len(results), 0)
         self.assertEqual(self.db.count(), 0)
+
+
+class TestHotkeyWatchdog(unittest.TestCase):
+    """GlobalHotkey 键盘监听线程守护：自动重注册逻辑（mock keyboard 模块）"""
+
+    def _fake_keyboard_module(self):
+        class FakeModule(object):
+            add_calls = 0
+            remove_calls = 0
+
+            @classmethod
+            def add_hotkey(cls, *a, **kw):
+                cls.add_calls += 1
+
+            @classmethod
+            def remove_hotkey(cls, *a, **kw):
+                cls.remove_calls += 1
+
+        return FakeModule
+
+    @mock.patch.dict("sys.modules", {"keyboard": None}, clear=False)
+    def test_reregister_restarts_listener_and_reattaches(self):
+        from src.hotkey import GlobalHotkey
+
+        fake_mod = self._fake_keyboard_module()
+        fake_mod.add_calls = 0
+        fake_mod.remove_calls = 0
+
+        class FakeListener(object):
+            listening = True
+            start_calls = 0
+
+            def start_if_necessary(self):
+                self.start_calls += 1
+
+        listener = FakeListener()
+
+        hk = GlobalHotkey()
+        hk._hotkey = "Ctrl+Alt+N"
+        hk._safe_callback = lambda: None
+        hk._backend = "keyboard"
+
+        with mock.patch.dict("sys.modules", {"keyboard": fake_mod}):
+            hk._reregister_keyboard(listener)
+
+        self.assertEqual(fake_mod.remove_calls, 1)
+        self.assertEqual(listener.start_calls, 1)
+        self.assertFalse(listener.listening)
+        self.assertEqual(fake_mod.add_calls, 1)
+
+    @mock.patch.dict("sys.modules", {"keyboard": None}, clear=False)
+    def test_unregister_stops_watchdog(self):
+        from src.hotkey import GlobalHotkey
+
+        fake_mod = self._fake_keyboard_module()
+        fake_mod.add_calls = 0
+
+        hk = GlobalHotkey()
+        hk._backend = "keyboard"
+        hk._hotkey = "Ctrl+Alt+N"
+        hk._safe_callback = lambda: None
+
+        with mock.patch.dict("sys.modules", {"keyboard": fake_mod}):
+            stop = mock.MagicMock()
+            hk._watchdog_stop = stop
+            hk.unregister()
+
+        # watchdog 应被停止，safe_callback 清空，remove_hotkey 被调用
+        stop.set.assert_called_once()
+        self.assertIsNone(hk._watchdog_stop)
+        self.assertIsNone(hk._safe_callback)
+        self.assertEqual(fake_mod.remove_calls, 1)
 
 
 if __name__ == "__main__":

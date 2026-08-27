@@ -26,6 +26,10 @@ logger = logging.getLogger(__name__)
 _sync_lock = threading.Lock()
 _sync_run_lock = threading.Lock()  # 防止 push/pull 并发执行
 
+# WebDAV 已确认存在的远端目录集合（进程内缓存，避免每个文件重复 MKCOL）
+_dav_dirs = set()
+_dav_dirs_lock = threading.Lock()
+
 # 同步进度状态（全局，供 JS 轮询）
 _sync_state = {
     "status": "idle",  # idle | uploading | downloading | done | error
@@ -537,15 +541,24 @@ class _WebDAVBackend(_SyncBackend):
         for p in [p for p in path.strip("/").split("/") if p]:
             rel += "/" + p
             url = self._url(rel)
+            # 已确认存在的目录直接跳过，避免对同一目录重复发 MKCOL
+            # （多线程 push 时每个 worker 都会调用，服务器端易触发锁）
+            with _dav_dirs_lock:
+                if url in _dav_dirs:
+                    continue
             try:
                 with self._request("MKCOL", url):
                     pass
             except urllib.error.HTTPError as e:
                 if e.code == 405:
+                    with _dav_dirs_lock:
+                        _dav_dirs.add(url)
                     continue  # 标准"已存在"
                 if 300 <= e.code < 400:
                     # 重定向：复核集合确实存在 → 幂等继续，否则判失败
                     if self.file_exists(rel):
+                        with _dav_dirs_lock:
+                            _dav_dirs.add(url)
                         continue
                 raise SyncError("MKCOL %s 失败: HTTP %d" % (url, e.code)) from e
             except Exception as e:
@@ -779,6 +792,7 @@ def _push_worker(entries, remote_root, cache_dir, remote_memes):
     bk = _get_backend()
     bk.connect()
     local_results = {"uploaded": 0, "skipped": 0, "errors": 0, "bytes": 0, "failed": []}
+    remote_dir_ready = False
     try:
         for entry in entries:
             fname = entry["filename"]
@@ -803,7 +817,10 @@ def _push_worker(entries, remote_root, cache_dir, remote_memes):
                 )
                 _increment_sync_progress(files_add=1)
                 continue
-            bk.ensure_remote_dir(os.path.dirname(rem_path))
+            if not remote_dir_ready:
+                # 同一批次所有文件都上传到 memes/ 目录，仅需确保一次
+                bk.ensure_remote_dir(os.path.dirname(rem_path))
+                remote_dir_ready = True
             if bk.upload_file(local_file, rem_path):
                 local_results["uploaded"] += 1
                 local_results["bytes"] += fsize
