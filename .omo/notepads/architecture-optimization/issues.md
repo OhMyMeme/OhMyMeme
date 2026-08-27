@@ -55,3 +55,9 @@ Problems and gotchas encountered during work on this plan.
 - Red test `test_legacy_manifest_apply_uses_public_library_boundary` initially reached the intended blocker: the callable LAN `_apply_manifest()` imported and invoked private sync helper functions when no SyncService was injected.
 - `_apply_manifest()` now delegates directly to `LocalLibraryService.apply_remote_metadata()` and returns its boolean result; no LAN callable path imports or invokes `_apply_remote_order()`/`_apply_remote_collections()`.
 - Added real LAN command coverage for push-manifest success (`{"ok": True, "local_count": ...}`), malformed input (`{"ok": False, "error": "manifest 格式错误"}`), and public apply failure (`{"ok": False, "error": "本地清单应用失败"}`).
+
+## 2026-08-27 dependency convergence verification
+
+- First full-suite run exposed the existing `_pull_worker` signature contract in `tests/application/test_import_service.py`; the public four-argument facade was restored, with new explicit dependencies confined to `_pull_worker_core`.
+- Targeted verification passed `125 passed, 1 skipped`; full verification passed `389 passed, 1 skipped`. Ruff and black checks passed. LSP diagnostics were rejected for every changed path because the client request cwd is the main worktree, not this linked worktree.
+- Scoped diff contains only the four requested production modules, two narrowly required regression test files, and this append-only notepad entry. No schema, manifest format, LAN wire protocol, config semantics, README, AGENTS, or protected dirty file changed.

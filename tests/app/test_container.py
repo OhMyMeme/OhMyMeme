@@ -226,6 +226,8 @@ def test_container_services_share_explicit_dependency_identity(tmp_path):
         assert lan_server._commands.db is container.db
         assert lan_server._commands.assets is container.assets
         assert lan_server._commands.manifest is container.manifest
+        assert lan_server._commands.library is container.library
+        assert lan_server._commands._sync_service.library is container.library
     finally:
         container.close()
 
@@ -262,6 +264,30 @@ def test_container_manifest_build_does_not_replace_module_functions(tmp_path):
         container.build_manifest()
         assert manifest_module.get_config is original_config
         assert manifest_module.get_db is original_db
+    finally:
+        container.close()
+
+
+def test_explicit_manifest_load_uses_supplied_assets_without_singletons(
+    monkeypatch, tmp_path
+):
+    import ohmymeme.core.manifest as manifest_module
+
+    container = Container(tmp_path / "manifest-load")
+    try:
+        container.assets.manifest_path.parent.mkdir(parents=True, exist_ok=True)
+        container.assets.manifest_path.write_text(
+            '{"version": 3, "memes": [], "collections": []}', encoding="utf-8"
+        )
+        monkeypatch.setattr(
+            manifest_module, "get_config", lambda: (_ for _ in ()).throw(AssertionError)
+        )
+
+        assert container.manifest.load() == {
+            "version": 3,
+            "memes": [],
+            "collections": [],
+        }
     finally:
         container.close()
 

@@ -94,15 +94,27 @@ class CommandHandlers:
     ):
         self._server = server
         self._sync_service = sync_service
-        self.config = config or get_config()
-        self.db = db or get_db()
-        self.assets = assets or AssetPaths(self.config.data_dir, self.config.cache_dir)
-        self.manifest = manifest or ManifestBuilder(self.config, self.db, self.assets)
-        self.library = library or LocalLibraryService(
-            self.db,
-            self.assets,
-            ImageImportService(self.db, self.assets, self.manifest.build),
-            self.manifest.build,
+        self.config = config if config is not None else get_config()
+        self.db = db if db is not None else get_db()
+        self.assets = (
+            assets
+            if assets is not None
+            else AssetPaths(self.config.data_dir, self.config.cache_dir)
+        )
+        self.manifest = (
+            manifest
+            if manifest is not None
+            else ManifestBuilder(self.config, self.db, self.assets)
+        )
+        self.library = (
+            library
+            if library is not None
+            else LocalLibraryService(
+                self.db,
+                self.assets,
+                ImageImportService(self.db, self.assets, self.manifest.build),
+                self.manifest.build,
+            )
         )
         self.build_manifest = self.manifest.build
 

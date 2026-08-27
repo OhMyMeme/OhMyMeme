@@ -19,3 +19,10 @@ Conventions and successful approaches discovered during work on this plan.
 - `LocalLibraryService.project_manifest()` now exposes the existing snapshot, projection, and recovery semantics without exposing `_project_after_mutation()` to service callers.
 - `LocalLibraryService.apply_remote_manifest_operation()` names the sync planning seam explicitly; `apply_remote_operation()` remains as a compatibility alias with the same boolean result shape.
 - Sync upload/push fallback and LAN `pull_manifest` now call only public library projection methods. Public-boundary sentinels fail if `_project_after_mutation` is accessed.
+
+## 2026-08-27 dependency convergence
+
+- Container-owned SyncService now forwards its config, db, assets, manifest, and library through the existing module-level operation seam; legacy calls without those arguments still resolve singleton config/db/assets.
+- Sync internal worker arguments were extended only behind `_pull_worker_core`; the public `_pull_worker(entries, remote_root, cache_dir, db)` signature remains unchanged for import/bridge compatibility.
+- Planning and LAN optional dependencies now distinguish an explicitly supplied falsey value from a missing dependency by checking `is not None`; standalone facades retain singleton fallback behavior.
+- Real temporary-root smoke confirmed Container Sync/LAN identity and manifest writes stayed under the temporary root while global singleton references were replaced with sentinels.

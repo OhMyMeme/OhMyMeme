@@ -75,35 +75,61 @@ class SyncService:
 
     def push(self, delete_remote=None):
         if self.job_manager is None:
-            return push(delete_remote, self.library)
+            return push(
+                delete_remote,
+                self.library,
+                config=self.config,
+                db=self.db,
+                assets=self.assets,
+                manifest=self.manifest,
+            )
         return self._run_job(
             "sync",
             lambda context: push(
-                delete_remote, self.library, cancellation=context.cancellation_event
+                delete_remote,
+                self.library,
+                cancellation=context.cancellation_event,
+                config=self.config,
+                db=self.db,
+                assets=self.assets,
+                manifest=self.manifest,
             ),
         )
 
     def pull(self, remove_local=None):
         if self.job_manager is None:
-            return pull(remove_local, self.library)
+            return pull(
+                remove_local,
+                self.library,
+                config=self.config,
+                db=self.db,
+                assets=self.assets,
+                manifest=self.manifest,
+            )
         return self._run_job(
             "sync",
             lambda context: pull(
-                remove_local, self.library, cancellation=context.cancellation_event
+                remove_local,
+                self.library,
+                cancellation=context.cancellation_event,
+                config=self.config,
+                db=self.db,
+                assets=self.assets,
+                manifest=self.manifest,
             ),
         )
 
     def test_connection(self):
         """测试当前配置的同步后端连接。"""
-        return sync_test()
+        return sync_test(self.config)
 
     def delete_all_remote(self):
         """删除远端全部表情与索引。"""
-        return delete_all_remote()
+        return delete_all_remote(self.config)
 
     def cleanup_remote_orphans(self, delete=False):
         """扫描或删除远端孤儿文件。"""
-        return cleanup_remote_orphans(delete)
+        return cleanup_remote_orphans(delete, self.config)
 
     def auto_sync(self):
         """按当前 Container 配置执行自动索引获取和同步。"""
@@ -112,7 +138,7 @@ class SyncService:
             return result
         try:
             if self.config.get("sync_auto_fetch_index", False):
-                result["fetched"] = download_index() is not None
+                result["fetched"] = download_index(self.config) is not None
             if self.config.get("sync_auto_sync", False):
                 result["synced"] = self.pull().get("downloaded", 0) > 0
         except Exception as error:
@@ -121,7 +147,7 @@ class SyncService:
 
     def get_status(self):
         """比较远端索引与当前 Container 本地目录。"""
-        manifest = download_index()
+        manifest = download_index(self.config)
         if not manifest:
             return {"ok": False, "error": "无法获取远端索引"}
         local_rows = self.db.search(keyword="", tags=None, limit=999999)
@@ -229,8 +255,8 @@ def get_sync_progress() -> dict:
     return dict(s)
 
 
-def _get_backend():
-    return get_backend(get_config())
+def _get_backend(config=None):
+    return get_backend(config if config is not None else get_config())
 
 
 def _connect():
@@ -250,8 +276,8 @@ def _safe_remote_fname(name: str) -> bool:
     return planning._safe_remote_fname(name)
 
 
-def _fetch_remote_memes(bk, remote_root):
-    return planning._fetch_remote_memes(bk, remote_root, get_config())
+def _fetch_remote_memes(bk, remote_root, config=None):
+    return planning._fetch_remote_memes(bk, remote_root, config)
 
 
 def _default_library():
@@ -277,16 +303,20 @@ def _apply_remote_metadata(remote_data: dict):
     return planning._apply_remote_metadata(remote_data, get_db())
 
 
-def list_remote_orphans(bk, remote_root) -> list:
-    return planning.list_remote_orphans(bk, remote_root, get_config())
+def list_remote_orphans(bk, remote_root, config=None) -> list:
+    return planning.list_remote_orphans(
+        bk, remote_root, config if config is not None else get_config()
+    )
 
 
 # ─── 多线程工作函数 ───
 
 
-def _push_worker(entries, remote_root, cache_dir, remote_memes, cancellation=None):
+def _push_worker(
+    entries, remote_root, cache_dir, remote_memes, cancellation=None, config=None
+):
     """单线程批量上传一批文件"""
-    bk = _get_backend()
+    bk = _get_backend(config)
     bk.connect()
     local_results = {"uploaded": 0, "skipped": 0, "errors": 0, "bytes": 0, "failed": []}
     try:
@@ -354,9 +384,17 @@ def _pull_worker(entries, remote_root, cache_dir, db):
     return _pull_worker_core(entries, remote_root, cache_dir, db)
 
 
-def _pull_worker_core(entries, remote_root, cache_dir, db, cancellation=None):
+def _pull_worker_core(
+    entries,
+    remote_root,
+    cache_dir,
+    db,
+    cancellation=None,
+    config=None,
+    manifest=None,
+):
     """单线程批量下载一批文件"""
-    bk = _get_backend()
+    bk = _get_backend(config)
     bk.connect()
     local_results = {
         "downloaded": 0,
@@ -372,7 +410,7 @@ def _pull_worker_core(entries, remote_root, cache_dir, db, cancellation=None):
     try:
         from ohmymeme.core.manifest import load as _load_manifest
 
-        ld = _load_manifest()
+        ld = manifest.load() if manifest is not None else _load_manifest()
         local_idx = {m["filename"]: m for m in ld.get("memes", [])}
     except Exception:
         pass
@@ -450,7 +488,14 @@ def _pull_worker_core(entries, remote_root, cache_dir, db, cancellation=None):
 
                             importer = ImageImportService(
                                 db,
-                                AssetPaths(get_config().data_dir, cache_dir),
+                                AssetPaths(
+                                    (
+                                        config.data_dir
+                                        if config is not None
+                                        else get_config().data_dir
+                                    ),
+                                    cache_dir,
+                                ),
                                 lambda: None,
                             )
                             imported = importer.register_existing_path(
@@ -586,19 +631,19 @@ def upload_index(bk=None) -> bool:
             bk.close()
 
 
-def download_index() -> Optional[dict]:
+def download_index(config=None) -> Optional[dict]:
     """从远端下载 manifest。
 
     无 manifest 返回 None；读取/解析失败抛 SyncError。
     """
-    cfg = get_config()
+    cfg = config if config is not None else get_config()
     remote_root = _remote_root(cfg)
     fd, tmp_name = tempfile.mkstemp(
         prefix=".remote-index-", suffix=".json", dir=str(cfg.data_dir)
     )
     os.close(fd)
     tmp = Path(tmp_name)
-    bk = _get_backend()
+    bk = _get_backend(cfg)
     bk.connect()
     try:
         remote_path = remote_root.rstrip("/") + "/" + REMOTE_INDEX
@@ -620,15 +665,23 @@ def download_index() -> Optional[dict]:
             tmp.unlink()
 
 
-def push(delete_remote: bool = None, library=None, cancellation=None) -> dict:
+def push(
+    delete_remote: bool = None,
+    library=None,
+    cancellation=None,
+    config=None,
+    db=None,
+    assets=None,
+    manifest=None,
+) -> dict:
     """本地 -> 远端：上传缺失/变更的表情包和清单（多线程）"""
-    cfg = get_config()
+    cfg = config if config is not None else get_config()
     if delete_remote is None:
         delete_remote = cfg.get("sync_delete_remote", False)
     remote_root = _remote_root(cfg)
-    cache_dir = cfg.cache_dir
+    cache_dir = assets.cache_dir if assets is not None else cfg.cache_dir
     max_workers = max(1, min(8, int(cfg.get("sync_threads", 3))))
-    local = load_manifest()
+    local = manifest.load() if manifest is not None else load_manifest()
     if not local.get("memes"):
         projected = (
             library.project_manifest()
@@ -637,7 +690,7 @@ def push(delete_remote: bool = None, library=None, cancellation=None) -> dict:
         )
         if not projected:
             raise SyncError("本地 manifest 生成失败")
-        local = load_manifest()
+        local = manifest.load() if manifest is not None else load_manifest()
         if not local.get("memes"):
             raise SyncError("local manifest is empty, nothing to push")
 
@@ -666,10 +719,10 @@ def push(delete_remote: bool = None, library=None, cancellation=None) -> dict:
                 "deleted": 0,
                 "failed_files": [],
             }
-        bk = _get_backend()
+        bk = _get_backend(cfg)
         bk.connect()
         bk.ensure_remote_dir(remote_root)
-        remote_memes = _fetch_remote_memes(bk, remote_root)
+        remote_memes = _fetch_remote_memes(bk, remote_root, cfg)
         local_idx = {m["filename"]: m for m in local["memes"]}
 
         entries = local["memes"]
@@ -694,6 +747,7 @@ def push(delete_remote: bool = None, library=None, cancellation=None) -> dict:
                     cache_dir,
                     remote_memes,
                     cancellation,
+                    cfg,
                 )
                 for ch in chunks
             ]
@@ -775,7 +829,7 @@ def push(delete_remote: bool = None, library=None, cancellation=None) -> dict:
         merged_file = None
         try:
             # 远端仍保留、但本地清单没有的项合并进待上传清单，避免孤儿
-            data = load_manifest()
+            data = manifest.load() if manifest is not None else load_manifest()
             local_fnames = {m["filename"] for m in data["memes"]}
             kept = [
                 m
@@ -823,10 +877,10 @@ def push(delete_remote: bool = None, library=None, cancellation=None) -> dict:
         _sync_run_lock.release()
 
 
-def sync_test() -> str:
+def sync_test(config=None) -> str:
     """测试当前配置的存储后端连接是否可用，返回 'ok' 或错误信息"""
     try:
-        bk = _get_backend()
+        bk = _get_backend(config)
         bk.connect()
         bk.test_connection()
         bk.close()
@@ -835,17 +889,25 @@ def sync_test() -> str:
         return str(e)
 
 
-def pull(remove_local: bool = None, library=None, cancellation=None) -> dict:
+def pull(
+    remove_local: bool = None,
+    library=None,
+    cancellation=None,
+    config=None,
+    db=None,
+    assets=None,
+    manifest=None,
+) -> dict:
     """远端 -> 本地：下载缺失/变更的表情包和清单（多线程）"""
     global _pull_library
-    _pull_library = library or _default_library()
-    cfg = get_config()
+    _pull_library = library if library is not None else _default_library()
+    cfg = config if config is not None else get_config()
     if remove_local is None:
         remove_local = cfg.get("sync_remove_local", False)
     remote_root = _remote_root(cfg)
-    cache_dir = cfg.cache_dir
+    cache_dir = assets.cache_dir if assets is not None else cfg.cache_dir
     max_workers = max(1, min(8, int(cfg.get("sync_threads", 3))))
-    db = get_db()
+    db = db if db is not None else get_db()
 
     if not _sync_run_lock.acquire(blocking=False):
         raise SyncError("同步正在进行中")
@@ -853,12 +915,12 @@ def pull(remove_local: bool = None, library=None, cancellation=None) -> dict:
     try:
         if cancellation is not None and cancellation.is_set():
             raise SyncError("同步已取消")
-        remote_data = download_index()
+        remote_data = download_index(cfg)
         if not remote_data:
             raise SyncError("no remote manifest available")
 
         remote_idx = {m["filename"]: m for m in remote_data.get("memes", [])}
-        local_data = load_manifest()
+        local_data = manifest.load() if manifest is not None else load_manifest()
         manifest_snapshot = (
             _pull_library._assets.manifest_path.read_bytes()
             if _pull_library._assets.manifest_path.exists()
@@ -896,7 +958,14 @@ def pull(remove_local: bool = None, library=None, cancellation=None) -> dict:
         with ThreadPoolExecutor(max_workers=len(chunks)) as executor:
             futures = [
                 executor.submit(
-                    _pull_worker_core, ch, remote_root, cache_dir, db, cancellation
+                    _pull_worker_core,
+                    ch,
+                    remote_root,
+                    cache_dir,
+                    db,
+                    cancellation,
+                    cfg,
+                    manifest,
                 )
                 for ch in chunks
             ]
@@ -1015,18 +1084,16 @@ def pull(remove_local: bool = None, library=None, cancellation=None) -> dict:
         _sync_run_lock.release()
 
 
-def delete_all_remote() -> dict:
+def delete_all_remote(config=None) -> dict:
     """删除远端所有表情包和清单"""
-    from ohmymeme.core.config import get_config
-
-    cfg = get_config()
+    cfg = config if config is not None else get_config()
     if not provider_supports(cfg.get("sync_type", ""), "delete"):
         return {"ok": False, "error": "当前同步后端不支持删除远端文件"}
     remote_root = _remote_root(cfg)
-    bk = _get_backend()
+    bk = _get_backend(cfg)
     bk.connect()
     try:
-        remote_memes = _fetch_remote_memes(bk, remote_root)
+        remote_memes = _fetch_remote_memes(bk, remote_root, cfg)
         count = 0
         for fname in remote_memes:
             rem_path = remote_root.rstrip("/") + "/" + REMOTE_MEME_DIR + "/" + fname
@@ -1047,16 +1114,16 @@ def delete_all_remote() -> dict:
         bk.close()
 
 
-def cleanup_remote_orphans(delete: bool = False) -> dict:
+def cleanup_remote_orphans(delete: bool = False, config=None) -> dict:
     """识别远端孤儿文件；delete=True 时物理删除，返回 {ok, orphans, removed}。"""
-    cfg = get_config()
+    cfg = config if config is not None else get_config()
     if delete and not provider_supports(cfg.get("sync_type", ""), "delete"):
         return {"ok": False, "error": "当前同步后端不支持删除远端文件"}
     remote_root = _remote_root(cfg)
-    bk = _get_backend()
+    bk = _get_backend(cfg)
     bk.connect()
     try:
-        orphans = list_remote_orphans(bk, remote_root)
+        orphans = list_remote_orphans(bk, remote_root, cfg)
         removed = 0
         if delete:
             for fname in orphans:

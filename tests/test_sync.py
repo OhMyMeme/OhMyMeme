@@ -40,6 +40,60 @@ from ohmymeme.services.sync.service import (
 
 
 class TestSyncJobAdapter(unittest.TestCase):
+    def test_sync_push_forwards_all_owned_dependencies(self):
+        config = object()
+        db = object()
+        assets = object()
+        manifest = object()
+        library = object()
+        captured = {}
+
+        def push(*args, **kwargs):
+            captured["args"] = args
+            captured["kwargs"] = kwargs
+            return {"uploaded": 0}
+
+        service = SyncService(config, db, assets, manifest, library)
+
+        # When: an explicitly constructed service starts a synchronous push.
+        with patch.object(sync, "push", side_effect=push):
+            result = service.push()
+
+        # Then: the operation receives the complete application-owned graph.
+        self.assertEqual(result, {"uploaded": 0})
+        self.assertEqual(captured["args"], (None, library))
+        self.assertEqual(
+            captured["kwargs"],
+            {"config": config, "db": db, "assets": assets, "manifest": manifest},
+        )
+
+    def test_sync_pull_forwards_all_owned_dependencies(self):
+        config = object()
+        db = object()
+        assets = object()
+        manifest = object()
+        library = object()
+        captured = {}
+
+        def pull(*args, **kwargs):
+            captured["args"] = args
+            captured["kwargs"] = kwargs
+            return {"downloaded": 0}
+
+        service = SyncService(config, db, assets, manifest, library)
+
+        # When: an explicitly constructed service starts a synchronous pull.
+        with patch.object(sync, "pull", side_effect=pull):
+            result = service.pull()
+
+        # Then: the operation receives the complete application-owned graph.
+        self.assertEqual(result, {"downloaded": 0})
+        self.assertEqual(captured["args"], (None, library))
+        self.assertEqual(
+            captured["kwargs"],
+            {"config": config, "db": db, "assets": assets, "manifest": manifest},
+        )
+
     def test_project_manifest_uses_public_library_boundary(self):
         class Library:
             def project_manifest(self):
@@ -57,6 +111,15 @@ class TestSyncJobAdapter(unittest.TestCase):
 
         # Then: the public boundary result is returned unchanged
         self.assertFalse(result)
+
+    def test_planning_explicit_dependencies_do_not_use_singletons(self):
+        fake_db = _FakeDb()
+        remote = {"version": 3, "memes": []}
+
+        with patch.object(sync.planning, "get_db", side_effect=AssertionError):
+            sync.planning._apply_remote_order(remote, fake_db)
+            sync.planning._apply_remote_collections(remote, fake_db)
+            sync.planning._apply_remote_metadata(remote, fake_db)
 
     def test_sync_service_uses_job_manager_single_flight(self):
         from ohmymeme.app.job_manager import JobManager
