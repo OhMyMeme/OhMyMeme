@@ -35,12 +35,24 @@ _TG_CANCEL = False
 _TG_ACTIVE_PROC = set()
 _TG_T0 = None
 _TG_JOB_CANCEL = None
+_TG_JOB_SNAPSHOT = None
 
 
 def _update_tg(**kw):
+    global _TG_JOB_SNAPSHOT
     with _TG_LOCK:
         _refresh_tg_elapsed()
         _TG_STATE.update(**kw)
+        snapshot = _TG_JOB_SNAPSHOT
+        state = dict(_TG_STATE)
+    if snapshot is not None:
+        snapshot(
+            phase=state["status"],
+            progress=state["progress"] / 100,
+            message=state["message"],
+            error_code=state["error_code"],
+            error=state["error"],
+        )
 
 
 # 按任务起点刷新已用秒数（仅运行中状态推进）
@@ -503,14 +515,16 @@ def start_tg_import(
         _update_tg(status="scanning", message="正在检测 Telegram Desktop 数据目录...")
 
     def target(context):
-        global _TG_JOB_CANCEL
+        global _TG_JOB_CANCEL, _TG_JOB_SNAPSHOT
         _TG_JOB_CANCEL = context.cancellation_event
+        _TG_JOB_SNAPSHOT = context.snapshot
         try:
             _tg_worker(import_callback, tdata_path, passcode, convert_webm)
             if _TG_STATE["status"] == "error":
                 raise RuntimeError(f"{_TG_STATE['error_code']}: {_TG_STATE['error']}")
         finally:
             _TG_JOB_CANCEL = None
+            _TG_JOB_SNAPSHOT = None
 
     if job_manager is None:
         threading.Thread(
@@ -519,7 +533,11 @@ def start_tg_import(
             daemon=True,
         ).start()
     else:
-        job_manager.start("import.telegram", target, resources=("telegram",))
+        _, created = job_manager.try_start(
+            "import.telegram", target, resources=("telegram",)
+        )
+        if not created:
+            return False
     return True
 
 

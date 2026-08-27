@@ -27,6 +27,11 @@ Conventions and successful approaches discovered during work on this plan.
 - Planning and LAN optional dependencies now distinguish an explicitly supplied falsey value from a missing dependency by checking `is not None`; standalone facades retain singleton fallback behavior.
 - Real temporary-root smoke confirmed Container Sync/LAN identity and manifest writes stayed under the temporary root while global singleton references were replaced with sentinels.
 
+## 2026-08-27 importer lifecycle contracts
+
+- Importer entrypoints keep their existing module progress dictionaries as the UI compatibility layer, while `JobManager` owns the external task snapshot. `JobContext.snapshot()` projects phase, normalized 0-1 progress, message, error code, and error without exposing subprocesses, executors, or temporary paths.
+- `JobManager.try_start()` supplies atomic admission without changing legacy `start()` duplicate-return semantics. Telegram, Douyin, WeChat, mobile QQ ADB, and QQNT declare stable `import.*` task types and one resource tuple each; `job_manager=None` continues to use the original daemon-thread path.
+
 ## 2026-08-27 explicit pull metadata boundary
 
 - `pull()` must distinguish an actually explicit resource graph from an all-legacy invocation before calling `_default_library()`; otherwise passing internally resolved defaults changes legacy callback behavior.

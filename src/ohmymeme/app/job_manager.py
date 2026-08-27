@@ -5,6 +5,21 @@ from dataclasses import dataclass, field
 from threading import Event, Lock, Thread
 from uuid import uuid4
 
+IMPORT_TASK_TYPES = (
+    "import.telegram",
+    "import.douyin",
+    "import.wechat",
+    "import.adb_qq",
+    "import.qqnt",
+)
+IMPORT_RESOURCES = {
+    "import.telegram": ("telegram",),
+    "import.douyin": ("douyin",),
+    "import.wechat": ("wechat",),
+    "import.adb_qq": ("adb",),
+    "import.qqnt": ("qqnt",),
+}
+
 
 @dataclass(frozen=True, slots=True)
 class JobRecord:
@@ -17,6 +32,9 @@ class JobRecord:
     error: str | None
     cancellation_event: Event = field(repr=False, compare=False)
     resources: tuple[str, ...]
+    phase: str = ""
+    message: str = ""
+    error_code: str = ""
 
 
 class JobContext:
@@ -34,6 +52,17 @@ class JobContext:
     def complete(self):
         """将任务标记为成功完成。"""
         self._manager._finish(self.job_id, "completed")
+
+    def snapshot(self, phase="", progress=None, message="", error_code="", error=None):
+        """更新任务的外部阶段快照。"""
+        self._manager._update(
+            self.job_id,
+            progress=progress,
+            phase=phase,
+            message=message,
+            error_code=error_code,
+            error=error,
+        )
 
 
 class JobManager:
@@ -76,6 +105,37 @@ class JobManager:
             self._threads[record_id] = thread
             thread.start()
             return record
+
+    def try_start(self, task_type, target, resources=()):
+        """原子启动任务，返回 (快照, 是否由本次调用创建)。"""
+        with self._lock:
+            active_id = self._active.get(task_type)
+            if active_id is not None:
+                return self._snapshot_locked(active_id), False
+            if self._closed:
+                raise RuntimeError("job manager is shut down")
+            record_id = uuid4().hex
+            cancellation_event = Event()
+            record = JobRecord(
+                task_type,
+                record_id,
+                "running",
+                0.0,
+                None,
+                cancellation_event,
+                tuple(resources),
+            )
+            self._records[record_id] = record
+            self._active[task_type] = record_id
+            thread = Thread(
+                target=self._run,
+                args=(record, target),
+                name=f"ohmymeme-job-{task_type}",
+                daemon=True,
+            )
+            self._threads[record_id] = thread
+            thread.start()
+            return record, True
 
     def get(self, job_id):
         """返回任务最新快照，终态快照持续保留。"""
@@ -135,7 +195,9 @@ class JobManager:
         except Exception as error:  # noqa: BLE001
             self._finish(record.id, "error", str(error))
 
-    def _update(self, job_id, progress):
+    def _update(
+        self, job_id, progress=None, phase="", message="", error_code="", error=None
+    ):
         with self._lock:
             record = self._records[job_id]
             if record.status == "running":
@@ -143,10 +205,13 @@ class JobManager:
                     record.type,
                     record.id,
                     record.status,
-                    progress,
-                    record.error,
+                    record.progress if progress is None else progress,
+                    record.error if error is None else error,
                     record.cancellation_event,
                     record.resources,
+                    phase or record.phase,
+                    message or record.message,
+                    error_code or record.error_code,
                 )
 
     def _finish(self, job_id, status, error=None):
@@ -165,6 +230,9 @@ class JobManager:
             error,
             record.cancellation_event,
             record.resources,
+            record.phase,
+            record.message,
+            record.error_code,
         )
         self._active.pop(record.type, None)
 
@@ -178,4 +246,7 @@ class JobManager:
             record.error,
             record.cancellation_event,
             record.resources,
+            record.phase,
+            record.message,
+            record.error_code,
         )

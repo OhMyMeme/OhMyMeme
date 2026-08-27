@@ -31,6 +31,7 @@ _DOUYIN_STATE = {
 _DOUYIN_LOCK = threading.Lock()
 _DOUYIN_CANCEL = False
 _DOUYIN_JOB_CANCEL = None
+_DOUYIN_JOB_SNAPSHOT = None
 
 API_STICKER = "https://www.douyin.com/aweme/v1/web/im/resource/list/aggregation"
 API_TTWID = "https://ttwid.bytedance.com/ttwid/union/register/"
@@ -51,8 +52,19 @@ HEADERS = {
 
 
 def _update_dy(**kw):
+    global _DOUYIN_JOB_SNAPSHOT
     with _DOUYIN_LOCK:
         _DOUYIN_STATE.update(**kw)
+        snapshot = _DOUYIN_JOB_SNAPSHOT
+        state = dict(_DOUYIN_STATE)
+    if snapshot is not None:
+        snapshot(
+            phase=state["message"],
+            progress=state["progress"] / 100,
+            message=state["message"],
+            error_code=state["error_code"],
+            error=state["error"],
+        )
 
 
 def get_douyin_progress():
@@ -427,8 +439,9 @@ def start_douyin_import(import_callback, cookie: str, job_manager=None) -> bool:
     else:
 
         def target(context):
-            global _DOUYIN_JOB_CANCEL
+            global _DOUYIN_JOB_CANCEL, _DOUYIN_JOB_SNAPSHOT
             _DOUYIN_JOB_CANCEL = context.cancellation_event
+            _DOUYIN_JOB_SNAPSHOT = context.snapshot
             try:
                 _run()
                 if _DOUYIN_STATE["status"] == "error":
@@ -437,6 +450,11 @@ def start_douyin_import(import_callback, cookie: str, job_manager=None) -> bool:
                     )
             finally:
                 _DOUYIN_JOB_CANCEL = None
+                _DOUYIN_JOB_SNAPSHOT = None
 
-        job_manager.start("import.douyin", target, resources=("douyin",))
+        _, created = job_manager.try_start(
+            "import.douyin", target, resources=("douyin",)
+        )
+        if not created:
+            return False
     return True

@@ -814,11 +814,23 @@ _QQNT_LOCK = threading.Lock()
 _QQNT_CANCEL = False
 _QQNT_JOB_MANAGER = None
 _QQNT_JOB_ID = None
+_QQNT_JOB_SNAPSHOT = None
 
 
 def _set_qqnt(**kw):
+    global _QQNT_JOB_SNAPSHOT
     with _QQNT_LOCK:
         _QQNT_STATE.update(**kw)
+        snapshot = _QQNT_JOB_SNAPSHOT
+        state = dict(_QQNT_STATE)
+    if snapshot is not None:
+        snapshot(
+            phase=state["status"],
+            progress=state["progress"] / 100,
+            message=state["message"],
+            error_code="error" if state["status"] == "error" else "",
+            error=state["error"],
+        )
 
 
 def _append_qqnt_log(msg):
@@ -867,9 +879,10 @@ def start_qqnt_extract(
     else:
 
         def target(context):
-            global _QQNT_JOB_MANAGER, _QQNT_JOB_ID
+            global _QQNT_JOB_MANAGER, _QQNT_JOB_ID, _QQNT_JOB_SNAPSHOT
             _QQNT_JOB_MANAGER = job_manager
             _QQNT_JOB_ID = context.job_id
+            _QQNT_JOB_SNAPSHOT = context.snapshot
             try:
                 _qqnt_worker(*args, cancellation_event=context.cancellation_event)
                 if _QQNT_STATE["status"] == "error":
@@ -877,8 +890,13 @@ def start_qqnt_extract(
             finally:
                 _QQNT_JOB_MANAGER = None
                 _QQNT_JOB_ID = None
+                _QQNT_JOB_SNAPSHOT = None
 
-        record = job_manager.start("import.qqnt", target, resources=("qqnt",))
+        record, created = job_manager.try_start(
+            "import.qqnt", target, resources=("qqnt",)
+        )
+        if not created:
+            return False
         _QQNT_JOB_ID = record.id
     return True
 

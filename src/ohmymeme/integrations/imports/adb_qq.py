@@ -37,6 +37,7 @@ _QQ_STATE = {
 _QQ_LOCK = threading.Lock()
 _QQ_CANCEL = False
 _QQ_JOB_CANCEL = None
+_QQ_JOB_SNAPSHOT = None
 
 _ADB_DEBUG = False
 
@@ -47,8 +48,19 @@ def set_adb_debug(enabled: bool = True):
 
 
 def _update_qq(**kw):
+    global _QQ_JOB_SNAPSHOT
     with _QQ_LOCK:
         _QQ_STATE.update(**kw)
+        snapshot = _QQ_JOB_SNAPSHOT
+        state = dict(_QQ_STATE)
+    if snapshot is not None:
+        snapshot(
+            phase=state["status"],
+            progress=state["progress"] / 100,
+            message=state["message"],
+            error_code="error" if state["status"] == "error" else "",
+            error=state["error"],
+        )
 
 
 _QQ_FILE_TYPES = {
@@ -348,16 +360,20 @@ def start_qq_import(job_manager=None):
     else:
 
         def target(context):
-            global _QQ_JOB_CANCEL
+            global _QQ_JOB_CANCEL, _QQ_JOB_SNAPSHOT
             _QQ_JOB_CANCEL = context.cancellation_event
+            _QQ_JOB_SNAPSHOT = context.snapshot
             try:
                 _qq_worker()
                 if _QQ_STATE["status"] == "error":
                     raise RuntimeError(_QQ_STATE["error"])
             finally:
                 _QQ_JOB_CANCEL = None
+                _QQ_JOB_SNAPSHOT = None
 
-        job_manager.start("import.adb_qq", target, resources=("adb",))
+        _, created = job_manager.try_start("import.adb_qq", target, resources=("adb",))
+        if not created:
+            return False
     return True
 
 

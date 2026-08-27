@@ -1,6 +1,6 @@
 import threading
 
-from ohmymeme.app.job_manager import JobManager
+from ohmymeme.app.job_manager import IMPORT_RESOURCES, IMPORT_TASK_TYPES, JobManager
 
 
 def test_start_is_single_flight_and_retains_terminal_snapshot():
@@ -101,3 +101,34 @@ def test_importer_job_types_are_single_flight_and_cancelable():
     assert manager.wait(first.id, 1)
     assert manager.get(first.id).status == "cancelled"
     manager.shutdown(1)
+
+
+def test_import_task_types_have_stable_resources_and_snapshot_fields():
+    manager = JobManager()
+    started = threading.Event()
+    release = threading.Event()
+
+    def importer(context):
+        context.snapshot(phase="scanning", progress=0.25, message="working")
+        started.set()
+        release.wait(1)
+
+    try:
+        for task_type in IMPORT_TASK_TYPES:
+            record, created = manager.try_start(
+                task_type, importer, resources=IMPORT_RESOURCES[task_type]
+            )
+            assert created
+            assert record.resources == IMPORT_RESOURCES[task_type]
+            assert started.wait(1)
+            snapshot = manager.get(record.id)
+            assert snapshot.phase == "scanning"
+            assert snapshot.progress == 0.25
+            assert snapshot.message == "working"
+            release.set()
+            assert manager.wait(record.id, 1)
+            started.clear()
+            release.clear()
+    finally:
+        release.set()
+        manager.shutdown(1)

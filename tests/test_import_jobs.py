@@ -115,6 +115,29 @@ def test_source_error_maps_to_job_error_without_losing_source_payload(monkeypatc
     manager.shutdown(1)
 
 
+def test_importer_phase_progress_updates_external_job_snapshot(monkeypatch):
+    entered = threading.Event()
+    release = threading.Event()
+
+    def worker(*_args):
+        entered.set()
+        release.wait(1)
+
+    monkeypatch.setattr(telegram, "_tg_worker", worker)
+    manager = JobManager()
+    try:
+        assert telegram.start_tg_import(lambda _: {}, "controlled", job_manager=manager)
+        assert entered.wait(1)
+        job = _wait_for_job(manager, "import.telegram")
+        telegram._update_tg(progress=37)
+        snapshot = manager.get(job.id)
+        assert snapshot.progress == 0.37
+        assert snapshot.resources == ("telegram",)
+    finally:
+        release.set()
+        manager.shutdown(1)
+
+
 def test_douyin_source_error_maps_to_job_error(monkeypatch):
     monkeypatch.setattr(douyin, "_build_session", lambda _cookie: None)
     monkeypatch.setattr(douyin, "_check_login", lambda _session: False)

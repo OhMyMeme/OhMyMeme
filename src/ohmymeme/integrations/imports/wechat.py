@@ -62,6 +62,7 @@ _WECHAT_STATE = {
 _WECHAT_LOCK = threading.Lock()
 _WECHAT_CANCEL = False
 _WECHAT_JOB_CANCEL = None
+_WECHAT_JOB_SNAPSHOT = None
 
 _MAX_DOWNLOAD = 20 * 1024 * 1024
 
@@ -70,6 +71,16 @@ def _update_wechat(**kw):
     """更新微信导入进度状态"""
     with _WECHAT_LOCK:
         _WECHAT_STATE.update(**kw)
+        snapshot = _WECHAT_JOB_SNAPSHOT
+        state = dict(_WECHAT_STATE)
+    if snapshot is not None:
+        snapshot(
+            phase=state["status"],
+            progress=state["progress"] / 100,
+            message=state["message"],
+            error_code=state["error_code"],
+            error=state["error"],
+        )
 
 
 def get_wechat_progress():
@@ -808,8 +819,9 @@ def start_wechat_import(
     else:
 
         def target(context):
-            global _WECHAT_JOB_CANCEL
+            global _WECHAT_JOB_CANCEL, _WECHAT_JOB_SNAPSHOT
             _WECHAT_JOB_CANCEL = context.cancellation_event
+            _WECHAT_JOB_SNAPSHOT = context.snapshot
             try:
                 _wechat_worker(import_callback, user_root, download, account_path)
                 if _WECHAT_STATE["status"] == "error":
@@ -818,8 +830,13 @@ def start_wechat_import(
                     )
             finally:
                 _WECHAT_JOB_CANCEL = None
+                _WECHAT_JOB_SNAPSHOT = None
 
-        job_manager.start("import.wechat", target, resources=("wechat",))
+        _, created = job_manager.try_start(
+            "import.wechat", target, resources=("wechat",)
+        )
+        if not created:
+            return False
     return True
 
 
