@@ -74,6 +74,9 @@ class GlobalHotkey:
         self._polling = False
         self._watchdog_stop = None
         self._safe_callback = None
+        self._reregister_pending = False
+        # 序列化 _reregister_keyboard 与 unregister，避免注销与重注册并发交错
+        self._reregister_lock = threading.Lock()
 
     def register(self, hotkey: str, callback) -> bool:
         """注册全局快捷键，自动尝试 keyboard → pynput → 轮询降级"""
@@ -163,6 +166,8 @@ class GlobalHotkey:
                         _log_hotkey_event(
                             "error", "监听/处理线程已退出，尝试自动重新注册热键"
                         )
+                        # 与 unregister 用同一锁互斥：若注销已完成则停止标志已置位，
+                        # 重注册函数会因该标志直接返回，避免注销后被重新挂上
                         self._reregister_keyboard(listener)
                 except Exception:
                     logger.exception("快捷键守护线程检查异常")
@@ -171,30 +176,52 @@ class GlobalHotkey:
         t.start()
 
     def _reregister_keyboard(self, listener):
-        """重置 keyboard 监听状态并重新注册热键（尽力而为，失败则下周期再试）。"""
-        try:
-            import keyboard
+        """重置 keyboard 监听状态并重新注册热键，返回是否成功。
 
-            if self._hotkey and self._safe_callback:
+        与 unregister 持同一 `_reregister_lock`，并在锁内复查 `_watchdog_stop`：
+        - 若注销已启动（停止标志已置位或回调已清空），直接返回 False，不重新挂热键；
+        - 若 `add_hotkey` 失败，置 `_reregister_pending=True` 并返回 False，守护线程
+          下一周期会继续重试，而不是误报成功后就再也不重试。
+        """
+        with self._reregister_lock:
+            # 注销已开始（回调已清空，或停止事件已置位）：不允许重新挂热键，
+            # 也避免把已清空的回调传进 add_hotkey
+            stopped = self._safe_callback is None or (
+                self._watchdog_stop is not None
+                and getattr(self._watchdog_stop, "is_set", lambda: False)()
+            )
+            if stopped:
+                return False
+            try:
+                import keyboard
+
+                if self._hotkey:
+                    try:
+                        keyboard.remove_hotkey(self._hotkey)
+                    except Exception:
+                        pass
+                # 线程崩溃后 listening 标志仍为 True，需重置才能重启线程
                 try:
-                    keyboard.remove_hotkey(self._hotkey)
-                except Exception:
-                    pass
-            # 线程崩溃后 listening 标志仍为 True，需重置才能重启线程
-            try:
-                listener.listening = False
-                listener.start_if_necessary()
-            except Exception as e:
-                logger.warning(f"keyboard 监听可能无法直接重启，改用重新 add: {e}")
-            try:
-                keyboard.add_hotkey(self._hotkey, self._safe_callback, suppress=False)
-            except Exception as e:
-                logger.warning(f"自动重新注册快捷键失败: {e}")
-                _log_hotkey_event("error", "自动重新注册快捷键失败: %s" % e)
-            logger.info(f"全局快捷键已自动重新注册: {self._hotkey}")
-            _log_hotkey_event("info", "热键已自动重新注册: %s" % self._hotkey)
-        except Exception:
-            logger.exception("自动重新注册快捷键失败")
+                    listener.listening = False
+                    listener.start_if_necessary()
+                except Exception as e:
+                    logger.warning("keyboard 监听可能无法直接重启，改用重新 add: %s", e)
+                try:
+                    keyboard.add_hotkey(
+                        self._hotkey, self._safe_callback, suppress=False
+                    )
+                except Exception as e:
+                    self._reregister_pending = True
+                    logger.warning("自动重新注册快捷键失败: %s", e)
+                    _log_hotkey_event("error", "自动重新注册快捷键失败: %s" % e)
+                    return False
+                self._reregister_pending = False
+                logger.info(f"全局快捷键已自动重新注册: {self._hotkey}")
+                _log_hotkey_event("info", "热键已自动重新注册: %s" % self._hotkey)
+                return True
+            except Exception:
+                logger.exception("自动重新注册快捷键失败")
+                return False
 
     def _try_pynput(self, hotkey: str, callback) -> bool:
         try:
@@ -297,31 +324,34 @@ class GlobalHotkey:
 
     def unregister(self):
         """注销全局快捷键"""
-        # 先停止守护线程，避免注销后又被自动重挂
-        if self._watchdog_stop is not None:
-            self._watchdog_stop.set()
-            self._watchdog_stop = None
-        if self._backend == "keyboard":
-            try:
-                import keyboard
-
-                if self._hotkey:
-                    keyboard.remove_hotkey(self._hotkey)
-            except Exception:
-                pass
-        elif self._backend == "pynput":
-            if self._listener:
+        # 与 _reregister_keyboard 持同一锁：等待进行中的重注册完成后再注销。
+        # 置位停止标志 + 清空回调，使未开始的重注册会因标志/回调被清而直接返回，
+        # 避免注销后被守护线程重新挂上或传入已清空的回调。
+        with self._reregister_lock:
+            if self._watchdog_stop is not None:
+                self._watchdog_stop.set()
+                self._watchdog_stop = None
+            if self._backend == "keyboard":
                 try:
-                    self._listener.stop()
+                    import keyboard
+
+                    if self._hotkey:
+                        keyboard.remove_hotkey(self._hotkey)
                 except Exception:
                     pass
-                self._listener = None
-        elif self._backend == "polling":
-            self._polling = False
-            if self._thread:
-                self._thread = None
-        self._active = False
-        self._safe_callback = None
+            elif self._backend == "pynput":
+                if self._listener:
+                    try:
+                        self._listener.stop()
+                    except Exception:
+                        pass
+                    self._listener = None
+            elif self._backend == "polling":
+                self._polling = False
+                if self._thread:
+                    self._thread = None
+            self._active = False
+            self._safe_callback = None
 
     def __del__(self):
         self.unregister()

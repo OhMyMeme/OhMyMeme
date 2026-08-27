@@ -541,28 +541,29 @@ class _WebDAVBackend(_SyncBackend):
         for p in [p for p in path.strip("/").split("/") if p]:
             rel += "/" + p
             url = self._url(rel)
-            # 已确认存在的目录直接跳过，避免对同一目录重复发 MKCOL
-            # （多线程 push 时每个 worker 都会调用，服务器端易触发锁）
+            # 缓存检查 + MKCOL + 缓存更新整体持锁原子执行：并发 worker 对同一
+            # 目录只发一次 MKCOL（服务器端易触发锁）；成功/405/复核命中均写缓存，
+            # 后续调用直接跳过。
             with _dav_dirs_lock:
                 if url in _dav_dirs:
                     continue
-            try:
-                with self._request("MKCOL", url):
-                    pass
-            except urllib.error.HTTPError as e:
-                if e.code == 405:
-                    with _dav_dirs_lock:
+                try:
+                    with self._request("MKCOL", url):
+                        pass
+                    _dav_dirs.add(url)
+                    continue
+                except urllib.error.HTTPError as e:
+                    if e.code == 405:
                         _dav_dirs.add(url)
-                    continue  # 标准"已存在"
-                if 300 <= e.code < 400:
-                    # 重定向：复核集合确实存在 → 幂等继续，否则判失败
-                    if self.file_exists(rel):
-                        with _dav_dirs_lock:
+                        continue  # 标准"已存在"
+                    if 300 <= e.code < 400:
+                        # 重定向：复核集合确实存在 → 幂等继续，否则判失败
+                        if self.file_exists(rel):
                             _dav_dirs.add(url)
-                        continue
-                raise SyncError("MKCOL %s 失败: HTTP %d" % (url, e.code)) from e
-            except Exception as e:
-                raise SyncError("MKCOL %s 失败: %s" % (url, e)) from e
+                            continue
+                    raise SyncError("MKCOL %s 失败: HTTP %d" % (url, e.code)) from e
+                except Exception as e:
+                    raise SyncError("MKCOL %s 失败: %s" % (url, e)) from e
         return True
 
     def upload_file(self, local_path, remote_path):

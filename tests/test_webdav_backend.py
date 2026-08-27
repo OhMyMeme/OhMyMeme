@@ -305,6 +305,16 @@ class TestWebDAVEnsureDir(unittest.TestCase):
         self.assertEqual(urlopen.call_count, 1)
 
     @patch("src.sync.urllib.request.urlopen")
+    def test_success_also_caches_and_single_mkcol(self, urlopen):
+        urlopen.return_value = _FakeResp(207)
+        bk = _make_backend()
+        # 成功创建也写缓存：第二次调用不应再发 MKCOL
+        self.assertTrue(bk.ensure_remote_dir("memes"))
+        self.assertEqual(urlopen.call_count, 1)
+        self.assertTrue(bk.ensure_remote_dir("memes"))
+        self.assertEqual(urlopen.call_count, 1)
+
+    @patch("src.sync.urllib.request.urlopen")
     def test_301_existing_collection_ok(self, urlopen):
         # MKCOL 301，PROPFIND 复核确认集合存在 → 幂等继续
         urlopen.side_effect = [
