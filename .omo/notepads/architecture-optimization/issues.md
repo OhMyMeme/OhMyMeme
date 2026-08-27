@@ -624,6 +624,12 @@ Problems and gotchas encountered during work on this plan.
 - Added bridge contract coverage for handler identity and retained existing representative ABI tests. Focused bridge/startup/import/sync/LAN suite passed `182 passed, 1 skipped`; full suite passed `450 passed, 1 skipped`.
 - Ruff, Black, and scoped `git diff --check` passed. The pre-existing `src/webui/settings.js` worktree change was not touched or staged.
 
+## 2026-08-28 shared catalog query predicates
+
+- Baseline `mise exec -- python -m pytest tests/test_core.py tests/test_startup.py::test_database_operations -q` passed `37`; the first new Catalog matrix run intentionally failed on list handling, then passed after positive descendant expansion was moved into the shared Catalog route helper.
+- Linked-worktree `lsp_diagnostics` was attempted for both production files and the new test file but rejected with `LSP file path must be inside request cwd`; no LSP-clean claim is made.
+- Full serial verification passed `460 passed, 1 skipped`; ruff, black, diff-check, and `CATALOG_QUERY_SMOKE_OK` passed. Protected dirty files remain outside the scoped change.
+
 ## 2026-08-28 independent Task 9 verification after `7f8c266`
 
 - Verification stayed exclusively in linked worktree `C:/Users/abbey/AppData/Local/Temp/opencode/ohmymeme-architecture-optimization-baseline`, at exact HEAD `7f8c266f55be865fb811fe05a28e6abb88d56ef4`. Native status before this append contained only the inherited protected `M src/webui/settings.js`; `git worktree list --porcelain` confirmed the main worktree is `D:/UserFiles/Development/Projects/OhMyMeme` on `gitbutler/workspace`. No source, tests, plan, README, AGENTS, or protected main-worktree file was modified, and no reset/stash/discard/amend/force/commit operation was used.

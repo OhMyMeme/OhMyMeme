@@ -76,3 +76,9 @@ Conventions and successful approaches discovered during work on this plan.
 - Added behavior-level bridge coverage for main/settings façade calls: exact positional arguments, defaults, representative return types, importer/update/sync envelopes, and settings refresh JavaScript expressions are asserted through recording handlers and deterministic module fakes.
 - Added platform failure coverage proving non-Windows and missing pythonnet/WinForms native drag return `False` without scheduling hotkey-session hide; missing dynamic methods retain the established `None` failure shape.
 - Task 9 remains structurally blocked and unconfirmed; these tests intentionally guard façade contracts before and after any future decomposition without changing the blocked implementation.
+
+## 2026-08-28 shared catalog query predicates
+
+- `MemeDB._build_meme_filters()` is the single predicate/parameter construction seam for `search()` and `count()`; query-specific SELECT, ordering, and pagination remain in their callers.
+- `Catalog._query_collection()` centralizes `-2` favorite, `-3` recent, `-4` uncategorized, and positive descendant expansion while recent search/count remain independent paths.
+- Real SQLite coverage confirms combined keyword/tag/descendant filters, favorite and uncategorized virtual collections, stego carrier exclusion, invalid tags/collections, pagination boundaries, sorting, and `get_collections()` recent counts.

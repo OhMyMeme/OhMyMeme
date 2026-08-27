@@ -418,17 +418,15 @@ class MemeDB:
 
     # --- 搜索 ---
 
-    def search(
+    def _build_meme_filters(
         self,
         keyword: str = "",
         tags: List[str] = None,
         collection_id: int = None,
         favorite_only: bool = False,
         uncategorized_only: bool = False,
-        offset: int = 0,
-        limit: int = 100,
-    ) -> List[dict]:
-        conn = self._get_conn()
+    ):
+        """构建搜索和计数共用的筛选条件及参数。"""
         where = ["(m.stego_of_hash IS NULL OR m.stego_of_hash = '')"]
         params = []
 
@@ -472,6 +470,23 @@ class MemeDB:
                 SELECT 1 FROM meme_collections mc WHERE mc.meme_id = m.id
             )""")
 
+        return where, params
+
+    def search(
+        self,
+        keyword: str = "",
+        tags: List[str] = None,
+        collection_id: int = None,
+        favorite_only: bool = False,
+        uncategorized_only: bool = False,
+        offset: int = 0,
+        limit: int = 100,
+    ) -> List[dict]:
+        conn = self._get_conn()
+        where, params = self._build_meme_filters(
+            keyword, tags, collection_id, favorite_only, uncategorized_only
+        )
+
         sql = "SELECT m.* FROM memes m"
         if where:
             sql += " WHERE " + " AND ".join(where)
@@ -502,42 +517,10 @@ class MemeDB:
         uncategorized_only: bool = False,
     ) -> int:
         conn = self._get_conn()
-        where = ["(stego_of_hash IS NULL OR stego_of_hash = '')"]
-        params = []
-        if keyword:
-            where.append("(filename LIKE ? OR original_name LIKE ?)")
-            kw = f"%{keyword}%"
-            params.extend([kw, kw])
-        if tags:
-            placeholders = ",".join("?" for _ in tags)
-            where.append(f"""id IN (
-                SELECT mt.meme_id FROM meme_tags mt
-                JOIN tags t ON t.id = mt.tag_id
-                WHERE t.name IN ({placeholders})
-                GROUP BY mt.meme_id HAVING COUNT(DISTINCT t.id) = ?
-            )""")
-            params.extend(tags)
-            params.append(len(tags))
-        if collection_id is not None:
-            if isinstance(collection_id, list):
-                placeholders = ",".join("?" for _ in collection_id)
-                where.append(f"""id IN (
-                    SELECT meme_id FROM meme_collections
-                    WHERE collection_id IN ({placeholders})
-                )""")
-                params.extend(collection_id)
-            else:
-                where.append("""id IN (
-                    SELECT meme_id FROM meme_collections WHERE collection_id = ?
-                )""")
-                params.append(collection_id)
-        if favorite_only:
-            where.append("id IN (SELECT meme_id FROM favorites)")
-        if uncategorized_only:
-            where.append("""NOT EXISTS (
-                SELECT 1 FROM meme_collections WHERE meme_id = memes.id
-            )""")
-        sql = "SELECT COUNT(*) FROM memes"
+        where, params = self._build_meme_filters(
+            keyword, tags, collection_id, favorite_only, uncategorized_only
+        )
+        sql = "SELECT COUNT(*) FROM memes m"
         if where:
             sql += " WHERE " + " AND ".join(where)
         row = conn.execute(sql, params).fetchone()

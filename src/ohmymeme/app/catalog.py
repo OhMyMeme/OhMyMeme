@@ -23,19 +23,12 @@ class Catalog:
         self, keyword="", tags=None, collection_id=None, offset=0, limit=200
     ):
         tags = tags or None
-        favorite_only = collection_id == -2
-        recent_only = collection_id == -3
-        uncategorized_only = collection_id == -4
-        target_collection = (
-            None
-            if favorite_only or recent_only or uncategorized_only
-            else collection_id
+        target_collection, favorite_only, recent_only, uncategorized_only = (
+            self._query_collection(collection_id)
         )
         if recent_only:
             rows = self._db.get_recent(limit, offset)
         else:
-            if target_collection is not None and target_collection > 0:
-                target_collection = self._collection_ids(target_collection)
             rows = self._db.search(
                 keyword=keyword,
                 tags=tags,
@@ -49,15 +42,11 @@ class Catalog:
 
     def count_memes(self, keyword="", tags=None, collection_id=None):
         tags = tags or None
-        if collection_id == -3:
-            return self._db.count_recent()
-        favorite_only = collection_id == -2
-        uncategorized_only = collection_id == -4
-        target_collection = (
-            None if favorite_only or uncategorized_only else collection_id
+        target_collection, favorite_only, recent_only, uncategorized_only = (
+            self._query_collection(collection_id)
         )
-        if target_collection is not None and target_collection > 0:
-            target_collection = self._collection_ids(target_collection)
+        if recent_only:
+            return self._db.count_recent()
         return self._db.count(
             keyword=keyword,
             tags=tags,
@@ -65,6 +54,20 @@ class Catalog:
             favorite_only=favorite_only,
             uncategorized_only=uncategorized_only,
         )
+
+    def _query_collection(self, collection_id):
+        """解析特殊分组并保留普通分组筛选值。"""
+        favorite_only = collection_id == -2
+        recent_only = collection_id == -3
+        uncategorized_only = collection_id == -4
+        target_collection = (
+            None
+            if favorite_only or recent_only or uncategorized_only
+            else collection_id
+        )
+        if isinstance(target_collection, int) and target_collection > 0:
+            target_collection = self._collection_ids(target_collection)
+        return target_collection, favorite_only, recent_only, uncategorized_only
 
     def get_tags(self):
         return self._db.get_all_tags()
