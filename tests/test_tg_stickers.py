@@ -452,6 +452,25 @@ class TestWorkerParallelState(unittest.TestCase):
         """转换循环 _TG_LOCK 内累加 done——RLock 支持 _update_tg 嵌套取锁"""
         self.assertEqual(type(tg._TG_LOCK).__name__, "RLock")
 
+    def test_cleanup_failure_is_terminal_error(self):
+        # Given: a completed worker whose temporary directory cannot be removed.
+        tdata = Path(tempfile.mkdtemp(prefix="tg_cleanup_failure_"))
+        (tdata / "user_data" / "cache").mkdir(parents=True)
+        (tdata / "key_datas").write_bytes(b"key")
+
+        # When: final cleanup raises an OS error.
+        with mock.patch.object(
+            tg, "read_local_key", return_value=b"key"
+        ), mock.patch.object(tg, "shutil") as cleanup:
+            cleanup.rmtree.side_effect = OSError("cleanup failed")
+            tg._tg_worker(
+                lambda _paths: {"ids": [], "rejected": 0}, str(tdata), "", True
+            )
+
+        # Then: success is not reported when the owned temporary resource remains.
+        self.assertEqual(tg.get_tg_progress()["status"], "error")
+        self.assertIn("cleanup failed", tg.get_tg_progress()["error"])
+
 
 if __name__ == "__main__":
     unittest.main()

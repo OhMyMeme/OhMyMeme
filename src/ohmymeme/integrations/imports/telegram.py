@@ -870,6 +870,11 @@ def _tg_worker(import_callback, tdata_path, passcode, convert_webm):
     finally:
         if temp_dir and os.path.isdir(temp_dir):
             try:
-                shutil.rmtree(temp_dir, ignore_errors=True)
-            except Exception:
-                pass
+                shutil.rmtree(temp_dir)
+            except OSError as error:
+                logger.error("tg import cleanup failed: %s", error)
+                _update_tg(
+                    status="error",
+                    error_code="cleanup_failed",
+                    error=f"临时文件清理失败: {error}",
+                )

@@ -1014,7 +1014,19 @@ def _qqnt_worker(
                 }
             ]
             if paths:
-                import_callback(paths)
+                result = import_callback(paths)
+                if _QQNT_CANCEL or (
+                    cancellation_event is not None and cancellation_event.is_set()
+                ):
+                    imported_ids = getattr(result, "imported_ids", ())
+                    if isinstance(result, dict):
+                        imported_ids = result.get("ids", [])
+                    if imported_ids:
+                        self_cleanup = getattr(import_callback, "__self__", None)
+                        if self_cleanup is not None and hasattr(
+                            self_cleanup, "delete_memes"
+                        ):
+                            self_cleanup.delete_memes(imported_ids)
         if _QQNT_CANCEL or (
             cancellation_event is not None and cancellation_event.is_set()
         ):

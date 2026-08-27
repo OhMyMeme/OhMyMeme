@@ -235,6 +235,48 @@ def test_qqnt_output_is_user_owned_and_projected_through_library(monkeypatch, tm
     assert library.calls == [([str(image_path)], None)]
 
 
+def test_qqnt_cancel_during_projection_rolls_back_library_import(monkeypatch, tmp_path):
+    # Given: projection requests cancellation after the application import commits.
+    from ohmymeme.presentation.desktop import window_manager
+
+    output_dir = tmp_path / "qqnt-output"
+    output_dir.mkdir()
+    image_path = output_dir / "sticker.png"
+    image_path.write_bytes(b"image")
+    rollback = []
+    finished = __import__("threading").Event()
+    webui = FakeWebUI()
+    webui._container.job_manager = None
+
+    class Library:
+        def import_paths(self, _paths):
+            rollback.append([42])
+            window_manager.cancel_qqnt_extract()
+            finished.set()
+            return {"ids": [42], "rejected": 0}
+
+        def delete_memes(self, ids):
+            rollback.append(list(ids))
+
+    webui._container.library = Library()
+    settings = SettingsApi(webui, FakeSettings(None))
+
+    def extract(_qq_number, destination, **_kwargs):
+        Path(destination).mkdir(parents=True, exist_ok=True)
+        image_path.touch()
+        return {"output_dir": destination, "copied": 1}
+
+    monkeypatch.setattr(window_manager.qqnt, "extract_qq_emojis", extract)
+
+    # When: extraction projects and cancellation is raised during that handoff.
+    assert settings.qqnt_start("123", str(output_dir))["ok"] is True
+    assert finished.wait(1)
+
+    # Then: the committed projection is compensated while user output remains.
+    assert rollback == [[42], [42]]
+    assert image_path.exists()
+
+
 def test_js_import_memes_delegates_import_and_preserves_failure_shape(monkeypatch):
     # Given: the dialog returns files and the application import fails.
     webui = FakeWebUI()
