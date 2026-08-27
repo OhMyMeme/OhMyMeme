@@ -56,9 +56,9 @@ from ohmymeme.integrations.platform.clipboard import (
     convert_image_mode_3,
     copy_image_to_clipboard,
 )
-from ohmymeme.services import updates as updater
 from ohmymeme.services.sync import service as sync_module
 
+from .api.handlers import create_handlers
 from .bottle_app import install_security_hooks
 from .import_workers import import_paths
 from .media import thumbnail_path
@@ -213,19 +213,22 @@ class JsApi:
         self._catalog = catalog
         self._settings = settings
         self._library = library
+        self._handlers = create_handlers(webui, catalog, settings, library)
 
     def search_memes(
         self, keyword="", tags=None, collection_id=None, offset=0, limit=200
     ):
         """搜索表情，支持 offset/limit 分页"""
-        return self._catalog.search_memes(keyword, tags, collection_id, offset, limit)
+        return self._handlers["meme"].search_memes(
+            keyword, tags, collection_id, offset, limit
+        )
 
     def count_memes(self, keyword="", tags=None, collection_id=None) -> int:
         """统计符合搜索条件（关键字/标签/分组/收藏/最近使用）的表情总数，供分页"""
-        return self._catalog.count_memes(keyword, tags, collection_id)
+        return self._handlers["meme"].count_memes(keyword, tags, collection_id)
 
     def get_tags(self) -> list:
-        return self._catalog.get_tags()
+        return self._handlers["meme"].get_tags()
 
     def get_meme_tags(self, meme_id):
         """返回某表情的标签列表"""
@@ -241,11 +244,11 @@ class JsApi:
 
     def get_meme_path(self, meme_id: int) -> str:
         """返回表情本地文件路径（供拖拽到外部应用），不存在返回空串"""
-        return self._catalog.get_meme_path(meme_id)
+        return self._handlers["meme"].get_meme_path(meme_id)
 
     def get_meme_paths(self, meme_ids: list) -> dict:
         """批量返回表情本地文件路径 {id: path}，供拖拽到外部应用"""
-        return self._catalog.get_meme_paths(meme_ids)
+        return self._handlers["meme"].get_meme_paths(meme_ids)
 
     def start_native_drag(self, meme_id: int) -> bool:
         """用 WinForms DoDragDrop 启动原生文件拖拽（QQ/微信可接收真实文件）"""
@@ -290,10 +293,10 @@ class JsApi:
         return {"ok": True, "status": "copied"}
 
     def toggle_favorite(self, meme_id: int) -> bool:
-        return self._library.toggle_favorite(meme_id)
+        return self._handlers["meme"].toggle_favorite(meme_id)
 
     def is_favorite(self, meme_id: int) -> bool:
-        return self._library.is_favorite(meme_id)
+        return self._handlers["meme"].is_favorite(meme_id)
 
     def rename_meme(self, meme_id: int, new_name: str) -> bool:
         if not new_name:
@@ -449,33 +452,23 @@ class JsApi:
 
     # 非阻塞检查更新：新鲜缓存即返，首次/过期/force 触发后台检查返回 pending
     def check_update(self, debug=False, force=False) -> dict:
-        from ohmymeme import __version__ as cur_ver
-
-        info = updater.check_latest_cached(force=bool(debug) or bool(force))
-        info["current"] = cur_ver
-        if debug or self._webui._update_debug:
-            info["has_update"] = True
-        return info
+        return self._handlers["update"].check_update(debug, force)
 
     def start_download(self, url: str) -> bool:
-        return updater.start_download(url)
+        return self._handlers["update"].start_download(url)
 
     def get_download_progress(self) -> dict:
-        return updater.get_download_progress()
+        return self._handlers["update"].download_progress()
 
     def run_downloaded_installer(self) -> bool:
-        ok = updater.run_downloaded_installer()
+        ok = self._handlers["update"].run_downloaded_installer()
         if ok:
             self._webui._schedule_quit()
         return ok
 
     def download_update(self, url: str) -> dict:
         """同步下载（旧版，保留兼容）"""
-        path = updater.download_release(url)
-        if not path:
-            return {"ok": False, "error": "download failed"}
-        ok = updater.run_installer(path)
-        return {"ok": ok, "error": "" if ok else "run installer failed"}
+        return self._handlers["update"].download_update(url)
 
     def check_connectivity(self) -> dict:
         return _check_connectivity()
@@ -583,11 +576,11 @@ class JsApi:
                 pass
 
     def get_sync_progress(self) -> dict:
-        return sync_module.get_sync_progress()
+        return self._handlers["sync"].progress()
 
     def sync_push(self) -> dict:
         try:
-            r = self._webui._container.create_sync_service().push()
+            r = self._handlers["sync"].service().push()
             r["ok"] = True
             return r
         except Exception as e:
@@ -599,7 +592,7 @@ class JsApi:
 
     def sync_pull(self) -> dict:
         try:
-            r = self._webui._container.create_sync_service().pull()
+            r = self._handlers["sync"].service().pull()
             r["ok"] = True
             return r
         except Exception as e:
@@ -612,13 +605,13 @@ class JsApi:
     def run_auto_sync(self) -> dict:
         """启动时自动同步：根据配置拉取远端索引和/或全量同步"""
         try:
-            return self._webui._container.create_sync_service().auto_sync()
+            return self._handlers["sync"].service().auto_sync()
         except Exception as e:
             return {"fetched": False, "synced": False, "error": str(e)}
 
     def sync_test(self) -> str:
         try:
-            return self._webui._container.create_sync_service().test_connection()
+            return self._handlers["sync"].service().test_connection()
         except Exception as e:
             return str(e)
 
@@ -1060,6 +1053,9 @@ class SettingsApi:
         self._cfg = webui._cfg
         self._settings = settings
         self._library = webui._container.library
+        self._handlers = create_handlers(
+            webui, getattr(webui._container, "catalog", None), settings, self._library
+        )
 
     def check_connectivity(self) -> dict:
         return _check_connectivity()
@@ -1518,7 +1514,7 @@ class SettingsApi:
         if not result:
             return {"ok": False, "cancelled": True}
         try:
-            r = _import_result_payload(self._library.import_paths(result))
+            r = _import_result_payload(self._handlers["import"].import_paths(result))
         except Exception as e:
             return {"ok": False, "error": str(e)}
         return {
@@ -1537,32 +1533,22 @@ class SettingsApi:
 
     # 非阻塞检查更新：新鲜缓存即返，首次/过期/force 触发后台检查返回 pending
     def check_update(self, debug=False, force=False) -> dict:
-        from ohmymeme import __version__ as cur_ver
-
-        info = updater.check_latest_cached(force=bool(debug) or bool(force))
-        info["current"] = cur_ver
-        if debug or self._webui._update_debug:
-            info["has_update"] = True
-        return info
+        return self._handlers["update"].check_update(debug, force)
 
     def start_download(self, url: str) -> bool:
-        return updater.start_download(url)
+        return self._handlers["update"].start_download(url)
 
     def get_download_progress(self) -> dict:
-        return updater.get_download_progress()
+        return self._handlers["update"].download_progress()
 
     def run_downloaded_installer(self) -> bool:
-        ok = updater.run_downloaded_installer()
+        ok = self._handlers["update"].run_downloaded_installer()
         if ok:
             self._webui._schedule_quit()
         return ok
 
     def download_update(self, url: str) -> dict:
-        path = updater.download_release(url)
-        if not path:
-            return {"ok": False, "error": "download failed"}
-        ok = updater.run_installer(path)
-        return {"ok": ok, "error": "" if ok else "run installer failed"}
+        return self._handlers["update"].download_update(url)
 
     def get_sync_progress(self) -> dict:
         return sync_module.get_sync_progress()

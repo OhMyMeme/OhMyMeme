@@ -1,6 +1,7 @@
 from pathlib import Path
 from types import SimpleNamespace
 
+from ohmymeme.presentation.desktop.api.handlers import create_handlers
 from ohmymeme.presentation.desktop.window_manager import JsApi, SettingsApi
 
 
@@ -185,6 +186,27 @@ def test_js_business_paths_delegate_without_db_access():
     # Then: all decisions were delegated to application services.
     assert ("meme_path", 1) in catalog.calls
     assert ("toggle_favorite", 1) in library.calls
+
+
+def test_bridge_handlers_share_container_owned_dependencies():
+    # Given: one Container-owned dependency graph exposed through both facades.
+    webui = FakeWebUI()
+    library = FakeLibrary(True)
+    catalog = FakeCatalog({})
+    webui._container.catalog = catalog
+    webui._container.settings = object()
+    webui._container.job_manager = object()
+
+    # When: domain handlers are created for the desktop bridge.
+    handlers = create_handlers(webui, catalog, webui._container.settings, library)
+
+    # Then: every handler retains the same application-owned resources.
+    assert handlers["meme"].catalog is catalog
+    assert handlers["meme"].library is library
+    assert handlers["import"].library is library
+    assert handlers["import"].job_manager is webui._container.job_manager
+    assert handlers["sync"].container is webui._container
+    assert handlers["window_settings"].webui is webui
 
 
 def test_qqnt_output_is_user_owned_and_projected_through_library(monkeypatch, tmp_path):
