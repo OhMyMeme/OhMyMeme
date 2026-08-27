@@ -135,6 +135,54 @@ def test_qqnt_job_manager_cancel_propagates_to_worker(monkeypatch):
         manager.shutdown(1)
 
 
+def test_qqnt_legacy_start_is_single_flight(monkeypatch):
+    from ohmymeme.presentation.desktop import window_manager
+
+    entered = __import__("threading").Event()
+    release = __import__("threading").Event()
+    calls = []
+
+    def worker(*_args, **_kwargs):
+        calls.append(True)
+        entered.set()
+        release.wait(1)
+
+    monkeypatch.setattr(window_manager, "_qqnt_worker", worker)
+    window_manager._set_qqnt(status="idle", progress=0, result=None)
+    try:
+        assert window_manager.start_qqnt_extract("1", "out") is True
+        assert entered.wait(1)
+        assert window_manager.start_qqnt_extract("1", "out") is False
+        assert calls == [True]
+    finally:
+        release.set()
+        assert window_manager.get_qqnt_progress()["status"] == "running"
+        window_manager._set_qqnt(status="idle", progress=0, result=None)
+
+
+def test_qqnt_managed_fast_completion_does_not_publish_stale_job_id(monkeypatch):
+    from ohmymeme.app.job_manager import JobManager
+    from ohmymeme.presentation.desktop import window_manager
+
+    def worker(*_args, **_kwargs):
+        window_manager._set_qqnt(status="done", progress=100, result={"ok": True})
+
+    monkeypatch.setattr(window_manager, "_qqnt_worker", worker)
+    manager = JobManager()
+    try:
+        assert window_manager.start_qqnt_extract("1", "out", job_manager=manager)
+        deadline = __import__("time").monotonic() + 1
+        while __import__("time").monotonic() < deadline:
+            if window_manager.get_qqnt_progress()["status"] == "done":
+                break
+        assert manager.active("import.qqnt") is None
+        state = window_manager.get_qqnt_progress()
+        assert state["status"] == "done"
+        assert window_manager._QQNT_JOB_ID is None
+    finally:
+        manager.shutdown(1)
+
+
 class _FakeConfig:
     def __init__(self, hotkey_show_at_mouse):
         self.hotkey_show_at_mouse = hotkey_show_at_mouse

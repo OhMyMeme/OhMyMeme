@@ -862,10 +862,18 @@ def start_qqnt_extract(
     global _QQNT_CANCEL, _QQNT_JOB_MANAGER, _QQNT_JOB_ID
     if job_manager is not None and job_manager.active("import.qqnt") is not None:
         return False
-    _QQNT_CANCEL = False
-    _set_qqnt(
-        status="running", progress=0, message="准备中", error="", log=[], result=None
-    )
+    with _QQNT_LOCK:
+        if job_manager is None and _QQNT_STATE["status"] == "running":
+            return False
+        _QQNT_CANCEL = False
+        _QQNT_STATE.update(
+            status="running",
+            progress=0,
+            message="准备中",
+            error="",
+            log=[],
+            result=None,
+        )
     args = (
         qq_number,
         output_dir,
@@ -897,7 +905,9 @@ def start_qqnt_extract(
         )
         if not created:
             return False
-        _QQNT_JOB_ID = record.id
+        with _QQNT_LOCK:
+            if job_manager.active("import.qqnt") is not None:
+                _QQNT_JOB_ID = record.id
     return True
 
 
