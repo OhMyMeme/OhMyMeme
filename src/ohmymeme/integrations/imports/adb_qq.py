@@ -366,10 +366,22 @@ def start_qq_import(job_manager=None):
     global _QQ_CANCEL
     if job_manager is not None and job_manager.active("import.adb_qq") is not None:
         return False
-    _QQ_CANCEL = False
     if job_manager is None:
+        with _QQ_LOCK:
+            if _QQ_STATE["status"] in _QQ_ACTIVE:
+                return False
+            _QQ_CANCEL = False
+            _QQ_STATE.update(
+                status="downloading_adb",
+                progress=0,
+                message="检查 ADB...",
+                error="",
+                zip_path="",
+                dl_progress=0,
+            )
         threading.Thread(target=_qq_worker, daemon=True).start()
     else:
+        _QQ_CANCEL = False
 
         def target(context):
             global _QQ_JOB_CANCEL, _QQ_JOB_SNAPSHOT

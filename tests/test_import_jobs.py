@@ -188,3 +188,27 @@ def test_adb_cancel_does_not_overwrite_terminal_done_state():
         assert state["zip_path"] == "result.zip"
     finally:
         adb_qq.reset_qq_import()
+
+
+def test_adb_legacy_start_is_single_flight(monkeypatch):
+    entered = threading.Event()
+    release = threading.Event()
+    calls = []
+
+    def worker():
+        calls.append(True)
+        entered.set()
+        release.wait(1)
+
+    monkeypatch.setattr(adb_qq, "_qq_worker", worker)
+    adb_qq.reset_qq_import()
+    try:
+        assert adb_qq.start_qq_import() is True
+        assert entered.wait(1)
+        assert adb_qq.start_qq_import() is False
+        assert calls == [True]
+    finally:
+        adb_qq.cancel_qq_import()
+        release.set()
+        assert adb_qq.get_qq_progress()["status"] == "cancelled"
+        adb_qq.reset_qq_import()
