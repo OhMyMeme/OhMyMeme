@@ -37,6 +37,7 @@ Conventions and successful approaches discovered during work on this plan.
 - Legacy ADB admission must reserve the module-level active phase while holding `_QQ_LOCK`, before creating its daemon thread. This preserves the old no-manager ABI while preventing two workers from sharing `_QQ_STATE` and `_QQ_CANCEL`.
 - QQNT legacy admission similarly reserves `running` under `_QQNT_LOCK` before spawning; managed post-start binding must check JobManager activity before publishing a job ID, preventing a fast worker's cleanup from being overwritten.
 - Cancellation binding belongs in the JobManager admission transaction, before the worker thread is started. This avoids a public cancel racing between record creation and importer-local `_JOB_CANCEL` initialization while preserving each adapter's legacy progress dictionary.
+- Managed ADB uses its admission-bound cancellation event as activity proof before `_qq_worker` publishes its first phase; this permits immediate cancel while retaining active-only terminal state protection.
 - A JobManager thread is an isolated task boundary: ordinary `Exception` keeps its historical `str(error)` mapping, while any `BaseException` escaping the worker is finalized there so thread exit cannot orphan an active slot. Cancellation event state determines whether that exceptional exit is externally `cancelled` or `error`.
 
 ## 2026-08-27 explicit pull metadata boundary
