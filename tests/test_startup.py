@@ -164,7 +164,12 @@ def test_qqnt_managed_fast_completion_does_not_publish_stale_job_id(monkeypatch)
     from ohmymeme.app.job_manager import JobManager
     from ohmymeme.presentation.desktop import window_manager
 
+    entered = __import__("threading").Event()
+    release = __import__("threading").Event()
+
     def worker(*_args, **_kwargs):
+        entered.set()
+        release.wait(1)
         window_manager._set_qqnt(status="done", progress=100, result={"ok": True})
 
     monkeypatch.setattr(window_manager, "_qqnt_worker", worker)
@@ -173,6 +178,8 @@ def test_qqnt_managed_fast_completion_does_not_publish_stale_job_id(monkeypatch)
         assert window_manager.start_qqnt_extract("1", "out", job_manager=manager)
         record = manager.active("import.qqnt")
         assert record is not None
+        assert entered.wait(1)
+        release.set()
         assert manager.wait(record.id, 1)
         assert manager.active("import.qqnt") is None
         state = window_manager.get_qqnt_progress()
@@ -187,9 +194,13 @@ def test_qqnt_managed_binding_does_not_replace_current_task_id(monkeypatch):
     from ohmymeme.presentation.desktop import window_manager
 
     calls = []
+    entered = __import__("threading").Event()
+    release = __import__("threading").Event()
 
     def worker(*args, **_kwargs):
         calls.append(args[0])
+        entered.set()
+        release.wait(1)
 
     monkeypatch.setattr(window_manager, "_qqnt_worker", worker)
     manager = JobManager()
@@ -197,6 +208,8 @@ def test_qqnt_managed_binding_does_not_replace_current_task_id(monkeypatch):
         assert window_manager.start_qqnt_extract("a", "out", job_manager=manager)
         current = manager.active("import.qqnt")
         assert current is not None
+        assert entered.wait(1)
+        release.set()
         assert manager.wait(current.id, 1)
         assert window_manager._QQNT_JOB_ID is None
         assert calls == ["a"]
