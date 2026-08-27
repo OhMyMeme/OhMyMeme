@@ -192,10 +192,12 @@ class JobManager:
                         else "completed"
                     )
                     self._finish_locked(record.id, status)
-        except (KeyboardInterrupt, SystemExit) as error:
-            self._finish(record.id, "error", f"{type(error).__name__}: {error}")
         except Exception as error:  # noqa: BLE001
             self._finish(record.id, "error", str(error))
+        except BaseException as error:  # noqa: BLE001, BROAD_EXCEPT_OK
+            status = "cancelled" if context.cancellation_event.is_set() else "error"
+            message = f"{type(error).__name__}: {error}"
+            self._finish(record.id, status, message)
 
     def _update(
         self, job_id, progress=None, phase="", message="", error_code="", error=None

@@ -176,3 +176,23 @@ def test_base_exception_worker_is_finalized_and_releases_active_slot(base_error)
         assert manager.active("interrupt") is None
     finally:
         manager.shutdown(1)
+
+
+def test_arbitrary_base_exception_worker_is_finalized_and_releases_active_slot():
+    class ControlledBaseException(BaseException):
+        pass
+
+    manager = JobManager()
+
+    def interrupted(_context):
+        raise ControlledBaseException("controlled base exception")
+
+    try:
+        record = manager.start("custom-interrupt", interrupted)
+        assert manager.wait(record.id, 1)
+        snapshot = manager.get(record.id)
+        assert snapshot.status == "error"
+        assert snapshot.error == ("ControlledBaseException: controlled base exception")
+        assert manager.active("custom-interrupt") is None
+    finally:
+        manager.shutdown(1)
