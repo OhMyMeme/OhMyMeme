@@ -102,6 +102,22 @@ def test_container_rejects_new_service_admission_after_close(tmp_path):
         container.create_sync_service()
 
 
+def test_container_rejects_new_hotkey_after_close(tmp_path):
+    container = Container(tmp_path / "closed-hotkey")
+    container.close()
+
+    with pytest.raises(RuntimeError, match="shut down"):
+        container.create_hotkey()
+
+
+def test_container_rejects_new_tray_after_close(tmp_path):
+    container = Container(tmp_path / "closed-tray")
+    container.close()
+
+    with pytest.raises(RuntimeError, match="shut down"):
+        container.create_tray(lambda: None, lambda: None, "source")
+
+
 def test_container_factory_admission_is_atomic_with_close(monkeypatch, tmp_path):
     container = Container(tmp_path / "admission-race")
     entered = threading.Event()

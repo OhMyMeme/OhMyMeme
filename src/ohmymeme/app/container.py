@@ -125,10 +125,16 @@ class Container:
             raise RuntimeError("container is shut down")
 
     def create_hotkey(self):
-        return GlobalHotkey()
+        with self._close_lock:
+            self._ensure_open()
+            return GlobalHotkey()
 
     def create_tray(self, on_show, on_quit, source_mode):
-        return TrayManager(on_show=on_show, on_quit=on_quit, source_mode=source_mode)
+        with self._close_lock:
+            self._ensure_open()
+            return TrayManager(
+                on_show=on_show, on_quit=on_quit, source_mode=source_mode
+            )
 
     def close(
         self,
