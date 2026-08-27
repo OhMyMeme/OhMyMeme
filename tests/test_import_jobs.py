@@ -486,3 +486,53 @@ def test_closed_manager_rolls_back_wechat_admission_state():
     finally:
         manager.shutdown(1)
         wechat._reset_state()
+
+
+def test_telegram_cancel_then_restart_isolates_old_snapshot_callback(monkeypatch):
+    entered = [threading.Event(), threading.Event()]
+    release = [threading.Event(), threading.Event()]
+    callbacks = []
+    calls = []
+
+    def worker(*_args):
+        index = len(calls)
+        calls.append(index)
+        callbacks.append(telegram._TG_JOB_SNAPSHOT)
+        entered[index].set()
+        release[index].wait(1)
+
+    monkeypatch.setattr(telegram, "_tg_worker", worker)
+    manager = JobManager()
+    try:
+        telegram._reset_state()
+        telegram._TG_JOB_CANCEL = None
+        telegram._TG_JOB_SNAPSHOT = None
+        assert telegram.start_tg_import(lambda _paths: {}, "first", job_manager=manager)
+        first = manager.active("import.telegram")
+        assert first is not None
+        assert entered[0].wait(1)
+        assert manager.cancel(first.id)
+        telegram._update_tg(status="cancelled", message="已取消")
+        release[0].set()
+        assert manager.wait(first.id, 1)
+        assert manager.get(first.id).status == "cancelled"
+
+        assert telegram.start_tg_import(
+            lambda _paths: {}, "second", job_manager=manager
+        )
+        second = manager.active("import.telegram")
+        assert second is not None
+        assert entered[1].wait(1)
+        callbacks[0](phase="late", progress=0.9, message="late")
+        current = manager.get(second.id)
+        assert current.status == "running"
+        assert current.message != "late"
+        release[1].set()
+        assert manager.wait(second.id, 1)
+        assert manager.get(second.id).status == "completed"
+        assert calls == [0, 1]
+    finally:
+        for event in release:
+            event.set()
+        manager.shutdown(1)
+        telegram._reset_state()
