@@ -131,6 +131,22 @@ class TestConvertProcessLifecycle(unittest.TestCase):
         # 已终止进程从集合保留（由 convert/discard 清理），这里验证终止被调用即可
         tg._reset_state()
 
+    def test_reset_keeps_live_process_registered_until_exit(self):
+        proc = DummyProc()
+        with tg._TG_LOCK:
+            tg._TG_ACTIVE_PROC.add(proc)
+
+        tg._reset_state()
+
+        self.assertTrue(proc.terminated)
+        with tg._TG_LOCK:
+            self.assertIn(proc, tg._TG_ACTIVE_PROC)
+
+        proc.returncode = 0
+        tg._reap_proc(proc, timeout=0)
+        with tg._TG_LOCK:
+            self.assertNotIn(proc, tg._TG_ACTIVE_PROC)
+
     def test_reap_keeps_process_registered_until_it_exits(self):
         class StillRunningProc(DummyProc):
             def __init__(self):

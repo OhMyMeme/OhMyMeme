@@ -130,13 +130,15 @@ def _reset_state():
     _TG_CANCEL = False
     _TG_T0 = None
     with _TG_LOCK:
-        for p in list(_TG_ACTIVE_PROC):
+        active_processes = list(_TG_ACTIVE_PROC)
+        for p in active_processes:
             if p.poll() is None:
                 try:
                     p.terminate()
                 except Exception:
                     pass
-        _TG_ACTIVE_PROC.clear()
+            else:
+                _TG_ACTIVE_PROC.discard(p)
     _update_tg(
         status="idle",
         progress=0,

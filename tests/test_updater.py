@@ -81,10 +81,13 @@ class TestCheckLatestCached(unittest.TestCase):
     # force=True 时即使有新鲜缓存也触发重新检查
     def test_force_triggers_recheck_despite_fresh_cache(self):
         calls = []
+        second_started = threading.Event()
 
         def tracking():
             # 记录每次真实请求次数
             calls.append(1)
+            if len(calls) == 2:
+                second_started.set()
             return dict(_SLOW_RESULT)
 
         with mock.patch.object(updater, "check_latest", side_effect=tracking):
@@ -102,7 +105,7 @@ class TestCheckLatestCached(unittest.TestCase):
             self.assertEqual(len(calls), 1)
             # force=True：立即触发再一次后台检查（fresh 缓存被忽略）
             self.assertIs(updater.check_latest_cached(force=True).get("pending"), True)
-            time.sleep(0.2)
+            self.assertTrue(second_started.wait(1))
             self.assertEqual(len(calls), 2)
 
     # 缓存超 24h 后非 force 也触发重新检查
