@@ -245,3 +245,48 @@ def test_try_start_rolls_back_when_thread_start_fails(monkeypatch):
         assert manager.active("thread-failure") is None
     finally:
         manager.shutdown(1)
+
+
+@pytest.mark.parametrize("failure_stage", ("admit", "thread"))
+def test_try_start_finalizes_arbitrary_base_exception(failure_stage, monkeypatch):
+    class ControlledBaseException(BaseException):
+        pass
+
+    manager = JobManager()
+
+    def fail_admission(_record, _context):
+        raise ControlledBaseException("admission base failure")
+
+    class FailingThread:
+        def __init__(self, *args, **kwargs):
+            pass
+
+        def start(self):
+            raise ControlledBaseException("thread base failure")
+
+        def join(self, _timeout=None):
+            return None
+
+        def is_alive(self):
+            return False
+
+    if failure_stage == "thread":
+        monkeypatch.setattr("ohmymeme.app.job_manager.Thread", FailingThread)
+    callback = fail_admission if failure_stage == "admit" else None
+    failure_message = (
+        "ControlledBaseException: admission base failure"
+        if failure_stage == "admit"
+        else "ControlledBaseException: thread base failure"
+    )
+    try:
+        with pytest.raises(ControlledBaseException):
+            manager.try_start(
+                "base-admission", lambda _context: None, on_admit=callback
+            )
+        record = manager.get(next(iter(manager._records)))
+        assert record.status == "error"
+        assert record.error == failure_message
+        assert manager.wait(record.id, 1)
+        assert manager.active("base-admission") is None
+    finally:
+        manager.shutdown(1)

@@ -145,6 +145,12 @@ class JobManager:
                     record_id, "error", f"{type(error).__name__}: {error}"
                 )
                 raise
+            except BaseException as error:  # noqa: BLE001, BROAD_EXCEPT_OK
+                status = "cancelled" if cancellation_event.is_set() else "error"
+                self._finish_locked(
+                    record_id, status, f"{type(error).__name__}: {error}"
+                )
+                raise
             return record, True
 
     def get(self, job_id):
