@@ -13,27 +13,40 @@ import ohmymeme.services.lan.server as lan
 from ohmymeme.core.config import Config
 from ohmymeme.core.database import MemeDB
 
+TEST_PORT = 0
+
+
+def free_port():
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as probe:
+        probe.bind(("127.0.0.1", 0))
+        return probe.getsockname()[1]
+
 
 @pytest.fixture()
 def lan_env(tmp_path):
+    global TEST_PORT
+    TEST_PORT = free_port()
     cfg = Config(tmp_path / "config.json")
     cfg.set("cache_dir", str(tmp_path / "cache"))
-    cfg.set("lan_port", 17990)
+    cfg.set("lan_port", TEST_PORT)
     db = MemeDB(tmp_path / "test.db")
     old_cfg = config_module._config
     old_db = database._db
     old_callback = lan.set_confirm_callback(None)
     config_module._config = cfg
     database._db = db
-    lan.stop()
-    lan.set_allow_secret_config(False)
-    assert lan.start(17990, "test-secret")
-    yield cfg
-    lan.stop()
-    lan.set_confirm_callback(old_callback)
-    lan.set_allow_secret_config(False)
-    config_module._config = old_cfg
-    database._db = old_db
+    try:
+        lan.stop()
+        lan.set_allow_secret_config(False)
+        assert lan.start(TEST_PORT, "test-secret")
+        yield cfg
+    finally:
+        lan.stop()
+        lan.set_confirm_callback(old_callback)
+        lan.set_allow_secret_config(False)
+        config_module._config = old_cfg
+        database._db = old_db
+        db.close()
 
 
 def recv_exact(sock, size):
@@ -86,8 +99,9 @@ def test_rejected_connection_cannot_dispatch(lan_env):
         lan.confirm_device(False, device["_confirm_id"])
 
     old = lan.set_confirm_callback(reject)
+    sock = None
     try:
-        sock = connect(17990)
+        sock = connect(TEST_PORT)
         key = handshake(sock)
         sock.sendall(frame(key, {"cmd": "device_info", "name": "blocked"}))
         assert recv_frame(sock, key)["approved"] is False
@@ -95,20 +109,28 @@ def test_rejected_connection_cannot_dispatch(lan_env):
         assert recv_frame(sock, key) == {"ok": False, "error": "设备未授权"}
     finally:
         lan.set_confirm_callback(old)
-        sock.close()
+        if sock is not None:
+            sock.close()
+
+
+def test_lan_fixture_uses_a_private_ephemeral_port(lan_env):
+    assert TEST_PORT > 0
+    assert TEST_PORT != 17990
 
 
 def test_replayed_mutation_is_rejected_but_ping_remains_compatible(lan_env):
-    sock = connect(17990)
-    key = handshake(sock)
-    payload = frame(key, {"cmd": "send_config", "config": {"theme": "light"}})
-    sock.sendall(payload)
-    assert recv_frame(sock, key) == {"ok": True}
-    sock.sendall(payload)
-    assert recv_frame(sock, key) == {"ok": False, "error": "重复请求"}
-    sock.sendall(frame(key, {"cmd": "ping"}))
-    assert recv_frame(sock, key)["ok"] is True
-    sock.close()
+    sock = connect(TEST_PORT)
+    try:
+        key = handshake(sock)
+        payload = frame(key, {"cmd": "send_config", "config": {"theme": "light"}})
+        sock.sendall(payload)
+        assert recv_frame(sock, key) == {"ok": True}
+        sock.sendall(payload)
+        assert recv_frame(sock, key) == {"ok": False, "error": "重复请求"}
+        sock.sendall(frame(key, {"cmd": "ping"}))
+        assert recv_frame(sock, key)["ok"] is True
+    finally:
+        sock.close()
 
 
 def test_replay_cache_is_bounded(lan_env):
@@ -132,14 +154,14 @@ def test_late_confirmation_does_not_authorize_next_connection(lan_env, monkeypat
     old = lan.set_confirm_callback(defer)
     first = second = None
     try:
-        first = connect(17990)
+        first = connect(TEST_PORT)
         first_key = handshake(first)
         first.sendall(frame(first_key, {"cmd": "device_info", "name": "first"}))
         assert recv_frame(first, first_key)["approved"] is False
         assert ready.wait(1)
         first.close()
 
-        second = connect(17990)
+        second = connect(TEST_PORT)
         second_key = handshake(second)
         second.sendall(frame(second_key, {"cmd": "device_info", "name": "second"}))
         assert recv_frame(second, second_key)["approved"] is False

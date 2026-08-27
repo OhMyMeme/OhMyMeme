@@ -26,7 +26,7 @@ from ohmymeme.core.config import Config
 from ohmymeme.core.database import MemeDB
 from ohmymeme.core.manifest import ManifestBuilder
 
-TEST_PORT = 17990
+TEST_PORT = 0
 _IV_LEN = 12
 
 
@@ -122,7 +122,14 @@ def _handshake(sock, secret):
     return _derive_client_key(secret)
 
 
-def _connect(port=TEST_PORT):
+def _free_port():
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as probe:
+        probe.bind(("127.0.0.1", 0))
+        return probe.getsockname()[1]
+
+
+def _connect(port=None):
+    port = TEST_PORT if port is None else port
     sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
     sock.settimeout(5)
     sock.connect(("127.0.0.1", port))
@@ -132,6 +139,8 @@ def _connect(port=TEST_PORT):
 @pytest.fixture()
 def lan_env(tmp_path):
     """隔离 config/db/cache 并启动 lan 服务"""
+    global TEST_PORT
+    TEST_PORT = _free_port()
     cfg = Config(tmp_path / "config.json")
     cfg.set("cache_dir", str(tmp_path / "cache"))
     cfg.set("lan_port", TEST_PORT)
@@ -143,16 +152,18 @@ def lan_env(tmp_path):
     config_module._config = cfg
     database._db = db
 
-    lan.stop()
-    lan.set_allow_secret_config(False)
-    assert lan.start(TEST_PORT, "test-secret")
-    yield cfg, db, tmp_path
-
-    lan.stop()
-    lan.set_confirm_callback(old_cb)
-    lan.set_allow_secret_config(False)
-    config_module._config = old_cfg
-    database._db = old_db
+    try:
+        lan.stop()
+        lan.set_allow_secret_config(False)
+        assert lan.start(TEST_PORT, "test-secret")
+        yield cfg, db, tmp_path
+    finally:
+        lan.stop()
+        lan.set_confirm_callback(old_cb)
+        lan.set_allow_secret_config(False)
+        config_module._config = old_cfg
+        database._db = old_db
+        db.close()
 
 
 # --- 测试 ---
@@ -169,6 +180,14 @@ def test_udp_discovery(lan_env):
     assert reply["t"] == "hello"
     assert reply["need_secret"] is True
     assert reply["ver"]
+
+
+def test_lan_fixture_uses_a_private_ephemeral_port(lan_env):
+    cfg, _, _ = lan_env
+
+    assert TEST_PORT > 0
+    assert TEST_PORT != 17990
+    assert cfg.get("lan_port") == TEST_PORT
 
 
 def test_pktinfo_extract_linux_layout(monkeypatch):
@@ -856,12 +875,15 @@ def test_no_secret_server(tmp_path):
     db = MemeDB(tmp_path / "test.db")
     old_cfg = config_module._config
     old_db = database._db
+    old_cb = lan.set_confirm_callback(None)
     config_module._config = cfg
     database._db = db
+    port = _free_port()
     lan.stop()
-    assert lan.start(TEST_PORT, "")
+    assert lan.start(port, "")
+    sock = None
     try:
-        sock = _connect()
+        sock = _connect(port)
         msg = _recv_plain(sock)
         assert msg["t"] == "ok"
         key = _derive_client_key("")
@@ -869,9 +891,13 @@ def test_no_secret_server(tmp_path):
         assert _recv_frame(sock, key)["ok"] is True
         sock.close()
     finally:
+        if sock is not None:
+            sock.close()
         lan.stop()
+        lan.set_confirm_callback(old_cb)
         config_module._config = old_cfg
         database._db = old_db
+        db.close()
 
 
 def test_stop_status(lan_env):
