@@ -26,6 +26,8 @@ Conventions and successful approaches discovered during work on this plan.
 - Sync internal worker arguments were extended only behind `_pull_worker_core`; the public `_pull_worker(entries, remote_root, cache_dir, db)` signature remains unchanged for import/bridge compatibility.
 - Planning and LAN optional dependencies now distinguish an explicitly supplied falsey value from a missing dependency by checking `is not None`; standalone facades retain singleton fallback behavior.
 - Real temporary-root smoke confirmed Container Sync/LAN identity and manifest writes stayed under the temporary root while global singleton references were replaced with sentinels.
+- QQNT managed binding must validate `job_manager.active("import.qqnt").id` while holding `_QQNT_LOCK` both before publishing and before clearing its global bridge references; checking only activity permits a completed task to overwrite the current task's cancellation target.
+- ADB's shared temporary directory is tracked at creation and reclaimed in the worker wrapper's `finally`, so unexpected ordinary exceptions cannot leave partial pull/processing files behind while preserving the existing UI progress dictionary and JobManager terminal mapping.
 
 ## 2026-08-27 importer lifecycle contracts
 
