@@ -280,13 +280,15 @@ def _fetch_remote_memes(bk, remote_root, config=None):
     return planning._fetch_remote_memes(bk, remote_root, config)
 
 
-def _default_library():
-    config = get_config()
-    db = get_db()
-    assets = AssetPaths(config.data_dir, config.cache_dir)
-    manifest = ManifestBuilder(config, db, assets)
+def _default_library(config=None, db=None, assets=None, manifest=None):
+    config = config if config is not None else get_config()
+    db = db if db is not None else get_db()
+    assets = (
+        assets if assets is not None else AssetPaths(config.data_dir, config.cache_dir)
+    )
+    manifest = manifest if manifest is not None else ManifestBuilder(config, db, assets)
     importer = ImageImportService(db, assets, manifest.build)
-    library = LocalLibraryService(db, assets, importer, manifest.build)
+    library = LocalLibraryService(db, assets, importer, manifest.build, config)
     library._legacy_metadata = _apply_remote_metadata
     return library
 
@@ -685,8 +687,10 @@ def push(
     if not local.get("memes"):
         projected = (
             library.project_manifest()
-            if library
-            else _default_library().project_manifest()
+            if library is not None
+            else _default_library(
+                config=config, db=db, assets=assets, manifest=manifest
+            ).project_manifest()
         )
         if not projected:
             raise SyncError("本地 manifest 生成失败")
@@ -818,8 +822,10 @@ def push(
                             )
         projected = (
             library.project_manifest()
-            if library
-            else _default_library().project_manifest()
+            if library is not None
+            else _default_library(
+                config=config, db=db, assets=assets, manifest=manifest
+            ).project_manifest()
         )
         if not projected:
             raise SyncError("本地 manifest 生成失败")
@@ -899,8 +905,6 @@ def pull(
     manifest=None,
 ) -> dict:
     """远端 -> 本地：下载缺失/变更的表情包和清单（多线程）"""
-    global _pull_library
-    _pull_library = library if library is not None else _default_library()
     cfg = config if config is not None else get_config()
     if remove_local is None:
         remove_local = cfg.get("sync_remove_local", False)
@@ -908,6 +912,21 @@ def pull(
     cache_dir = assets.cache_dir if assets is not None else cfg.cache_dir
     max_workers = max(1, min(8, int(cfg.get("sync_threads", 3))))
     db = db if db is not None else get_db()
+    resolved_assets = (
+        assets if assets is not None else AssetPaths(cfg.data_dir, cfg.cache_dir)
+    )
+    global _pull_library
+    _pull_library = (
+        library
+        if library is not None
+        else _default_library(
+            config=cfg,
+            db=db,
+            assets=resolved_assets,
+            manifest=manifest,
+        )
+    )
+    cache_dir = resolved_assets.cache_dir
 
     if not _sync_run_lock.acquire(blocking=False):
         raise SyncError("同步正在进行中")

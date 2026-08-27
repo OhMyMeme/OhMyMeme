@@ -40,6 +40,76 @@ from ohmymeme.services.sync.service import (
 
 
 class TestSyncJobAdapter(unittest.TestCase):
+    def test_pull_library_none_builds_from_explicit_resources(self):
+        class Config:
+            @staticmethod
+            def get(_key, default=None):
+                return default
+
+            data_dir = Path("explicit-data")
+
+        config = Config()
+        db = object()
+        assets = type("Assets", (), {"cache_dir": Path("explicit-cache")})()
+        manifest = type("Manifest", (), {"load": lambda _self: {"memes": []}})()
+        captured = {}
+
+        def factory(**kwargs):
+            captured.update(kwargs)
+            return object()
+
+        with patch.object(sync, "_default_library", side_effect=factory), patch.object(
+            sync, "download_index", return_value=None
+        ):
+            with self.assertRaises(SyncError):
+                sync.pull(
+                    config=config,
+                    db=db,
+                    assets=assets,
+                    manifest=manifest,
+                )
+
+        self.assertEqual(
+            captured,
+            {"config": config, "db": db, "assets": assets, "manifest": manifest},
+        )
+
+    def test_push_preserves_falsey_explicit_library(self):
+        class Config:
+            @staticmethod
+            def get(_key, default=None):
+                return default
+
+            data_dir = Path("explicit-data")
+
+        class FalseyLibrary:
+            def __bool__(self):
+                return False
+
+            def project_manifest(self):
+                raise AssertionError("falsey library was replaced")
+
+        library = FalseyLibrary()
+        config = Config()
+        db = object()
+        assets = type("Assets", (), {"cache_dir": Path("explicit-cache")})()
+        manifest = type("Manifest", (), {"load": lambda _self: {"memes": []}})()
+        with (
+            patch.object(sync, "load_manifest", return_value={"memes": []}),
+            patch.object(
+                sync, "_default_library", side_effect=AssertionError("library fallback")
+            ),
+        ):
+            with self.assertRaises(AssertionError) as error:
+                sync.push(
+                    library=library,
+                    config=config,
+                    db=db,
+                    assets=assets,
+                    manifest=manifest,
+                )
+        self.assertEqual(str(error.exception), "falsey library was replaced")
+
     def test_sync_push_forwards_all_owned_dependencies(self):
         config = object()
         db = object()
