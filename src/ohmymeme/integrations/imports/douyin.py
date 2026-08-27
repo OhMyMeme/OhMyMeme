@@ -80,7 +80,7 @@ def get_douyin_progress():
 
 
 def cancel_douyin_import():
-    global _DOUYIN_CANCEL
+    global _DOUYIN_CANCEL, _DOUYIN_JOB_CANCEL, _DOUYIN_JOB_SNAPSHOT
     _DOUYIN_CANCEL = True
     if _DOUYIN_JOB_CANCEL is not None:
         _DOUYIN_JOB_CANCEL.set()
@@ -457,14 +457,22 @@ def start_douyin_import(import_callback, cookie: str, job_manager=None) -> bool:
                 _DOUYIN_JOB_CANCEL = None
                 _DOUYIN_JOB_SNAPSHOT = None
 
-        _, created = job_manager.try_start(
-            "import.douyin",
-            target,
-            resources=("douyin",),
-            on_admit=lambda record, context: _bind_douyin_job(
-                job_manager, record, context
-            ),
-        )
+        try:
+            _, created = job_manager.try_start(
+                "import.douyin",
+                target,
+                resources=("douyin",),
+                on_admit=lambda record, context: _bind_douyin_job(
+                    job_manager, record, context
+                ),
+            )
+        except BaseException:
+            with _DOUYIN_LOCK:
+                _DOUYIN_JOB_CANCEL = None
+                _DOUYIN_JOB_SNAPSHOT = None
+                _DOUYIN_CANCEL = False
+                _DOUYIN_STATE["status"] = "idle"
+            raise
         if not created:
             return False
     return True

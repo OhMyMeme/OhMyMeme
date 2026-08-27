@@ -81,7 +81,7 @@ def get_tg_progress():
 
 
 def cancel_tg_import():
-    global _TG_CANCEL
+    global _TG_CANCEL, _TG_JOB_CANCEL, _TG_JOB_SNAPSHOT
     _TG_CANCEL = True
     if _TG_JOB_CANCEL is not None:
         _TG_JOB_CANCEL.set()
@@ -537,12 +537,22 @@ def start_tg_import(
             daemon=True,
         ).start()
     else:
-        _, created = job_manager.try_start(
-            "import.telegram",
-            target,
-            resources=("telegram",),
-            on_admit=lambda record, context: _bind_tg_job(job_manager, record, context),
-        )
+        try:
+            _, created = job_manager.try_start(
+                "import.telegram",
+                target,
+                resources=("telegram",),
+                on_admit=lambda record, context: _bind_tg_job(
+                    job_manager, record, context
+                ),
+            )
+        except BaseException:
+            with _TG_LOCK:
+                _TG_JOB_CANCEL = None
+                _TG_JOB_SNAPSHOT = None
+                _TG_CANCEL = False
+                _TG_STATE["status"] = "idle"
+            raise
         if not created:
             return False
     return True

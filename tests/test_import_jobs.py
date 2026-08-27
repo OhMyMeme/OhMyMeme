@@ -1,6 +1,8 @@
 import threading
 import time
 
+import pytest
+
 from ohmymeme.app.job_manager import JobManager
 from ohmymeme.integrations.imports import adb_qq, douyin, telegram, wechat
 
@@ -421,6 +423,66 @@ def test_wechat_cancel_reclaims_worker_temp_dir(monkeypatch, tmp_path):
         assert manager.wait(job.id, 1)
         assert wechat.get_wechat_progress()["status"] == "cancelled"
         assert not temp_dir.exists()
+    finally:
+        manager.shutdown(1)
+        wechat._reset_state()
+
+
+def test_closed_manager_rolls_back_telegram_admission_state():
+    manager = JobManager()
+    manager.shutdown(1)
+    telegram._reset_state()
+    telegram._TG_JOB_CANCEL = None
+    telegram._TG_JOB_SNAPSHOT = None
+
+    try:
+        with pytest.raises(RuntimeError, match="job manager is shut down"):
+            telegram.start_tg_import(lambda _paths: {}, "closed", job_manager=manager)
+        state = telegram.get_tg_progress()
+        assert state["status"] == "idle"
+        assert manager.active("import.telegram") is None
+        assert telegram._TG_JOB_CANCEL is None
+        assert telegram._TG_JOB_SNAPSHOT is None
+    finally:
+        manager.shutdown(1)
+        telegram._reset_state()
+
+
+def test_closed_manager_rolls_back_douyin_admission_state():
+    manager = JobManager()
+    manager.shutdown(1)
+    douyin._reset_state()
+    douyin._DOUYIN_JOB_CANCEL = None
+    douyin._DOUYIN_JOB_SNAPSHOT = None
+
+    try:
+        with pytest.raises(RuntimeError, match="job manager is shut down"):
+            douyin.start_douyin_import(lambda _paths: {}, "closed", manager)
+        state = douyin.get_douyin_progress()
+        assert state["status"] == "idle"
+        assert manager.active("import.douyin") is None
+        assert douyin._DOUYIN_JOB_CANCEL is None
+        assert douyin._DOUYIN_JOB_SNAPSHOT is None
+    finally:
+        manager.shutdown(1)
+        douyin._reset_state()
+
+
+def test_closed_manager_rolls_back_wechat_admission_state():
+    manager = JobManager()
+    manager.shutdown(1)
+    wechat._reset_state()
+    wechat._WECHAT_JOB_CANCEL = None
+    wechat._WECHAT_JOB_SNAPSHOT = None
+
+    try:
+        with pytest.raises(RuntimeError, match="job manager is shut down"):
+            wechat.start_wechat_import(lambda _paths: {}, job_manager=manager)
+        state = wechat.get_wechat_progress()
+        assert state["status"] == "idle"
+        assert manager.active("import.wechat") is None
+        assert wechat._WECHAT_JOB_CANCEL is None
+        assert wechat._WECHAT_JOB_SNAPSHOT is None
     finally:
         manager.shutdown(1)
         wechat._reset_state()

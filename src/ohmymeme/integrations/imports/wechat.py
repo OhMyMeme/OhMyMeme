@@ -98,7 +98,7 @@ def get_wechat_progress():
 
 def cancel_wechat_import():
     """请求取消微信导入"""
-    global _WECHAT_CANCEL
+    global _WECHAT_CANCEL, _WECHAT_JOB_CANCEL, _WECHAT_JOB_SNAPSHOT
     _WECHAT_CANCEL = True
     if _WECHAT_JOB_CANCEL is not None:
         _WECHAT_JOB_CANCEL.set()
@@ -837,14 +837,22 @@ def start_wechat_import(
                 _WECHAT_JOB_CANCEL = None
                 _WECHAT_JOB_SNAPSHOT = None
 
-        _, created = job_manager.try_start(
-            "import.wechat",
-            target,
-            resources=("wechat",),
-            on_admit=lambda record, context: _bind_wechat_job(
-                job_manager, record, context
-            ),
-        )
+        try:
+            _, created = job_manager.try_start(
+                "import.wechat",
+                target,
+                resources=("wechat",),
+                on_admit=lambda record, context: _bind_wechat_job(
+                    job_manager, record, context
+                ),
+            )
+        except BaseException:
+            with _WECHAT_LOCK:
+                _WECHAT_JOB_CANCEL = None
+                _WECHAT_JOB_SNAPSHOT = None
+                _WECHAT_CANCEL = False
+                _WECHAT_STATE["status"] = "idle"
+            raise
         if not created:
             return False
     return True
