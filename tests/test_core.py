@@ -3,7 +3,9 @@
 import re
 import sys
 import tempfile
+import threading
 import unittest
+import unittest.mock as mock
 from pathlib import Path
 
 # 确保 src 在导入路径中
@@ -291,6 +293,179 @@ class TestDatabase(unittest.TestCase):
         results = self.db.search()
         self.assertEqual(len(results), 0)
         self.assertEqual(self.db.count(), 0)
+
+
+class TestHotkeyWatchdog(unittest.TestCase):
+    """GlobalHotkey 键盘监听线程守护：自动重注册逻辑（mock keyboard 模块）"""
+
+    def _fake_keyboard_module(self, should_raise=False):
+        class FakeModule(object):
+            add_raises = False
+            add_calls = 0
+            remove_calls = 0
+
+            @classmethod
+            def add_hotkey(cls, *a, **kw):
+                cls.add_calls += 1
+                if cls.add_raises:
+                    raise RuntimeError("inject-fail")
+
+            @classmethod
+            def remove_hotkey(cls, *a, **kw):
+                cls.remove_calls += 1
+
+        if should_raise:
+            FakeModule.add_raises = True
+        return FakeModule
+
+    @mock.patch.dict("sys.modules", {"keyboard": None}, clear=False)
+    def test_reregister_restarts_listener_and_reattaches(self):
+        from src.hotkey import GlobalHotkey
+
+        fake_mod = self._fake_keyboard_module()
+        fake_mod.add_calls = 0
+        fake_mod.remove_calls = 0
+
+        class FakeListener(object):
+            listening = True
+            start_calls = 0
+
+            def start_if_necessary(self):
+                self.start_calls += 1
+
+        listener = FakeListener()
+
+        hk = GlobalHotkey()
+        hk._hotkey = "Ctrl+Alt+N"
+        hk._safe_callback = lambda: None
+        hk._backend = "keyboard"
+        hk._watchdog_stop = threading.Event()  # 模拟守护已启动
+
+        with mock.patch.dict("sys.modules", {"keyboard": fake_mod}):
+            ok = hk._reregister_keyboard(listener)
+
+        self.assertTrue(ok)
+        self.assertFalse(hk._reregister_pending)
+        self.assertEqual(fake_mod.remove_calls, 1)
+        self.assertEqual(listener.start_calls, 1)
+        self.assertFalse(listener.listening)
+        self.assertEqual(fake_mod.add_calls, 1)
+
+    @mock.patch.dict("sys.modules", {"keyboard": None}, clear=False)
+    def test_reregister_add_failure_sets_pending_and_not_success(self):
+        """重注册 add_hotkey 失败：返回 False、置 pending，绝不记录成功/停止重试。"""
+        from src.hotkey import GlobalHotkey
+
+        fake_mod = self._fake_keyboard_module(should_raise=True)
+        fake_mod.add_calls = 0
+        fake_mod.remove_calls = 0
+
+        class FakeListener(object):
+            listening = True
+            start_calls = 0
+
+            def start_if_necessary(self):
+                self.start_calls += 1
+
+        hk = GlobalHotkey()
+        hk._hotkey = "Ctrl+Alt+N"
+        hk._safe_callback = lambda: None
+        hk._backend = "keyboard"
+        hk._watchdog_stop = threading.Event()
+
+        with mock.patch.dict("sys.modules", {"keyboard": fake_mod}):
+            ok = hk._reregister_keyboard(FakeListener())
+
+        self.assertFalse(ok)
+        self.assertTrue(hk._reregister_pending)  # 守护下轮会继续重试
+
+    @mock.patch.dict("sys.modules", {"keyboard": None}, clear=False)
+    def test_reregister_after_unregister_does_not_add(self):
+        """注销后重注册不得重新挂热键（同锁 + 停止标志/回调清空兜底）。"""
+        from src.hotkey import GlobalHotkey
+
+        fake_mod = self._fake_keyboard_module()
+        fake_mod.add_calls = 0
+        fake_mod.remove_calls = 0
+
+        class FakeListener(object):
+            listening = True
+
+            def start_if_necessary(self):
+                pass
+
+        hk = GlobalHotkey()
+        hk._hotkey = "Ctrl+Alt+N"
+        hk._safe_callback = lambda: None
+        hk._backend = "keyboard"
+
+        with mock.patch.dict("sys.modules", {"keyboard": fake_mod}):
+            # 1) 已注销：watchdog_stop 置位后 unregister 清空回调
+            hk._watchdog_stop = threading.Event()
+            hk.unregister()  # stop.set() + _safe_callback=None
+            # 2) 守护线程若此刻想重注册，应直接返回 False 且不再 add
+            ok = hk._reregister_keyboard(FakeListener())
+
+        self.assertFalse(ok)
+        self.assertEqual(fake_mod.add_calls, 0)  # 注销后不得重新挂热键
+
+    @mock.patch.dict("sys.modules", {"keyboard": None}, clear=False)
+    def test_stale_generation_cannot_touch_after_reregister(self):
+        """注销后重新注册：旧代次 watchdog 的重注册操作不得作用到新生命周期。"""
+        from src.hotkey import GlobalHotkey
+
+        fake_mod = self._fake_keyboard_module()
+        fake_mod.add_calls = 0
+
+        class FakeListener(object):
+            listening = True
+
+            def start_if_necessary(self):
+                pass
+
+        hk = GlobalHotkey()
+        hk._backend = "keyboard"
+        hk._hotkey = "Ctrl+Alt+N"
+
+        with mock.patch.dict("sys.modules", {"keyboard": fake_mod}):
+            # 第一次注册（代次 0）→ 注销（代次 -> 1）→ 立即重新注册（新代次 1）
+            hk._watchdog_stop = threading.Event()
+            hk.unregister()
+            old_gen = 0  # 旧 watchdog 捕获的代次
+            # 重新注册：赋新回调并启动新守护（当前代次已是 1）
+            hk._safe_callback = lambda: None
+            self.assertEqual(hk._watchdog_gen, 1)
+            # 旧代次 watchdog 调重注册：应被拒，不得 add
+            stale = hk._reregister_keyboard(FakeListener(), gen=old_gen)
+            self.assertFalse(stale)
+            self.assertEqual(fake_mod.add_calls, 0)
+            # 新代次（当前 gen）可以正常重注册
+            fresh = hk._reregister_keyboard(FakeListener(), gen=hk._watchdog_gen)
+            self.assertTrue(fresh)
+            self.assertEqual(fake_mod.add_calls, 1)
+
+    @mock.patch.dict("sys.modules", {"keyboard": None}, clear=False)
+    def test_unregister_stops_watchdog(self):
+        from src.hotkey import GlobalHotkey
+
+        fake_mod = self._fake_keyboard_module()
+        fake_mod.add_calls = 0
+
+        hk = GlobalHotkey()
+        hk._backend = "keyboard"
+        hk._hotkey = "Ctrl+Alt+N"
+        hk._safe_callback = lambda: None
+
+        with mock.patch.dict("sys.modules", {"keyboard": fake_mod}):
+            stop = mock.MagicMock()
+            hk._watchdog_stop = stop
+            hk.unregister()
+
+        # watchdog 应被停止，safe_callback 清空，remove_hotkey 被调用
+        stop.set.assert_called_once()
+        self.assertIsNone(hk._watchdog_stop)
+        self.assertIsNone(hk._safe_callback)
+        self.assertEqual(fake_mod.remove_calls, 1)
 
 
 if __name__ == "__main__":

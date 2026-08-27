@@ -284,11 +284,53 @@ class TestWebDAVList(unittest.TestCase):
 
 
 class TestWebDAVEnsureDir(unittest.TestCase):
+    def setUp(self):
+        # 进程级 `_dav_dirs` 目录缓存会跨测试残留，逐个测试清空以保证独立
+        sync._dav_dirs.clear()
+
     @patch("src.sync.urllib.request.urlopen")
     def test_405_ok(self, urlopen):
         urlopen.side_effect = urllib.error.HTTPError("u", 405, "exists", {}, None)
         bk = _make_backend()
         self.assertTrue(bk.ensure_remote_dir("memes"))
+
+    @patch("src.sync.urllib.request.urlopen")
+    def test_second_call_skips_mkcol(self, urlopen):
+        urlopen.side_effect = urllib.error.HTTPError("u", 405, "exists", {}, None)
+        bk = _make_backend()
+        self.assertTrue(bk.ensure_remote_dir("memes"))
+        self.assertEqual(urlopen.call_count, 1)
+        # 目录已缓存存在，第二次调用不再发 MKCOL（避免触发远端锁）
+        self.assertTrue(bk.ensure_remote_dir("memes"))
+        self.assertEqual(urlopen.call_count, 1)
+
+    @patch("src.sync.urllib.request.urlopen")
+    def test_success_also_caches_and_single_mkcol(self, urlopen):
+        # RFC 4918：MKCOL 成功返回 201 Created
+        urlopen.return_value = _FakeResp(201)
+        bk = _make_backend()
+        # 成功创建也写缓存：第二次调用不应再发 MKCOL
+        self.assertTrue(bk.ensure_remote_dir("memes"))
+        self.assertEqual(urlopen.call_count, 1)
+        self.assertTrue(bk.ensure_remote_dir("memes"))
+        self.assertEqual(urlopen.call_count, 1)
+
+    @patch("src.sync.urllib.request.urlopen")
+    def test_clear_cache_retriggers_mkcol(self, urlopen):
+        """push 开始时清空缓存后，ensure_remote_dir 会再次发 MKCOL（重建已删目录）。"""
+        # 两次 URL 计调用次数用 405（"已存在"）路径进缓存
+        urlopen.side_effect = urllib.error.HTTPError("u", 405, "exists", {}, None)
+        bk = _make_backend()
+        self.assertTrue(bk.ensure_remote_dir("memes"))
+        self.assertEqual(urlopen.call_count, 1)
+        # 目录已在缓存
+        self.assertTrue(bk.ensure_remote_dir("memes"))
+        self.assertEqual(urlopen.call_count, 1)
+        # 模拟 push 开始清空进程级缓存
+        sync._dav_dirs.clear()
+        # 清空后再次确保：应重新发 MKCOL（远端目录可能已被删除）
+        self.assertTrue(bk.ensure_remote_dir("memes"))
+        self.assertEqual(urlopen.call_count, 2)
 
     @patch("src.sync.urllib.request.urlopen")
     def test_301_existing_collection_ok(self, urlopen):
