@@ -127,16 +127,24 @@ class JobManager:
             )
             self._records[record_id] = record
             self._active[task_type] = record_id
-            if on_admit is not None:
-                on_admit(record, JobContext(self, record.id, record.cancellation_event))
-            thread = Thread(
-                target=self._run,
-                args=(record, target),
-                name=f"ohmymeme-job-{task_type}",
-                daemon=True,
-            )
-            self._threads[record_id] = thread
-            thread.start()
+            try:
+                if on_admit is not None:
+                    on_admit(
+                        record, JobContext(self, record.id, record.cancellation_event)
+                    )
+                thread = Thread(
+                    target=self._run,
+                    args=(record, target),
+                    name=f"ohmymeme-job-{task_type}",
+                    daemon=True,
+                )
+                self._threads[record_id] = thread
+                thread.start()
+            except Exception as error:
+                self._finish_locked(
+                    record_id, "error", f"{type(error).__name__}: {error}"
+                )
+                raise
             return record, True
 
     def get(self, job_id):

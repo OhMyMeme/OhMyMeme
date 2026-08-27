@@ -196,3 +196,52 @@ def test_arbitrary_base_exception_worker_is_finalized_and_releases_active_slot()
         assert manager.active("custom-interrupt") is None
     finally:
         manager.shutdown(1)
+
+
+def test_try_start_rolls_back_when_admission_callback_fails():
+    manager = JobManager()
+
+    def fail_admission(_record, _context):
+        raise RuntimeError("admit boom")
+
+    try:
+        with pytest.raises(RuntimeError, match="admit boom"):
+            manager.try_start(
+                "admission-failure", lambda _context: None, on_admit=fail_admission
+            )
+        record = manager.get(next(iter(manager._records)))
+        assert record.status == "error"
+        assert record.error == "RuntimeError: admit boom"
+        assert manager.wait(record.id, 1)
+        assert manager.active("admission-failure") is None
+    finally:
+        manager.shutdown(1)
+
+
+def test_try_start_rolls_back_when_thread_start_fails(monkeypatch):
+    manager = JobManager()
+
+    class FailingThread:
+        def __init__(self, *args, **kwargs):
+            pass
+
+        def start(self):
+            raise RuntimeError("thread start boom")
+
+        def join(self, _timeout=None):
+            return None
+
+        def is_alive(self):
+            return False
+
+    monkeypatch.setattr("ohmymeme.app.job_manager.Thread", FailingThread)
+    try:
+        with pytest.raises(RuntimeError, match="thread start boom"):
+            manager.try_start("thread-failure", lambda _context: None)
+        record = manager.get(next(iter(manager._records)))
+        assert record.status == "error"
+        assert record.error == "RuntimeError: thread start boom"
+        assert manager.wait(record.id, 1)
+        assert manager.active("thread-failure") is None
+    finally:
+        manager.shutdown(1)
