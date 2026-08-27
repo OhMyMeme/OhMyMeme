@@ -192,6 +192,8 @@ class JobManager:
                         else "completed"
                     )
                     self._finish_locked(record.id, status)
+        except (KeyboardInterrupt, SystemExit) as error:
+            self._finish(record.id, "error", f"{type(error).__name__}: {error}")
         except Exception as error:  # noqa: BLE001
             self._finish(record.id, "error", str(error))
 
@@ -222,6 +224,8 @@ class JobManager:
         record = self._records[job_id]
         if record.status != "running":
             return
+        if status == "completed" and record.cancellation_event.is_set():
+            status = "cancelled"
         self._records[job_id] = JobRecord(
             record.type,
             record.id,

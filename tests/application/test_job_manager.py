@@ -1,5 +1,7 @@
 import threading
 
+import pytest
+
 from ohmymeme.app.job_manager import IMPORT_RESOURCES, IMPORT_TASK_TYPES, JobManager
 
 
@@ -131,4 +133,46 @@ def test_import_task_types_have_stable_resources_and_snapshot_fields():
             release.clear()
     finally:
         release.set()
+        manager.shutdown(1)
+
+
+def test_cancel_request_wins_over_late_context_complete():
+    manager = JobManager()
+    entered = threading.Event()
+    release = threading.Event()
+
+    def job(context):
+        entered.set()
+        release.wait(1)
+        context.complete()
+
+    try:
+        record = manager.start("cancel-wins", job)
+        assert entered.wait(1)
+        assert manager.cancel(record.id)
+        release.set()
+        assert manager.wait(record.id, 1)
+        snapshot = manager.get(record.id)
+        assert snapshot.status == "cancelled"
+        assert manager.active("cancel-wins") is None
+    finally:
+        release.set()
+        manager.shutdown(1)
+
+
+@pytest.mark.parametrize("base_error", (KeyboardInterrupt, SystemExit))
+def test_base_exception_worker_is_finalized_and_releases_active_slot(base_error):
+    manager = JobManager()
+
+    def interrupted(_context):
+        raise base_error("controlled interrupt")
+
+    try:
+        record = manager.start("interrupt", interrupted)
+        assert manager.wait(record.id, 1)
+        snapshot = manager.get(record.id)
+        assert snapshot.status == "error"
+        assert snapshot.error == f"{base_error.__name__}: controlled interrupt"
+        assert manager.active("interrupt") is None
+    finally:
         manager.shutdown(1)

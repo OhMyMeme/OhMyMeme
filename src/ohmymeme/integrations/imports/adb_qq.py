@@ -38,6 +38,13 @@ _QQ_LOCK = threading.Lock()
 _QQ_CANCEL = False
 _QQ_JOB_CANCEL = None
 _QQ_JOB_SNAPSHOT = None
+_QQ_ACTIVE = (
+    "downloading_adb",
+    "starting_adb",
+    "waiting_device",
+    "pulling",
+    "processing",
+)
 
 _ADB_DEBUG = False
 
@@ -238,10 +245,15 @@ def init_background():
 
 def cancel_qq_import():
     global _QQ_CANCEL
-    _QQ_CANCEL = True
-    if _QQ_JOB_CANCEL is not None:
-        _QQ_JOB_CANCEL.set()
+    with _QQ_LOCK:
+        if _QQ_STATE["status"] not in _QQ_ACTIVE:
+            return False
+        _QQ_CANCEL = True
+        if _QQ_JOB_CANCEL is not None:
+            _QQ_JOB_CANCEL.set()
+        _QQ_STATE["status"] = "cancelled"
     _update_qq(status="cancelled")
+    return True
 
 
 def reset_qq_import():
@@ -380,7 +392,12 @@ def start_qq_import(job_manager=None):
 def _check_cancel():
     """检查是否取消，是则清理并返回 True"""
     if _QQ_CANCEL or (_QQ_JOB_CANCEL is not None and _QQ_JOB_CANCEL.is_set()):
-        _update_qq(status="cancelled")
+        with _QQ_LOCK:
+            should_update = _QQ_STATE["status"] in _QQ_ACTIVE
+            if should_update:
+                _QQ_STATE["status"] = "cancelled"
+        if should_update:
+            _update_qq(status="cancelled")
         return True
     return False
 

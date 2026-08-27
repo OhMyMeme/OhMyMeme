@@ -176,3 +176,15 @@ def test_adb_source_error_maps_to_job_error(monkeypatch):
     assert adb_qq.get_qq_progress()["status"] == "error"
     assert manager.get(job.id).status == "error"
     manager.shutdown(1)
+
+
+def test_adb_cancel_does_not_overwrite_terminal_done_state():
+    adb_qq.reset_qq_import()
+    adb_qq._update_qq(status="done", progress=100, zip_path="result.zip")
+    try:
+        adb_qq.cancel_qq_import()
+        state = adb_qq.get_qq_progress()
+        assert state["status"] == "done"
+        assert state["zip_path"] == "result.zip"
+    finally:
+        adb_qq.reset_qq_import()
