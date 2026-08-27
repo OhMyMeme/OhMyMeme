@@ -91,6 +91,14 @@ class FakeSettings:
         self.calls.append(settings)
         return self.result
 
+    def get_settings(self):
+        self.calls.append(("get_settings",))
+        return {"hotkey": "Ctrl+Alt+N"}
+
+    def reset_settings(self):
+        self.calls.append(("reset_settings",))
+        return {"hotkey": "Ctrl+Alt+N"}
+
 
 class FakeLibrary:
     def __init__(self, result=None, error=None):
@@ -473,3 +481,166 @@ def test_storage_info_delegates_cache_statistics_without_traversal():
     assert result["file_count"] == 2
     assert result["total_size"] == 12
     assert library.calls == [("storage_info",)]
+
+
+class _RecordingHandler:
+    def __init__(self, values=None):
+        self.calls = []
+        self.values = values or {}
+
+    def __getattr__(self, name):
+        def call(*args, **kwargs):
+            self.calls.append((name, args, kwargs))
+            return self.values.get(name, {"ok": True})
+
+        return call
+
+
+def test_js_facade_routes_named_sync_import_update_and_window_abi():
+    # Given: handlers return typed representative bridge values and record arguments.
+    webui = FakeWebUI()
+    webui.open_settings = lambda: True
+    webui.hide = lambda: None
+    webui._schedule_quit = lambda: None
+    api = JsApi(webui, FakeCatalog({}), FakeSettings(None))
+    handlers = {
+        name: _RecordingHandler()
+        for name in ("meme", "import", "sync", "update", "window_settings")
+    }
+    handlers["meme"].values.update({"get_init_data": {"startup_bg_color": "#000000"}})
+    handlers["update"].values.update({"download_progress": {"status": "idle"}})
+    handlers["sync"].values.update({"progress": {"progress": 0}})
+    api._handlers = handlers
+
+    # When: every dynamic caller-facing operation is invoked through the façade.
+    assert isinstance(api.search_memes("q", ["tag"], 7, 2, 3), dict)
+    assert isinstance(api.check_update(False, True), dict)
+    assert isinstance(api.start_download("https://example.test/a"), dict)
+    assert isinstance(api.get_download_progress(), dict)
+    assert isinstance(api.get_sync_progress(), dict)
+    assert isinstance(api.sync_push(), dict)
+    assert isinstance(api.sync_pull(), dict)
+    assert isinstance(api.run_auto_sync(), dict)
+    assert isinstance(api.sync_test(), dict)
+    assert isinstance(api.import_memes(), dict)
+    assert isinstance(api.import_folder(False), dict)
+    assert isinstance(api.import_from_clipboard(), dict)
+    assert isinstance(api.get_settings(), dict)
+    assert api.save_settings({"hotkey": "Ctrl+Alt+X"}) == {"ok": True}
+    assert isinstance(api.reset_settings(), dict)
+    assert api.move_window(4, -3) == {"ok": True}
+    assert api.start_window_drag(1, 20, 30) is False
+    assert api.hide_window() is None
+
+    # Then: names and exact positional/default ABI remain stable at each domain seam.
+    assert handlers["meme"].calls[0] == ("search_memes", ("q", ["tag"], 7, 2, 3), {})
+    assert ("check_update", (False, True), {}) in handlers["update"].calls
+    assert ("start_download", ("https://example.test/a",), {}) in handlers[
+        "update"
+    ].calls
+    assert ("sync_push", (), {}) not in handlers["sync"].calls
+    assert ("push", (), {}) in handlers["sync"].calls
+    assert ("pull", (), {}) in handlers["sync"].calls
+    assert ("auto_sync", (), {}) in handlers["sync"].calls
+    assert ("test_connection", (), {}) in handlers["sync"].calls
+    assert ("import_folder", (api._catalog, False), {}) in handlers["import"].calls
+    assert ("save_settings", ({"hotkey": "Ctrl+Alt+X"},), {}) in handlers[
+        "window_settings"
+    ].calls
+    assert ("move_main_window", (4, -3), {}) in handlers["window_settings"].calls
+
+
+def test_settings_facade_routes_import_sync_update_and_refresh_abi(monkeypatch):
+    # Given: a settings façade with deterministic handlers and a JS refresh target.
+    webui = FakeWebUI()
+    webui._container.library = FakeLibrary()
+    webui._container.job_manager = None
+    api = SettingsApi(webui, FakeSettings(None))
+    handlers = {
+        name: _RecordingHandler()
+        for name in ("import", "sync", "update", "window_settings")
+    }
+    api._handlers = handlers
+    from ohmymeme.integrations.imports import douyin, telegram, wechat
+    from ohmymeme.presentation.desktop import window_manager
+
+    importer_calls = []
+    monkeypatch.setattr(
+        telegram,
+        "start_tg_import",
+        lambda *args: importer_calls.append(("tg", args)) or True,
+    )
+    monkeypatch.setattr(telegram, "get_tg_progress", lambda: {"status": "idle"})
+    monkeypatch.setattr(
+        douyin,
+        "start_douyin_import",
+        lambda *args: importer_calls.append(("douyin", args)) or True,
+    )
+    monkeypatch.setattr(douyin, "get_douyin_progress", lambda: {"status": "idle"})
+    monkeypatch.setattr(
+        wechat,
+        "start_wechat_import",
+        lambda *args: importer_calls.append(("wechat", args)) or True,
+    )
+    monkeypatch.setattr(wechat, "get_wechat_progress", lambda: {"status": "idle"})
+    qqnt_calls = []
+    monkeypatch.setattr(
+        window_manager,
+        "start_qqnt_extract",
+        lambda *args, **kwargs: qqnt_calls.append((args, kwargs)) or True,
+    )
+    monkeypatch.setattr(window_manager, "get_qqnt_progress", lambda: {"status": "idle"})
+    evaluated = []
+    monkeypatch.setattr(
+        "ohmymeme.presentation.desktop.window_manager.webview",
+        SimpleNamespace(windows=[SimpleNamespace(evaluate_js=evaluated.append)]),
+    )
+
+    # When: settings-window dynamic methods and refresh callbacks are used.
+    assert isinstance(api.get_settings(), dict)
+    assert api.save_settings({"sync_auto_sync": True}) is None
+    assert isinstance(api.reset_settings(), dict)
+    assert isinstance(api.lan_start(), dict)
+    assert isinstance(api.lan_stop(), dict)
+    assert isinstance(api.lan_get_status(), dict)
+    assert isinstance(api.lan_get_ip(), dict)
+    assert isinstance(api.lan_set_allow_secret_config(True), dict)
+    assert isinstance(api.get_storage_info(), dict)
+    assert isinstance(api.pick_storage_dir(), dict)
+    assert isinstance(api.apply_storage_dir("C:/cache", True), dict)
+    assert api.start_tg_import() == {"ok": True}
+    assert isinstance(api.get_tg_import_progress(), dict)
+    assert api.start_douyin_import("cookie") == {"ok": True}
+    assert isinstance(api.get_douyin_import_progress(), dict)
+    assert api.start_wechat_import("C:/wechat", False, "acct") == {"ok": True}
+    assert isinstance(api.get_wechat_import_progress(), dict)
+    assert api.qqnt_start("123", "C:/out", True, True) == {"ok": True}
+    assert isinstance(api.qqnt_get_progress(), dict)
+    assert isinstance(api.start_download("https://example.test/a"), dict)
+    assert isinstance(api.get_download_progress(), dict)
+    assert isinstance(api.check_update(False, True), dict)
+    assert api.refresh_memes() == {"ok": True}
+    assert api.refresh_tags() == {"ok": True}
+    assert api.refresh_collections() == {"ok": True}
+
+    # Then: argument order/defaults and refresh expressions are observable contracts.
+    assert ("start_lan", (None, None), {}) in handlers["window_settings"].calls
+    assert ("apply_storage_dir", ("C:/cache", True), {}) in handlers[
+        "window_settings"
+    ].calls
+    assert importer_calls[0][0] == "tg"
+    assert importer_calls[0][1][1:4] == (None, "", True)
+    assert importer_calls[1][1][1] == "cookie"
+    assert importer_calls[2][1][1:4] == ("C:/wechat", False, "acct")
+    assert qqnt_calls[0] == (
+        ("123", "C:/out"),
+        {
+            "image_only": True,
+            "overwrite": True,
+            "ini_path": None,
+            "userdata_save_path": None,
+            "job_manager": None,
+            "import_callback": webui._container.library.import_paths,
+        },
+    )
+    assert evaluated == ["refreshMemes();", "refreshTags();", "refreshCollections();"]

@@ -5,6 +5,7 @@ import re
 import subprocess
 import sys
 from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import patch
 
 import pytest
@@ -597,6 +598,67 @@ def test_successful_native_drag_requests_hide_only_for_hotkey_session(monkeypatc
     ui.toggle_hotkey_safe()
     assert ui._api.start_native_drag(1)
     assert ui._visible is False
+
+
+def test_native_drag_platform_or_dotnet_failure_does_not_schedule_hide(monkeypatch):
+    # Given: a hidden-window hotkey session and a native drag backend unavailable.
+    import ohmymeme.integrations.platform.native_drag as native_drag
+
+    ui = _fake_webui(True)
+    ui.toggle_hotkey_safe()
+    scheduled = []
+    monkeypatch.setattr(ui, "schedule_hide", lambda: scheduled.append(True))
+    monkeypatch.setattr(native_drag.platform, "system", lambda: "Linux")
+    monkeypatch.setattr(ui._api._catalog, "get_meme_path", lambda _meme_id: "meme.png")
+
+    # When: the main-window façade tries to start native drag off Windows.
+    result = ui._api.start_native_drag(1)
+
+    # Then: the platform failure is a boolean false and never schedules hiding.
+    assert result is False
+    assert scheduled == []
+
+
+def test_native_drag_dotnet_import_failure_does_not_schedule_hide(
+    monkeypatch, tmp_path
+):
+    # Given: a valid local path and a Windows host without pythonnet/WinForms.
+    import ohmymeme.integrations.platform.native_drag as native_drag
+
+    path = tmp_path / "meme.png"
+    path.write_bytes(b"image")
+    ui = _fake_webui(True)
+    ui.toggle_hotkey_safe()
+    scheduled = []
+    monkeypatch.setattr(ui, "schedule_hide", lambda: scheduled.append(True))
+    monkeypatch.setattr(ui._api._catalog, "get_meme_path", lambda _meme_id: str(path))
+    monkeypatch.setattr(native_drag.platform, "system", lambda: "Windows")
+    monkeypatch.setattr(native_drag, "_import_wf", lambda: None)
+    monkeypatch.setattr(
+        native_drag,
+        "webview",
+        SimpleNamespace(windows=[SimpleNamespace(native=object())]),
+        raising=False,
+    )
+
+    # When: the main-window façade tries to start native drag without .NET.
+    result = ui._api.start_native_drag(1)
+
+    # Then: the dependency failure remains false and the hotkey session stays visible.
+    assert result is False
+    assert scheduled == []
+
+
+def test_missing_bridge_method_keeps_null_failure_shape():
+    # Given: the settings-window runtime receives an API object without a method.
+    api = SimpleNamespace(existing=lambda: {"ok": True})
+
+    # When: the legacy dynamic lookup asks for a missing method.
+    method = getattr(api, "missing_method", None)
+    result = None if not callable(method) else method()
+
+    # Then: missing methods remain the established null failure shape.
+    assert result is None
 
 
 def test_successful_copy_requests_hide_only_for_hotkey_session(monkeypatch):

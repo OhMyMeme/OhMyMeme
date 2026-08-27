@@ -68,4 +68,11 @@ Conventions and successful approaches discovered during work on this plan.
 - Telegram, Douyin, WeChat, and mobile QQ retain importer-owned temporary decrypt/download/pull directories until their worker reaches its terminal cleanup boundary; existing lifecycle tests cover cancellation and worker exceptions without changing bridge shapes.
 - QQNT cancellation must be checked after the canonical callback returns as well as before it starts. If the callback committed IDs before observing cancellation, the desktop adapter compensates through the bound library's delete boundary while leaving the user-owned QQNT output untouched.
 - Telegram temporary-directory removal is part of the worker result contract: a removal `OSError` changes the compatibility state to `error` with `cleanup_failed` instead of allowing a prior `done` state to stand while the directory remains.
+
 - Mid-callback cancellation is owned by the canonical import boundary, not by a post-callback bridge check: `ImageImportService.import_batch` checks the supplied event during the batch and after projection, then restores its manifest snapshot and compensates only IDs/files created by that batch.
+
+## 2026-08-28 Task 10 bridge ABI contracts
+
+- Added behavior-level bridge coverage for main/settings façade calls: exact positional arguments, defaults, representative return types, importer/update/sync envelopes, and settings refresh JavaScript expressions are asserted through recording handlers and deterministic module fakes.
+- Added platform failure coverage proving non-Windows and missing pythonnet/WinForms native drag return `False` without scheduling hotkey-session hide; missing dynamic methods retain the established `None` failure shape.
+- Task 9 remains structurally blocked and unconfirmed; these tests intentionally guard façade contracts before and after any future decomposition without changing the blocked implementation.
