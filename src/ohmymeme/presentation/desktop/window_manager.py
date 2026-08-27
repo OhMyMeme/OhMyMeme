@@ -888,26 +888,30 @@ def start_qqnt_extract(
 
         def target(context):
             global _QQNT_JOB_MANAGER, _QQNT_JOB_ID, _QQNT_JOB_SNAPSHOT
-            _QQNT_JOB_MANAGER = job_manager
-            _QQNT_JOB_ID = context.job_id
-            _QQNT_JOB_SNAPSHOT = context.snapshot
+            with _QQNT_LOCK:
+                active = job_manager.active("import.qqnt")
+                if active is None or active.id != context.job_id:
+                    return
+                _QQNT_JOB_MANAGER = job_manager
+                _QQNT_JOB_ID = context.job_id
+                _QQNT_JOB_SNAPSHOT = context.snapshot
             try:
                 _qqnt_worker(*args, cancellation_event=context.cancellation_event)
                 if _QQNT_STATE["status"] == "error":
                     raise RuntimeError(_QQNT_STATE["error"])
             finally:
-                _QQNT_JOB_MANAGER = None
-                _QQNT_JOB_ID = None
-                _QQNT_JOB_SNAPSHOT = None
+                with _QQNT_LOCK:
+                    active = job_manager.active("import.qqnt")
+                    if _QQNT_JOB_ID == context.job_id and (
+                        active is None or active.id == context.job_id
+                    ):
+                        _QQNT_JOB_MANAGER = None
+                        _QQNT_JOB_ID = None
+                        _QQNT_JOB_SNAPSHOT = None
 
-        record, created = job_manager.try_start(
-            "import.qqnt", target, resources=("qqnt",)
-        )
+        _, created = job_manager.try_start("import.qqnt", target, resources=("qqnt",))
         if not created:
             return False
-        with _QQNT_LOCK:
-            if job_manager.active("import.qqnt") is not None:
-                _QQNT_JOB_ID = record.id
     return True
 
 

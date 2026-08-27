@@ -171,13 +171,66 @@ def test_qqnt_managed_fast_completion_does_not_publish_stale_job_id(monkeypatch)
     manager = JobManager()
     try:
         assert window_manager.start_qqnt_extract("1", "out", job_manager=manager)
-        deadline = __import__("time").monotonic() + 1
-        while __import__("time").monotonic() < deadline:
-            if window_manager.get_qqnt_progress()["status"] == "done":
-                break
+        record = manager.active("import.qqnt")
+        assert record is not None
+        assert manager.wait(record.id, 1)
         assert manager.active("import.qqnt") is None
         state = window_manager.get_qqnt_progress()
         assert state["status"] == "done"
+        assert window_manager._QQNT_JOB_ID is None
+    finally:
+        manager.shutdown(1)
+
+
+def test_qqnt_managed_binding_does_not_replace_current_task_id(monkeypatch):
+    from ohmymeme.app.job_manager import JobManager
+    from ohmymeme.presentation.desktop import window_manager
+
+    calls = []
+
+    def worker(*args, **_kwargs):
+        calls.append(args[0])
+
+    monkeypatch.setattr(window_manager, "_qqnt_worker", worker)
+    manager = JobManager()
+    try:
+        assert window_manager.start_qqnt_extract("a", "out", job_manager=manager)
+        current = manager.active("import.qqnt")
+        assert current is not None
+        assert manager.wait(current.id, 1)
+        assert window_manager._QQNT_JOB_ID is None
+        assert calls == ["a"]
+    finally:
+        manager.shutdown(1)
+
+
+def test_qqnt_managed_binding_requires_current_active_job(monkeypatch):
+    from types import SimpleNamespace
+
+    from ohmymeme.app.job_manager import JobManager
+    from ohmymeme.presentation.desktop import window_manager
+
+    active_calls = 0
+
+    def worker(*_args, **_kwargs):
+        pass
+
+    def active(task_type):
+        nonlocal active_calls
+        active_calls += 1
+        if active_calls == 1:
+            return None
+        return SimpleNamespace(id="task-b")
+
+    monkeypatch.setattr(window_manager, "_qqnt_worker", worker)
+    manager = JobManager()
+    monkeypatch.setattr(manager, "active", active)
+    try:
+        assert window_manager.start_qqnt_extract("a", "out", job_manager=manager)
+        record = manager.get(next(iter(manager._records)))
+        assert record is not None
+        assert manager.wait(record.id, 1)
+        assert active_calls == 2
         assert window_manager._QQNT_JOB_ID is None
     finally:
         manager.shutdown(1)
