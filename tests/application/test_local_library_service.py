@@ -305,7 +305,7 @@ def test_projection_restore_failure_is_raised_and_not_reported_as_success(
 
     def project():
         manifest_path.write_text("new", encoding="utf-8")
-        raise OSError("projection failed")
+        raise ValueError("projection failed")
 
     service, db, assets = _real_service(tmp_path, project)
     meme_id = db.add_meme("example.png", original_name="old")
@@ -316,13 +316,14 @@ def test_projection_restore_failure_is_raised_and_not_reported_as_success(
 
     monkeypatch.setattr(service, "_restore_manifest", fail_restore)
 
-    # When: the projection boundary restores the old manifest and that also fails
-    with pytest.raises(OSError, match="projection failed") as error:
-        service._project_after_mutation()
+    # When: a public mutation commits before projection and recovery both fail
+    with pytest.raises(ValueError, match="projection failed") as error:
+        service.rename_meme(meme_id, "renamed")
 
     # Then: the error exposes recovery failure as its cause, never a success value
+    assert isinstance(error.value, ValueError)
     assert isinstance(error.value.__cause__, OSError)
     assert str(error.value.__cause__) == "restore failed"
-    assert db.get_by_id(meme_id)["original_name"] == "old"
+    assert db.get_by_id(meme_id)["original_name"] == "renamed"
     assert assets.manifest_path.read_bytes() == b"new"
     db.close()
