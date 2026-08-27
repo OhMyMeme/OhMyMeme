@@ -306,13 +306,31 @@ class TestWebDAVEnsureDir(unittest.TestCase):
 
     @patch("src.sync.urllib.request.urlopen")
     def test_success_also_caches_and_single_mkcol(self, urlopen):
-        urlopen.return_value = _FakeResp(207)
+        # RFC 4918：MKCOL 成功返回 201 Created
+        urlopen.return_value = _FakeResp(201)
         bk = _make_backend()
         # 成功创建也写缓存：第二次调用不应再发 MKCOL
         self.assertTrue(bk.ensure_remote_dir("memes"))
         self.assertEqual(urlopen.call_count, 1)
         self.assertTrue(bk.ensure_remote_dir("memes"))
         self.assertEqual(urlopen.call_count, 1)
+
+    @patch("src.sync.urllib.request.urlopen")
+    def test_clear_cache_retriggers_mkcol(self, urlopen):
+        """push 开始时清空缓存后，ensure_remote_dir 会再次发 MKCOL（重建已删目录）。"""
+        # 两次 URL 计调用次数用 405（"已存在"）路径进缓存
+        urlopen.side_effect = urllib.error.HTTPError("u", 405, "exists", {}, None)
+        bk = _make_backend()
+        self.assertTrue(bk.ensure_remote_dir("memes"))
+        self.assertEqual(urlopen.call_count, 1)
+        # 目录已在缓存
+        self.assertTrue(bk.ensure_remote_dir("memes"))
+        self.assertEqual(urlopen.call_count, 1)
+        # 模拟 push 开始清空进程级缓存
+        sync._dav_dirs.clear()
+        # 清空后再次确保：应重新发 MKCOL（远端目录可能已被删除）
+        self.assertTrue(bk.ensure_remote_dir("memes"))
+        self.assertEqual(urlopen.call_count, 2)
 
     @patch("src.sync.urllib.request.urlopen")
     def test_301_existing_collection_ok(self, urlopen):

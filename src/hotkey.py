@@ -77,6 +77,8 @@ class GlobalHotkey:
         self._reregister_pending = False
         # 序列化 _reregister_keyboard 与 unregister，避免注销与重注册并发交错
         self._reregister_lock = threading.Lock()
+        # 代次 token：register/unregister 递增，使旧 watchdog 的重注册操作失效
+        self._watchdog_gen = 0
 
     def register(self, hotkey: str, callback) -> bool:
         """注册全局快捷键，自动尝试 keyboard → pynput → 轮询降级"""
@@ -145,6 +147,8 @@ class GlobalHotkey:
             return  # 已在监控运行，避免重复
         stop = threading.Event()
         self._watchdog_stop = stop
+        # 捕获当前代次：仅当代次仍匹配时才允许重注册，阻止旧 watchdog 在新生命周期操作
+        gen = self._watchdog_gen
 
         def watch():
             while not stop.wait(KEYBOARD_WATCH_INTERVAL):
@@ -167,25 +171,28 @@ class GlobalHotkey:
                             "error", "监听/处理线程已退出，尝试自动重新注册热键"
                         )
                         # 与 unregister 用同一锁互斥：若注销已完成则停止标志已置位，
-                        # 重注册函数会因该标志直接返回，避免注销后被重新挂上
-                        self._reregister_keyboard(listener)
+                        # 重注册函数会因该标志/代次不符而直接返回，避免注销后被重新挂上
+                        self._reregister_keyboard(listener, gen)
                 except Exception:
                     logger.exception("快捷键守护线程检查异常")
 
         t = threading.Thread(target=watch, daemon=True)
         t.start()
 
-    def _reregister_keyboard(self, listener):
+    def _reregister_keyboard(self, listener, gen=0):
         """重置 keyboard 监听状态并重新注册热键，返回是否成功。
 
-        与 unregister 持同一 `_reregister_lock`，并在锁内复查 `_watchdog_stop`：
-        - 若注销已启动（停止标志已置位或回调已清空），直接返回 False，不重新挂热键；
+        与 unregister 持同一 `_reregister_lock`，并在锁内复查代次与停止状态：
+        - 若调用方代次 `gen` 不等于当前 `_watchdog_gen`（旧 watchdog/旧生命周期），
+          直接返回 False，不操作新注册的热键；
+        - 若注销已启动（回调已清空，或停止事件已置位），直接返回 False，不重新挂热键；
         - 若 `add_hotkey` 失败，置 `_reregister_pending=True` 并返回 False，守护线程
           下一周期会继续重试，而不是误报成功后就再也不重试。
         """
         with self._reregister_lock:
-            # 注销已开始（回调已清空，或停止事件已置位）：不允许重新挂热键，
-            # 也避免把已清空的回调传进 add_hotkey
+            # 生命周期不匹配或已注销：不允许重新挂热键，也避免把已清空的回调传进去
+            if gen != self._watchdog_gen:
+                return False
             stopped = self._safe_callback is None or (
                 self._watchdog_stop is not None
                 and getattr(self._watchdog_stop, "is_set", lambda: False)()
@@ -328,6 +335,8 @@ class GlobalHotkey:
         # 置位停止标志 + 清空回调，使未开始的重注册会因标志/回调被清而直接返回，
         # 避免注销后被守护线程重新挂上或传入已清空的回调。
         with self._reregister_lock:
+            # 递增代次，使旧 watchdog 捕获的代次失效，禁止其操作新注册状态
+            self._watchdog_gen += 1
             if self._watchdog_stop is not None:
                 self._watchdog_stop.set()
                 self._watchdog_stop = None

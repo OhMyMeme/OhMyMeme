@@ -410,6 +410,41 @@ class TestHotkeyWatchdog(unittest.TestCase):
         self.assertEqual(fake_mod.add_calls, 0)  # 注销后不得重新挂热键
 
     @mock.patch.dict("sys.modules", {"keyboard": None}, clear=False)
+    def test_stale_generation_cannot_touch_after_reregister(self):
+        """注销后重新注册：旧代次 watchdog 的重注册操作不得作用到新生命周期。"""
+        from src.hotkey import GlobalHotkey
+
+        fake_mod = self._fake_keyboard_module()
+        fake_mod.add_calls = 0
+
+        class FakeListener(object):
+            listening = True
+
+            def start_if_necessary(self):
+                pass
+
+        hk = GlobalHotkey()
+        hk._backend = "keyboard"
+        hk._hotkey = "Ctrl+Alt+N"
+
+        with mock.patch.dict("sys.modules", {"keyboard": fake_mod}):
+            # 第一次注册（代次 0）→ 注销（代次 -> 1）→ 立即重新注册（新代次 1）
+            hk._watchdog_stop = threading.Event()
+            hk.unregister()
+            old_gen = 0  # 旧 watchdog 捕获的代次
+            # 重新注册：赋新回调并启动新守护（当前代次已是 1）
+            hk._safe_callback = lambda: None
+            self.assertEqual(hk._watchdog_gen, 1)
+            # 旧代次 watchdog 调重注册：应被拒，不得 add
+            stale = hk._reregister_keyboard(FakeListener(), gen=old_gen)
+            self.assertFalse(stale)
+            self.assertEqual(fake_mod.add_calls, 0)
+            # 新代次（当前 gen）可以正常重注册
+            fresh = hk._reregister_keyboard(FakeListener(), gen=hk._watchdog_gen)
+            self.assertTrue(fresh)
+            self.assertEqual(fake_mod.add_calls, 1)
+
+    @mock.patch.dict("sys.modules", {"keyboard": None}, clear=False)
     def test_unregister_stops_watchdog(self):
         from src.hotkey import GlobalHotkey
 

@@ -1074,6 +1074,11 @@ def push(delete_remote: bool = None) -> dict:
     if not _sync_run_lock.acquire(blocking=False):
         raise SyncError("同步正在进行中")
 
+    # 每次 push 清空进程级目录缓存：避免命中上一次同步的缓存，而跳过已被删除
+    # 远端目录的 MKCOL（目录需重新创建时也能正确发请求）
+    with _dav_dirs_lock:
+        _dav_dirs.clear()
+
     _reset_sync_state("upload", files_total, bytes_total)
     start = time.time()
     _update_sync_state(status="uploading", start_time=start)
