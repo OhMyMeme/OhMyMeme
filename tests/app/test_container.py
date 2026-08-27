@@ -169,6 +169,31 @@ def test_container_owns_lan_instance_lifecycle(monkeypatch, tmp_path):
     assert events == [("start", 19000, "secret"), "stop"]
 
 
+def test_container_start_lan_reuses_owned_server(monkeypatch, tmp_path):
+    container = Container(tmp_path / "lan-reuse")
+    servers = []
+
+    class Lan:
+        def start(self, port, secret):
+            return (port, secret)
+
+        def stop(self):
+            pass
+
+    def create_server():
+        server = Lan()
+        servers.append(server)
+        return server
+
+    monkeypatch.setattr(container, "create_lan_server", create_server)
+    try:
+        assert container.start_lan(19001, "first") == (19001, "first")
+        assert container.start_lan(19002, "second") == (19002, "second")
+        assert len(servers) == 1
+    finally:
+        container.close()
+
+
 def test_container_stops_directly_created_lan_server(tmp_path):
     container = Container(tmp_path / "direct-lan-owner")
     server = container.create_lan_server()
@@ -238,6 +263,7 @@ def test_container_services_share_explicit_dependency_identity(tmp_path):
         assert sync_service.db is container.db
         assert sync_service.assets is container.assets
         assert sync_service.manifest is container.manifest
+        assert sync_service.library is container.library
         assert lan_server._commands.config is container.config
         assert lan_server._commands.db is container.db
         assert lan_server._commands.assets is container.assets
@@ -304,6 +330,22 @@ def test_explicit_manifest_load_uses_supplied_assets_without_singletons(
             "memes": [],
             "collections": [],
         }
+    finally:
+        container.close()
+
+
+def test_container_lan_command_uses_owned_library_and_paths(tmp_path):
+    container = Container(tmp_path / "lan-command")
+    try:
+        server = container.create_lan_server()
+        response = server._cmd_push_manifest(
+            {"version": 3, "memes": [], "collections": []}
+        )
+
+        assert response == {"ok": True, "local_count": 0}
+        assert container.assets.manifest_path.exists()
+        assert container.assets.manifest_path.is_relative_to(tmp_path)
+        assert server._commands.library is container.library
     finally:
         container.close()
 

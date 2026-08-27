@@ -20,8 +20,11 @@ import ohmymeme.core.database as database
 import ohmymeme.services.lan as lan_package
 import ohmymeme.services.lan.server as lan
 import ohmymeme.services.sync.service as sync_module
+from ohmymeme.app.local_library import LocalLibraryService
+from ohmymeme.core.assets import AssetPaths
 from ohmymeme.core.config import Config
 from ohmymeme.core.database import MemeDB
+from ohmymeme.core.manifest import ManifestBuilder
 
 TEST_PORT = 17990
 _IV_LEN = 12
@@ -474,6 +477,35 @@ def test_push_manifest_projection_failure_returns_error_shape(lan_env):
 
     # Then: LAN does not report a false success
     assert response == {"ok": False, "error": "本地清单应用失败"}
+
+
+def test_lan_command_handlers_reuse_explicit_application_graph(lan_env):
+    cfg, db, tmp = lan_env
+    assets = AssetPaths(cfg.data_dir, cfg.cache_dir)
+    manifest = ManifestBuilder(cfg, db, assets)
+    library = LocalLibraryService(
+        db,
+        assets,
+        type("Importer", (), {"import_bytes": lambda self, request: None})(),
+        manifest.build,
+        cfg,
+    )
+    server = lan.LanServer(
+        config=cfg,
+        db=db,
+        assets=assets,
+        manifest=manifest,
+        library=library,
+    )
+
+    assert server._commands.config is cfg
+    assert server._commands.db is db
+    assert server._commands.assets is assets
+    assert server._commands.manifest is manifest
+    assert server._commands.library is library
+    assert server._commands._cmd_push_manifest(
+        {"version": 3, "memes": [], "collections": []}
+    ) == {"ok": True, "local_count": 0}
 
 
 def test_push_pull_file(lan_env):

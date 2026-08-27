@@ -1,9 +1,18 @@
+import io
+
 import pytest
+from PIL import Image
 
 from ohmymeme.app.local_library import LocalLibraryService
 from ohmymeme.core.assets import AssetPaths
 from ohmymeme.core.database import MemeDB
-from ohmymeme.core.imports import ImportBytes, ImportResult
+from ohmymeme.core.imports import ImageImportService, ImportBytes, ImportResult
+
+
+def _png_bytes():
+    buffer = io.BytesIO()
+    Image.new("RGBA", (1, 1), (255, 0, 0, 255)).save(buffer, "PNG")
+    return buffer.getvalue()
 
 
 class FakeDb:
@@ -247,6 +256,40 @@ def test_real_database_commit_and_manifest_projection_are_both_observable(tmp_pa
         '{"version": 3, "memes": [{"filename": "example.png"}]}'
     )
     db.close()
+
+
+def test_real_local_library_import_uses_only_supplied_root(tmp_path, monkeypatch):
+    root = tmp_path / "library-root"
+    assets = AssetPaths(root / "data", root / "cache")
+    assets.cache_dir.mkdir(parents=True)
+    db = MemeDB(root / "data" / "memes.db")
+
+    def fail_singleton():
+        raise AssertionError("default singleton accessed")
+
+    monkeypatch.setattr("ohmymeme.core.config.get_config", fail_singleton)
+    monkeypatch.setattr("ohmymeme.core.database.get_db", fail_singleton)
+
+    def manifest():
+        return assets.manifest_path.write_text(
+            '{"version": 3, "memes": []}', encoding="utf-8"
+        )
+
+    service = LocalLibraryService(
+        db,
+        assets,
+        ImageImportService(db, assets, manifest),
+        manifest,
+    )
+
+    try:
+        result = service.import_bytes(ImportBytes(_png_bytes(), "only-root.png"))
+        assert result.imported_ids
+        assert root in assets.manifest_path.parents
+        assert db.get_by_id(result.imported_ids[0]) is not None
+        assert not list(tmp_path.glob("memes.db"))
+    finally:
+        db.close()
 
 
 def test_real_database_mutation_kept_when_projection_restores_old_manifest(

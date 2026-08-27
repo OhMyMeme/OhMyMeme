@@ -36,12 +36,29 @@ from ohmymeme.services.sync.backends import get_backend
 from ohmymeme.services.sync.service import (
     SyncError,
     SyncService,
+    _default_library,
     cleanup_remote_orphans,
     get_sync_progress,
 )
 
 
 class TestSyncJobAdapter(unittest.TestCase):
+    def test_legacy_facade_without_resources_keeps_singleton_metadata_callback(self):
+        root = Path(tempfile.mkdtemp())
+        self.addCleanup(shutil.rmtree, root, ignore_errors=True)
+        config = Config(root / "config.json")
+        db = MemeDB(config.db_path)
+        self.addCleanup(db.close)
+        with patch.object(sync, "get_config", return_value=config), patch.object(
+            sync, "get_db", return_value=db
+        ):
+            library = _default_library()
+
+        self.assertIs(library._legacy_metadata, sync._apply_remote_metadata)
+        with patch.object(sync, "get_db", return_value=db) as get_db:
+            self.assertIsNone(library._legacy_metadata({"version": 3, "memes": []}))
+        get_db.assert_called_once_with()
+
     def test_pull_library_none_builds_from_explicit_resources(self):
         class Config:
             @staticmethod

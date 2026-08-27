@@ -31,3 +31,9 @@ Conventions and successful approaches discovered during work on this plan.
 
 - `pull()` must distinguish an actually explicit resource graph from an all-legacy invocation before calling `_default_library()`; otherwise passing internally resolved defaults changes legacy callback behavior.
 - For explicit resources with `library=None`, the compatibility metadata callback is bound to the supplied DB through `planning._apply_remote_metadata(remote_data, db)`, while the no-argument facade retains `_apply_remote_metadata` and singleton behavior.
+
+## 2026-08-27 dependency ownership test coverage
+
+- Added test-only coverage for `Container.start_lan()` reusing its owned server, Sync retaining the Container-owned library identity, LAN command handlers retaining the supplied config/db/assets/manifest/library graph, and a real LAN `push_manifest` writing only beneath the Container temporary root.
+- Added a real `ImageImportService` temporary-root import with singleton config/DB factories patched to fail; the imported row, cache, and manifest are all observed through the supplied graph. Added explicit no-resource Sync facade coverage proving `_default_library()` remains singleton-compatible and invokes the legacy metadata callback.
+- Baseline targeted LAN runs were intentionally recorded with known fixed-port/global-state races (`4` and `7` LAN failures in separate runs); the corrected serial targeted suite passed `154 passed, 1 skipped`, with Sync/Container/local-library subset `112 passed` and LAN/integration subset `42 passed, 1 skipped`. LSP remains unavailable for the linked worktree because the client request cwd excludes it.
