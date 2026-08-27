@@ -128,6 +128,16 @@ def _free_port():
         return probe.getsockname()[1]
 
 
+def _start_test_server(secret):
+    global TEST_PORT
+    for _ in range(10):
+        TEST_PORT = _free_port()
+        if lan.start(TEST_PORT, secret):
+            return
+        lan.stop()
+    pytest.fail("无法为 LAN 测试绑定临时端口")
+
+
 def _connect(port=None):
     port = TEST_PORT if port is None else port
     sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
@@ -139,11 +149,8 @@ def _connect(port=None):
 @pytest.fixture()
 def lan_env(tmp_path):
     """隔离 config/db/cache 并启动 lan 服务"""
-    global TEST_PORT
-    TEST_PORT = _free_port()
     cfg = Config(tmp_path / "config.json")
     cfg.set("cache_dir", str(tmp_path / "cache"))
-    cfg.set("lan_port", TEST_PORT)
     db = MemeDB(tmp_path / "test.db")
 
     old_cfg = config_module._config
@@ -155,10 +162,12 @@ def lan_env(tmp_path):
     try:
         lan.stop()
         lan.set_allow_secret_config(False)
-        assert lan.start(TEST_PORT, "test-secret")
+        _start_test_server("test-secret")
+        cfg.set("lan_port", TEST_PORT)
         yield cfg, db, tmp_path
     finally:
         lan.stop()
+        assert lan.get_status()["status"] == "stopped"
         lan.set_confirm_callback(old_cb)
         lan.set_allow_secret_config(False)
         config_module._config = old_cfg
@@ -880,7 +889,13 @@ def test_no_secret_server(tmp_path):
     database._db = db
     port = _free_port()
     lan.stop()
-    assert lan.start(port, "")
+    for _ in range(10):
+        if lan.start(port, ""):
+            break
+        lan.stop()
+        port = _free_port()
+    else:
+        pytest.fail("无法为无密钥 LAN 测试绑定临时端口")
     sock = None
     try:
         sock = _connect(port)

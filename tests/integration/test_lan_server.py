@@ -22,13 +22,20 @@ def free_port():
         return probe.getsockname()[1]
 
 
+def start_test_server(secret):
+    global TEST_PORT
+    for _ in range(10):
+        TEST_PORT = free_port()
+        if lan.start(TEST_PORT, secret):
+            return
+        lan.stop()
+    pytest.fail("无法为 LAN 集成测试绑定临时端口")
+
+
 @pytest.fixture()
 def lan_env(tmp_path):
-    global TEST_PORT
-    TEST_PORT = free_port()
     cfg = Config(tmp_path / "config.json")
     cfg.set("cache_dir", str(tmp_path / "cache"))
-    cfg.set("lan_port", TEST_PORT)
     db = MemeDB(tmp_path / "test.db")
     old_cfg = config_module._config
     old_db = database._db
@@ -38,10 +45,12 @@ def lan_env(tmp_path):
     try:
         lan.stop()
         lan.set_allow_secret_config(False)
-        assert lan.start(TEST_PORT, "test-secret")
+        start_test_server("test-secret")
+        cfg.set("lan_port", TEST_PORT)
         yield cfg
     finally:
         lan.stop()
+        assert lan.get_status()["status"] == "stopped"
         lan.set_confirm_callback(old_callback)
         lan.set_allow_secret_config(False)
         config_module._config = old_cfg
