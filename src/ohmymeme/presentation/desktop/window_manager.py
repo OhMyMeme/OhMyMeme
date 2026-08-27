@@ -1014,7 +1014,7 @@ def _qqnt_worker(
                 }
             ]
             if paths:
-                result = import_callback(paths)
+                result = import_callback(paths, cancellation_event)
                 if _QQNT_CANCEL or (
                     cancellation_event is not None and cancellation_event.is_set()
                 ):

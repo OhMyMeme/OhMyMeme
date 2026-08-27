@@ -243,20 +243,21 @@ def test_qqnt_cancel_during_projection_rolls_back_library_import(monkeypatch, tm
     output_dir.mkdir()
     image_path = output_dir / "sticker.png"
     image_path.write_bytes(b"image")
-    rollback = []
+    app_state = {"db": 0, "cache": False, "manifest": False}
     finished = __import__("threading").Event()
     webui = FakeWebUI()
     webui._container.job_manager = None
 
     class Library:
-        def import_paths(self, _paths):
-            rollback.append([42])
+        def import_paths(self, _paths, _cancellation_event=None):
+            app_state.update(db=1, cache=True, manifest=True)
             window_manager.cancel_qqnt_extract()
             finished.set()
             return {"ids": [42], "rejected": 0}
 
         def delete_memes(self, ids):
-            rollback.append(list(ids))
+            assert ids == [42]
+            app_state.update(db=0, cache=False, manifest=False)
 
     webui._container.library = Library()
     settings = SettingsApi(webui, FakeSettings(None))
@@ -273,7 +274,7 @@ def test_qqnt_cancel_during_projection_rolls_back_library_import(monkeypatch, tm
     assert finished.wait(1)
 
     # Then: the committed projection is compensated while user output remains.
-    assert rollback == [[42], [42]]
+    assert app_state == {"db": 0, "cache": False, "manifest": False}
     assert image_path.exists()
 
 

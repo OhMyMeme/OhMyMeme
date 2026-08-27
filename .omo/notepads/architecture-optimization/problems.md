@@ -20,3 +20,4 @@ Unresolved blockers and technical debt discovered during work on this plan.
 
 - No new production blocker was observed after routing QQNT output through the canonical library boundary. Linked-worktree LSP remains unavailable due to the known request-cwd restriction; serial tests and static checks provide the verification evidence.
 - Focused and full serial verification passed after the cancellation rollback and Telegram cleanup-error fixes; linked-worktree LSP remains unavailable for the known request-cwd reason.
+- The real mid-callback race is closed by event-aware import-batch compensation; no remaining Task 8 ownership blocker was reproduced in the final serial verification.

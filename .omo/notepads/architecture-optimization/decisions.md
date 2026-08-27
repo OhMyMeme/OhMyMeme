@@ -22,3 +22,4 @@ Architectural choices and rationales discovered during work on this plan.
 
 - `SettingsApi.qqnt_start` is the ownership handoff point: QQNT owns user output creation and retention, while `LocalLibraryService.import_paths` owns application cache/DB/manifest projection. No QQNT output directory cleanup is delegated to the application worker.
 - Cancellation compensation is limited to IDs returned by the existing import callback and uses the callback-bound library deletion operation; no direct DB/cache/manifest manipulation or user-output deletion is added.
+- Preserve the old one-argument `LocalLibraryService.import_paths` call shape when no cancellation event is supplied; QQNT alone passes its worker event so unrelated importers and legacy fakes retain their ABI.

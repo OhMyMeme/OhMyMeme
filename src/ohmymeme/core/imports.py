@@ -147,11 +147,15 @@ class ImageImportService:
             raise
         return ImportResult((meme_id,), 0)
 
-    def import_batch(self, requests: Sequence[ImportRequest]) -> ImportResult:
+    def import_batch(
+        self, requests: Sequence[ImportRequest], cancellation_event=None
+    ) -> ImportResult:
         with self._lock:
-            return self._import_batch_locked(requests)
+            return self._import_batch_locked(requests, cancellation_event)
 
-    def _import_batch_locked(self, requests: Sequence[ImportRequest]) -> ImportResult:
+    def _import_batch_locked(
+        self, requests: Sequence[ImportRequest], cancellation_event=None
+    ) -> ImportResult:
         created_paths: list[Path] = []
         created_ids: list[int] = []
         imported_ids: list[int] = []
@@ -162,6 +166,12 @@ class ImageImportService:
         )
         try:
             for request in requests:
+                if cancellation_event is not None and cancellation_event.is_set():
+                    cleanup_failures = self._compensate(created_ids, created_paths)
+                    self._restore_manifest(manifest_snapshot, cleanup_failures)
+                    if cleanup_failures:
+                        self._write_recovery_marker(cleanup_failures)
+                    return ImportResult((), rejected)
                 validated = self._validate(request)
                 if validated is None:
                     rejected += 1
@@ -190,8 +200,20 @@ class ImageImportService:
                 )
                 created_ids.append(meme_id)
                 imported_ids.append(meme_id)
+                if cancellation_event is not None and cancellation_event.is_set():
+                    cleanup_failures = self._compensate(created_ids, created_paths)
+                    self._restore_manifest(manifest_snapshot, cleanup_failures)
+                    if cleanup_failures:
+                        self._write_recovery_marker(cleanup_failures)
+                    return ImportResult((), rejected)
             if imported_ids:
                 self._build_manifest()
+                if cancellation_event is not None and cancellation_event.is_set():
+                    cleanup_failures = self._compensate(created_ids, created_paths)
+                    self._restore_manifest(manifest_snapshot, cleanup_failures)
+                    if cleanup_failures:
+                        self._write_recovery_marker(cleanup_failures)
+                    return ImportResult((), rejected)
         except (OSError, RuntimeError, sqlite3.Error):
             cleanup_failures = self._compensate(created_ids, created_paths)
             self._restore_manifest(manifest_snapshot, cleanup_failures)

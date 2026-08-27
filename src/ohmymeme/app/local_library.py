@@ -115,12 +115,14 @@ class LocalLibraryService:
         """Delegate batch import through the local-library boundary."""
         return self._importer.import_batch(requests)
 
-    def import_paths(self, paths):
+    def import_paths(self, paths, cancellation_event=None):
         """Import downloaded paths through the local-library boundary."""
         from ohmymeme.core.imports import ImportPath
 
         requests = tuple(ImportPath(Path(path), Path(path).stem) for path in paths)
-        return self.import_batch(requests)
+        if cancellation_event is None:
+            return self._importer.import_batch(requests)
+        return self._importer.import_batch(requests, cancellation_event)
 
     def import_clipboard_paths(self, paths, names=None):
         """Import clipboard paths and resolve the display name at the app boundary."""
