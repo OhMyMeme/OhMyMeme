@@ -393,6 +393,25 @@ def test_pull_manifest(lan_env):
     sock.close()
 
 
+def test_pull_manifest_uses_public_library_projection_boundary(lan_env):
+    class Library:
+        def project_manifest(self):
+            return False
+
+        def __getattr__(self, name):
+            if name == "_project_after_mutation":
+                raise AssertionError("private projection boundary bypass")
+            raise AttributeError(name)
+
+    server = lan.LanServer(library=Library())
+
+    # When: LAN asks for a local manifest through the command handler
+    response = server._cmd_pull_manifest()
+
+    # Then: projection failure keeps the established LAN error envelope
+    assert response == {"ok": False, "error": "本地清单生成失败"}
+
+
 def test_push_pull_file(lan_env):
     cfg, db, tmp = lan_env
     import base64

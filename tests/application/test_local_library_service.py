@@ -273,6 +273,29 @@ def test_real_database_mutation_kept_when_projection_restores_old_manifest(
     db.close()
 
 
+def test_public_project_manifest_restores_old_manifest_after_projection_failure(
+    tmp_path,
+):
+    # Given: a real SQLite database, an old manifest, and a projector that fails
+    # after writing
+    manifest_path = tmp_path / "meme-index.json"
+
+    def project():
+        manifest_path.write_text("new", encoding="utf-8")
+        raise OSError("projection failed")
+
+    service, db, assets = _real_service(tmp_path, project)
+    assets.manifest_path.write_bytes(b"old")
+
+    # When: the public projection operation is called
+    result = service.project_manifest()
+
+    # Then: the operation reports failure and restores the exact old bytes
+    assert result is False
+    assert assets.manifest_path.read_bytes() == b"old"
+    db.close()
+
+
 def test_projection_failure_without_manifest_removes_partial_manifest(
     tmp_path,
 ):

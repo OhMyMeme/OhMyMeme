@@ -44,14 +44,14 @@ class SyncService:
     def apply_remote_order(self, remote_data):
         if self.library is None:
             return False
-        return self.library.apply_remote_operation(
+        return self.library.apply_remote_manifest_operation(
             remote_data, lambda data: planning._apply_remote_order(data, self.db)
         )
 
     def apply_remote_collections(self, remote_data):
         if self.library is None:
             return False
-        return self.library.apply_remote_operation(
+        return self.library.apply_remote_manifest_operation(
             remote_data, lambda data: planning._apply_remote_collections(data, self.db)
         )
 
@@ -69,7 +69,9 @@ class SyncService:
         return importer.register_existing_path(request)
 
     def project_manifest(self):
-        return self.library._project_after_mutation()
+        if self.library is None:
+            return False
+        return self.library.project_manifest()
 
     def push(self, delete_remote=None):
         if self.job_manager is None:
@@ -565,7 +567,7 @@ def upload_index(bk=None) -> bool:
         return {"ok": False, "error": "当前同步后端不支持删除远端文件"}
     remote_root = _remote_root(cfg)
     library = _default_library()
-    if not library._project_after_mutation():
+    if not library.project_manifest():
         return False
     local_index = cfg.data_dir / INDEX_FILENAME
     own_backend = bk is None
@@ -631,7 +633,7 @@ def push(delete_remote: bool = None, library=None, cancellation=None) -> dict:
         projected = (
             library.project_manifest()
             if library
-            else _default_library()._project_after_mutation()
+            else _default_library().project_manifest()
         )
         if not projected:
             raise SyncError("本地 manifest 生成失败")
@@ -763,7 +765,7 @@ def push(delete_remote: bool = None, library=None, cancellation=None) -> dict:
         projected = (
             library.project_manifest()
             if library
-            else _default_library()._project_after_mutation()
+            else _default_library().project_manifest()
         )
         if not projected:
             raise SyncError("本地 manifest 生成失败")

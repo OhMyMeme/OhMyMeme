@@ -127,7 +127,7 @@ class CommandHandlers:
 
     def _cmd_pull_manifest(self) -> dict:
         """返回本地清单。"""
-        if not self.library._project_after_mutation():
+        if not self.library.project_manifest():
             return {"ok": False, "error": "本地清单生成失败"}
         return {"ok": True, "manifest": self.manifest.load()}
 

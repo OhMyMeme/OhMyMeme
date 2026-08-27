@@ -21,3 +21,10 @@ Problems and gotchas encountered during work on this plan.
 ## 2026-08-27 recovery-failure test correction
 
 - Replaced the private `_project_after_mutation()` invocation with public `rename_meme()`. The test now proves the SQLite row changes to `renamed` before a `ValueError` projection failure, then surfaces that same exception with deterministic `OSError("restore failed")` as its cause while the unrecovered manifest bytes remain `new`.
+
+## 2026-08-27 public projection boundary verification
+
+- Failing-first tests initially failed for the intended reasons: `LocalLibraryService` had no `project_manifest()` and LAN `pull_manifest` accessed `_project_after_mutation()`.
+- After the minimal boundary change, targeted application/sync/LAN/container tests passed `137 passed, 1 skipped`; the full suite passed `382 passed, 1 skipped`.
+- Real temporary-root smoke paths independently observed Container/library projection, Sync `project_manifest`, and LAN `pull_manifest` plus `push_manifest` success. Temporary roots were removed after each probe.
+- `lsp_diagnostics` could not run against this linked worktree because the LSP client rejects paths outside its request cwd; no clean LSP result is claimed.

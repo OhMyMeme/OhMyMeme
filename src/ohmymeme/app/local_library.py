@@ -316,9 +316,17 @@ class LocalLibraryService:
         """Apply remote collection and ordering metadata, then project the manifest."""
         return self._mutate(self._db.apply_remote_metadata, remote_data)
 
-    def apply_remote_operation(self, remote_data, operation):
-        """Run a sync planning mutation against this library and project it."""
+    def apply_remote_manifest_operation(self, remote_data, operation):
+        """Apply a remote manifest operation and project the committed local state."""
         return self._mutate(operation, remote_data)
+
+    def apply_remote_operation(self, remote_data, operation):
+        """Compatibility alias for remote manifest operation application."""
+        return self.apply_remote_manifest_operation(remote_data, operation)
+
+    def project_manifest(self):
+        """Project the committed local library state and report its outcome."""
+        return self._project_after_mutation()
 
     def rollback_delete(self, meme_id):
         """Remove a rollback-created meme and its cache without a second projection."""

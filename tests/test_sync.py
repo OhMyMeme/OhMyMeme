@@ -40,6 +40,24 @@ from ohmymeme.services.sync.service import (
 
 
 class TestSyncJobAdapter(unittest.TestCase):
+    def test_project_manifest_uses_public_library_boundary(self):
+        class Library:
+            def project_manifest(self):
+                return False
+
+            def __getattr__(self, name):
+                if name == "_project_after_mutation":
+                    raise AssertionError("private projection boundary bypass")
+                raise AttributeError(name)
+
+        service = SyncService(None, None, None, None, Library())
+
+        # When: sync requests a local manifest projection
+        result = service.project_manifest()
+
+        # Then: the public boundary result is returned unchanged
+        self.assertFalse(result)
+
     def test_sync_service_uses_job_manager_single_flight(self):
         from ohmymeme.app.job_manager import JobManager
 
