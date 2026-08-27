@@ -2,6 +2,7 @@ import pytest
 
 from ohmymeme.app.local_library import LocalLibraryService
 from ohmymeme.core.assets import AssetPaths
+from ohmymeme.core.database import MemeDB
 from ohmymeme.core.imports import ImportBytes, ImportResult
 
 
@@ -213,3 +214,115 @@ def test_cache_failure_does_not_project_or_change_manifest(tmp_path, monkeypatch
     assert db.calls == []
     assert events == []
     assert assets.manifest_path.read_bytes() == b"old"
+
+
+def _real_service(tmp_path, projector):
+    assets = AssetPaths(tmp_path, tmp_path / "cache")
+    assets.cache_dir.mkdir()
+    db = MemeDB(tmp_path / "memes.db")
+    service = LocalLibraryService(db, assets, FakeImporter(), projector)
+    return service, db, assets
+
+
+def test_real_database_commit_and_manifest_projection_are_both_observable(tmp_path):
+    # Given: a real SQLite database and a projector writing a versioned manifest
+    manifest_path = tmp_path / "meme-index.json"
+
+    def project():
+        manifest_path.write_text(
+            '{"version": 3, "memes": [{"filename": "example.png"}]}',
+            encoding="utf-8",
+        )
+
+    service, db, assets = _real_service(tmp_path, project)
+    meme_id = db.add_meme("example.png", original_name="old")
+
+    # When: a committed database mutation is projected
+    result = service.rename_meme(meme_id, "renamed")
+
+    # Then: the result, database row, and manifest state identify a success
+    assert result is True
+    assert db.get_by_id(meme_id)["original_name"] == "renamed"
+    assert assets.manifest_path.read_text(encoding="utf-8") == (
+        '{"version": 3, "memes": [{"filename": "example.png"}]}'
+    )
+    db.close()
+
+
+def test_real_database_mutation_kept_when_projection_restores_old_manifest(
+    tmp_path,
+):
+    # Given: a real row, an old manifest, and a projector that fails after writing
+    manifest_path = tmp_path / "meme-index.json"
+
+    def project():
+        manifest_path.write_text("new", encoding="utf-8")
+        raise OSError("projection failed")
+
+    service, db, assets = _real_service(tmp_path, project)
+    meme_id = db.add_meme("example.png", original_name="old")
+    assets.manifest_path.write_bytes(b"old")
+
+    # When: the database commit succeeds but projection fails
+    result = service.rename_meme(meme_id, "renamed")
+
+    # Then: failure is returned, DB mutation remains, and old manifest is restored
+    assert result is False
+    assert db.get_by_id(meme_id)["original_name"] == "renamed"
+    assert assets.manifest_path.read_bytes() == b"old"
+    db.close()
+
+
+def test_projection_failure_without_manifest_removes_partial_manifest(
+    tmp_path,
+):
+    # Given: a real row and no prior manifest
+    manifest_path = tmp_path / "meme-index.json"
+
+    def project():
+        manifest_path.write_text("partial", encoding="utf-8")
+        raise OSError("projection failed")
+
+    service, db, assets = _real_service(tmp_path, project)
+    meme_id = db.add_meme("example.png", original_name="old")
+
+    # When: projection fails without an old snapshot
+    result = service.rename_meme(meme_id, "renamed")
+
+    # Then: failure is returned, DB mutation remains, and no manifest is exposed
+    assert result is False
+    assert db.get_by_id(meme_id)["original_name"] == "renamed"
+    assert not assets.manifest_path.exists()
+    db.close()
+
+
+def test_projection_restore_failure_is_raised_and_not_reported_as_success(
+    tmp_path,
+    monkeypatch,
+):
+    # Given: a real row, an old manifest, and a projector that fails after writing
+    manifest_path = tmp_path / "meme-index.json"
+
+    def project():
+        manifest_path.write_text("new", encoding="utf-8")
+        raise OSError("projection failed")
+
+    service, db, assets = _real_service(tmp_path, project)
+    meme_id = db.add_meme("example.png", original_name="old")
+    assets.manifest_path.write_bytes(b"old")
+
+    def fail_restore(path, snapshot):
+        raise OSError("restore failed")
+
+    monkeypatch.setattr(service, "_restore_manifest", fail_restore)
+
+    # When: the projection boundary restores the old manifest and that also fails
+    with pytest.raises(OSError, match="projection failed") as error:
+        service._project_after_mutation()
+
+    # Then: the error exposes recovery failure as its cause, never a success value
+    assert isinstance(error.value.__cause__, OSError)
+    assert str(error.value.__cause__) == "restore failed"
+    assert db.get_by_id(meme_id)["original_name"] == "old"
+    assert assets.manifest_path.read_bytes() == b"new"
+    db.close()
