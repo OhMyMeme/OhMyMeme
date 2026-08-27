@@ -50,8 +50,18 @@ _QQ_ACTIVE = (
 
 def _bind_qq_job(_manager, record, context):
     global _QQ_JOB_CANCEL, _QQ_JOB_SNAPSHOT
-    _QQ_JOB_CANCEL = record.cancellation_event
-    _QQ_JOB_SNAPSHOT = context.snapshot
+    with _QQ_LOCK:
+        _QQ_JOB_CANCEL = record.cancellation_event
+        _QQ_JOB_SNAPSHOT = context.snapshot
+        if _QQ_STATE["status"] == "idle":
+            _QQ_STATE.update(
+                status="downloading_adb",
+                progress=0,
+                message="检查 ADB...",
+                error="",
+                zip_path="",
+                dl_progress=0,
+            )
 
 
 _ADB_DEBUG = False
@@ -254,7 +264,7 @@ def init_background():
 def cancel_qq_import():
     global _QQ_CANCEL
     with _QQ_LOCK:
-        if _QQ_STATE["status"] not in _QQ_ACTIVE:
+        if _QQ_STATE["status"] not in _QQ_ACTIVE and _QQ_JOB_CANCEL is None:
             return False
         _QQ_CANCEL = True
         if _QQ_JOB_CANCEL is not None:
