@@ -80,9 +80,12 @@ _LOG_MAX = 5000
 # 分页：主窗口单页展示的表情包数量（与前端 index.js MEME_PAGE 保持一致）
 MEME_PAGE = 200
 
-# 贡献者 SVG 缓存：TTL 1 小时，避免每次打开设置页都请求外网
+# 贡献者 SVG 缓存：TTL 1 小时，避免每次打开设置页都请求外网；刷新失败退避
+# 重试，避免上游不可用时每个请求都反复触发 10s 慢抓取
 _CONTRIBUTORS_TTL = 3600
-_CONTRIBUTORS_CACHE = {"svg": None, "at": 0.0}
+_CONTRIBUTORS_RETRY_INTERVAL = 60
+_CONTRIBUTORS_LOCK = threading.Lock()
+_CONTRIBUTORS_CACHE = {"svg": None, "at": 0.0, "next_retry": 0.0}
 
 
 class _LogBufferHandler(logging.Handler):
@@ -114,6 +117,15 @@ install_log_buffer()
 
 HTML_DIR = Path(__file__).resolve().parent / "webui"
 RESOURCES_DIR = Path(__file__).resolve().parent / "resources"
+
+
+def _contributors_svg():
+    """剥离缓存 SVG 的白色背景矩形，适配深色主题后返回"""
+    white_rect = '<rect width="100%" height="100%" fill="#ffffff"/>'
+    svg = _CONTRIBUTORS_CACHE["svg"].replace(white_rect, "")
+    bottle.response.content_type = "image/svg+xml; charset=utf-8"
+    return svg
+
 
 # 启动动画视频边缘主色（OhMyMeme.mp4 边框纯黑，写死避免运行时 ffmpeg 抽帧采样）
 _STARTUP_BG_COLOR = "#000000"
@@ -3353,28 +3365,39 @@ class WebUI:
 
         @app.route("/api/contributors")
         def serve_contributors():
-            # 代理贡献者 SVG：剥离白色背景矩形，适配深色主题；TTL 缓存，失败回退旧缓存
+            # 代理贡献者 SVG：剥离白色背景矩形，适配深色主题；TTL 缓存 + 单飞
+            # 刷新（锁内抓取），失败退避 60s 并回退旧缓存
             now = time.time()
             if _CONTRIBUTORS_CACHE["svg"] is None or now >= (
                 _CONTRIBUTORS_CACHE["at"] + _CONTRIBUTORS_TTL
             ):
-                try:
-                    from urllib.request import Request, urlopen
+                # 是否已过退避期（缓存不存在时永远尝试）
+                if _CONTRIBUTORS_CACHE["svg"] is not None and now < (
+                    _CONTRIBUTORS_CACHE["next_retry"]
+                ):
+                    return _contributors_svg()
+                with _CONTRIBUTORS_LOCK:
+                    if _CONTRIBUTORS_CACHE["svg"] is None or now >= (
+                        _CONTRIBUTORS_CACHE["at"] + _CONTRIBUTORS_TTL
+                    ):
+                        try:
+                            from urllib.request import Request, urlopen
 
-                    url = "https://contributor.starsfire.top/TNTXZ/OhMyMeme"
-                    req = Request(url, headers={"User-Agent": "OhMyMeme"})
-                    with urlopen(req, timeout=10) as resp:
-                        svg = resp.read().decode("utf-8", "replace")
-                    _CONTRIBUTORS_CACHE["svg"] = svg
-                    _CONTRIBUTORS_CACHE["at"] = now
-                except Exception:
-                    if _CONTRIBUTORS_CACHE["svg"] is None:
-                        bottle.response.status = 502
-                        return ""
-            white_rect = '<rect width="100%" height="100%" fill="#ffffff"/>'
-            svg = _CONTRIBUTORS_CACHE["svg"].replace(white_rect, "")
-            bottle.response.content_type = "image/svg+xml; charset=utf-8"
-            return svg
+                            url = "https://contributor.starsfire.top/TNTXZ/OhMyMeme"
+                            req = Request(url, headers={"User-Agent": "OhMyMeme"})
+                            with urlopen(req, timeout=10) as resp:
+                                svg = resp.read().decode("utf-8", "replace")
+                            _CONTRIBUTORS_CACHE["svg"] = svg
+                            _CONTRIBUTORS_CACHE["at"] = now
+                        except Exception:
+                            if _CONTRIBUTORS_CACHE["svg"] is None:
+                                bottle.response.status = 502
+                                return ""
+                            # 保留旧缓存，退避后再尝试
+                            _CONTRIBUTORS_CACHE["next_retry"] = (
+                                now + _CONTRIBUTORS_RETRY_INTERVAL
+                            )
+            return _contributors_svg()
 
         @app.route("/api/thumb/<meme_id>/<filename>")
         def serve_thumb(meme_id, filename):
