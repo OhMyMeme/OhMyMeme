@@ -60,22 +60,15 @@ async function startQQImport() {
     } else if (s.status === 'done') {
       document.getElementById('btn-qq-help').style.display = 'none';
       document.getElementById('qq-import-title').textContent = '导入完成';
-      const fileCount = Number.isFinite(Number(s.total)) ? Number(s.total) : 0;
-      document.getElementById('qq-import-msg').textContent = '共导出 ' + fileCount + ' 个文件';
+      document.getElementById('qq-import-msg').textContent = '共导出 ' + pct + ' 个文件';
       document.getElementById('btn-qq-save').style.display = '';
       if (qqPollTimer) { clearInterval(qqPollTimer); qqPollTimer = null; }
-    } else if (s.status === 'cancelled') {
-      document.getElementById('btn-qq-help').style.display = 'none';
-      document.getElementById('btn-qq-save').style.display = 'none';
-      if (qqPollTimer) { clearInterval(qqPollTimer); qqPollTimer = null; }
-      document.getElementById('qq-import-title').textContent = '已取消';
-      document.getElementById('qq-import-msg').textContent = s.message || '导入已取消';
     } else if (s.status === 'error') {
       document.getElementById('btn-qq-help').style.display = 'none';
       if (qqPollTimer) { clearInterval(qqPollTimer); qqPollTimer = null; }
       document.getElementById('qq-import-title').textContent = '导入失败';
       document.getElementById('qq-import-error').style.display = '';
-      document.getElementById('qq-import-error').textContent = s.error || s.error_code || '未知错误';
+      document.getElementById('qq-import-error').textContent = s.error || '未知错误';
     }
   }, 300);
 }

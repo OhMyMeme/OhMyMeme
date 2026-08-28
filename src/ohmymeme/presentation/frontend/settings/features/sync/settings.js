@@ -120,9 +120,74 @@ async function saveSettings() {
 async function resetSettings() {
   const s = await api('reset_settings');
   if (s) {
+    const hk = document.getElementById('s-hotkey');
+    const gif = document.getElementById('s-gif');
+    const as = document.getElementById('s-auto-start');
+    const ss = document.getElementById('s-silent-start');
+    if (hk) hk.value = s.hotkey;
     const hsam = document.getElementById('s-hotkey-show-at-mouse');
     if (hsam) hsam.checked = s.hotkey_show_at_mouse === true;
-    await getSettings();
+    if (gif) gif.checked = s.auto_play_gif !== false;
+    const hp = document.getElementById('s-hover-play');
+    if (hp) hp.checked = s.hover_to_play === true;
+    const tgtd = document.getElementById('s-tg-tdata');
+    if (tgtd) tgtd.value = s.tg_tdata_path || '';
+    const to = document.getElementById('s-try-original');  // DeepSeek V4 Flash
+    if (to) to.checked = false;
+    const cm = document.getElementById('s-copy-mode');
+    if (cm) cm.value = String(s.copy_resize_mode ?? 1);
+    if (as) as.checked = s.auto_start === true;
+    if (ss) ss.checked = s.silent_start === true;
+    toggleSilentStart();
+    checkConnectivity();  // DeepSeek V4 Flash
+    const ff = document.getElementById('s-sync-fetch');
+    const sa = document.getElementById('s-sync-auto');
+    const st = document.getElementById('s-sync-type');
+    if (ff) ff.checked = false;
+    if (sa) sa.checked = false;
+    if (st) { st.value = ''; toggleSyncType(); }
+    document.getElementById('s-ftp-host').value = '';
+    document.getElementById('s-ftp-port').value = '21';
+    document.getElementById('s-ftp-user').value = '';
+    document.getElementById('s-ftp-pass').value = '';
+    document.getElementById('s-ftp-path').value = '/';
+    document.getElementById('s3-endpoint').value = '';
+    document.getElementById('s3-region').value = '';
+    document.getElementById('s3-bucket').value = '';
+    document.getElementById('s3-access-key').value = '';
+    document.getElementById('s3-secret-key').value = '';
+    document.getElementById('s3-path').value = '';
+    document.getElementById('r2-account-id').value = '';
+    document.getElementById('r2-access-key-id').value = '';
+    document.getElementById('r2-secret-access-key').value = '';
+    document.getElementById('r2-bucket').value = '';
+    document.getElementById('r2-path').value = '';
+    document.getElementById('wd-url').value = '';
+    document.getElementById('wd-user').value = '';
+    document.getElementById('wd-pass').value = '';
+    document.getElementById('wd-path').value = '';
+    const kr = document.getElementById('s-delete-remote');
+    const rl = document.getElementById('s-remove-local');
+    const hw = document.getElementById('s-hide-upload-warn');
+    if (kr) kr.checked = false;
+    if (rl) rl.checked = false;
+    if (hw) hw.checked = false;
+    const up = document.getElementById('s-show-up-progress');
+    const ud = document.getElementById('s-show-up-done');
+    const dp = document.getElementById('s-show-dl-progress');
+    const dd = document.getElementById('s-show-dl-done');
+    if (up) up.checked = true;
+    if (ud) ud.checked = true;
+    if (dp) dp.checked = true;
+    if (dd) dd.checked = true;
+    const rec = document.getElementById('s-record-recent');
+    if (rec) rec.checked = true;
+    const ssa = document.getElementById('s-show-startup-anim');
+    if (ssa) ssa.checked = true;
+    const lport = document.getElementById('s-lan-port');
+    if (lport) lport.value = '17852';
+    const lsec = document.getElementById('s-lan-secret');
+    if (lsec) lsec.value = '';
     const le = document.getElementById('s-lan-enable');
     if (le) le.checked = false;
     const lcc = document.getElementById('s-lan-secret-config');
@@ -134,3 +199,4 @@ async function resetSettings() {
     _settingsDirty = false;
   }
 }
+

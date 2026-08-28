@@ -1,9 +1,6 @@
 /* Init */
 let initRetries = 0;
-let settingsInitStarted = false;
 async function initSettings() {
-  if (settingsInitStarted) return;
-  settingsInitStarted = true;
   const s = await getSettings();
   if (s) {
     document.getElementById('s-hotkey')?.focus();
@@ -12,7 +9,6 @@ async function initSettings() {
     if (!active) switchSettingsGroup('base');
     return;
   }
-  settingsInitStarted = false;
   // pywebview bridge not ready yet, retry
   initRetries++;
   if (initRetries < 20) {
@@ -39,7 +35,6 @@ async function initVersion() {
 }
 document.addEventListener('DOMContentLoaded', () => {
   initSettings();
-  document.addEventListener('pywebviewready', initSettings, { once: true });
   setTimeout(initVersion, 500);
   initDirtyTracking();
 });
