@@ -3371,15 +3371,17 @@ class WebUI:
             if _CONTRIBUTORS_CACHE["svg"] is None or now >= (
                 _CONTRIBUTORS_CACHE["at"] + _CONTRIBUTORS_TTL
             ):
-                # 是否已过退避期（缓存不存在时永远尝试）
-                if _CONTRIBUTORS_CACHE["svg"] is not None and now < (
-                    _CONTRIBUTORS_CACHE["next_retry"]
-                ):
-                    return _contributors_svg()
                 with _CONTRIBUTORS_LOCK:
+                    # 取锁后刷新时间并重查退避期：等待中的并发请求不再重复抓取
+                    now = time.time()
                     if _CONTRIBUTORS_CACHE["svg"] is None or now >= (
                         _CONTRIBUTORS_CACHE["at"] + _CONTRIBUTORS_TTL
                     ):
+                        if now < _CONTRIBUTORS_CACHE["next_retry"]:
+                            if _CONTRIBUTORS_CACHE["svg"] is None:
+                                bottle.response.status = 502
+                                return ""
+                            return _contributors_svg()
                         try:
                             from urllib.request import Request, urlopen
 
@@ -3390,13 +3392,13 @@ class WebUI:
                             _CONTRIBUTORS_CACHE["svg"] = svg
                             _CONTRIBUTORS_CACHE["at"] = now
                         except Exception:
-                            if _CONTRIBUTORS_CACHE["svg"] is None:
-                                bottle.response.status = 502
-                                return ""
-                            # 保留旧缓存，退避后再尝试
+                            # 失败一律退避（含无缓存冷启动），防并发请求反复触发网络重试
                             _CONTRIBUTORS_CACHE["next_retry"] = (
                                 now + _CONTRIBUTORS_RETRY_INTERVAL
                             )
+                            if _CONTRIBUTORS_CACHE["svg"] is None:
+                                bottle.response.status = 502
+                                return ""
             return _contributors_svg()
 
         @app.route("/api/thumb/<meme_id>/<filename>")
