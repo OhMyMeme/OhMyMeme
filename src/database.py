@@ -373,7 +373,7 @@ class MemeDB:
             conn.commit()
 
     def add_memes_to_collection(self, meme_ids: List[int], collection_id: int) -> int:
-        """批量加入分组（追加语义，单事务），返回实际存在的表情数"""
+        """批量加入分组（追加语义，单事务），返回实际新增的关联数（重复加入不计）"""
         ids = list(dict.fromkeys(int(x) for x in (meme_ids or [])))
         if not ids:
             return 0
@@ -390,14 +390,16 @@ class MemeDB:
                     is None
                 ):
                     raise ValueError(f"collection {collection_id} not found")
+                added = 0
                 for mid in valid_ids:
-                    conn.execute(
+                    cur = conn.execute(
                         "INSERT OR IGNORE INTO meme_collections "
                         "(meme_id, collection_id) VALUES (?, ?)",
                         (mid, collection_id),
                     )
+                    added += max(cur.rowcount, 0)
                 conn.commit()
-                return len(valid_ids)
+                return added
             except Exception:
                 conn.rollback()
                 raise
@@ -405,7 +407,11 @@ class MemeDB:
     def move_memes_to_collection(
         self, meme_ids: List[int], from_ids: List[int], to_id: int
     ) -> int:
-        """批量从 from_ids（源分组子树）移出并加入 to_id（单事务），返回有效表情数"""
+        """批量把实际属于 from_ids（源分组子树）成员的表情移入 to_id（单事务）
+
+        返回实际新增的目标关联数（已在目标分组的重复关联不计）；
+        不属于源子树的表情不受删除或移动影响
+        """
         ids = list(dict.fromkeys(int(x) for x in (meme_ids or [])))
         froms = list(dict.fromkeys(int(x) for x in (from_ids or [])))
         if not ids or not froms:
@@ -423,21 +429,33 @@ class MemeDB:
                     is None
                 ):
                     raise ValueError(f"collection {to_id} not found")
+                # 仅纳入实际属于源子树的成员
                 ph_from = ",".join("?" for _ in froms)
                 ph_mid = ",".join("?" for _ in valid_ids)
+                member_rows = conn.execute(
+                    f"SELECT DISTINCT meme_id FROM meme_collections "
+                    f"WHERE collection_id IN ({ph_from}) AND meme_id IN ({ph_mid})",
+                    [*froms, *valid_ids],
+                ).fetchall()
+                members = [r[0] for r in member_rows]
+                if not members:
+                    return 0
+                ph_members = ",".join("?" for _ in members)
                 conn.execute(
                     f"DELETE FROM meme_collections WHERE collection_id IN ({ph_from}) "
-                    f"AND meme_id IN ({ph_mid})",
-                    [*froms, *valid_ids],
+                    f"AND meme_id IN ({ph_members})",
+                    [*froms, *members],
                 )
-                for mid in valid_ids:
-                    conn.execute(
+                moved = 0
+                for mid in members:
+                    cur = conn.execute(
                         "INSERT OR IGNORE INTO meme_collections "
                         "(meme_id, collection_id) VALUES (?, ?)",
                         (mid, to_id),
                     )
+                    moved += max(cur.rowcount, 0)
                 conn.commit()
-                return len(valid_ids)
+                return moved
             except Exception:
                 conn.rollback()
                 raise

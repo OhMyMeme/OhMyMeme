@@ -251,10 +251,32 @@ class TestDatabase(unittest.TestCase):
         count = self.db.add_memes_to_collection([mid1, mid2, 99999], cid)
         self.assertEqual(count, 2)
         self.assertEqual(len(self.db.search(collection_id=cid)), 2)
+        # 重复加入同一分组：不产生重复关联，计数为 0
+        self.assertEqual(self.db.add_memes_to_collection([mid1], cid), 0)
+        self.assertEqual(len(self.db.search(collection_id=cid)), 2)
         # 目标分组不存在：抛异常且不产生部分写入
         with self.assertRaises(ValueError):
             self.db.add_memes_to_collection([mid1], 424242)
         self.assertEqual(len(self.db.search(collection_id=cid)), 2)
+
+    def test_move_memes_to_collection_scope_and_dedup(self):
+        mid1 = self.db.add_meme("a.png")  # 属于源分组
+        mid2 = self.db.add_meme("b.png")  # 不属于源分组，仅属于其他分组
+        mid3 = self.db.add_meme("c.png")  # 属于源分组且已在目标分组
+        src = self.db.create_collection("src")
+        other = self.db.create_collection("other")
+        target = self.db.create_collection("t")
+        self.db.add_to_collection(mid1, src)
+        self.db.add_to_collection(mid3, src)
+        self.db.add_to_collection(mid3, target)
+        self.db.add_to_collection(mid2, other)
+
+        moved = self.db.move_memes_to_collection([mid1, mid2, mid3], [src], target)
+        # 仅 mid1 实际新增目标关联；mid3 重复加入不计；mid2 非源成员不受影响
+        self.assertEqual(moved, 1)
+        self.assertEqual(self.db.search(collection_id=src), [])
+        self.assertEqual(len(self.db.search(collection_id=target)), 2)
+        self.assertEqual(len(self.db.search(collection_id=other)), 1)
 
     def test_move_memes_to_collection_batch(self):
         mid1 = self.db.add_meme("a.png")

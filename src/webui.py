@@ -709,7 +709,8 @@ class JsApi:
             if cid in from_ids:
                 return {"ok": False, "error": "不能移动到当前分组自身或其子分组"}
             moved = self._db.move_memes_to_collection(ids, from_ids, cid)
-            if moved:
+            # moved==0 时成员关系仍可能变化（成员已在目标、仅从源移除），manifest 需重建
+            if ids:
                 build_manifest()
             return {"ok": True, "moved": moved}
         except Exception:
