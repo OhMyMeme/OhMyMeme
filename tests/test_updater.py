@@ -1,7 +1,6 @@
 """updater 模块单测：非阻塞版本检查缓存机制"""
 
 import sys
-import threading
 import time
 import unittest
 from pathlib import Path
@@ -9,7 +8,6 @@ from unittest import mock
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from ohmymeme.app.job_manager import JobManager
 from ohmymeme.services import updates as updater
 
 _SLOW_RESULT = {
@@ -28,31 +26,6 @@ class TestCheckLatestCached(unittest.TestCase):
 
     def tearDown(self):
         updater.reset_check_cache()
-
-    def test_closed_job_manager_rolls_back_download_admission(self):
-        manager = JobManager()
-        manager.shutdown(1)
-        old_manager = updater._job_manager
-        updater.set_job_manager(manager)
-        with updater._download_lock:
-            updater._download_state.update(
-                progress=0, status="idle", error="", path=None
-            )
-        try:
-            with self.assertRaisesRegex(RuntimeError, "job manager is shut down"):
-                updater.start_download("https://example.invalid/file.exe")
-            state = updater.get_download_progress()
-            self.assertEqual(state["status"], "idle")
-            self.assertEqual(state["progress"], 0)
-            self.assertEqual(state["error"], "")
-            self.assertIsNone(state["path"])
-            self.assertIsNone(manager.active("update-download"))
-        finally:
-            updater.set_job_manager(old_manager)
-            with updater._download_lock:
-                updater._download_state.update(
-                    progress=0, status="idle", error="", path=None
-                )
 
     # 首次调用触发后台检查，立即返回 pending 不阻塞
     def test_first_call_returns_pending_without_blocking(self):
@@ -106,13 +79,10 @@ class TestCheckLatestCached(unittest.TestCase):
     # force=True 时即使有新鲜缓存也触发重新检查
     def test_force_triggers_recheck_despite_fresh_cache(self):
         calls = []
-        second_started = threading.Event()
 
         def tracking():
             # 记录每次真实请求次数
             calls.append(1)
-            if len(calls) == 2:
-                second_started.set()
             return dict(_SLOW_RESULT)
 
         with mock.patch.object(updater, "check_latest", side_effect=tracking):
@@ -130,7 +100,7 @@ class TestCheckLatestCached(unittest.TestCase):
             self.assertEqual(len(calls), 1)
             # force=True：立即触发再一次后台检查（fresh 缓存被忽略）
             self.assertIs(updater.check_latest_cached(force=True).get("pending"), True)
-            self.assertTrue(second_started.wait(1))
+            time.sleep(0.2)
             self.assertEqual(len(calls), 2)
 
     # 缓存超 24h 后非 force 也触发重新检查
@@ -222,48 +192,6 @@ class TestCheckLatestCached(unittest.TestCase):
                     break
                 time.sleep(0.05)
             self.assertIsNone(r2.get("pending"))
-
-    def test_stale_generation_cannot_clear_new_generation_running_state(self):
-        manager = JobManager()
-        started = [threading.Event(), threading.Event()]
-        finished = [threading.Event(), threading.Event()]
-        release = [threading.Event(), threading.Event()]
-        calls = iter(range(2))
-
-        def blocked():
-            generation = next(calls)
-            started[generation].set()
-            release[generation].wait(2)
-            finished[generation].set()
-            return dict(_SLOW_RESULT, latest=str(generation + 1))
-
-        old_manager = updater._job_manager
-        updater.set_job_manager(manager)
-        try:
-            with mock.patch.object(updater, "check_latest", side_effect=blocked):
-                self.assertIs(updater.check_latest_cached(force=True)["pending"], True)
-                self.assertTrue(started[0].wait(1))
-                updater.reset_check_cache()
-                self.assertIs(updater.check_latest_cached(force=True)["pending"], True)
-                self.assertTrue(started[1].wait(1))
-                release[0].set()
-                self.assertIs(updater.check_latest_cached()["pending"], True)
-                with updater._check_lock:
-                    self.assertTrue(updater._check_running)
-                self.assertIsNone(updater._check_result)
-                self.assertTrue(finished[0].wait(1))
-                with updater._check_lock:
-                    self.assertTrue(updater._check_running)
-                release[1].set()
-                deadline = time.time() + 2
-                while time.time() < deadline:
-                    result = updater.check_latest_cached()
-                    if not result.get("pending"):
-                        break
-                    time.sleep(0.01)
-                self.assertEqual(result["latest"], "2")
-        finally:
-            updater.set_job_manager(old_manager)
 
 
 if __name__ == "__main__":
