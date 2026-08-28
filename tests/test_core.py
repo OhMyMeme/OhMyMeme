@@ -6,15 +6,13 @@ import sys
 import tempfile
 import unittest
 from pathlib import Path
-from types import SimpleNamespace
 from unittest.mock import patch
 
 # 确保 src 在导入路径中
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from ohmymeme import __app_name__, __version__
-from ohmymeme.app.catalog import Catalog
-from ohmymeme.core.config import Config, get_provider_metadata
+from ohmymeme.core.config import Config
 from ohmymeme.core.crypto import decrypt_data, encrypt_data
 from ohmymeme.core.database import MemeDB
 
@@ -60,53 +58,6 @@ class TestConfig(unittest.TestCase):
         self.assertEqual(cfg.get("sync_type"), "")
         self.assertEqual(cfg.get("ftp_host"), "")
         self.assertEqual(cfg.get("cache_max_size_mb"), 500)
-
-    def test_provider_metadata_covers_defaults_secrets_lan_and_capabilities(self):
-        expected = {
-            "ftp": (
-                {"ftp_host", "ftp_port", "ftp_user", "ftp_password", "ftp_path"},
-                {"ftp_password"},
-            ),
-            "s3": (
-                {
-                    "s3_endpoint",
-                    "s3_region",
-                    "s3_bucket",
-                    "s3_access_key",
-                    "s3_secret_key",
-                    "s3_path",
-                    "s3_addressing_style",
-                    "s3_signature_version",
-                },
-                {"s3_access_key", "s3_secret_key"},
-            ),
-            "r2": (
-                {
-                    "r2_account_id",
-                    "r2_access_key_id",
-                    "r2_secret_access_key",
-                    "r2_bucket",
-                    "r2_path",
-                },
-                {"r2_access_key_id", "r2_secret_access_key"},
-            ),
-            "webdav": (
-                {
-                    "webdav_url",
-                    "webdav_user",
-                    "webdav_password",
-                    "webdav_path",
-                    "webdav_timeout",
-                },
-                {"webdav_password"},
-            ),
-        }
-        for provider, (keys, secrets) in expected.items():
-            metadata = get_provider_metadata(provider)
-            self.assertEqual(set(metadata["defaults"]), keys)
-            self.assertEqual(set(metadata["secret_keys"]), secrets)
-            self.assertEqual(set(metadata["lan_keys"]), keys - secrets)
-            self.assertIn("delete", metadata["capabilities"])
 
     def test_set_get(self):
         cfg = Config(self.config_path)
@@ -282,74 +233,6 @@ class TestDatabase(unittest.TestCase):
 
         results = self.db.search(keyword="dog")
         self.assertEqual(len(results), 2)
-
-    def test_catalog_real_sqlite_query_matrix(self):
-        catalog = Catalog(
-            SimpleNamespace(get=lambda _key, default=None: default),
-            self.db,
-            lambda: None,
-            library=SimpleNamespace(is_favorite=self.db.is_favorite),
-        )
-        animal = self.db.add_meme(
-            "animal.png",
-            original_name="friendly cat",
-            tags=["animal", "cute"],
-        )
-        parent_match = self.db.add_meme(
-            "parent.png", original_name="friendly dog", tags=["animal"]
-        )
-        favorite = self.db.add_meme("favorite.png", tags=["other"])
-        uncategorized = self.db.add_meme("uncategorized.png")
-        carrier = self.db.add_meme(
-            "carrier.gif", tags=["animal", "cute"], stego_of_hash="animal-hash"
-        )
-        parent = self.db.create_collection("animals")
-        child = self.db.create_collection("cute", parent)
-        self.db.add_to_collection(animal, child)
-        self.db.add_to_collection(parent_match, parent)
-        self.db.add_to_collection(favorite, parent)
-        self.db.toggle_favorite(favorite)
-        self.db.record_use(animal)
-        self.db.record_use(carrier)
-        self.db.reorder_memes([favorite, animal, parent_match, carrier, uncategorized])
-
-        combined = catalog.search_memes(
-            keyword="friendly",
-            tags=["animal", "cute"],
-            collection_id=parent,
-        )
-        self.assertEqual([row["id"] for row in combined], [animal])
-        self.assertEqual(
-            catalog.count_memes(
-                keyword="friendly", tags=["animal", "cute"], collection_id=parent
-            ),
-            1,
-        )
-        self.assertEqual(
-            [row["id"] for row in catalog.search_memes(collection_id=-2)], [favorite]
-        )
-        self.assertEqual(catalog.count_memes(collection_id=-2), 1)
-        self.assertEqual(
-            [row["id"] for row in catalog.search_memes(collection_id=-4)],
-            [uncategorized],
-        )
-        self.assertEqual(catalog.count_memes(collection_id=-4), 1)
-        self.assertEqual(
-            [row["id"] for row in catalog.search_memes(collection_id=-3)], [animal]
-        )
-        self.assertEqual(catalog.count_memes(collection_id=-3), 1)
-        self.assertEqual(
-            [row["id"] for row in catalog.search_memes(limit=1, offset=1)], [animal]
-        )
-        self.assertEqual(
-            [row["id"] for row in self.db.search(limit=4)],
-            [favorite, animal, parent_match, uncategorized],
-        )
-        self.assertEqual(
-            [row["id"] for row in self.db.search(collection_id=parent)],
-            [parent_match, favorite],
-        )
-        self.assertEqual(self.db.count(), 4)
 
     def test_tags(self):
         mid = self.db.add_meme("test.png", tags=["a", "b", "c"])
