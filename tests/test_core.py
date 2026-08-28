@@ -232,6 +232,17 @@ class TestDatabase(unittest.TestCase):
         self.assertEqual(self.db.add_tags_to_memes([mid1], []), 0)
         self.assertEqual(self.db.add_tags_to_memes([mid1], ["  "]), 0)
 
+    def test_add_tags_to_memes_missing_ids(self):
+        # 混合有效与不存在的 id：只对存在的表情生效，不抛异常、不部分写入
+        mid = self.db.add_meme("a.png")
+        count = self.db.add_tags_to_memes([mid, 99999], ["t1"])
+        self.assertEqual(count, 1)
+        self.assertEqual(set(self.db.get_meme_tags(mid)), {"t1"})
+        self.assertEqual(set(self.db.get_all_tags()), {"t1"})
+        # 全部 id 不存在：返回 0 且不产生任何标签
+        self.assertEqual(self.db.add_tags_to_memes([88888, 99999], ["t2"]), 0)
+        self.assertEqual(set(self.db.get_all_tags()), {"t1"})
+
     def test_tags(self):
         mid = self.db.add_meme("test.png", tags=["a", "b", "c"])
         tags = self.db.get_meme_tags(mid)

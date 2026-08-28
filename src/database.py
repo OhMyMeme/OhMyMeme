@@ -267,31 +267,41 @@ class MemeDB:
     def add_tags_to_memes(self, meme_ids: List[int], tags: List[str]) -> int:
         """批量合并追加标签（不清空各表情已有标签），返回实际存在的表情数"""
         names = [t.strip() for t in (tags or []) if t.strip()]
-        if not names or not meme_ids:
+        ids = list(dict.fromkeys(int(x) for x in (meme_ids or [])))
+        if not names or not ids:
             return 0
         with self._lock:
             conn = self._get_conn()
-            for tag in names:
-                # INSERT OR IGNORE 后 lastrowid 不可靠（同 _set_tags）
-                conn.execute("INSERT OR IGNORE INTO tags (name) VALUES (?)", (tag,))
-                row = conn.execute(
-                    "SELECT id FROM tags WHERE name=?", (tag,)
-                ).fetchone()
-                if row is None:
-                    continue
-                for mid in meme_ids:
-                    conn.execute(
-                        "INSERT OR IGNORE INTO meme_tags "
-                        "(meme_id, tag_id) VALUES (?, ?)",
-                        (mid, row[0]),
-                    )
-            conn.commit()
-            placeholders = ",".join("?" for _ in meme_ids)
-            row = conn.execute(
-                f"SELECT COUNT(*) FROM memes WHERE id IN ({placeholders})",
-                list(meme_ids),
-            ).fetchone()
-            return row[0] if row else 0
+            try:
+                # 先过滤出实际存在的表情（外键开启时对缺失 id 写 meme_tags 会整批失败）
+                placeholders = ",".join("?" for _ in ids)
+                valid_ids = [
+                    r[0]
+                    for r in conn.execute(
+                        f"SELECT id FROM memes WHERE id IN ({placeholders})", ids
+                    ).fetchall()
+                ]
+                if not valid_ids:
+                    return 0
+                for tag in names:
+                    # INSERT OR IGNORE 后 lastrowid 不可靠（同 _set_tags）
+                    conn.execute("INSERT OR IGNORE INTO tags (name) VALUES (?)", (tag,))
+                    row = conn.execute(
+                        "SELECT id FROM tags WHERE name=?", (tag,)
+                    ).fetchone()
+                    if row is None:
+                        continue
+                    for mid in valid_ids:
+                        conn.execute(
+                            "INSERT OR IGNORE INTO meme_tags "
+                            "(meme_id, tag_id) VALUES (?, ?)",
+                            (mid, row[0]),
+                        )
+                conn.commit()
+                return len(valid_ids)
+            except Exception:
+                conn.rollback()
+                raise
 
     # --- 收藏 ---
 

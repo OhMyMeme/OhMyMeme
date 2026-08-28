@@ -54,6 +54,25 @@ export function flattenCollections(items: any[], prefix: string, out: Collection
   }
 }
 
+// 收集 rootId 及其所有后代分组 id
+function collectSubtreeIds(items: any[], rootId: number): number[] {
+  for (const c of items) {
+    if (!c || c.id <= 0) continue
+    if (c.id === rootId) {
+      const out: number[] = []
+      const walk = (n: any) => {
+        out.push(n.id)
+        for (const ch of n.children || []) walk(ch)
+      }
+      walk(c)
+      return out
+    }
+    const r = collectSubtreeIds(c.children || [], rootId)
+    if (r.length) return r
+  }
+  return []
+}
+
 export function useCollectionBuilder() {
   async function open(onConfirm: (result: CollectionConfirm) => void, preselect: number[] = []) {
     onConfirmCallback = onConfirm
@@ -112,9 +131,12 @@ export function useCollectionBuilder() {
     const collections = await api('get_collections')
     const opts: CollectionOption[] = []
     flattenCollections(collections || [], '', opts)
-    // move 模式排除源分组本身（选中自己会假成功）
-    collectionOptions.value =
-      mode === 'move' && fromId > 0 ? opts.filter(o => o.id !== fromId) : opts
+    // move 模式排除源分组及其整棵子树（移入后代等于移出后又加回递归视图，后端同样拒绝）
+    const excluded =
+      mode === 'move' && fromId > 0 ? collectSubtreeIds(collections || [], fromId) : []
+    collectionOptions.value = excluded.length
+      ? opts.filter(o => !excluded.includes(o.id))
+      : opts
 
     loading.value = false
     await nextTick()

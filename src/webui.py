@@ -695,6 +695,8 @@ class JsApi:
         """批量从 from 分组（含子分组）移动到 to 分组；to_id<=0 时按 name 建目标"""
         ids = list(dict.fromkeys(int(x) for x in (meme_ids or [])))
         try:
+            # 分组视图递归展示子分组成员，移出时需从整棵子树移除才算真正"移走"
+            from_ids = self._get_collection_ids_recursive(int(from_id))
             cid = int(to_id or 0)
             if cid <= 0:
                 name = (name or "").strip()
@@ -703,8 +705,9 @@ class JsApi:
                 cid = self._db.create_collection(name)
                 if cid < 0:
                     return {"ok": False}
-            # 分组视图递归展示子分组成员，移出时需从整棵子树移除才算真正"移走"
-            from_ids = self._get_collection_ids_recursive(int(from_id))
+            elif cid in from_ids:
+                # 移入源分组的后代 = 移出后又加回递归视图，等于没移动，拒绝
+                return {"ok": False, "error": "不能移动到当前分组的子分组"}
             for mid in ids:
                 for fid in from_ids:
                     self._db.remove_from_collection(mid, fid)

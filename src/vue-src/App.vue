@@ -361,15 +361,9 @@ function onShowSubmenu(_items: any[], x: number, y: number) {
   const targetCol = state.activeCollection && state.activeCollection > 0 ? state.activeCollection : null
   const sub: { action: string; label: string }[] = []
   if (trigger.isFolder) {
-    if (!targetCol) {
-      sub.push({ action: '__new-subgroup__', label: '新建分组' })
-    } else {
-      sub.push({ action: '__new-subgroup__', label: '新建小分组' })
-      const node = findCollectionNode(state.collections, targetCol)
-      for (const ch of node?.children || []) {
-        sub.push({ action: 'subgroup-' + ch.id, label: ch.name })
-      }
-    }
+    // 文件夹上下文仅保留新建子分组（在右键的分组下创建，见 __new-subgroup__）；
+    // 已有分组列表项依赖 t.memeId，对文件夹无意义
+    sub.push({ action: '__new-subgroup__', label: '新建子分组' })
     ctx.showSubmenu(sub, x, y)
     return
   }
@@ -415,10 +409,19 @@ async function onCtxAction(action: string) {
     case 'collection': { showCollectionBuilder(t.memeId); break }
     case 'add-to-subgroup': { /* 子菜单在 hover 时加载，点击走 subgroup-N / __new-subgroup__ */ break }
     case '__new-subgroup__': {
+      // 文件夹上下文：在右键的分组下新建子分组（不涉及表情）
+      if (t.isFolder && t.folderId > 0) {
+        const name = await inputDialog.value?.open('新建子分组', '', '输入小分组名称')
+        if (!name) break
+        const r = await window.pywebview?.api?.create_subcollection(name, t.folderId)
+        if (r && r.ok) { showToast('分组已创建'); refreshCollections() }
+        else showToast(r?.error || '创建失败')
+        break
+      }
       const isSub = state.activeCollection && state.activeCollection > 0
       const name = await inputDialog.value?.open(isSub ? '新建小分组' : '新建分组', '', isSub ? '输入小分组名称' : '输入分组名称')
       if (!name) break
-      const targetCol = state.activeCollection && state.activeCollection > 0 ? state.activeCollection : null
+      const targetCol = isSub ? state.activeCollection : null
       let ok: any
       if (targetCol) {
         const r = await window.pywebview?.api?.create_subcollection(name, targetCol)
