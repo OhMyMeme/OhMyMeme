@@ -16,7 +16,13 @@ JsApi / SettingsApi → SQLite (WAL) + 本地缓存 + 远端同步
 - `Container` 是完整应用对象图的唯一创建点，并负责构造 `LocalLibraryService`；其他入口复用容器持有的本地库服务，不自行组装另一套本地写入链路。
 - `LocalLibraryService` 是本地库写入边界：导入、删除、重命名、排序等成功变更统一在此完成 manifest 投影；同步和局域网命令通过该边界应用本地变更。
 - `JobManager` 由 `Container` 持有并注册给更新服务；同一任务类型的活动任务 single-flight，取消使用协作事件，`shutdown()` 请求活动任务取消并在超时预算内等待，不强杀线程。
+- `src/ohmymeme/presentation/desktop/window_manager.py` 保留 `JsApi`/`SettingsApi` 作为桌面桥接 facade；主窗口和设置窗口通过各自 facade 进入应用服务，不在 facade 外另建本地写入对象图。`src/ohmymeme/presentation/desktop/api/` 只提供兼容导出入口。
 - 以上是进程内对象所有权和生命周期约定，不是用户可见的数据格式、协议或配置语义。
+
+### 任务与前端维护边界
+- `JobManager.start(task_type, target, resources=())` 按 `task_type` single-flight，并保留任务终态快照；任务通过 `JobContext.cancellation_event` 协作取消，调用方可用 `cancel()` 发信号、用 `wait()` 在预算内等待。`shutdown()` 只请求取消并在预算内等待，不强杀线程。
+- 主窗口 Vue 源码只维护 `src/ohmymeme/presentation/frontend/main/`，桥接调用集中在 `shared/bridge.ts`；Vite 输出 `src/webui/dist/ohmymeme.js`，该产物由构建流程生成，不手工维护。设置窗口只维护 `src/webui/settings.html`、`src/webui/settings.css` 和 `src/webui/settings.js`，不与 Vue 源码合并。
+- 涉及对象图、本地写入边界或任务生命周期时，先依次运行 `tests/app/test_container.py`、`tests/application/test_local_library_service.py`、`tests/application/test_job_manager.py`；再运行配置、manifest、LAN 和 bridge 兼容回归；最后运行完整测试、lint、格式检查和前端构建。验证只检查既有内部边界，不改变用户可见协议或配置语义。
 
 ## 技术栈
 - **Python 3.12** + **pywebview** (frameless 窗口) + **Bottle** (静态文件/缩略图路由)

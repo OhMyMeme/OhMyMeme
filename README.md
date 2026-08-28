@@ -118,6 +118,10 @@ tests/                      单元、集成、协议与发布契约测试
 
 应用内部所有权约定：`Container` 是完整应用对象图的创建点，并拥有 `LocalLibraryService` 的构造；本地库服务是导入、删除、重命名和排序等本地写入的统一边界，成功变更后负责生成当前 manifest 投影。后台任务由应用级 `JobManager` 持有：同一任务类型的活动任务 single-flight，取消通过协作事件传播，关闭时请求活动任务取消并在有界时间内等待，不强杀线程。这些是源码内部生命周期约定，不改变用户数据、协议或配置格式。
 
+桌面桥接的兼容边界由 `src/ohmymeme/presentation/desktop/window_manager.py` 中的 `JsApi`/`SettingsApi` facade 保留，主窗口和设置窗口继续通过 facade 进入应用服务；`src/ohmymeme/presentation/desktop/api/` 只提供兼容导出，不创建第二套本地写入对象图。`JobManager.start()` 按任务类型 single-flight，任务通过 `JobContext.cancellation_event` 协作取消，`cancel()` 只发出取消信号，`wait()` 和 `shutdown()` 在给定预算内等待，不强杀线程。
+
+前端维护边界是：主窗口只维护 `src/ohmymeme/presentation/frontend/main/`，桥接调用集中在 `shared/bridge.ts`，Vite 生成 `src/webui/dist/ohmymeme.js`；设置窗口只维护 `src/webui/settings.html`、`src/webui/settings.css` 和 `src/webui/settings.js`，不与 Vue 源码合并。涉及对象图、本地写入或任务生命周期时，按 `tests/app/test_container.py`、`tests/application/test_local_library_service.py`、`tests/application/test_job_manager.py`，再到 `tests/test_core.py`、`tests/test_sync.py`、`tests/test_lan.py`、`tests/presentation/test_bridge_compat.py` 的顺序分批验证，最后运行完整测试、lint、格式检查和前端构建。
+
 主窗口启动时播放 `src/resources/OhMyMeme.mp4` 启动动画（全屏遮罩，视频结束或 6s 兜底后淡出），仅启动时播放一次，快捷键/托盘呼出不重播。设置页「显示启动动画」开关（配置 `show_startup_animation`，默认开）可关闭动画：关闭时不播放视频，降级为 300ms 延时后加载后续内容；开启时动画播放期间即并行加载（无 300ms 延时，动画天然覆盖桥接稳定时间）。
 
 可用调试参数：
