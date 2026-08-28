@@ -30,41 +30,12 @@ _QQ_STATE = {
     "progress": 0,
     "message": "",
     "error": "",
-    "error_code": "",
     "zip_path": "",
     "dl_progress": 0,
-    "total": 0,
 }
 
 _QQ_LOCK = threading.Lock()
 _QQ_CANCEL = False
-_QQ_JOB_CANCEL = None
-_QQ_JOB_SNAPSHOT = None
-_QQ_TMP_DIR = None
-_QQ_ACTIVE = (
-    "downloading_adb",
-    "starting_adb",
-    "waiting_device",
-    "pulling",
-    "processing",
-)
-
-
-def _bind_qq_job(_manager, record, context):
-    global _QQ_JOB_CANCEL, _QQ_JOB_SNAPSHOT
-    with _QQ_LOCK:
-        _QQ_JOB_CANCEL = record.cancellation_event
-        _QQ_JOB_SNAPSHOT = context.snapshot
-        if _QQ_STATE["status"] == "idle":
-            _QQ_STATE.update(
-                status="downloading_adb",
-                progress=0,
-                message="检查 ADB...",
-                error="",
-                zip_path="",
-                dl_progress=0,
-            )
-
 
 _ADB_DEBUG = False
 
@@ -75,19 +46,8 @@ def set_adb_debug(enabled: bool = True):
 
 
 def _update_qq(**kw):
-    global _QQ_JOB_SNAPSHOT
     with _QQ_LOCK:
         _QQ_STATE.update(**kw)
-        snapshot = _QQ_JOB_SNAPSHOT
-        state = dict(_QQ_STATE)
-    if snapshot is not None:
-        snapshot(
-            phase=state["status"],
-            progress=state["progress"] / 100,
-            message=state["message"],
-            error_code="error" if state["status"] == "error" else "",
-            error=state["error"],
-        )
 
 
 _QQ_FILE_TYPES = {
@@ -265,15 +225,8 @@ def init_background():
 
 def cancel_qq_import():
     global _QQ_CANCEL
-    with _QQ_LOCK:
-        if _QQ_STATE["status"] not in _QQ_ACTIVE and _QQ_JOB_CANCEL is None:
-            return False
-        _QQ_CANCEL = True
-        if _QQ_JOB_CANCEL is not None:
-            _QQ_JOB_CANCEL.set()
-        _QQ_STATE["status"] = "cancelled"
+    _QQ_CANCEL = True
     _update_qq(status="cancelled")
-    return True
 
 
 def reset_qq_import():
@@ -287,10 +240,8 @@ def reset_qq_import():
                 "progress": 0,
                 "message": "",
                 "error": "",
-                "error_code": "",
                 "zip_path": "",
                 "dl_progress": 0,
-                "total": 0,
             }
         )
 
@@ -383,87 +334,17 @@ def _resolve_adb(adb_path):
     return adb_path if adb_path != "adb" else "adb"
 
 
-def _run_qq_worker():
-    """执行 QQ worker 并把未预期异常映射为终态错误。"""
-    global _QQ_TMP_DIR
-    try:
-        _qq_worker()
-    except Exception as error:
-        _update_qq(status="error", error=str(error))
-        logger.error("qq import worker failed: %s", error)
-    except BaseException as error:
-        cancelled = _QQ_CANCEL or (
-            _QQ_JOB_CANCEL is not None and _QQ_JOB_CANCEL.is_set()
-        )
-        if cancelled:
-            _update_qq(status="cancelled", message="已取消")
-        else:
-            _update_qq(
-                status="error",
-                error=f"{type(error).__name__}: {error}",
-            )
-        logger.error("qq import worker terminated: %s", error)
-        raise
-    finally:
-        with _QQ_LOCK:
-            tmp_dir = _QQ_TMP_DIR
-            _QQ_TMP_DIR = None
-        if tmp_dir is not None:
-            shutil.rmtree(tmp_dir, ignore_errors=True)
-
-
-def start_qq_import(job_manager=None):
+def start_qq_import():
     """后台启动 QQ 表情包导入流程"""
     global _QQ_CANCEL
-    if job_manager is not None and job_manager.active("import.adb_qq") is not None:
-        return False
-    if job_manager is None:
-        with _QQ_LOCK:
-            if _QQ_STATE["status"] in _QQ_ACTIVE:
-                return False
-            _QQ_CANCEL = False
-            _QQ_STATE.update(
-                status="downloading_adb",
-                progress=0,
-                message="检查 ADB...",
-                error="",
-                zip_path="",
-                dl_progress=0,
-            )
-        threading.Thread(target=_run_qq_worker, daemon=True).start()
-    else:
-        _QQ_CANCEL = False
-
-        def target(context):
-            global _QQ_JOB_CANCEL, _QQ_JOB_SNAPSHOT
-            try:
-                _run_qq_worker()
-                if _QQ_STATE["status"] == "error":
-                    raise RuntimeError(_QQ_STATE["error"])
-            finally:
-                _QQ_JOB_CANCEL = None
-                _QQ_JOB_SNAPSHOT = None
-
-        _, created = job_manager.try_start(
-            "import.adb_qq",
-            target,
-            resources=("adb",),
-            on_admit=lambda record, context: _bind_qq_job(job_manager, record, context),
-        )
-        if not created:
-            return False
-    return True
+    _QQ_CANCEL = False
+    threading.Thread(target=_qq_worker, daemon=True).start()
 
 
 def _check_cancel():
     """检查是否取消，是则清理并返回 True"""
-    if _QQ_CANCEL or (_QQ_JOB_CANCEL is not None and _QQ_JOB_CANCEL.is_set()):
-        with _QQ_LOCK:
-            should_update = _QQ_STATE["status"] in _QQ_ACTIVE
-            if should_update:
-                _QQ_STATE["status"] = "cancelled"
-        if should_update:
-            _update_qq(status="cancelled")
+    if _QQ_CANCEL:
+        _update_qq(status="cancelled")
         return True
     return False
 
@@ -515,12 +396,7 @@ def _find_qq_favorite_dir(adb_path):
 def _qq_worker():
     """后台执行 QQ 表情包导入：检测/下载 ADB → 连接设备 → 拉取缓存 → 打包 ZIP"""
     _update_qq(status="downloading_adb", progress=0, message="检查 ADB...", error="")
-    try:
-        adb_path = detect_adb()
-    except Exception as error:
-        _update_qq(status="error", error=str(error))
-        logger.error("qq import worker failed: %s", error)
-        return
+    adb_path = detect_adb()
     if _check_cancel():
         return
     if not adb_path:
@@ -574,9 +450,6 @@ def _qq_worker():
         return
     _update_qq(status="pulling", progress=30, message="正在拉取 QQ 缓存文件...")
     tmp_dir = Path(tempfile.mkdtemp(prefix="ohmymeme-qq-"))
-    global _QQ_TMP_DIR
-    with _QQ_LOCK:
-        _QQ_TMP_DIR = tmp_dir
     try:
         remote = _find_qq_favorite_dir(adb_path)
     except subprocess.TimeoutExpired:
@@ -637,7 +510,6 @@ def _qq_worker():
                 if ext:
                     f.rename(f.with_suffix(ext))
             count += 1
-    _update_qq(total=count)
     if _check_cancel():
         shutil.rmtree(tmp_dir, ignore_errors=True)
         return

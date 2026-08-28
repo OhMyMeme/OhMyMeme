@@ -30,15 +30,6 @@ _DOUYIN_STATE = {
 
 _DOUYIN_LOCK = threading.Lock()
 _DOUYIN_CANCEL = False
-_DOUYIN_JOB_CANCEL = None
-_DOUYIN_JOB_SNAPSHOT = None
-
-
-def _bind_douyin_job(_manager, record, context):
-    global _DOUYIN_JOB_CANCEL, _DOUYIN_JOB_SNAPSHOT
-    _DOUYIN_JOB_CANCEL = record.cancellation_event
-    _DOUYIN_JOB_SNAPSHOT = context.snapshot
-
 
 API_STICKER = "https://www.douyin.com/aweme/v1/web/im/resource/list/aggregation"
 API_TTWID = "https://ttwid.bytedance.com/ttwid/union/register/"
@@ -59,19 +50,8 @@ HEADERS = {
 
 
 def _update_dy(**kw):
-    global _DOUYIN_JOB_SNAPSHOT
     with _DOUYIN_LOCK:
         _DOUYIN_STATE.update(**kw)
-        snapshot = _DOUYIN_JOB_SNAPSHOT
-        state = dict(_DOUYIN_STATE)
-    if snapshot is not None:
-        snapshot(
-            phase=state["message"],
-            progress=state["progress"] / 100,
-            message=state["message"],
-            error_code=state["error_code"],
-            error=state["error"],
-        )
 
 
 def get_douyin_progress():
@@ -80,16 +60,12 @@ def get_douyin_progress():
 
 
 def cancel_douyin_import():
-    global _DOUYIN_CANCEL, _DOUYIN_JOB_CANCEL, _DOUYIN_JOB_SNAPSHOT
+    global _DOUYIN_CANCEL
     _DOUYIN_CANCEL = True
-    if _DOUYIN_JOB_CANCEL is not None:
-        _DOUYIN_JOB_CANCEL.set()
 
 
 def _check_cancel():
-    return _DOUYIN_CANCEL or (
-        _DOUYIN_JOB_CANCEL is not None and _DOUYIN_JOB_CANCEL.is_set()
-    )
+    return _DOUYIN_CANCEL
 
 
 def _reset_state():
@@ -298,12 +274,10 @@ def _download_sticker(url: str, tmp_dir: str, session, sticker_id: str = "") -> 
     return fpath
 
 
-def start_douyin_import(import_callback, cookie: str, job_manager=None) -> bool:
+def start_douyin_import(import_callback, cookie: str) -> bool:
     """启动抖音表情包下载导入（全部下载），后台线程执行"""
     global _DOUYIN_CANCEL
 
-    if job_manager is not None and job_manager.active("import.douyin") is not None:
-        return False
     with _DOUYIN_LOCK:
         if _DOUYIN_STATE["status"] == "running":
             return False
@@ -329,9 +303,6 @@ def start_douyin_import(import_callback, cookie: str, job_manager=None) -> bool:
         try:
             _update_dy(message="初始化 Session...")
             session = _build_session(cookie)
-            if _check_cancel():
-                _update_dy(status="cancelled", message="已取消")
-                return
 
             _update_dy(message="检查登录状态...")
             if not _check_login(session):
@@ -441,38 +412,5 @@ def start_douyin_import(import_callback, cookie: str, job_manager=None) -> bool:
             except Exception:
                 pass
 
-    if job_manager is None:
-        threading.Thread(target=_run, daemon=True).start()
-    else:
-
-        def target(context):
-            global _DOUYIN_JOB_CANCEL, _DOUYIN_JOB_SNAPSHOT
-            try:
-                _run()
-                if _DOUYIN_STATE["status"] == "error":
-                    raise RuntimeError(
-                        f"{_DOUYIN_STATE['error_code']}: {_DOUYIN_STATE['error']}"
-                    )
-            finally:
-                _DOUYIN_JOB_CANCEL = None
-                _DOUYIN_JOB_SNAPSHOT = None
-
-        try:
-            _, created = job_manager.try_start(
-                "import.douyin",
-                target,
-                resources=("douyin",),
-                on_admit=lambda record, context: _bind_douyin_job(
-                    job_manager, record, context
-                ),
-            )
-        except BaseException:
-            with _DOUYIN_LOCK:
-                _DOUYIN_JOB_CANCEL = None
-                _DOUYIN_JOB_SNAPSHOT = None
-                _DOUYIN_CANCEL = False
-                _DOUYIN_STATE["status"] = "idle"
-            raise
-        if not created:
-            return False
+    threading.Thread(target=_run, daemon=True).start()
     return True
