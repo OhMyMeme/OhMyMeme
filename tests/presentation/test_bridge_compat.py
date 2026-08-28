@@ -597,6 +597,32 @@ def test_main_facade_preserves_sync_import_update_and_window_failure_envelopes(
     assert move_result is None
 
 
+def test_sync_factory_failure_does_not_reuse_previous_failed_files(monkeypatch):
+    # Given: a prior sync left failure entries in the process-wide progress snapshot.
+    from ohmymeme.services.sync import service as sync_service
+
+    webui = FakeWebUI()
+    api = JsApi(webui, FakeCatalog({}), FakeSettings(None), FakeLibrary())
+    monkeypatch.setitem(
+        sync_service._sync_state,
+        "failed_items",
+        [{"filename": "old.png", "status": "error", "error": "old"}],
+    )
+    api._handlers["sync"].service = lambda: (_ for _ in ()).throw(
+        RuntimeError("sync factory failed")
+    )
+
+    # When: the next bridge sync invocation cannot construct its service.
+    result = api.sync_push()
+
+    # Then: the failure envelope belongs to this invocation, not stale progress.
+    assert result == {
+        "ok": False,
+        "error": "sync factory failed",
+        "failed_files": [],
+    }
+
+
 def test_settings_facade_preserves_failure_envelopes_and_primitive_types():
     # Given: production settings handlers return their documented failure shapes.
     webui = FakeWebUI()

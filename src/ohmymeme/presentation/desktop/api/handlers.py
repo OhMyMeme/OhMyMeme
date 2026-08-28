@@ -470,7 +470,11 @@ class SyncHandler:
 
     def push(self, delete_remote=None):
         try:
-            result = self.service().push(delete_remote=delete_remote)
+            sync_service = self.service()
+        except Exception as error:
+            return {"ok": False, "error": str(error), "failed_files": []}
+        try:
+            result = sync_service.push(delete_remote=delete_remote)
             result["ok"] = True
             return result
         except Exception as error:
@@ -482,7 +486,11 @@ class SyncHandler:
 
     def pull(self, remove_local=None, refresh=False):
         try:
-            result = self.service().pull(remove_local=remove_local)
+            sync_service = self.service()
+        except Exception as error:
+            return {"ok": False, "error": str(error), "failed_files": []}
+        try:
+            result = sync_service.pull(remove_local=remove_local)
             result["ok"] = True
             if refresh:
                 try:
