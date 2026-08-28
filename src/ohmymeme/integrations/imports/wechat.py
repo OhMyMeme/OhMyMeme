@@ -61,15 +61,6 @@ _WECHAT_STATE = {
 
 _WECHAT_LOCK = threading.Lock()
 _WECHAT_CANCEL = False
-_WECHAT_JOB_CANCEL = None
-_WECHAT_JOB_SNAPSHOT = None
-
-
-def _bind_wechat_job(_manager, record, context):
-    global _WECHAT_JOB_CANCEL, _WECHAT_JOB_SNAPSHOT
-    _WECHAT_JOB_CANCEL = record.cancellation_event
-    _WECHAT_JOB_SNAPSHOT = context.snapshot
-
 
 _MAX_DOWNLOAD = 20 * 1024 * 1024
 
@@ -78,16 +69,6 @@ def _update_wechat(**kw):
     """更新微信导入进度状态"""
     with _WECHAT_LOCK:
         _WECHAT_STATE.update(**kw)
-        snapshot = _WECHAT_JOB_SNAPSHOT
-        state = dict(_WECHAT_STATE)
-    if snapshot is not None:
-        snapshot(
-            phase=state["status"],
-            progress=state["progress"] / 100,
-            message=state["message"],
-            error_code=state["error_code"],
-            error=state["error"],
-        )
 
 
 def get_wechat_progress():
@@ -98,17 +79,13 @@ def get_wechat_progress():
 
 def cancel_wechat_import():
     """请求取消微信导入"""
-    global _WECHAT_CANCEL, _WECHAT_JOB_CANCEL, _WECHAT_JOB_SNAPSHOT
+    global _WECHAT_CANCEL
     _WECHAT_CANCEL = True
-    if _WECHAT_JOB_CANCEL is not None:
-        _WECHAT_JOB_CANCEL.set()
 
 
 def _check_cancel():
     """是否请求了取消"""
-    return _WECHAT_CANCEL or (
-        _WECHAT_JOB_CANCEL is not None and _WECHAT_JOB_CANCEL.is_set()
-    )
+    return _WECHAT_CANCEL
 
 
 def _reset_state():
@@ -794,12 +771,10 @@ _WECHAT_ACTIVE = (
 
 
 def start_wechat_import(
-    import_callback, user_root=None, download=True, account_path=None, job_manager=None
+    import_callback, user_root=None, download=True, account_path=None
 ):
     """后台启动微信表情包导入，已有任务时返回 False"""
     global _WECHAT_CANCEL
-    if job_manager is not None and job_manager.active("import.wechat") is not None:
-        return False
     with _WECHAT_LOCK:
         if _WECHAT_STATE["status"] in _WECHAT_ACTIVE:
             return False
@@ -817,44 +792,11 @@ def start_wechat_import(
             failed=0,
             rejected=0,
         )
-    if job_manager is None:
-        threading.Thread(
-            target=_wechat_worker,
-            args=(import_callback, user_root, download, account_path),
-            daemon=True,
-        ).start()
-    else:
-
-        def target(context):
-            global _WECHAT_JOB_CANCEL, _WECHAT_JOB_SNAPSHOT
-            try:
-                _wechat_worker(import_callback, user_root, download, account_path)
-                if _WECHAT_STATE["status"] == "error":
-                    raise RuntimeError(
-                        f"{_WECHAT_STATE['error_code']}: {_WECHAT_STATE['error']}"
-                    )
-            finally:
-                _WECHAT_JOB_CANCEL = None
-                _WECHAT_JOB_SNAPSHOT = None
-
-        try:
-            _, created = job_manager.try_start(
-                "import.wechat",
-                target,
-                resources=("wechat",),
-                on_admit=lambda record, context: _bind_wechat_job(
-                    job_manager, record, context
-                ),
-            )
-        except BaseException:
-            with _WECHAT_LOCK:
-                _WECHAT_JOB_CANCEL = None
-                _WECHAT_JOB_SNAPSHOT = None
-                _WECHAT_CANCEL = False
-                _WECHAT_STATE["status"] = "idle"
-            raise
-        if not created:
-            return False
+    threading.Thread(
+        target=_wechat_worker,
+        args=(import_callback, user_root, download, account_path),
+        daemon=True,
+    ).start()
     return True
 
 
@@ -867,9 +809,6 @@ def _wechat_worker(import_callback, user_root, download, account_path):
             _update_wechat(status="cancelled", message="已取消")
             return
         env = inspect_wechat_environment(user_root)
-        if _check_cancel():
-            _update_wechat(status="cancelled", message="已取消")
-            return
         if env.get("status") not in _PROCEEDABLE:
             logger.error(
                 "wechat import: 环境检测失败 status=%s reason=%s",
