@@ -14,13 +14,17 @@ jobs:
         with:
           ref: dev
           fetch-depth: 0
-      - uses: actions/setup-python@v5
-        with:
-          python-version: "3.12"
+      - uses: jdx/mise-action@v4
+      - name: Bootstrap pip
+        run: python -m ensurepip --upgrade
       - name: Install dependencies
         run: |
           pip install -r requirements.txt
           pip install pyinstaller
+      - name: Build frontend
+        run: |
+          npm ci
+          npm run build
       - name: Build with PyInstaller
         run: python scripts/build.py --build-only --nightly
       - name: Install InnoSetup
@@ -45,9 +49,9 @@ jobs:
         with:
           ref: dev
           fetch-depth: 0
-      - uses: actions/setup-python@v5
-        with:
-          python-version: "3.12"
+      - uses: jdx/mise-action@v4
+      - name: Bootstrap pip
+        run: python -m ensurepip --upgrade
       - name: Install dependencies
         run: |
           sudo apt-get update
@@ -55,6 +59,10 @@ jobs:
           pip install -r requirements.txt
           pip install pyinstaller
           pip install PyGObject
+      - name: Build frontend
+        run: |
+          npm ci
+          npm run build
       - name: Build Linux nightly
         run: python scripts/build.py --linux --nightly
       - name: Package contract smoke
@@ -83,13 +91,17 @@ jobs:
         with:
           ref: dev
           fetch-depth: 0
-      - uses: actions/setup-python@v5
-        with:
-          python-version: "3.12"
+      - uses: jdx/mise-action@v4
+      - name: Bootstrap pip
+        run: python -m ensurepip --upgrade
       - name: Install dependencies
         run: |
           pip install -r requirements.txt
           pip install pyinstaller
+      - name: Build frontend
+        run: |
+          npm ci
+          npm run build
       - name: Build macOS nightly (.app + .dmg)
         run: python scripts/build.py --macos --nightly --arch ${{ matrix.arch }}
       - name: Package contract smoke

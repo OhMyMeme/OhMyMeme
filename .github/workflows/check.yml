@@ -6,21 +6,18 @@ on:
   pull_request:
     branches: ["**"]
 
+permissions:
+  contents: read
+
 jobs:
   check:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
-        with:
-          python-version: "3.12"
+      - uses: jdx/mise-action@v4
+      - name: Bootstrap pip
+        run: python -m ensurepip --upgrade
       - name: Install dependencies
-        run: |
-          pip install -r requirements.txt
-          pip install ruff black pytest
-      - name: Lint
-        run: |
-          ruff check src/
-          black --check src/
-      - name: Test
-        run: python -m pytest tests/ -v
+        run: mise run setup
+      - name: Check
+        run: mise run check
