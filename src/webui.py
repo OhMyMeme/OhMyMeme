@@ -681,11 +681,10 @@ class JsApi:
                 cid = self._db.create_collection(name)
                 if cid < 0:
                     return {"ok": False}
-            for mid in ids:
-                self._db.add_to_collection(mid, cid)
-            if ids:
+            added = self._db.add_memes_to_collection(ids, cid)
+            if added:
                 build_manifest()
-            return {"ok": True, "added": len(ids)}
+            return {"ok": True, "added": added}
         except Exception:
             return {"ok": False}
 
@@ -705,16 +704,14 @@ class JsApi:
                 cid = self._db.create_collection(name)
                 if cid < 0:
                     return {"ok": False}
-            elif cid in from_ids:
-                # 移入源分组的后代 = 移出后又加回递归视图，等于没移动，拒绝
-                return {"ok": False, "error": "不能移动到当前分组的子分组"}
-            for mid in ids:
-                for fid in from_ids:
-                    self._db.remove_from_collection(mid, fid)
-                self._db.add_to_collection(mid, cid)
-            if ids:
+            # create_collection 会复用同名顶层分组（可能是源分组自身），解析后统一校验：
+            # 移入源分组自身或其子分组 = 移出后又加回递归视图，等于没移动，拒绝
+            if cid in from_ids:
+                return {"ok": False, "error": "不能移动到当前分组自身或其子分组"}
+            moved = self._db.move_memes_to_collection(ids, from_ids, cid)
+            if moved:
                 build_manifest()
-            return {"ok": True, "moved": len(ids)}
+            return {"ok": True, "moved": moved}
         except Exception:
             return {"ok": False}
 

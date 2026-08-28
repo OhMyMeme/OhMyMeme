@@ -264,6 +264,16 @@ class MemeDB:
             r[0] for r in conn.execute("SELECT name FROM tags ORDER BY name").fetchall()
         ]
 
+    def _existing_meme_ids(self, conn, ids: List[int]) -> List[int]:
+        """过滤出实际存在的表情 id（外键开启时对缺失 id 写子表会整批失败）"""
+        placeholders = ",".join("?" for _ in ids)
+        return [
+            r[0]
+            for r in conn.execute(
+                f"SELECT id FROM memes WHERE id IN ({placeholders})", ids
+            ).fetchall()
+        ]
+
     def add_tags_to_memes(self, meme_ids: List[int], tags: List[str]) -> int:
         """批量合并追加标签（不清空各表情已有标签），返回实际存在的表情数"""
         names = [t.strip() for t in (tags or []) if t.strip()]
@@ -273,14 +283,7 @@ class MemeDB:
         with self._lock:
             conn = self._get_conn()
             try:
-                # 先过滤出实际存在的表情（外键开启时对缺失 id 写 meme_tags 会整批失败）
-                placeholders = ",".join("?" for _ in ids)
-                valid_ids = [
-                    r[0]
-                    for r in conn.execute(
-                        f"SELECT id FROM memes WHERE id IN ({placeholders})", ids
-                    ).fetchall()
-                ]
+                valid_ids = self._existing_meme_ids(conn, ids)
                 if not valid_ids:
                     return 0
                 for tag in names:
@@ -368,6 +371,76 @@ class MemeDB:
                 (meme_id, collection_id),
             )
             conn.commit()
+
+    def add_memes_to_collection(self, meme_ids: List[int], collection_id: int) -> int:
+        """批量加入分组（追加语义，单事务），返回实际存在的表情数"""
+        ids = list(dict.fromkeys(int(x) for x in (meme_ids or [])))
+        if not ids:
+            return 0
+        with self._lock:
+            conn = self._get_conn()
+            try:
+                valid_ids = self._existing_meme_ids(conn, ids)
+                if not valid_ids:
+                    return 0
+                if (
+                    conn.execute(
+                        "SELECT 1 FROM collections WHERE id=?", (collection_id,)
+                    ).fetchone()
+                    is None
+                ):
+                    raise ValueError(f"collection {collection_id} not found")
+                for mid in valid_ids:
+                    conn.execute(
+                        "INSERT OR IGNORE INTO meme_collections "
+                        "(meme_id, collection_id) VALUES (?, ?)",
+                        (mid, collection_id),
+                    )
+                conn.commit()
+                return len(valid_ids)
+            except Exception:
+                conn.rollback()
+                raise
+
+    def move_memes_to_collection(
+        self, meme_ids: List[int], from_ids: List[int], to_id: int
+    ) -> int:
+        """批量从 from_ids（源分组子树）移出并加入 to_id（单事务），返回有效表情数"""
+        ids = list(dict.fromkeys(int(x) for x in (meme_ids or [])))
+        froms = list(dict.fromkeys(int(x) for x in (from_ids or [])))
+        if not ids or not froms:
+            return 0
+        with self._lock:
+            conn = self._get_conn()
+            try:
+                valid_ids = self._existing_meme_ids(conn, ids)
+                if not valid_ids:
+                    return 0
+                if (
+                    conn.execute(
+                        "SELECT 1 FROM collections WHERE id=?", (to_id,)
+                    ).fetchone()
+                    is None
+                ):
+                    raise ValueError(f"collection {to_id} not found")
+                ph_from = ",".join("?" for _ in froms)
+                ph_mid = ",".join("?" for _ in valid_ids)
+                conn.execute(
+                    f"DELETE FROM meme_collections WHERE collection_id IN ({ph_from}) "
+                    f"AND meme_id IN ({ph_mid})",
+                    [*froms, *valid_ids],
+                )
+                for mid in valid_ids:
+                    conn.execute(
+                        "INSERT OR IGNORE INTO meme_collections "
+                        "(meme_id, collection_id) VALUES (?, ?)",
+                        (mid, to_id),
+                    )
+                conn.commit()
+                return len(valid_ids)
+            except Exception:
+                conn.rollback()
+                raise
 
     def collection_exists(self, name: str, parent_id: int = None) -> bool:
         """检查同名分组是否已存在"""

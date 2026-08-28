@@ -243,6 +243,40 @@ class TestDatabase(unittest.TestCase):
         self.assertEqual(self.db.add_tags_to_memes([88888, 99999], ["t2"]), 0)
         self.assertEqual(set(self.db.get_all_tags()), {"t1"})
 
+    def test_add_memes_to_collection_batch(self):
+        mid1 = self.db.add_meme("a.png")
+        mid2 = self.db.add_meme("b.png")
+        cid = self.db.create_collection("g")
+        # 混合有效与不存在的 id：只对存在的表情生效
+        count = self.db.add_memes_to_collection([mid1, mid2, 99999], cid)
+        self.assertEqual(count, 2)
+        self.assertEqual(len(self.db.search(collection_id=cid)), 2)
+        # 目标分组不存在：抛异常且不产生部分写入
+        with self.assertRaises(ValueError):
+            self.db.add_memes_to_collection([mid1], 424242)
+        self.assertEqual(len(self.db.search(collection_id=cid)), 2)
+
+    def test_move_memes_to_collection_batch(self):
+        mid1 = self.db.add_meme("a.png")
+        mid2 = self.db.add_meme("b.png")  # 仅属于子分组
+        parent = self.db.create_collection("p")
+        child = self.db.create_collection("c", parent_id=parent)
+        self.db.add_to_collection(mid1, parent)
+        self.db.add_to_collection(mid2, child)
+        target = self.db.create_collection("t")
+        # 从源子树整体移出：仅属于子分组的成员也会被移走
+        count = self.db.move_memes_to_collection(
+            [mid1, mid2, 99999], [parent, child], target
+        )
+        self.assertEqual(count, 2)
+        self.assertEqual(self.db.search(collection_id=parent), [])
+        self.assertEqual(self.db.search(collection_id=child), [])
+        self.assertEqual(len(self.db.search(collection_id=target)), 2)
+        # 目标分组不存在：抛异常且不产生部分写入
+        with self.assertRaises(ValueError):
+            self.db.move_memes_to_collection([mid1], [parent], 424242)
+        self.assertEqual(len(self.db.search(collection_id=target)), 2)
+
     def test_tags(self):
         mid = self.db.add_meme("test.png", tags=["a", "b", "c"])
         tags = self.db.get_meme_tags(mid)
