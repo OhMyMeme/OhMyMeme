@@ -13,21 +13,6 @@ logger = logging.getLogger(__name__)
 INDEX_FILENAME = _INDEX_FILENAME
 
 
-class ManifestBuilder:
-    """Build and load a manifest from explicit application-owned resources."""
-
-    def __init__(self, config, db, assets):
-        self.config = config
-        self.db = db
-        self.assets = assets
-
-    def build(self):
-        return _build(self.db, self.assets)
-
-    def load(self):
-        return _load(self.assets)
-
-
 def _assets():
     config = get_config()
     return AssetPaths(config.data_dir, config.cache_dir)
@@ -59,9 +44,8 @@ def _build_collection_tree(db, parent_id=None, empty_ids=None):
     return items
 
 
-def _write(data, assets=None):
-    assets = assets or _assets()
-    path = assets.manifest_path
+def _write(data):
+    path = _index_path()
     tmp = path.with_name(path.name + ".tmp")
     try:
         path.parent.mkdir(parents=True, exist_ok=True)
@@ -72,9 +56,11 @@ def _write(data, assets=None):
             tmp.unlink()
 
 
-def _build(db, assets):
+def build():
     """从数据库重建完整索引并写入磁盘。"""
+    db = get_db()
     rows = db.search(keyword="", tags=None, limit=999999)
+    assets = _assets()
     memes = []
     for row in rows:
         filename = row["filename"]
@@ -98,7 +84,7 @@ def _build(db, assets):
     collections = _build_collection_tree(db, empty_ids=empty_ids)
     data = {"version": 3, "memes": memes, "collections": collections}
     try:
-        _write(data, assets)
+        _write(data)
         for collection_id in empty_ids:
             db.delete_collection(collection_id)
         logger.debug(
@@ -110,9 +96,9 @@ def _build(db, assets):
     return memes
 
 
-def _load(assets):
+def load():
     """加载索引文件，不存在时返回空结构。"""
-    path = assets.manifest_path
+    path = _index_path()
     if not path.exists():
         return {"version": 3, "memes": [], "collections": []}
     try:
@@ -134,14 +120,3 @@ def _load(assets):
     except (AttributeError, json.JSONDecodeError, OSError, TypeError) as error:
         logger.warning("manifest load failed: %s", error)
         return {"version": 3, "memes": [], "collections": []}
-
-
-def build():
-    """使用默认单例资源重建索引。"""
-    config = get_config()
-    return _build(get_db(), AssetPaths(config.data_dir, config.cache_dir))
-
-
-def load():
-    """使用默认单例资源加载索引。"""
-    return _load(_assets())
