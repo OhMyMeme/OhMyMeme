@@ -34,36 +34,12 @@ _TG_LOCK = threading.RLock()
 _TG_CANCEL = False
 _TG_ACTIVE_PROC = set()
 _TG_T0 = None
-_TG_JOB_CANCEL = None
-_TG_JOB_SNAPSHOT = None
-_TG_GENERATION = 0
-_TG_WORKER = threading.local()
-
-
-def _bind_tg_job(_manager, record, context):
-    global _TG_JOB_CANCEL, _TG_JOB_SNAPSHOT
-    _TG_JOB_CANCEL = record.cancellation_event
-    _TG_JOB_SNAPSHOT = context.snapshot
 
 
 def _update_tg(**kw):
-    global _TG_JOB_SNAPSHOT
     with _TG_LOCK:
-        worker_generation = getattr(_TG_WORKER, "generation", None)
-        if worker_generation is not None and worker_generation != _TG_GENERATION:
-            return
         _refresh_tg_elapsed()
         _TG_STATE.update(**kw)
-        snapshot = _TG_JOB_SNAPSHOT
-        state = dict(_TG_STATE)
-    if snapshot is not None:
-        snapshot(
-            phase=state["status"],
-            progress=state["progress"] / 100,
-            message=state["message"],
-            error_code=state["error_code"],
-            error=state["error"],
-        )
 
 
 # 按任务起点刷新已用秒数（仅运行中状态推进）
@@ -86,10 +62,8 @@ def get_tg_progress():
 
 
 def cancel_tg_import():
-    global _TG_CANCEL, _TG_JOB_CANCEL, _TG_JOB_SNAPSHOT
+    global _TG_CANCEL
     _TG_CANCEL = True
-    if _TG_JOB_CANCEL is not None:
-        _TG_JOB_CANCEL.set()
     with _TG_LOCK:
         procs = list(_TG_ACTIVE_PROC)
     for p in procs:
@@ -101,7 +75,7 @@ def cancel_tg_import():
 
 
 def _check_cancel():
-    return _TG_CANCEL or (_TG_JOB_CANCEL is not None and _TG_JOB_CANCEL.is_set())
+    return _TG_CANCEL
 
 
 def _import_tgcrypto():
@@ -130,15 +104,13 @@ def _reset_state():
     _TG_CANCEL = False
     _TG_T0 = None
     with _TG_LOCK:
-        active_processes = list(_TG_ACTIVE_PROC)
-        for p in active_processes:
+        for p in list(_TG_ACTIVE_PROC):
             if p.poll() is None:
                 try:
                     p.terminate()
                 except Exception:
                     pass
-            else:
-                _TG_ACTIVE_PROC.discard(p)
+        _TG_ACTIVE_PROC.clear()
     _update_tg(
         status="idle",
         progress=0,
@@ -502,17 +474,9 @@ def dedup_static_against_animated(webp_paths, threshold=0.02):
     return keep, skipped
 
 
-def start_tg_import(
-    import_callback,
-    tdata_path=None,
-    passcode="",
-    convert_webm=True,
-    job_manager=None,
-):
+def start_tg_import(import_callback, tdata_path=None, passcode="", convert_webm=True):
     """后台启动 Telegram 表情包导入流程，已有任务时返回 False"""
-    global _TG_CANCEL, _TG_GENERATION
-    if job_manager is not None and job_manager.active("import.telegram") is not None:
-        return False
+    global _TG_CANCEL
     with _TG_LOCK:
         if _TG_STATE["status"] in (
             "scanning",
@@ -523,53 +487,14 @@ def start_tg_import(
             "importing",
         ):
             return False
-        _TG_GENERATION += 1
-        generation = _TG_GENERATION
         _reset_state()
         # 锁内立即占位运行态，使并发调用在锁内看到 scanning 而拒绝，防止双 worker
         _update_tg(status="scanning", message="正在检测 Telegram Desktop 数据目录...")
-
-    def target(context):
-        _TG_WORKER.generation = generation
-        global _TG_JOB_CANCEL, _TG_JOB_SNAPSHOT
-        try:
-            _tg_worker(import_callback, tdata_path, passcode, convert_webm)
-            if _TG_STATE["status"] == "error":
-                raise RuntimeError(f"{_TG_STATE['error_code']}: {_TG_STATE['error']}")
-        finally:
-            _TG_JOB_CANCEL = None
-            _TG_JOB_SNAPSHOT = None
-
-    if job_manager is None:
-
-        def legacy_target(*_args):
-            _TG_WORKER.generation = generation
-            _tg_worker(import_callback, tdata_path, passcode, convert_webm)
-
-        threading.Thread(
-            target=legacy_target,
-            args=(import_callback, tdata_path, passcode, convert_webm),
-            daemon=True,
-        ).start()
-    else:
-        try:
-            _, created = job_manager.try_start(
-                "import.telegram",
-                target,
-                resources=("telegram",),
-                on_admit=lambda record, context: _bind_tg_job(
-                    job_manager, record, context
-                ),
-            )
-        except BaseException:
-            with _TG_LOCK:
-                _TG_JOB_CANCEL = None
-                _TG_JOB_SNAPSHOT = None
-                _TG_CANCEL = False
-                _TG_STATE["status"] = "idle"
-            raise
-        if not created:
-            return False
+    threading.Thread(
+        target=_tg_worker,
+        args=(import_callback, tdata_path, passcode, convert_webm),
+        daemon=True,
+    ).start()
     return True
 
 
@@ -583,13 +508,7 @@ def _tg_worker(import_callback, tdata_path, passcode, convert_webm):
             return
         if tdata_path:
             tdata = tdata_path
-            if _check_cancel():
-                _update_tg(status="cancelled", message="已取消")
-                return
             if not is_valid_tdata(tdata):
-                if _check_cancel():
-                    _update_tg(status="cancelled", message="已取消")
-                    return
                 logger.error("tg import: 无效 tdata 目录: %s", tdata)
                 _update_tg(
                     status="error",
@@ -870,11 +789,6 @@ def _tg_worker(import_callback, tdata_path, passcode, convert_webm):
     finally:
         if temp_dir and os.path.isdir(temp_dir):
             try:
-                shutil.rmtree(temp_dir)
-            except OSError as error:
-                logger.error("tg import cleanup failed: %s", error)
-                _update_tg(
-                    status="error",
-                    error_code="cleanup_failed",
-                    error=f"临时文件清理失败: {error}",
-                )
+                shutil.rmtree(temp_dir, ignore_errors=True)
+            except Exception:
+                pass
