@@ -47,6 +47,9 @@ JsApi / SettingsApi → SQLite (WAL) + 本地缓存 + 远端同步
 - **PR 贡献必须确保 `black --check src/` 和 `ruff check src/` 全部通过**，CI 会检查这两项
 
 ## 关键目录
+
+完整的仓库文件树、目录职责、生成文件标记和依赖方向见 [`docs/project-structure.md`](docs/project-structure.md)；本文档继续作为行为约束和开发规范的权威来源。
+
 ```
 src/              # 源码根与固定运行时静态资产
   ohmymeme/       # 唯一 Python 业务包

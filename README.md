@@ -116,6 +116,8 @@ tests/                      单元、集成、协议与发布契约测试
 
 依赖方向从入口层流向 `core` 和服务层，平台集成与 UI 通过应用层调用核心能力。静态资源不作为 Python 模块导入。源码布局由 `mise.toml` 设置 `PYTHONPATH=src`，实际导入形式是 `ohmymeme.core...`，不是 `src.ohmymeme...`。源码启动命令固定为 `python -m ohmymeme`。
 
+完整的目录、子目录、文件职责和推荐阅读顺序见 [`docs/project-structure.md`](docs/project-structure.md)。
+
 主窗口启动时播放 `src/resources/OhMyMeme.mp4` 启动动画（全屏遮罩，视频结束或 6s 兜底后淡出），仅启动时播放一次，快捷键/托盘呼出不重播。设置页「显示启动动画」开关（配置 `show_startup_animation`，默认开）可关闭动画：关闭时不播放视频，降级为 300ms 延时后加载后续内容；开启时动画播放期间即并行加载（无 300ms 延时，动画天然覆盖桥接稳定时间）。
 
 可用调试参数：
