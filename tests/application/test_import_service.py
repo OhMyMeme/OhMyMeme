@@ -268,9 +268,9 @@ def test_manifest_restore_failure_writes_recovery_marker(tmp_path, monkeypatch):
 
 def test_public_import_method_signatures_remain_frozen():
     # Given: the established bridge and service methods
-    from ohmymeme.presentation.desktop.window_manager import JsApi
     from ohmymeme.services.lan.commands import _import_bytes
     from ohmymeme.services.sync.service import _pull_worker
+    from ohmymeme.presentation.desktop.window_manager import JsApi
 
     # When: inspecting their public callable contracts
     signatures = {
