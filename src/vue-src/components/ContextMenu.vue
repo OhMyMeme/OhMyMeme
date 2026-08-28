@@ -117,6 +117,13 @@ function onItemClick(e: MouseEvent, item: MenuItem) {
   animation: ctxFadeIn 0.1s ease;
 }
 
+/* 子菜单列出全部分组树时可能超过视口高度，需可滚动 */
+.ctx-submenu {
+  max-height: 60vh;
+  overflow-y: auto;
+  scrollbar-width: thin;
+}
+
 @keyframes ctxFadeIn {
   from { opacity: 0; transform: scale(0.95); }
   to { opacity: 1; transform: scale(1); }

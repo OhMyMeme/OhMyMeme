@@ -1,8 +1,20 @@
 <script setup lang="ts">
+import { computed } from 'vue'
 import { useCollectionBuilder } from '../composables/useCollectionBuilder'
 import { trapTabFocus } from '../utils/api'
 
 const cb = useCollectionBuilder()
+
+const isPick = computed(() => cb.pickMode.value !== '')
+const pickTitle = computed(() =>
+  cb.pickMode.value === 'move' ? '移动到分组' : '加入分组'
+)
+const confirmLabel = computed(() => {
+  if (!isPick.value) return cb.selectedId.value !== null ? '保存到该分组' : '创建分组'
+  const verb = cb.pickMode.value === 'move' ? '移动到' : '加入'
+  const target = cb.selectedId.value !== null ? '该分组' : '新分组'
+  return verb + target
+})
 
 function onBoxKeydown(e: KeyboardEvent) {
   if (e.key === 'Escape') { e.stopPropagation(); cb.close() }
@@ -17,13 +29,14 @@ function onBoxKeydown(e: KeyboardEvent) {
   <div v-if="cb.visible.value" id="cb-overlay">
     <div id="cb-box" role="dialog" aria-modal="true" aria-labelledby="cb-title" @keydown="onBoxKeydown">
       <div class="cb-header">
-        <h2 id="cb-title">添加分组</h2>
+        <h2 id="cb-title">{{ isPick ? pickTitle : '添加分组' }}</h2>
+        <div v-if="isPick" class="cb-pick-hint">将{{ cb.pickMode.value === 'move' ? '移动' : '加入' }}已选的 {{ cb.selectedIds.value.size }} 个表情包</div>
         <div class="cb-name-wrap">
           <input
             id="cb-name"
             v-model="cb.collectionName.value"
             type="text"
-            placeholder="输入分组名或选择已有分组..."
+            placeholder="搜索分组或输入新分组名..."
             autocomplete="off"
             spellcheck="false"
             @focus="cb.showDropdown.value = true"
@@ -36,19 +49,20 @@ function onBoxKeydown(e: KeyboardEvent) {
             </div>
             <div class="cb-dd-section">加入已有分组</div>
             <div
-              v-for="opt in cb.collectionOptions.value"
+              v-for="opt in cb.filteredCollectionOptions.value"
               :key="opt.id"
               class="cb-dd-item"
               :class="{ 'cb-dd-selected': cb.selectedId.value === opt.id }"
               @click="cb.selectCollection(opt)"
             >
-              {{ opt.name }}
+              {{ opt.depth || opt.name }}
             </div>
+            <div v-if="!cb.filteredCollectionOptions.value.length" class="cb-dd-item cb-dd-hint">无匹配分组</div>
           </div>
         </div>
       </div>
 
-      <div class="cb-search">
+      <div v-if="!isPick" class="cb-search">
         <input
           v-model="cb.searchQuery.value"
           type="text"
@@ -60,7 +74,7 @@ function onBoxKeydown(e: KeyboardEvent) {
 
       <div v-if="cb.loading.value" class="cb-loading">加载中...</div>
 
-      <div v-else id="cb-cols">
+      <div v-else-if="!isPick" id="cb-cols">
         <div class="cb-col">
           <div class="cb-col-title">表情库 ({{ cb.filteredMemes.value.length }})</div>
           <div class="cb-col-list">
@@ -106,14 +120,14 @@ function onBoxKeydown(e: KeyboardEvent) {
         </div>
       </div>
 
-      <div v-if="cb.memberLoadError.value" class="cb-error">
+      <div v-if="!isPick && cb.memberLoadError.value" class="cb-error">
         <span>分组信息加载失败，请重试</span>
         <button class="btn btn-sm btn-secondary" @click="cb.retryLoadMembers()">重试</button>
       </div>
 
       <div class="cb-footer">
         <button class="btn btn-secondary" @click="cb.close()">取消</button>
-        <button class="btn btn-primary" :disabled="cb.memberLoading.value || cb.memberLoadError.value || !cb.collectionName.value.trim()" @click="cb.confirm()">{{ cb.selectedId.value != null ? '保存到该分组' : '创建分组' }}</button>
+        <button class="btn btn-primary" :disabled="cb.memberLoading.value || cb.memberLoadError.value || !cb.collectionName.value.trim()" @click="cb.confirm()">{{ confirmLabel }}</button>
       </div>
     </div>
   </div>
@@ -152,6 +166,12 @@ function onBoxKeydown(e: KeyboardEvent) {
   font-size: 15px;
   font-weight: 600;
   margin-bottom: 10px;
+}
+
+.cb-pick-hint {
+  font-size: 12px;
+  color: var(--muted);
+  margin: -6px 0 8px;
 }
 
 .cb-name-wrap {

@@ -209,6 +209,112 @@ class TestDatabase(unittest.TestCase):
         results = self.db.search(keyword="dog")
         self.assertEqual(len(results), 2)
 
+    def test_search_keyword_matches_tag(self):
+        self.db.add_meme("img1.png", tags=["小猫"])
+        self.db.add_meme("img2.png", tags=["小狗"])
+        # 搜索词命中标签名也能搜到
+        results = self.db.search(keyword="小猫")
+        self.assertEqual(len(results), 1)
+        self.assertEqual(results[0]["filename"], "img1.png")
+        self.assertEqual(self.db.count(keyword="小狗"), 1)
+        self.assertEqual(self.db.count(keyword="不存在的标签"), 0)
+
+    def test_add_tags_to_memes_merge(self):
+        mid1 = self.db.add_meme("a.png", tags=["old"])
+        mid2 = self.db.add_meme("b.png")
+        count = self.db.add_tags_to_memes([mid1, mid2], ["new", " old "])
+        self.assertEqual(count, 2)
+        self.assertEqual(set(self.db.get_meme_tags(mid1)), {"old", "new"})
+        self.assertEqual(set(self.db.get_meme_tags(mid2)), {"old", "new"})
+        self.assertEqual(set(self.db.get_all_tags()), {"old", "new"})
+        # 空参数不产生变更
+        self.assertEqual(self.db.add_tags_to_memes([], ["x"]), 0)
+        self.assertEqual(self.db.add_tags_to_memes([mid1], []), 0)
+        self.assertEqual(self.db.add_tags_to_memes([mid1], ["  "]), 0)
+
+    def test_add_tags_to_memes_missing_ids(self):
+        # 混合有效与不存在的 id：只对存在的表情生效，不抛异常、不部分写入
+        mid = self.db.add_meme("a.png")
+        count = self.db.add_tags_to_memes([mid, 99999], ["t1"])
+        self.assertEqual(count, 1)
+        self.assertEqual(set(self.db.get_meme_tags(mid)), {"t1"})
+        self.assertEqual(set(self.db.get_all_tags()), {"t1"})
+        # 全部 id 不存在：返回 0 且不产生任何标签
+        self.assertEqual(self.db.add_tags_to_memes([88888, 99999], ["t2"]), 0)
+        self.assertEqual(set(self.db.get_all_tags()), {"t1"})
+
+    def test_add_memes_to_collection_batch(self):
+        mid1 = self.db.add_meme("a.png")
+        mid2 = self.db.add_meme("b.png")
+        cid = self.db.create_collection("g")
+        # 混合有效与不存在的 id：只对存在的表情生效
+        count = self.db.add_memes_to_collection([mid1, mid2, 99999], cid)
+        self.assertEqual(count, 2)
+        self.assertEqual(len(self.db.search(collection_id=cid)), 2)
+        # 重复加入同一分组：不产生重复关联，计数为 0
+        self.assertEqual(self.db.add_memes_to_collection([mid1], cid), 0)
+        self.assertEqual(len(self.db.search(collection_id=cid)), 2)
+        # 目标分组不存在：抛异常且不产生部分写入
+        with self.assertRaises(ValueError):
+            self.db.add_memes_to_collection([mid1], 424242)
+        self.assertEqual(len(self.db.search(collection_id=cid)), 2)
+
+    def test_move_memes_to_collection_scope_and_dedup(self):
+        mid1 = self.db.add_meme("a.png")  # 属于源分组
+        mid2 = self.db.add_meme("b.png")  # 不属于源分组，仅属于其他分组
+        mid3 = self.db.add_meme("c.png")  # 属于源分组且已在目标分组
+        src = self.db.create_collection("src")
+        other = self.db.create_collection("other")
+        target = self.db.create_collection("t")
+        self.db.add_to_collection(mid1, src)
+        self.db.add_to_collection(mid3, src)
+        self.db.add_to_collection(mid3, target)
+        self.db.add_to_collection(mid2, other)
+
+        moved = self.db.move_memes_to_collection([mid1, mid2, mid3], [src], target)
+        # 仅 mid1 实际新增目标关联；mid3 重复加入不计；mid2 非源成员不受影响
+        self.assertEqual(moved, 1)
+        self.assertEqual(self.db.search(collection_id=src), [])
+        self.assertEqual(len(self.db.search(collection_id=target)), 2)
+        self.assertEqual(len(self.db.search(collection_id=other)), 1)
+
+    def test_move_cascades_empty_group_cleanup(self):
+        mid1 = self.db.add_meme("a.png")
+        mid2 = self.db.add_meme("b.png")
+        parent = self.db.create_collection("p")
+        child = self.db.create_collection("c", parent_id=parent)
+        keep = self.db.create_collection("keep")  # 源子树外的空分组
+        target = self.db.create_collection("t")
+        self.db.add_to_collection(mid1, child)
+        self.db.add_to_collection(mid2, parent)
+
+        moved = self.db.move_memes_to_collection([mid1, mid2], [parent, child], target)
+        self.assertEqual(moved, 2)
+        # 源子树内 child 先空、parent 后空，级联清理；子树外的空分组保留
+        ids = {c[0] for c in self.db.get_collections()}
+        self.assertEqual(ids, {target, keep})
+
+    def test_move_memes_to_collection_batch(self):
+        mid1 = self.db.add_meme("a.png")
+        mid2 = self.db.add_meme("b.png")  # 仅属于子分组
+        parent = self.db.create_collection("p")
+        child = self.db.create_collection("c", parent_id=parent)
+        self.db.add_to_collection(mid1, parent)
+        self.db.add_to_collection(mid2, child)
+        target = self.db.create_collection("t")
+        # 从源子树整体移出：仅属于子分组的成员也会被移走
+        count = self.db.move_memes_to_collection(
+            [mid1, mid2, 99999], [parent, child], target
+        )
+        self.assertEqual(count, 2)
+        self.assertEqual(self.db.search(collection_id=parent), [])
+        self.assertEqual(self.db.search(collection_id=child), [])
+        self.assertEqual(len(self.db.search(collection_id=target)), 2)
+        # 目标分组不存在：抛异常且不产生部分写入
+        with self.assertRaises(ValueError):
+            self.db.move_memes_to_collection([mid1], [parent], 424242)
+        self.assertEqual(len(self.db.search(collection_id=target)), 2)
+
     def test_tags(self):
         mid = self.db.add_meme("test.png", tags=["a", "b", "c"])
         tags = self.db.get_meme_tags(mid)

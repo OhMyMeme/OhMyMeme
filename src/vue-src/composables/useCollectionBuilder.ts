@@ -37,14 +37,48 @@ const preselectIds = ref<number[]>([])
 const memberLoading = ref(false)
 // 分组成员加载失败：保留现有选择、禁用确认，提供重试
 const memberLoadError = ref(false)
+// 选择模式：'' = 构建模式（双栏），'add'/'move' = 批量加入/移动（仅选分组）
+const pickMode = ref<'' | 'add' | 'move'>('')
+const pickFromId = ref(0)
 
 let onConfirmCallback: ((result: CollectionConfirm) => void) | null = null
 let memberReqGen = 0
+
+// 展平分组树（含子分组），子分组 label 带「父/子」路径；供 CollectionBuilder 下拉与右键子菜单共用
+export function flattenCollections(items: any[], prefix: string, out: CollectionOption[]) {
+  for (const c of items) {
+    if (!c || c.id <= 0) continue
+    const label = prefix ? prefix + '/' + c.name : c.name
+    out.push({ id: c.id, name: c.name, depth: label })
+    if (c.children && c.children.length) flattenCollections(c.children, label, out)
+  }
+}
+
+// 收集 rootId 及其所有后代分组 id
+function collectSubtreeIds(items: any[], rootId: number): number[] {
+  for (const c of items) {
+    if (!c || c.id <= 0) continue
+    if (c.id === rootId) {
+      const out: number[] = []
+      const walk = (n: any) => {
+        out.push(n.id)
+        for (const ch of n.children || []) walk(ch)
+      }
+      walk(c)
+      return out
+    }
+    const r = collectSubtreeIds(c.children || [], rootId)
+    if (r.length) return r
+  }
+  return []
+}
 
 export function useCollectionBuilder() {
   async function open(onConfirm: (result: CollectionConfirm) => void, preselect: number[] = []) {
     onConfirmCallback = onConfirm
     preselectIds.value = preselect
+    pickMode.value = ''
+    pickFromId.value = 0
     memberReqGen++
     memberLoading.value = false
     memberLoadError.value = false
@@ -64,9 +98,45 @@ export function useCollectionBuilder() {
     ])
 
     allMemes.value = memes || []
-    collectionOptions.value = (collections || [])
-      .filter((c: any) => c.id > 0)
-      .map((c: any) => ({ id: c.id, name: c.name }))
+    const opts: CollectionOption[] = []
+    flattenCollections(collections || [], '', opts)
+    collectionOptions.value = opts
+
+    loading.value = false
+    await nextTick()
+    const nameInput = document.getElementById('cb-name') as HTMLInputElement | null
+    nameInput?.focus()
+    nameInput?.select()
+  }
+
+  // 选择模式打开：不加载表情库，仅选分组后确认（批量加入/移动）
+  async function openPick(onConfirm: (result: CollectionConfirm) => void, mode: 'add' | 'move', preselect: number[] = [], fromId = 0) {
+    onConfirmCallback = onConfirm
+    preselectIds.value = preselect
+    pickMode.value = mode
+    pickFromId.value = fromId
+    memberReqGen++
+    memberLoading.value = false
+    memberLoadError.value = false
+    rememberFocus()
+    visible.value = true
+    loading.value = true
+    searchQuery.value = ''
+    selectedIds.value = new Set(preselect)
+    collectionName.value = ''
+    selectedId.value = null
+    selectedName.value = ''
+    showDropdown.value = false
+
+    const collections = await api('get_collections')
+    const opts: CollectionOption[] = []
+    flattenCollections(collections || [], '', opts)
+    // move 模式排除源分组及其整棵子树（移入后代等于移出后又加回递归视图，后端同样拒绝）
+    const excluded =
+      mode === 'move' && fromId > 0 ? collectSubtreeIds(collections || [], fromId) : []
+    collectionOptions.value = excluded.length
+      ? opts.filter(o => !excluded.includes(o.id))
+      : opts
 
     loading.value = false
     await nextTick()
@@ -81,6 +151,8 @@ export function useCollectionBuilder() {
     memberLoadError.value = false
     visible.value = false
     showDropdown.value = false
+    pickMode.value = ''
+    pickFromId.value = 0
     restoreFocus()
   }
 
@@ -111,9 +183,12 @@ export function useCollectionBuilder() {
 
   function selectCollection(opt: CollectionOption) {
     selectedId.value = opt.id
-    selectedName.value = opt.name
-    collectionName.value = opt.name
+    // selectedName 与输入框显示值保持一致（含父路径），避免 watch 误判为手动改名
+    selectedName.value = opt.depth || opt.name
+    collectionName.value = opt.depth || opt.name
     showDropdown.value = false
+    // 选择模式不加载成员（批量操作为追加/移动语义，非覆盖）
+    if (pickMode.value) return
     // 已有分组：加载其现有成员，并保留预选的表情（右键带入的新增项）
     loadMembers(opt.id)
   }
@@ -123,8 +198,8 @@ export function useCollectionBuilder() {
     memberLoadError.value = false
     selectedId.value = null
     selectedName.value = ''
-    collectionName.value = ''
-    selectedIds.value = new Set(preselectIds.value)
+    // 保留输入框中的名称，直接确认即创建该分组
+    selectedIds.value = new Set(pickMode.value ? selectedIds.value : preselectIds.value)
     showDropdown.value = false
   }
   function retryLoadMembers() {
@@ -160,6 +235,15 @@ export function useCollectionBuilder() {
     )
   })
 
+  // 分组下拉按输入词过滤（匹配组名或父路径）
+  const filteredCollectionOptions = computed(() => {
+    const q = collectionName.value.trim().toLowerCase()
+    if (!q) return collectionOptions.value
+    return collectionOptions.value.filter(o =>
+      o.name.toLowerCase().includes(q) || (o.depth || '').toLowerCase().includes(q)
+    )
+  })
+
   function onClickOutside(e: MouseEvent) {
     const dropdown = document.getElementById('cb-dropdown')
     const input = document.getElementById('cb-name')
@@ -187,10 +271,14 @@ export function useCollectionBuilder() {
     selectedId,
     collectionName,
     collectionOptions,
+    filteredCollectionOptions,
     showDropdown,
     allMemes,
     filteredMemes,
+    pickMode,
+    pickFromId,
     open,
+    openPick,
     close,
     toggleMeme,
     selectCollection,
