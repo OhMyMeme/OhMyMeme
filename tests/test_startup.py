@@ -5,10 +5,7 @@ import re
 import subprocess
 import sys
 from pathlib import Path
-from types import SimpleNamespace
 from unittest.mock import patch
-
-import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 os.environ["OHMYMEME_TEST"] = "1"
@@ -21,296 +18,6 @@ from ohmymeme.integrations.platform.hotkey import GlobalHotkey
 from ohmymeme.integrations.platform.tray import _create_default_icon
 
 ROOT = Path(__file__).resolve().parent.parent
-
-
-def test_webui_stop_releases_bottle_server_and_joins_thread(tmp_path):
-    from ohmymeme.app.container import Container
-
-    container = Container(tmp_path / "bottle-owner")
-    ui = container.create_webui()
-    events = []
-
-    class Server:
-        def shutdown(self):
-            events.append("shutdown")
-
-    class Thread:
-        def join(self, timeout):
-            events.append(("join", timeout))
-
-        def is_alive(self):
-            return False
-
-    ui._bottle_server = Server()
-    ui._bottle_thread = Thread()
-    ui.stop()
-    container.close()
-
-    assert events == ["shutdown", ("join", 1.0)]
-
-
-def test_webui_stop_waits_for_thread_after_first_join_budget(tmp_path):
-    from ohmymeme.app.container import Container
-
-    container = Container(tmp_path / "bottle-slow-owner")
-    ui = container.create_webui()
-
-    class Server:
-        def shutdown(self):
-            pass
-
-    class Thread:
-        def __init__(self):
-            self.alive = True
-            self.join_calls = 0
-
-        def join(self, timeout):
-            self.join_calls += 1
-            if self.join_calls == 2:
-                self.alive = False
-
-        def is_alive(self):
-            return self.alive
-
-    thread = Thread()
-    ui._bottle_server = Server()
-    ui._bottle_thread = thread
-
-    ui.stop()
-    container.close()
-
-    assert thread.join_calls == 2
-    assert not thread.is_alive()
-
-
-def test_qqnt_job_manager_preserves_terminal_error_and_single_flight(monkeypatch):
-    from ohmymeme.app.job_manager import JobManager
-    from ohmymeme.presentation.desktop import window_manager
-
-    entered = __import__("threading").Event()
-    release = __import__("threading").Event()
-
-    def extract(*_args, **kwargs):
-        entered.set()
-        release.wait(1)
-        raise RuntimeError("controlled qqnt failure")
-
-    monkeypatch.setattr(window_manager.qqnt, "extract_qq_emojis", extract)
-    manager = JobManager()
-    try:
-        assert window_manager.start_qqnt_extract("1", "out", job_manager=manager)
-        assert not window_manager.start_qqnt_extract("1", "out", job_manager=manager)
-        assert entered.wait(1)
-        job = manager.active("import.qqnt")
-        assert job is not None
-        release.set()
-        assert manager.wait(job.id, 1)
-        assert window_manager.get_qqnt_progress()["status"] == "error"
-        assert manager.get(job.id).status == "error"
-    finally:
-        manager.shutdown(1)
-
-
-def test_qqnt_job_manager_cancel_propagates_to_worker(monkeypatch):
-    from ohmymeme.app.job_manager import JobManager
-    from ohmymeme.presentation.desktop import window_manager
-
-    entered = __import__("threading").Event()
-
-    def extract(*_args, **kwargs):
-        entered.set()
-        while not kwargs["should_stop"]():
-            __import__("time").sleep(0.001)
-        return {"cancelled": True}
-
-    monkeypatch.setattr(window_manager.qqnt, "extract_qq_emojis", extract)
-    manager = JobManager()
-    try:
-        assert window_manager.start_qqnt_extract("1", "out", job_manager=manager)
-        assert entered.wait(1)
-        job = manager.active("import.qqnt")
-        assert job is not None
-        window_manager.cancel_qqnt_extract()
-        assert manager.wait(job.id, 1)
-        assert window_manager.get_qqnt_progress()["status"] == "cancelled"
-        assert manager.get(job.id).status == "cancelled"
-    finally:
-        manager.shutdown(1)
-
-
-def test_qqnt_managed_keyboard_interrupt_reconciles_ui_and_job(monkeypatch):
-    from ohmymeme.app.job_manager import JobManager
-    from ohmymeme.presentation.desktop import window_manager
-
-    entered = __import__("threading").Event()
-    release = __import__("threading").Event()
-    error = "KeyboardInterrupt: controlled qqnt interrupt"
-
-    def extract(*_args, **_kwargs):
-        entered.set()
-        release.wait(1)
-        raise KeyboardInterrupt("controlled qqnt interrupt")
-
-    monkeypatch.setattr(window_manager.qqnt, "extract_qq_emojis", extract)
-    manager = JobManager()
-    window_manager._set_qqnt(
-        status="idle", progress=0, message="", error="", result=None
-    )
-    try:
-        assert window_manager.start_qqnt_extract("1", "out", job_manager=manager)
-        assert entered.wait(1)
-        record = manager.active("import.qqnt")
-        assert record is not None
-        release.set()
-        assert manager.wait(record.id, 1)
-
-        snapshot = manager.get(record.id)
-        state = window_manager.get_qqnt_progress()
-        assert snapshot.status == "error"
-        assert snapshot.error == error
-        assert state["status"] == "error"
-        assert state["error"] == error
-        assert manager.active("import.qqnt") is None
-        assert window_manager._QQNT_JOB_MANAGER is None
-        assert window_manager._QQNT_JOB_ID is None
-        assert window_manager._QQNT_JOB_SNAPSHOT is None
-    finally:
-        release.set()
-        manager.shutdown(1)
-        window_manager._set_qqnt(
-            status="idle", progress=0, message="", error="", result=None
-        )
-
-
-def test_qqnt_managed_start_rolls_back_after_manager_shutdown():
-    from ohmymeme.app.job_manager import JobManager
-    from ohmymeme.presentation.desktop import window_manager
-
-    manager = JobManager()
-    window_manager._set_qqnt(
-        status="idle", progress=0, message="", error="", result=None
-    )
-    with window_manager._QQNT_LOCK:
-        window_manager._QQNT_JOB_MANAGER = manager
-        window_manager._QQNT_JOB_ID = "stale-qqnt-job"
-        window_manager._QQNT_JOB_SNAPSHOT = None
-    manager.shutdown(1)
-    try:
-        with pytest.raises(RuntimeError, match="shut down"):
-            window_manager.start_qqnt_extract("1", "out", job_manager=manager)
-
-        state = window_manager.get_qqnt_progress()
-        assert state["status"] == "idle"
-        assert state["error"] == ""
-        assert manager.active("import.qqnt") is None
-        assert window_manager._QQNT_JOB_MANAGER is None
-        assert window_manager._QQNT_JOB_ID is None
-        assert window_manager._QQNT_JOB_SNAPSHOT is None
-    finally:
-        window_manager._set_qqnt(
-            status="idle", progress=0, message="", error="", result=None
-        )
-
-
-def test_qqnt_legacy_start_is_single_flight(monkeypatch):
-    from ohmymeme.presentation.desktop import window_manager
-
-    entered = __import__("threading").Event()
-    release = __import__("threading").Event()
-    calls = []
-
-    def worker(*_args, **_kwargs):
-        calls.append(True)
-        entered.set()
-        release.wait(1)
-
-    monkeypatch.setattr(window_manager, "_qqnt_worker", worker)
-    window_manager._set_qqnt(status="idle", progress=0, result=None)
-    try:
-        assert window_manager.start_qqnt_extract("1", "out") is True
-        assert entered.wait(1)
-        assert window_manager.start_qqnt_extract("1", "out") is False
-        assert calls == [True]
-    finally:
-        release.set()
-        assert window_manager.get_qqnt_progress()["status"] == "running"
-        window_manager._set_qqnt(status="idle", progress=0, result=None)
-
-
-def test_qqnt_managed_fast_completion_does_not_publish_stale_job_id(monkeypatch):
-    from ohmymeme.app.job_manager import JobManager
-    from ohmymeme.presentation.desktop import window_manager
-
-    entered = __import__("threading").Event()
-    release = __import__("threading").Event()
-
-    def worker(*_args, **_kwargs):
-        entered.set()
-        release.wait(1)
-        window_manager._set_qqnt(status="done", progress=100, result={"ok": True})
-
-    monkeypatch.setattr(window_manager, "_qqnt_worker", worker)
-    manager = JobManager()
-    try:
-        assert window_manager.start_qqnt_extract("1", "out", job_manager=manager)
-        record = manager.active("import.qqnt")
-        assert record is not None
-        assert entered.wait(1)
-        release.set()
-        assert manager.wait(record.id, 1)
-        assert manager.active("import.qqnt") is None
-        state = window_manager.get_qqnt_progress()
-        assert state["status"] == "done"
-        assert window_manager._QQNT_JOB_ID is None
-    finally:
-        manager.shutdown(1)
-
-
-def test_qqnt_managed_binding_does_not_replace_current_task_id(monkeypatch):
-    from ohmymeme.app.job_manager import JobManager
-    from ohmymeme.presentation.desktop import window_manager
-
-    calls = []
-    entered = __import__("threading").Event()
-    release = __import__("threading").Event()
-
-    def worker(*args, **_kwargs):
-        calls.append(args[0])
-        entered.set()
-        release.wait(1)
-
-    monkeypatch.setattr(window_manager, "_qqnt_worker", worker)
-    manager = JobManager()
-    try:
-        assert window_manager.start_qqnt_extract("a", "out", job_manager=manager)
-        current = manager.active("import.qqnt")
-        assert current is not None
-        assert entered.wait(1)
-        release.set()
-        assert manager.wait(current.id, 1)
-        assert window_manager._QQNT_JOB_ID is None
-        assert calls == ["a"]
-    finally:
-        manager.shutdown(1)
-
-
-def test_qqnt_managed_binding_is_created_by_admission(monkeypatch):
-    from ohmymeme.app.job_manager import JobManager
-    from ohmymeme.presentation.desktop import window_manager
-
-    def worker(*_args, **_kwargs):
-        pass
-
-    monkeypatch.setattr(window_manager, "_qqnt_worker", worker)
-    manager = JobManager()
-    try:
-        assert window_manager.start_qqnt_extract("a", "out", job_manager=manager)
-        record = manager.get(next(iter(manager._records)))
-        assert record is not None
-        assert manager.wait(record.id, 1)
-        assert window_manager._QQNT_JOB_ID is None
-    finally:
-        manager.shutdown(1)
 
 
 class _FakeConfig:
@@ -586,7 +293,8 @@ def test_successful_native_drag_requests_hide_only_for_hotkey_session(monkeypatc
     import ohmymeme.integrations.platform.native_drag as native_drag
 
     ui = _fake_webui(True)
-    monkeypatch.setattr(ui._api._catalog, "get_meme_path", lambda meme_id: "meme-1.png")
+    ui._api._db = _FakeMemeDB()
+    monkeypatch.setattr(ui._api, "_find_meme_file", lambda filename: filename)
     monkeypatch.setattr(native_drag, "start_native_drag", lambda path: True)
     monkeypatch.setattr(ui, "_run_on_gui", lambda delay, func: func())
 
@@ -600,81 +308,12 @@ def test_successful_native_drag_requests_hide_only_for_hotkey_session(monkeypatc
     assert ui._visible is False
 
 
-def test_native_drag_platform_or_dotnet_failure_does_not_schedule_hide(monkeypatch):
-    # Given: a hidden-window hotkey session and a native drag backend unavailable.
-    import ohmymeme.integrations.platform.native_drag as native_drag
-
-    ui = _fake_webui(True)
-    ui.toggle_hotkey_safe()
-    scheduled = []
-    monkeypatch.setattr(ui, "schedule_hide", lambda: scheduled.append(True))
-    monkeypatch.setattr(native_drag.platform, "system", lambda: "Linux")
-    monkeypatch.setattr(ui._api._catalog, "get_meme_path", lambda _meme_id: "meme.png")
-
-    # When: the main-window façade tries to start native drag off Windows.
-    result = ui._api.start_native_drag(1)
-
-    # Then: the platform failure is a boolean false and never schedules hiding.
-    assert result is False
-    assert scheduled == []
-
-
-def test_native_drag_dotnet_import_failure_does_not_schedule_hide(
-    monkeypatch, tmp_path
-):
-    # Given: a valid local path and a Windows host without pythonnet/WinForms.
-    import ohmymeme.integrations.platform.native_drag as native_drag
-
-    path = tmp_path / "meme.png"
-    path.write_bytes(b"image")
-    ui = _fake_webui(True)
-    ui.toggle_hotkey_safe()
-    scheduled = []
-    monkeypatch.setattr(ui, "schedule_hide", lambda: scheduled.append(True))
-    monkeypatch.setattr(ui._api._catalog, "get_meme_path", lambda _meme_id: str(path))
-    monkeypatch.setattr(native_drag.platform, "system", lambda: "Windows")
-    monkeypatch.setattr(native_drag, "_import_wf", lambda: None)
-    monkeypatch.setattr(
-        native_drag,
-        "webview",
-        SimpleNamespace(windows=[SimpleNamespace(native=object())]),
-        raising=False,
-    )
-
-    # When: the main-window façade tries to start native drag without .NET.
-    result = ui._api.start_native_drag(1)
-
-    # Then: the dependency failure remains false and the hotkey session stays visible.
-    assert result is False
-    assert scheduled == []
-
-
-def test_missing_bridge_method_keeps_null_failure_shape():
-    # Given: the actual production settings façade has no requested method.
-    from ohmymeme.presentation.desktop.window_manager import SettingsApi
-
-    webui = _fake_webui(False)
-    api = SettingsApi(
-        webui,
-        SimpleNamespace(
-            get_settings=lambda: {},
-            save_settings=lambda _: None,
-            reset_settings=lambda: {"hotkey": "Ctrl+Alt+N"},
-        ),
-    )
-
-    # When: the dynamic bridge lookup asks the production façade for a missing method.
-    result = getattr(api, "missing_method", None)
-
-    # Then: missing methods remain the established null failure shape.
-    assert result is None
-
-
 def test_successful_copy_requests_hide_only_for_hotkey_session(monkeypatch):
     import ohmymeme.presentation.desktop.window_manager as webui_module
 
     ui = _fake_webui(True)
-    monkeypatch.setattr(ui._api._catalog, "get_meme_path", lambda meme_id: "meme-1.png")
+    ui._api._db = _FakeMemeDB()
+    monkeypatch.setattr(ui._api, "_find_meme_file", lambda filename: filename)
     monkeypatch.setattr(webui_module, "copy_image_to_clipboard", lambda path: True)
     monkeypatch.setattr(ui, "_run_on_gui", lambda delay, func: func())
 
@@ -949,36 +588,6 @@ def test_vue_main_window_feature_layout_static_contract():
         )
     ]
     assert raw_bridge_users == [bridge]
-
-
-def test_frontend_source_outputs_and_legacy_fallback_static_contract():
-    root = Path(__file__).resolve().parent.parent
-    settings_source = (
-        root / "src" / "ohmymeme" / "presentation" / "frontend" / "settings"
-    )
-    entry = (settings_source / "entry.mjs").read_text(encoding="utf-8")
-    module_names = re.findall(r'"([^\"]+\.js)"', entry)
-    expected_output = "\n".join(
-        (settings_source / module_name).read_text(encoding="utf-8")
-        for module_name in module_names
-    )
-    settings_output = (root / "src" / "webui" / "settings.js").read_text(
-        encoding="utf-8"
-    )
-    build_script = (root / "scripts" / "build_settings.mjs").read_text(encoding="utf-8")
-    package = (root / "package.json").read_text(encoding="utf-8")
-    window_manager = (
-        root / "src" / "ohmymeme" / "presentation" / "desktop" / "window_manager.py"
-    ).read_text(encoding="utf-8")
-
-    assert module_names
-    assert settings_output == expected_output
-    assert '"src/webui/settings.js"' in build_script
-    assert "settingsModules.map" in build_script
-    assert "writeFile(runtimeEntry, sources.join" in build_script
-    assert '"build": "node scripts/build_settings.mjs && vite build"' in package
-    assert '"dist" / "ohmymeme.js"' in window_manager
-    assert 'bottle.static_file("index.html"' in window_manager
 
 
 def test_sorting_visual_feedback_static_contract():
