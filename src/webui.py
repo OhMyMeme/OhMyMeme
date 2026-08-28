@@ -6,6 +6,7 @@ import math
 import os
 import platform
 import socket
+import tempfile
 import threading
 import time
 from pathlib import Path
@@ -79,6 +80,13 @@ _LOG_MAX = 5000
 # 分页：主窗口单页展示的表情包数量（与前端 index.js MEME_PAGE 保持一致）
 MEME_PAGE = 200
 
+# 贡献者 SVG 缓存：TTL 1 小时，避免每次打开设置页都请求外网；刷新失败退避
+# 重试，避免上游不可用时每个请求都反复触发 10s 慢抓取
+_CONTRIBUTORS_TTL = 3600
+_CONTRIBUTORS_RETRY_INTERVAL = 60
+_CONTRIBUTORS_LOCK = threading.Lock()
+_CONTRIBUTORS_CACHE = {"svg": None, "at": 0.0, "next_retry": 0.0}
+
 
 class _LogBufferHandler(logging.Handler):
     """把 DEBUG 级日志缓存在内存中（限量 5000 条）"""
@@ -109,6 +117,15 @@ install_log_buffer()
 
 HTML_DIR = Path(__file__).resolve().parent / "webui"
 RESOURCES_DIR = Path(__file__).resolve().parent / "resources"
+
+
+def _contributors_svg():
+    """剥离缓存 SVG 的白色背景矩形，适配深色主题后返回"""
+    white_rect = '<rect width="100%" height="100%" fill="#ffffff"/>'
+    svg = _CONTRIBUTORS_CACHE["svg"].replace(white_rect, "")
+    bottle.response.content_type = "image/svg+xml; charset=utf-8"
+    return svg
+
 
 # 启动动画视频边缘主色（OhMyMeme.mp4 边框纯黑，写死避免运行时 ffmpeg 抽帧采样）
 _STARTUP_BG_COLOR = "#000000"
@@ -3082,7 +3099,18 @@ class WebUI:
             buf = io.BytesIO()
             img.save(buf, "PNG")
             cache_dir.mkdir(parents=True, exist_ok=True)
-            thumb_path.write_bytes(buf.getvalue())
+            # 并发请求同一缩略图时避免交错写同一文件：先写临时文件再原子替换
+            fd, tmp_path = tempfile.mkstemp(dir=str(cache_dir), suffix=".tmp")
+            try:
+                with os.fdopen(fd, "wb") as f:
+                    f.write(buf.getvalue())
+                os.replace(tmp_path, thumb_path)
+            except Exception:
+                try:
+                    os.remove(tmp_path)
+                except OSError:
+                    pass
+                raise
             return str(thumb_path)
         except Exception as e:
             logger.warning(f"thumb error {filename}: {e}")
@@ -3337,21 +3365,41 @@ class WebUI:
 
         @app.route("/api/contributors")
         def serve_contributors():
-            # 代理贡献者 SVG：剥离白色背景矩形，适配深色主题
-            try:
-                from urllib.request import Request, urlopen
+            # 代理贡献者 SVG：剥离白色背景矩形，适配深色主题；TTL 缓存 + 单飞
+            # 刷新（锁内抓取），失败退避 60s 并回退旧缓存
+            now = time.time()
+            if _CONTRIBUTORS_CACHE["svg"] is None or now >= (
+                _CONTRIBUTORS_CACHE["at"] + _CONTRIBUTORS_TTL
+            ):
+                with _CONTRIBUTORS_LOCK:
+                    # 取锁后刷新时间并重查退避期：等待中的并发请求不再重复抓取
+                    now = time.time()
+                    if _CONTRIBUTORS_CACHE["svg"] is None or now >= (
+                        _CONTRIBUTORS_CACHE["at"] + _CONTRIBUTORS_TTL
+                    ):
+                        if now < _CONTRIBUTORS_CACHE["next_retry"]:
+                            if _CONTRIBUTORS_CACHE["svg"] is None:
+                                bottle.response.status = 502
+                                return ""
+                            return _contributors_svg()
+                        try:
+                            from urllib.request import Request, urlopen
 
-                url = "https://contributor.starsfire.top/TNTXZ/OhMyMeme"
-                req = Request(url, headers={"User-Agent": "OhMyMeme"})
-                with urlopen(req, timeout=10) as resp:
-                    svg = resp.read().decode("utf-8", "replace")
-                white_rect = '<rect width="100%" height="100%" fill="#ffffff"/>'
-                svg = svg.replace(white_rect, "")
-                bottle.response.content_type = "image/svg+xml; charset=utf-8"
-                return svg
-            except Exception:
-                bottle.response.status = 502
-                return ""
+                            url = "https://contributor.starsfire.top/TNTXZ/OhMyMeme"
+                            req = Request(url, headers={"User-Agent": "OhMyMeme"})
+                            with urlopen(req, timeout=10) as resp:
+                                svg = resp.read().decode("utf-8", "replace")
+                            _CONTRIBUTORS_CACHE["svg"] = svg
+                            _CONTRIBUTORS_CACHE["at"] = now
+                        except Exception:
+                            # 失败一律退避（含无缓存冷启动），防并发请求反复触发网络重试
+                            _CONTRIBUTORS_CACHE["next_retry"] = (
+                                now + _CONTRIBUTORS_RETRY_INTERVAL
+                            )
+                            if _CONTRIBUTORS_CACHE["svg"] is None:
+                                bottle.response.status = 502
+                                return ""
+            return _contributors_svg()
 
         @app.route("/api/thumb/<meme_id>/<filename>")
         def serve_thumb(meme_id, filename):
@@ -3449,7 +3497,21 @@ class WebUI:
                 return bottle.static_file(filepath, root=str(HTML_DIR), mimetype=ctype)
             return bottle.static_file(filepath, root=str(HTML_DIR))
 
-        bottle.run(app, host="127.0.0.1", port=self._port, quiet=True)
+        # 多线程 wsgiref：默认单线程下慢请求（外网抓取/缩略图生成）会阻塞
+        # 其他路由，导致设置页资源排队、JS 监听未注册期间窗口无法交互
+        from socketserver import ThreadingMixIn
+        from wsgiref.simple_server import WSGIServer
+
+        class _ThreadedWSGIServer(ThreadingMixIn, WSGIServer):
+            daemon_threads = True
+
+        bottle.run(
+            app,
+            host="127.0.0.1",
+            port=self._port,
+            quiet=True,
+            server_class=_ThreadedWSGIServer,
+        )
 
     # --- 缓存扫描 ---
 
