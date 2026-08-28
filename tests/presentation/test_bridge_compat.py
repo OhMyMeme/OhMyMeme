@@ -1,3 +1,4 @@
+import ast
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -633,35 +634,6 @@ def test_settings_facade_routes_import_sync_update_and_refresh_abi(monkeypatch):
         for name in ("import", "sync", "update", "window_settings")
     }
     api._handlers = handlers
-    from ohmymeme.integrations.imports import douyin, telegram, wechat
-    from ohmymeme.presentation.desktop import window_manager
-
-    importer_calls = []
-    monkeypatch.setattr(
-        telegram,
-        "start_tg_import",
-        lambda *args: importer_calls.append(("tg", args)) or True,
-    )
-    monkeypatch.setattr(telegram, "get_tg_progress", lambda: {"status": "idle"})
-    monkeypatch.setattr(
-        douyin,
-        "start_douyin_import",
-        lambda *args: importer_calls.append(("douyin", args)) or True,
-    )
-    monkeypatch.setattr(douyin, "get_douyin_progress", lambda: {"status": "idle"})
-    monkeypatch.setattr(
-        wechat,
-        "start_wechat_import",
-        lambda *args: importer_calls.append(("wechat", args)) or True,
-    )
-    monkeypatch.setattr(wechat, "get_wechat_progress", lambda: {"status": "idle"})
-    qqnt_calls = []
-    monkeypatch.setattr(
-        window_manager,
-        "start_qqnt_extract",
-        lambda *args, **kwargs: qqnt_calls.append((args, kwargs)) or True,
-    )
-    monkeypatch.setattr(window_manager, "get_qqnt_progress", lambda: {"status": "idle"})
     evaluated = []
     monkeypatch.setattr(
         "ohmymeme.presentation.desktop.window_manager.webview",
@@ -700,19 +672,78 @@ def test_settings_facade_routes_import_sync_update_and_refresh_abi(monkeypatch):
     assert ("apply_storage_dir", ("C:/cache", True), {}) in handlers[
         "window_settings"
     ].calls
-    assert importer_calls[0][0] == "tg"
-    assert importer_calls[0][1][1:4] == (None, "", True)
-    assert importer_calls[1][1][1] == "cookie"
-    assert importer_calls[2][1][1:4] == ("C:/wechat", False, "acct")
-    assert qqnt_calls[0] == (
-        ("123", "C:/out"),
-        {
-            "image_only": True,
-            "overwrite": True,
-            "ini_path": None,
-            "userdata_save_path": None,
-            "job_manager": None,
-            "import_callback": webui._container.library.import_paths,
-        },
-    )
+    assert ("start_tg_import", (None, "", True), {}) in handlers[
+        "window_settings"
+    ].calls
+    assert ("start_douyin_import", ("cookie",), {}) in handlers["window_settings"].calls
+    assert ("start_wechat_import", ("C:/wechat", False, "acct"), {}) in handlers[
+        "window_settings"
+    ].calls
+    assert ("qqnt_start", ("123", "C:/out", True, True), {}) in handlers[
+        "window_settings"
+    ].calls
     assert evaluated == ["refreshMemes();", "refreshTags();", "refreshCollections();"]
+
+
+def test_desktop_facades_leave_domain_bodies_in_named_handlers():
+    # Given: the production desktop bridge source and its named handler module.
+    root = Path(__file__).parents[2]
+    facade_tree = ast.parse(
+        (root / "src/ohmymeme/presentation/desktop/window_manager.py").read_text(
+            encoding="utf-8"
+        )
+    )
+    handler_tree = ast.parse(
+        (root / "src/ohmymeme/presentation/desktop/api/handlers.py").read_text(
+            encoding="utf-8"
+        )
+    )
+
+    # When: the façade classes and handler declarations are inspected structurally.
+    facade_classes = {
+        node.name: node
+        for node in facade_tree.body
+        if isinstance(node, ast.ClassDef) and node.name in {"JsApi", "SettingsApi"}
+    }
+    handler_classes = {
+        node.name: node
+        for node in handler_tree.body
+        if isinstance(node, ast.ClassDef)
+        and node.name
+        in {
+            "MemeHandler",
+            "ImportHandler",
+            "SyncHandler",
+            "UpdateHandler",
+            "WindowSettingsHandler",
+        }
+    }
+    facade_code = ast.unparse(
+        ast.Module(body=list(facade_classes.values()), type_ignores=[])
+    )
+
+    # Then: façades contain routing/wiring only, while named handlers contain bodies.
+    assert "create_file_dialog" not in facade_code
+    assert "extract_qq_emojis" not in facade_code
+    assert "qqnt_handler._STATE" in ast.unparse(facade_tree)
+    assert set(handler_classes) == {
+        "MemeHandler",
+        "ImportHandler",
+        "SyncHandler",
+        "UpdateHandler",
+        "WindowSettingsHandler",
+    }
+    assert any(
+        isinstance(node, ast.Call)
+        and isinstance(node.func, ast.Attribute)
+        and node.func.attr == "start_tg_import"
+        for node in ast.walk(handler_tree)
+    )
+    assert any(
+        isinstance(node, ast.Call)
+        and isinstance(node.func, ast.Attribute)
+        and node.func.attr == "create_file_dialog"
+        for node in ast.walk(
+            ast.Module(body=list(handler_classes.values()), type_ignores=[])
+        )
+    )
