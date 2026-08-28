@@ -3,7 +3,7 @@ import { ref, onMounted, onUnmounted, computed } from 'vue'
 import { useMemes } from './composables/useMemes'
 import { useDragSort } from './composables/useDragSort'
 import { useContextMenu, type MenuItem } from './composables/useContextMenu'
-import { useCollectionBuilder } from './composables/useCollectionBuilder'
+import { useCollectionBuilder, flattenCollections, type CollectionOption } from './composables/useCollectionBuilder'
 import ContextMenu from './components/ContextMenu.vue'
 import CollectionBuilder from './components/CollectionBuilder.vue'
 import CollectionTreeNode from './components/CollectionTreeNode.vue'
@@ -331,9 +331,9 @@ function onMemeRightClick(e: MouseEvent, meme: Meme) {
     { action: 'collection', label: '添加分组' },
   ]
   if (state.activeCollection && state.activeCollection > 0) {
-    items.push({ action: 'add-to-subgroup', label: '加入小分组' })
     items.push({ action: 'remove-collection', label: '移出该分组' })
   }
+  items.push({ action: 'add-to-subgroup', label: '加入分组' })
   if (state.activeCollection === -3) {
     items.push({ action: 'remove-recent', label: '从最近使用中删除' })
   }
@@ -354,19 +354,30 @@ function onFolderRightClick(e: MouseEvent, folderId: number, folderName: string)
   ctx.show(items, { folderId, folderName, isFolder: true }, e.clientX, e.clientY)
 }
 
-// 右键「加入小分组」子菜单：加载已有分组
-async function onShowSubmenu(_items: any[], x: number, y: number) {
-  // 只显示当前分组（正 ID）下的子分组；不在分组内时无子分组
+// 右键「加入分组」子菜单：表情上下文任意视图可用，列出全部分组树（子分组带「父/子」路径）
+// 文件夹上下文（新建子分组）保持旧行为：仅列当前分组的子分组；均走缓存的 state.collections，无桥接等待
+function onShowSubmenu(_items: any[], x: number, y: number) {
+  const trigger = ctx.trigger.value
   const targetCol = state.activeCollection && state.activeCollection > 0 ? state.activeCollection : null
-  const children = targetCol ? ((await window.pywebview?.api?.get_child_collections(targetCol)) || []) : []
   const sub: { action: string; label: string }[] = []
-  if (!targetCol) {
-    sub.push({ action: '__new-subgroup__', label: '新建分组' })
-  } else {
-    sub.push({ action: '__new-subgroup__', label: '新建小分组' })
-    for (const ch of children) {
-      sub.push({ action: 'subgroup-' + ch.id, label: ch.name })
+  if (trigger.isFolder) {
+    if (!targetCol) {
+      sub.push({ action: '__new-subgroup__', label: '新建分组' })
+    } else {
+      sub.push({ action: '__new-subgroup__', label: '新建小分组' })
+      const node = findCollectionNode(state.collections, targetCol)
+      for (const ch of node?.children || []) {
+        sub.push({ action: 'subgroup-' + ch.id, label: ch.name })
+      }
     }
+    ctx.showSubmenu(sub, x, y)
+    return
+  }
+  sub.push({ action: '__new-subgroup__', label: targetCol ? '新建小分组' : '新建分组' })
+  const opts: CollectionOption[] = []
+  flattenCollections(state.collections, '', opts)
+  for (const o of opts) {
+    sub.push({ action: 'subgroup-' + o.id, label: o.depth || o.name })
   }
   ctx.showSubmenu(sub, x, y)
 }
@@ -531,6 +542,81 @@ async function batchDelete() {
   }
   refreshCollections()
   refreshTags()
+}
+
+// 批量加入分组：CollectionBuilder 选择模式，追加语义（不覆盖已有成员）
+function batchAddToCollection() {
+  const ids = [...state.selectedIds]
+  if (ids.length === 0) return
+  cb.openPick(async (r) => {
+    let result: any
+    try {
+      result = r.existingId
+        ? await window.pywebview?.api?.batch_add_to_collection(ids, r.existingId)
+        : await window.pywebview?.api?.batch_add_to_collection(ids, 0, r.name)
+    } catch (_) {
+      showToast('加入分组失败')
+      return
+    }
+    if (result?.ok) {
+      showToast(r.existingId ? `已加入分组：${r.name}` : `已加入新分组「${r.name}」`)
+      refreshCollections()
+      search()
+    } else {
+      showToast(result?.error || '加入分组失败')
+    }
+  }, 'add', ids)
+}
+
+// 批量移动分组：从当前分组移出并加入所选分组，原分组移空且无子分组时删除
+function batchMoveToCollection() {
+  const ids = [...state.selectedIds]
+  const fromId = state.activeCollection
+  if (ids.length === 0 || !fromId || fromId <= 0) return
+  cb.openPick(async (r) => {
+    let result: any
+    try {
+      result = r.existingId
+        ? await window.pywebview?.api?.batch_move_to_collection(ids, fromId, r.existingId)
+        : await window.pywebview?.api?.batch_move_to_collection(ids, fromId, 0, r.name)
+    } catch (_) {
+      showToast('移动失败')
+      return
+    }
+    if (!result?.ok) { showToast(result?.error || '移动失败'); return }
+    showToast(`已移动 ${result.moved ?? ids.length} 个表情包`)
+    await refreshCollections()
+    const node = findCollectionNode(state.collections, fromId)
+    if (fromId > 0 && (!node || node.count === 0) && !(node?.children || []).length) {
+      const parent = findParentCollection(state.collections, fromId)
+      await window.pywebview?.api?.delete_collection(fromId)
+      setActiveCollection(parent ? parent.id : -4)
+      await refreshCollections()
+    }
+    search()
+  }, 'move', ids, fromId)
+}
+
+// 批量打标签：合并追加语义（不清空各表情已有标签）
+async function batchTag() {
+  const ids = [...state.selectedIds]
+  if (ids.length === 0) return
+  const tags = await tagEditor.value?.openBatch()
+  if (tags === null || tags.length === 0) return
+  let result: any
+  try {
+    result = await window.pywebview?.api?.batch_add_tags(ids, tags)
+  } catch (_) {
+    showToast('批量打标签失败')
+    return
+  }
+  if (result?.ok) {
+    showToast(`已为 ${result.count ?? ids.length} 个表情包添加标签`)
+    refreshTags()
+    search()
+  } else {
+    showToast('批量打标签失败')
+  }
 }
 
 // 在 collections 树中查找 target 的父分组
@@ -927,6 +1013,9 @@ onUnmounted(() => {
           <span class="count">已选 {{ state.selectedIds.size }} 项</span>
           <button class="btn btn-sm" :disabled="state.memes.length === 0" @click="selectAllVisible">全选当前页</button>
           <button class="btn btn-sm btn-secondary" :disabled="state.selectedIds.size === 0" @click="clearSelection">取消选择</button>
+          <button class="btn btn-sm" :disabled="state.selectedIds.size === 0" @click="batchAddToCollection">加入分组</button>
+          <button class="btn btn-sm" :disabled="state.selectedIds.size === 0" @click="batchTag">打标签</button>
+          <button v-if="state.activeCollection && state.activeCollection > 0" class="btn btn-sm" :disabled="state.selectedIds.size === 0" @click="batchMoveToCollection">移动到分组</button>
           <button class="btn btn-sm btn-danger" :disabled="state.selectedIds.size === 0" @click="batchDelete">批量删除</button>
         </div>
 

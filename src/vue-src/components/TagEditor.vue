@@ -12,6 +12,7 @@ const allTags = ref<string[]>([])
 const selected = ref<string[]>([])
 const query = ref('')
 const loading = ref(false)
+const batchMode = ref(false)
 const boxEl = ref<HTMLElement>()
 const inputEl = ref<HTMLInputElement>()
 
@@ -19,6 +20,7 @@ let resolveFn: ((tags: string[] | null) => void) | null = null
 
 async function open(id: number): Promise<string[] | null> {
   memeId.value = id
+  batchMode.value = false
   rememberFocus()
   visible.value = true
   loading.value = true
@@ -34,6 +36,26 @@ async function open(id: number): Promise<string[] | null> {
   } catch (_) {
     allTags.value = []
     selected.value = []
+  }
+  loading.value = false
+  await nextTick()
+  inputEl.value?.focus()
+  return new Promise(resolve => { resolveFn = resolve })
+}
+
+// 批量模式：不加载单个表情已有标签，确认后由调用方合并追加
+async function openBatch(): Promise<string[] | null> {
+  memeId.value = 0
+  batchMode.value = true
+  rememberFocus()
+  visible.value = true
+  loading.value = true
+  query.value = ''
+  selected.value = []
+  try {
+    allTags.value = (await api('get_tags')) || []
+  } catch (_) {
+    allTags.value = []
   }
   loading.value = false
   await nextTick()
@@ -80,13 +102,13 @@ function confirm() {
   close(selected.value.slice())
 }
 
-defineExpose({ open })
+defineExpose({ open, openBatch })
 </script>
 
 <template>
   <div v-if="visible" class="tag-editor-overlay" @click.self="close(null)">
     <div class="tag-editor-box" ref="boxEl" role="dialog" aria-modal="true" aria-labelledby="tag-editor-title" @keydown="onBoxKeydown">
-      <div id="tag-editor-title" class="tag-editor-title">编辑标签</div>
+      <div id="tag-editor-title" class="tag-editor-title">{{ batchMode ? '批量添加标签' : '编辑标签' }}</div>
 
       <input
         id="tag-editor-input"

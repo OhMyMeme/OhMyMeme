@@ -209,6 +209,29 @@ class TestDatabase(unittest.TestCase):
         results = self.db.search(keyword="dog")
         self.assertEqual(len(results), 2)
 
+    def test_search_keyword_matches_tag(self):
+        self.db.add_meme("img1.png", tags=["小猫"])
+        self.db.add_meme("img2.png", tags=["小狗"])
+        # 搜索词命中标签名也能搜到
+        results = self.db.search(keyword="小猫")
+        self.assertEqual(len(results), 1)
+        self.assertEqual(results[0]["filename"], "img1.png")
+        self.assertEqual(self.db.count(keyword="小狗"), 1)
+        self.assertEqual(self.db.count(keyword="不存在的标签"), 0)
+
+    def test_add_tags_to_memes_merge(self):
+        mid1 = self.db.add_meme("a.png", tags=["old"])
+        mid2 = self.db.add_meme("b.png")
+        count = self.db.add_tags_to_memes([mid1, mid2], ["new", " old "])
+        self.assertEqual(count, 2)
+        self.assertEqual(set(self.db.get_meme_tags(mid1)), {"old", "new"})
+        self.assertEqual(set(self.db.get_meme_tags(mid2)), {"old", "new"})
+        self.assertEqual(set(self.db.get_all_tags()), {"old", "new"})
+        # 空参数不产生变更
+        self.assertEqual(self.db.add_tags_to_memes([], ["x"]), 0)
+        self.assertEqual(self.db.add_tags_to_memes([mid1], []), 0)
+        self.assertEqual(self.db.add_tags_to_memes([mid1], ["  "]), 0)
+
     def test_tags(self):
         mid = self.db.add_meme("test.png", tags=["a", "b", "c"])
         tags = self.db.get_meme_tags(mid)

@@ -667,6 +667,63 @@ class JsApi:
         except Exception:
             return False
 
+    def batch_add_to_collection(
+        self, meme_ids: list, collection_id: int = 0, name: str = ""
+    ) -> dict:
+        """批量加入分组（追加语义）；collection_id<=0 时按 name 创建/复用顶层分组"""
+        ids = list(dict.fromkeys(int(x) for x in (meme_ids or [])))
+        try:
+            cid = int(collection_id or 0)
+            if cid <= 0:
+                name = (name or "").strip()
+                if not name:
+                    return {"ok": False, "error": "分组名为空"}
+                cid = self._db.create_collection(name)
+                if cid < 0:
+                    return {"ok": False}
+            for mid in ids:
+                self._db.add_to_collection(mid, cid)
+            if ids:
+                build_manifest()
+            return {"ok": True, "added": len(ids)}
+        except Exception:
+            return {"ok": False}
+
+    def batch_move_to_collection(
+        self, meme_ids: list, from_id: int, to_id: int = 0, name: str = ""
+    ) -> dict:
+        """批量从 from 分组（含子分组）移动到 to 分组；to_id<=0 时按 name 建目标"""
+        ids = list(dict.fromkeys(int(x) for x in (meme_ids or [])))
+        try:
+            cid = int(to_id or 0)
+            if cid <= 0:
+                name = (name or "").strip()
+                if not name:
+                    return {"ok": False, "error": "分组名为空"}
+                cid = self._db.create_collection(name)
+                if cid < 0:
+                    return {"ok": False}
+            # 分组视图递归展示子分组成员，移出时需从整棵子树移除才算真正"移走"
+            from_ids = self._get_collection_ids_recursive(int(from_id))
+            for mid in ids:
+                for fid in from_ids:
+                    self._db.remove_from_collection(mid, fid)
+                self._db.add_to_collection(mid, cid)
+            if ids:
+                build_manifest()
+            return {"ok": True, "moved": len(ids)}
+        except Exception:
+            return {"ok": False}
+
+    def batch_add_tags(self, meme_ids: list, tags: list) -> dict:
+        """批量合并追加标签（不清空各表情已有标签），返回 {ok, count}"""
+        try:
+            ids = list(dict.fromkeys(int(x) for x in (meme_ids or [])))
+            count = self._db.add_tags_to_memes(ids, list(tags or []))
+            return {"ok": True, "count": count}
+        except Exception:
+            return {"ok": False}
+
     def set_collection_members(self, collection_id: int, meme_ids: list) -> bool:
         """批量设置分组内成员（先清空再写入），供添加分组弹窗确定时保存右侧列表"""
         try:

@@ -264,6 +264,35 @@ class MemeDB:
             r[0] for r in conn.execute("SELECT name FROM tags ORDER BY name").fetchall()
         ]
 
+    def add_tags_to_memes(self, meme_ids: List[int], tags: List[str]) -> int:
+        """批量合并追加标签（不清空各表情已有标签），返回实际存在的表情数"""
+        names = [t.strip() for t in (tags or []) if t.strip()]
+        if not names or not meme_ids:
+            return 0
+        with self._lock:
+            conn = self._get_conn()
+            for tag in names:
+                # INSERT OR IGNORE 后 lastrowid 不可靠（同 _set_tags）
+                conn.execute("INSERT OR IGNORE INTO tags (name) VALUES (?)", (tag,))
+                row = conn.execute(
+                    "SELECT id FROM tags WHERE name=?", (tag,)
+                ).fetchone()
+                if row is None:
+                    continue
+                for mid in meme_ids:
+                    conn.execute(
+                        "INSERT OR IGNORE INTO meme_tags "
+                        "(meme_id, tag_id) VALUES (?, ?)",
+                        (mid, row[0]),
+                    )
+            conn.commit()
+            placeholders = ",".join("?" for _ in meme_ids)
+            row = conn.execute(
+                f"SELECT COUNT(*) FROM memes WHERE id IN ({placeholders})",
+                list(meme_ids),
+            ).fetchone()
+            return row[0] if row else 0
+
     # --- 收藏 ---
 
     def toggle_favorite(self, meme_id: int) -> bool:
@@ -448,9 +477,13 @@ class MemeDB:
         params = []
 
         if keyword:
-            where.append("(m.filename LIKE ? OR m.original_name LIKE ?)")
             kw = f"%{keyword}%"
-            params.extend([kw, kw])
+            where.append(
+                "(m.filename LIKE ? OR m.original_name LIKE ? OR m.id IN ("
+                "SELECT mt.meme_id FROM meme_tags mt "
+                "JOIN tags t ON t.id = mt.tag_id WHERE t.name LIKE ?))"
+            )
+            params.extend([kw, kw, kw])
 
         if tags:
             placeholders = ",".join("?" for _ in tags)
@@ -520,9 +553,13 @@ class MemeDB:
         where = ["(stego_of_hash IS NULL OR stego_of_hash = '')"]
         params = []
         if keyword:
-            where.append("(filename LIKE ? OR original_name LIKE ?)")
             kw = f"%{keyword}%"
-            params.extend([kw, kw])
+            where.append(
+                "(filename LIKE ? OR original_name LIKE ? OR memes.id IN ("
+                "SELECT mt.meme_id FROM meme_tags mt "
+                "JOIN tags t ON t.id = mt.tag_id WHERE t.name LIKE ?))"
+            )
+            params.extend([kw, kw, kw])
         if tags:
             placeholders = ",".join("?" for _ in tags)
             where.append(f"""id IN (
