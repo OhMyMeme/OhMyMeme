@@ -58,6 +58,7 @@ from ohmymeme.integrations.platform.clipboard import (  # noqa: F401
 )
 
 from .api import qqnt as qqnt_handler
+from .api.context import BridgeContext
 from .api.handlers import create_handlers
 from .bottle_app import install_security_hooks
 from .import_workers import import_paths
@@ -210,6 +211,24 @@ def _find_hotkey_window_position(cursor, work_area, width, height):
     return None
 
 
+def _bridge_context():
+    """Bind legacy module seams explicitly for bridge handlers."""
+    return BridgeContext(
+        lambda: globals()["webview"],
+        lambda path, size: convert_image_mode_1(path, size),
+        lambda path, size: convert_image_mode_2(path, size),
+        lambda path, size: convert_image_mode_3(path, size),
+        lambda path: copy_image_to_clipboard(path),
+        _strip_url_modifiers,
+        _check_connectivity,
+        start_qqnt_extract,
+        get_qqnt_progress,
+        cancel_qqnt_extract,
+        _LOG_LOCK,
+        _LOG_BUFFER,
+    )
+
+
 class JsApi:
     """暴露给前端的 JS API"""
 
@@ -220,7 +239,9 @@ class JsApi:
         self._catalog = catalog
         self._settings = settings
         self._library = library
-        self._handlers = create_handlers(webui, catalog, settings, library)
+        self._handlers = create_handlers(
+            webui, catalog, settings, library, _bridge_context()
+        )
 
     def search_memes(
         self, keyword="", tags=None, collection_id=None, offset=0, limit=200
@@ -542,7 +563,11 @@ class SettingsApi:
         self._settings = settings
         self._library = webui._container.library
         self._handlers = create_handlers(
-            webui, getattr(webui._container, "catalog", None), settings, self._library
+            webui,
+            getattr(webui._container, "catalog", None),
+            settings,
+            self._library,
+            _bridge_context(),
         )
 
     def check_connectivity(self) -> dict:

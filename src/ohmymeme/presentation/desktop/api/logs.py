@@ -3,17 +3,15 @@
 import logging
 
 
-def export_logs(webui):
-    from .. import window_manager
-
+def export_logs(webui, context, log_lock, log_buffer):
     window = webui._settings_window or (
-        window_manager.webview.windows[0] if window_manager.webview.windows else None
+        context.webview().windows[0] if context.webview().windows else None
     )
     if not window:
         return {"ok": False, "error": "no window"}
     try:
         result = window.create_file_dialog(
-            window_manager.webview.FileDialog.SAVE,
+            context.webview().FileDialog.SAVE,
             allow_multiple=False,
             save_filename="OhMyMeme-logs.txt",
             file_types=("文本文件 (*.txt)",),
@@ -26,8 +24,8 @@ def export_logs(webui):
     destination = result[0] if isinstance(result, (tuple, list)) else result
     if not destination.lower().endswith(".txt"):
         destination += ".txt"
-    with window_manager._LOG_LOCK:
-        lines = list(window_manager._LOG_BUFFER)
+    with log_lock:
+        lines = list(log_buffer)
     if not lines:
         return {"ok": False, "error": "no logs"}
     try:

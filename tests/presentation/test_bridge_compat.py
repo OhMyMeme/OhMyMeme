@@ -725,6 +725,18 @@ def test_desktop_facades_leave_domain_bodies_in_named_handlers():
         )
     )
 
+    # Handler modules must receive platform seams explicitly, never import façades.
+    api_root = root / "src/ohmymeme/presentation/desktop/api"
+    for path in (
+        api_root / "handlers.py",
+        api_root / "settings_imports.py",
+        api_root / "logs.py",
+    ):
+        source = path.read_text(encoding="utf-8")
+        assert "window_manager" not in source
+        assert "JsApi" not in source
+        assert "SettingsApi" not in source
+
     # When: the façade classes and handler declarations are inspected structurally.
     facade_classes = {
         node.name: node

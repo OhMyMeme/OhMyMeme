@@ -6,9 +6,10 @@ import platform
 class MemeHandler:
     """Owns references used by meme and collection bridge operations."""
 
-    def __init__(self, catalog, library):
+    def __init__(self, catalog, library, context):
         self.catalog = catalog
         self.library = library
+        self.context = context
 
     def search_memes(
         self, keyword="", tags=None, collection_id=None, offset=0, limit=200
@@ -60,18 +61,16 @@ class MemeHandler:
         path = self.catalog.get_meme_path(meme_id)
         if not path:
             return {"ok": False, "status": "copy_failed"}
-        from .. import window_manager
-
         resize_mode = int(config.get("copy_resize_mode", 1) or 0)
         resize_max = int(config.get("copy_resize_max", 200) or 200)
         match resize_mode:
             case 1:
-                path = window_manager.convert_image_mode_1(path, resize_max) or path
+                path = self.context.copy_mode_1(path, resize_max) or path
             case 2:
-                path = window_manager.convert_image_mode_2(path, resize_max) or path
+                path = self.context.copy_mode_2(path, resize_max) or path
             case 3:
-                path = window_manager.convert_image_mode_3(path, resize_max) or path
-        if not window_manager.copy_image_to_clipboard(path):
+                path = self.context.copy_mode_3(path, resize_max) or path
+        if not self.context.copy_image(path):
             return {"ok": False, "status": "copy_failed"}
         if config.get("record_recent_use", True):
             try:
@@ -245,18 +244,17 @@ class MemeHandler:
 class ImportHandler:
     """Owns the application import boundary for bridge import operations."""
 
-    def __init__(self, library, job_manager, catalog=None):
+    def __init__(self, library, job_manager, catalog=None, context=None):
         self.library = library
         self.job_manager = job_manager
         self.catalog = catalog
+        self.context = context
 
     def import_paths(self, paths, names=None):
         return self.library.import_paths(paths, names)
 
     def import_memes(self):
-        from .. import window_manager
-
-        webview = window_manager.webview
+        webview = self.context.webview()
 
         try:
             result = webview.windows[0].create_file_dialog(
@@ -375,8 +373,6 @@ class ImportHandler:
         from urllib.parse import urlparse
         from urllib.request import urlopen
 
-        from .. import window_manager
-
         source = url.strip()
         local_path = None
         if source.startswith("file://"):
@@ -403,10 +399,10 @@ class ImportHandler:
                     "error": "文件超过大小/分辨率限制，已跳过",
                 }
             return {"ok": False, "error": "导入失败"}
-        clean_url = window_manager._strip_url_modifiers(source)
+        clean_url = self.context.strip_url(source)
         if not config.get("try_original_image", False):
             return {"ok": False, "error": "功能未启用"}
-        if not window_manager._check_connectivity()["ok"]:
+        if not self.context.connectivity()["ok"]:
             return {"ok": False, "error": "无网络连接"}
         parsed_path = urlparse(clean_url).path
         ext = os.path.splitext(parsed_path)[1].lower()
@@ -587,13 +583,14 @@ class UpdateHandler:
 class WindowSettingsHandler:
     """Owns shared settings dependencies without constructing a second graph."""
 
-    def __init__(self, webui, settings):
+    def __init__(self, webui, settings, context):
         from .settings_imports import SettingsImportHandler
 
         self.webui = webui
         self.settings = settings
         self.config = webui._cfg
-        self.imports = SettingsImportHandler(webui)
+        self.imports = SettingsImportHandler(webui, context)
+        self.context = context
 
     def get_settings(self):
         return self.settings.get_settings()
@@ -768,7 +765,12 @@ class WindowSettingsHandler:
     def export_logs(self):
         from .logs import export_logs
 
-        return export_logs(self.webui)
+        return export_logs(
+            self.webui,
+            self.context,
+            self.context.log_lock,
+            self.context.log_buffer,
+        )
 
     def cancel_qq_import(self):
         return self.imports.cancel_qq_import()
@@ -834,17 +836,18 @@ class WindowSettingsHandler:
         return self.imports.qqnt_open_dir(path)
 
 
-def create_handlers(webui, catalog, settings, library):
+def create_handlers(webui, catalog, settings, library, context=None):
     """Create the domain handlers for one WebUI Container graph."""
     container = webui._container
     return {
-        "meme": MemeHandler(catalog, library),
+        "meme": MemeHandler(catalog, library, context),
         "import": ImportHandler(
             library,
             getattr(container, "job_manager", None),
             catalog,
+            context,
         ),
         "sync": SyncHandler(container),
         "update": UpdateHandler(webui),
-        "window_settings": WindowSettingsHandler(webui, settings),
+        "window_settings": WindowSettingsHandler(webui, settings, context),
     }

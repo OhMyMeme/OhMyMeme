@@ -5,17 +5,16 @@ import shutil
 
 from ohmymeme.integrations.imports import adb_qq, telegram
 
-from .. import window_manager
-
 
 class SettingsImportHandler:
     """Owns settings-window importer orchestration for one WebUI graph."""
 
-    def __init__(self, webui):
+    def __init__(self, webui, context):
         self.webui = webui
         self.config = webui._cfg
         self.library = webui._container.library
         self.job_manager = getattr(webui._container, "job_manager", None)
+        self.context = context
 
     def start_qq_import(self):
         started = adb_qq.start_qq_import(self.job_manager)
@@ -29,10 +28,14 @@ class SettingsImportHandler:
         if state["status"] != "done" or not state["zip_path"]:
             return {"ok": False, "error": "no zip ready"}
         try:
-            result = window_manager.webview.windows[0].create_file_dialog(
-                window_manager.webview.FileDialog.SAVE,
-                allow_multiple=False,
-                file_types=("ZIP 文件 (*.zip)",),
+            result = (
+                self.context.webview()
+                .windows[0]
+                .create_file_dialog(
+                    self.context.webview().FileDialog.SAVE,
+                    allow_multiple=False,
+                    file_types=("ZIP 文件 (*.zip)",),
+                )
             )
         except Exception:
             return {"ok": False, "error": "dialog failed"}
@@ -68,8 +71,12 @@ class SettingsImportHandler:
 
     def pick_tg_tdata(self):
         try:
-            result = window_manager.webview.windows[0].create_file_dialog(
-                window_manager.webview.FileDialog.FOLDER, allow_multiple=False
+            result = (
+                self.context.webview()
+                .windows[0]
+                .create_file_dialog(
+                    self.context.webview().FileDialog.FOLDER, allow_multiple=False
+                )
             )
         except Exception:
             return {"ok": False, "error": "无法打开目录选择对话框"}
@@ -130,8 +137,12 @@ class SettingsImportHandler:
 
     def pick_wechat_root(self):
         try:
-            result = window_manager.webview.windows[0].create_file_dialog(
-                window_manager.webview.FileDialog.FOLDER, allow_multiple=False
+            result = (
+                self.context.webview()
+                .windows[0]
+                .create_file_dialog(
+                    self.context.webview().FileDialog.FOLDER, allow_multiple=False
+                )
             )
         except Exception:
             return {"ok": False, "error": "无法打开目录选择对话框"}
@@ -178,10 +189,14 @@ class SettingsImportHandler:
 
     def qqnt_pick_ini(self):
         try:
-            result = window_manager.webview.windows[0].create_file_dialog(
-                window_manager.webview.FileDialog.OPEN,
-                allow_multiple=False,
-                file_types=("INI Files (*.ini);;All Files (*)",),
+            result = (
+                self.context.webview()
+                .windows[0]
+                .create_file_dialog(
+                    self.context.webview().FileDialog.OPEN,
+                    allow_multiple=False,
+                    file_types=("INI Files (*.ini);;All Files (*)",),
+                )
             )
         except Exception:
             return {"ok": False}
@@ -191,12 +206,16 @@ class SettingsImportHandler:
         self.config.set("qqnt_ini_path", path)
         self.config.set("qqnt_userdata_path", "")
         self.config.save()
-        return self.webui._settings_api.qqnt_check_env()
+        return self._qqnt_check_env()
 
     def qqnt_pick_userdata(self):
         try:
-            result = window_manager.webview.windows[0].create_file_dialog(
-                window_manager.webview.FileDialog.FOLDER, allow_multiple=False
+            result = (
+                self.context.webview()
+                .windows[0]
+                .create_file_dialog(
+                    self.context.webview().FileDialog.FOLDER, allow_multiple=False
+                )
             )
         except Exception:
             return {"ok": False}
@@ -205,12 +224,16 @@ class SettingsImportHandler:
         path = result[0] if isinstance(result, (tuple, list)) else result
         self.config.set("qqnt_userdata_path", path)
         self.config.save()
-        return self.webui._settings_api.qqnt_check_env()
+        return self._qqnt_check_env()
 
     def qqnt_pick_base(self):
         try:
-            result = window_manager.webview.windows[0].create_file_dialog(
-                window_manager.webview.FileDialog.FOLDER, allow_multiple=False
+            result = (
+                self.context.webview()
+                .windows[0]
+                .create_file_dialog(
+                    self.context.webview().FileDialog.FOLDER, allow_multiple=False
+                )
             )
         except Exception:
             return {"ok": False}
@@ -220,9 +243,7 @@ class SettingsImportHandler:
         return {"ok": True, "base": path}
 
     def qqnt_start(self, qq_number, output_dir, image_only=False, overwrite=False):
-        from .. import window_manager
-
-        ok = window_manager.start_qqnt_extract(
+        ok = self.context.qqnt_start(
             qq_number,
             output_dir,
             image_only=image_only,
@@ -235,14 +256,19 @@ class SettingsImportHandler:
         return {"ok": ok}
 
     def qqnt_get_progress(self):
-        from .. import window_manager
-
-        return window_manager.get_qqnt_progress()
+        return self.context.qqnt_progress()
 
     def qqnt_cancel(self):
-        from .. import window_manager
+        return self.context.qqnt_cancel()
 
-        window_manager.cancel_qqnt_extract()
+    def _qqnt_check_env(self):
+        from ohmymeme.integrations.imports import qqnt
+
+        return qqnt.get_extract_status(
+            ini_path=self.config.get("qqnt_ini_path") or qqnt.DEFAULT_INI_PATH,
+            userdata_save_path=self.config.get("qqnt_userdata_path") or None,
+            fetch_nicknames=True,
+        )
 
     def qqnt_open_dir(self, path):
         import platform
