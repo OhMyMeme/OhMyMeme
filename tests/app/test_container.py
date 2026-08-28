@@ -3,10 +3,12 @@ import json
 import threading
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 from PIL import Image
 
+from ohmymeme.app.catalog import Catalog
 from ohmymeme.app.container import Container
 from ohmymeme.core.config import Config
 from ohmymeme.core.crypto import encrypt_data
@@ -42,10 +44,100 @@ class _JobRecorder:
         return False
 
 
+class _CatalogQueryDb:
+    def __init__(self):
+        self.search_calls = []
+        self.count_calls = []
+        self.recent_calls = []
+        self.children = {10: [{"id": 11}], 11: [{"id": 12}], 12: []}
+        self.rows = [{"id": 1, "filename": "one.png"}]
+
+    def search(
+        self,
+        keyword="",
+        tags=None,
+        collection_id=None,
+        favorite_only=False,
+        uncategorized_only=False,
+        offset=0,
+        limit=100,
+    ):
+        self.search_calls.append(
+            (
+                keyword,
+                tags,
+                collection_id,
+                favorite_only,
+                uncategorized_only,
+                offset,
+                limit,
+            )
+        )
+        return list(self.rows)
+
+    def count(
+        self,
+        keyword="",
+        tags=None,
+        collection_id=None,
+        favorite_only=False,
+        uncategorized_only=False,
+    ):
+        self.count_calls.append(
+            (
+                keyword,
+                tags,
+                collection_id,
+                favorite_only,
+                uncategorized_only,
+            )
+        )
+        return len(self.rows)
+
+    def get_recent(self, limit=50, offset=0):
+        self.recent_calls.append((limit, offset))
+        return list(self.rows)
+
+    def count_recent(self):
+        return len(self.rows)
+
+    def get_child_collections(self, parent_id):
+        return self.children.get(parent_id, [])
+
+
+class _CatalogLibrary:
+    def is_favorite(self, _meme_id):
+        return False
+
+
 def _png_bytes():
     buffer = io.BytesIO()
     Image.new("RGBA", (1, 1), (255, 0, 0, 255)).save(buffer, "PNG")
     return buffer.getvalue()
+
+
+def test_catalog_fake_requires_and_records_explicit_query_contract():
+    db = _CatalogQueryDb()
+    catalog = Catalog(
+        SimpleNamespace(get=lambda _key, default=None: default),
+        db,
+        lambda: None,
+        library=_CatalogLibrary(),
+    )
+
+    catalog.search_memes(
+        keyword="needle", tags=["a", "b"], collection_id=10, offset=4, limit=2
+    )
+    catalog.search_memes(collection_id=-2)
+    catalog.count_memes(keyword="needle", tags=["a", "b"], collection_id=-2)
+    catalog.search_memes(collection_id=-3, offset=7, limit=3)
+
+    assert db.search_calls == [
+        ("needle", ["a", "b"], [10, 11, 12], False, False, 4, 2),
+        ("", None, None, True, False, 0, 200),
+    ]
+    assert db.count_calls == [("needle", ["a", "b"], None, True, False)]
+    assert db.recent_calls == [(3, 7)]
 
 
 def test_container_thumbnail_generation_creates_clean_root_directory(tmp_path):

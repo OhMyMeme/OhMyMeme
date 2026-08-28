@@ -12,6 +12,7 @@
 """
 
 import hashlib
+import inspect
 import io
 import json
 import shutil
@@ -43,6 +44,23 @@ from ohmymeme.services.sync.service import (
 
 
 class TestSyncJobAdapter(unittest.TestCase):
+    def test_fake_db_search_exposes_explicit_catalog_query_contract(self):
+        parameters = tuple(inspect.signature(_FakeDb.search).parameters)
+
+        self.assertEqual(
+            parameters,
+            (
+                "self",
+                "keyword",
+                "tags",
+                "collection_id",
+                "favorite_only",
+                "uncategorized_only",
+                "offset",
+                "limit",
+            ),
+        )
+
     def test_legacy_facade_without_resources_keeps_singleton_metadata_callback(self):
         root = Path(tempfile.mkdtemp())
         self.addCleanup(shutil.rmtree, root, ignore_errors=True)
@@ -58,6 +76,33 @@ class TestSyncJobAdapter(unittest.TestCase):
         with patch.object(sync, "get_db", return_value=db) as get_db:
             self.assertIsNone(library._legacy_metadata({"version": 3, "memes": []}))
         get_db.assert_called_once_with()
+
+    def test_manifest_fake_records_complete_search_contract(self):
+        fake_db = _FakeDb()
+        cache_dir = Path(tempfile.mkdtemp())
+        self.addCleanup(shutil.rmtree, cache_dir, ignore_errors=True)
+        assets = type(
+            "Assets",
+            (),
+            {"cache_dir": cache_dir, "manifest_path": cache_dir / INDEX_FILENAME},
+        )()
+
+        from ohmymeme.core.manifest import _build
+
+        _build(fake_db, assets)
+
+        self.assertEqual(
+            fake_db.search_calls[0],
+            {
+                "keyword": "",
+                "tags": None,
+                "collection_id": None,
+                "favorite_only": False,
+                "uncategorized_only": False,
+                "offset": 0,
+                "limit": 999999,
+            },
+        )
 
     def test_pull_library_none_builds_from_explicit_resources(self):
         class Config:
@@ -456,8 +501,29 @@ class _FakeDb:
         self.order = []  # reorder_memes 记录的 id 顺序
         self.collections = []
         self.deleted_collections = []
+        self.search_calls = []
 
-    def search(self, keyword="", tags=None, limit=999999, collection_id=None):
+    def search(
+        self,
+        keyword="",
+        tags=None,
+        collection_id=None,
+        favorite_only=False,
+        uncategorized_only=False,
+        offset=0,
+        limit=100,
+    ):
+        self.search_calls.append(
+            {
+                "keyword": keyword,
+                "tags": tags,
+                "collection_id": collection_id,
+                "favorite_only": favorite_only,
+                "uncategorized_only": uncategorized_only,
+                "offset": offset,
+                "limit": limit,
+            }
+        )
         return list(self.rows)
 
     def get_collections(self):
