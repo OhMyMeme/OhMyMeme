@@ -1054,56 +1054,6 @@ class SettingsApi:
 
     def get_settings(self) -> dict:
         return self._settings.get_settings()
-        d = self._cfg.to_dict()
-        from ohmymeme.integrations.platform.system import is_auto_start_enabled
-
-        return {
-            "hotkey": d.get("hotkey", "Ctrl+Alt+N"),
-            "hotkey_show_at_mouse": d.get("hotkey_show_at_mouse", False),
-            "auto_play_gif": d.get("auto_play_gif", True),
-            "try_original_image": d.get("try_original_image", False),
-            "copy_resize_mode": int(d.get("copy_resize_mode", 1) or 0),
-            "cache_dir": str(self._cfg.cache_dir),
-            "lan_port": d.get("lan_port", 17852),
-            "lan_secret": d.get("lan_secret", ""),
-            "auto_start": is_auto_start_enabled(),
-            "silent_start": d.get("silent_start", False),
-            "sync_auto_fetch_index": d.get("sync_auto_fetch_index", False),
-            "sync_auto_sync": d.get("sync_auto_sync", False),
-            "sync_type": d.get("sync_type", ""),
-            "sync_delete_remote": d.get("sync_delete_remote", False),
-            "sync_remove_local": d.get("sync_remove_local", False),
-            "sync_hide_upload_warning": d.get("sync_hide_upload_warning", False),
-            "ftp_host": d.get("ftp_host", ""),
-            "ftp_port": d.get("ftp_port", 21),
-            "ftp_user": d.get("ftp_user", ""),
-            "ftp_password": d.get("ftp_password", ""),
-            "ftp_path": d.get("ftp_path", "/"),
-            "s3_endpoint": d.get("s3_endpoint", ""),
-            "s3_region": d.get("s3_region", ""),
-            "s3_bucket": d.get("s3_bucket", ""),
-            "s3_access_key": d.get("s3_access_key", ""),
-            "s3_secret_key": d.get("s3_secret_key", ""),
-            "s3_path": d.get("s3_path", ""),
-            "r2_account_id": d.get("r2_account_id", ""),
-            "r2_access_key_id": d.get("r2_access_key_id", ""),
-            "r2_secret_access_key": d.get("r2_secret_access_key", ""),
-            "r2_bucket": d.get("r2_bucket", ""),
-            "r2_path": d.get("r2_path", ""),
-            "webdav_url": d.get("webdav_url", ""),
-            "webdav_user": d.get("webdav_user", ""),
-            "webdav_password": d.get("webdav_password", ""),
-            "webdav_path": d.get("webdav_path", ""),
-            "show_upload_progress": d.get("show_upload_progress", True),
-            "show_upload_done": d.get("show_upload_done", True),
-            "show_download_progress": d.get("show_download_progress", True),
-            "show_download_done": d.get("show_download_done", True),
-            "show_uncategorized": d.get("show_uncategorized", True),
-            "record_recent_use": d.get("record_recent_use", True),
-            "show_startup_animation": d.get("show_startup_animation", True),
-            "tg_tdata_path": d.get("tg_tdata_path", ""),
-            "hover_to_play": d.get("hover_to_play", False),
-        }
 
     def _safe_refresh(self, js_function: str) -> dict:
         """执行前端刷新函数，并在异常时记录日志"""
@@ -1130,83 +1080,11 @@ class SettingsApi:
         hotkey = self._settings.save_settings(settings)
         if hotkey:
             self._webui._on_hotkey_change(hotkey)
-        return
-        if isinstance(settings, dict):
-            if "auto_start" in settings:
-                from ohmymeme.integrations.platform.system import set_auto_start
-
-                set_auto_start(settings["auto_start"])
-            self._cfg.update_from_dict(settings)
-            self._cfg.save()
-            if "hotkey" in settings:
-                self._webui._on_hotkey_change(settings["hotkey"])
-            try:
-                if len(webview.windows) > 0:
-                    webview.windows[0].evaluate_js("refreshMemes();")
-            except Exception:
-                pass
 
     def reset_settings(self) -> dict:
         result = self._settings.reset_settings()
         self._webui._on_hotkey_change(result["hotkey"])
         return result
-        prev_cache_dir = self._cfg.get("cache_dir", "")
-        self._cfg.reset()
-        if prev_cache_dir:
-            self._cfg.set("cache_dir", prev_cache_dir)
-        self._cfg.save()
-        hotkey = self._cfg.get("hotkey", "Ctrl+Alt+N")
-        self._webui._on_hotkey_change(hotkey)
-        from ohmymeme.integrations.platform.system import set_auto_start
-
-        set_auto_start(False)
-        try:
-            if len(webview.windows) > 0:
-                webview.windows[0].evaluate_js("refreshMemes();")
-        except Exception:
-            pass
-        return {
-            "hotkey": hotkey,
-            "hotkey_show_at_mouse": self._cfg.get("hotkey_show_at_mouse", False),
-            "auto_play_gif": self._cfg.get("auto_play_gif", True),
-            "copy_resize_mode": self._cfg.get("copy_resize_mode", 1),
-            "auto_start": False,
-            "silent_start": False,
-            "sync_auto_fetch_index": False,
-            "sync_auto_sync": False,
-            "sync_type": "",
-            "sync_delete_remote": False,
-            "sync_remove_local": False,
-            "sync_hide_upload_warning": False,
-            "ftp_host": "",
-            "ftp_port": 21,
-            "ftp_user": "",
-            "ftp_password": "",
-            "ftp_path": "/",
-            "s3_endpoint": "",
-            "s3_region": "",
-            "s3_bucket": "",
-            "s3_access_key": "",
-            "s3_secret_key": "",
-            "s3_path": "",
-            "r2_account_id": "",
-            "r2_access_key_id": "",
-            "r2_secret_access_key": "",
-            "r2_bucket": "",
-            "r2_path": "",
-            "webdav_url": "",
-            "webdav_user": "",
-            "webdav_password": "",
-            "webdav_path": "",
-            "show_upload_progress": True,
-            "show_upload_done": True,
-            "show_download_progress": True,
-            "show_download_done": True,
-            "record_recent_use": True,
-            "show_startup_animation": True,
-            "tg_tdata_path": self._cfg.get("tg_tdata_path", ""),
-            "hover_to_play": self._cfg.get("hover_to_play", False),
-        }
 
     def move_window(self, dx: int, dy: int):
         w = self._webui._settings_window
