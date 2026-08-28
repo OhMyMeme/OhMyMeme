@@ -951,6 +951,36 @@ def test_vue_main_window_feature_layout_static_contract():
     assert raw_bridge_users == [bridge]
 
 
+def test_frontend_source_outputs_and_legacy_fallback_static_contract():
+    root = Path(__file__).resolve().parent.parent
+    settings_source = (
+        root / "src" / "ohmymeme" / "presentation" / "frontend" / "settings"
+    )
+    entry = (settings_source / "entry.mjs").read_text(encoding="utf-8")
+    module_names = re.findall(r'"([^\"]+\.js)"', entry)
+    expected_output = "\n".join(
+        (settings_source / module_name).read_text(encoding="utf-8")
+        for module_name in module_names
+    )
+    settings_output = (root / "src" / "webui" / "settings.js").read_text(
+        encoding="utf-8"
+    )
+    build_script = (root / "scripts" / "build_settings.mjs").read_text(encoding="utf-8")
+    package = (root / "package.json").read_text(encoding="utf-8")
+    window_manager = (
+        root / "src" / "ohmymeme" / "presentation" / "desktop" / "window_manager.py"
+    ).read_text(encoding="utf-8")
+
+    assert module_names
+    assert settings_output == expected_output
+    assert '"src/webui/settings.js"' in build_script
+    assert "settingsModules.map" in build_script
+    assert "writeFile(runtimeEntry, sources.join" in build_script
+    assert '"build": "node scripts/build_settings.mjs && vite build"' in package
+    assert '"dist" / "ohmymeme.js"' in window_manager
+    assert 'bottle.static_file("index.html"' in window_manager
+
+
 def test_sorting_visual_feedback_static_contract():
     root = Path(__file__).resolve().parent.parent
     index_js = (root / "src" / "webui" / "index.js").read_text(encoding="utf-8")
