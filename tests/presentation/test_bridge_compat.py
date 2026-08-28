@@ -719,19 +719,34 @@ def test_desktop_facades_leave_domain_bodies_in_named_handlers():
             encoding="utf-8"
         )
     )
-    handler_tree = ast.parse(
-        (root / "src/ohmymeme/presentation/desktop/api/handlers.py").read_text(
-            encoding="utf-8"
+    domain_trees = {
+        name: ast.parse(
+            (root / "src/ohmymeme/presentation/desktop/api" / filename).read_text(
+                encoding="utf-8"
+            )
         )
-    )
+        for name, filename in {
+            "MemeHandler": "meme_handler.py",
+            "ImportHandler": "import_handler.py",
+            "SyncHandler": "sync_handler.py",
+            "UpdateHandler": "update_handler.py",
+            "WindowSettingsHandler": "window_settings_handler.py",
+        }.items()
+    }
 
     # Handler modules must receive platform seams explicitly, never import façades.
     api_root = root / "src/ohmymeme/presentation/desktop/api"
-    for path in (
+    domain_paths = (
         api_root / "handlers.py",
         api_root / "settings_imports.py",
         api_root / "logs.py",
-    ):
+        api_root / "meme_handler.py",
+        api_root / "import_handler.py",
+        api_root / "sync_handler.py",
+        api_root / "update_handler.py",
+        api_root / "window_settings_handler.py",
+    )
+    for path in domain_paths:
         source = path.read_text(encoding="utf-8")
         assert "window_manager" not in source
         assert "JsApi" not in source
@@ -745,7 +760,8 @@ def test_desktop_facades_leave_domain_bodies_in_named_handlers():
     }
     handler_classes = {
         node.name: node
-        for node in handler_tree.body
+        for tree in domain_trees.values()
+        for node in tree.body
         if isinstance(node, ast.ClassDef)
         and node.name
         in {
@@ -771,17 +787,42 @@ def test_desktop_facades_leave_domain_bodies_in_named_handlers():
         "UpdateHandler",
         "WindowSettingsHandler",
     }
+    assert not any(
+        isinstance(node, ast.ClassDef) and node.name.endswith("Handler")
+        for node in ast.walk(
+            ast.parse((api_root / "handlers.py").read_text(encoding="utf-8"))
+        )
+    )
+    for facade in facade_classes.values():
+        for method in facade.body:
+            if not isinstance(method, ast.FunctionDef) or method.name == "__init__":
+                continue
+            statements = [
+                statement
+                for statement in method.body
+                if not isinstance(statement, ast.Expr)
+                or not isinstance(statement.value, ast.Constant)
+                or not isinstance(statement.value.value, str)
+            ]
+            assert len(statements) <= 4
     assert any(
         isinstance(node, ast.Call)
         and isinstance(node.func, ast.Attribute)
         and node.func.attr == "start_tg_import"
-        for node in ast.walk(handler_tree)
+        for tree in domain_trees.values()
+        for node in ast.walk(tree)
     )
     assert any(
         isinstance(node, ast.Call)
         and isinstance(node.func, ast.Attribute)
         and node.func.attr == "create_file_dialog"
-        for node in ast.walk(
-            ast.Module(body=list(handler_classes.values()), type_ignores=[])
-        )
+        for tree in domain_trees.values()
+        for node in ast.walk(tree)
+    )
+    assert not any(
+        isinstance(node, ast.ImportFrom)
+        and node.module
+        and ("window_manager" in node.module or "handlers" in node.module)
+        for tree in domain_trees.values()
+        for node in ast.walk(tree)
     )
