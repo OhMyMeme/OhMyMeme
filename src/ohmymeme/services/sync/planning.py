@@ -44,7 +44,7 @@ def _safe_remote_fname(name: str) -> bool:
 
 def _fetch_remote_memes(bk, remote_root, config=None):
     """下载远端 manifest 并返回 {filename: entry} 字典（无 manifest 返回 {}）"""
-    cfg = config if config is not None else get_config()
+    cfg = config or get_config()
     remote_path = remote_root.rstrip("/") + "/" + REMOTE_INDEX
     if not bk.file_exists(remote_path):
         return {}
@@ -73,7 +73,7 @@ def _fetch_remote_memes(bk, remote_root, config=None):
 
 
 def _apply_remote_collections(remote_data: dict, db=None):
-    db = db if db is not None else get_db()
+    db = db or get_db()
     for rc in remote_data.get("collections", []):
         cname = rc["name"]
         cid = db.create_collection(cname)
@@ -87,7 +87,7 @@ def _apply_remote_collections(remote_data: dict, db=None):
 
 def _apply_remote_order(remote_data: dict, db=None):
     """按远端 manifest 的 memes 顺序更新本地 sort_order，保留云端排序"""
-    db = db if db is not None else get_db()
+    db = db or get_db()
     ordered_ids = []
     for m in remote_data.get("memes", []):
         if not isinstance(m, dict):
@@ -103,7 +103,7 @@ def _apply_remote_order(remote_data: dict, db=None):
 
 
 def _apply_remote_metadata(remote_data: dict, db=None):
-    (db if db is not None else get_db()).apply_remote_metadata(remote_data)
+    (db or get_db()).apply_remote_metadata(remote_data)
 
 
 def list_remote_orphans(bk, remote_root, config=None) -> list:
