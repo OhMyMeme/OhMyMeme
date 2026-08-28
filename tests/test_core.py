@@ -278,6 +278,22 @@ class TestDatabase(unittest.TestCase):
         self.assertEqual(len(self.db.search(collection_id=target)), 2)
         self.assertEqual(len(self.db.search(collection_id=other)), 1)
 
+    def test_move_cascades_empty_group_cleanup(self):
+        mid1 = self.db.add_meme("a.png")
+        mid2 = self.db.add_meme("b.png")
+        parent = self.db.create_collection("p")
+        child = self.db.create_collection("c", parent_id=parent)
+        keep = self.db.create_collection("keep")  # 源子树外的空分组
+        target = self.db.create_collection("t")
+        self.db.add_to_collection(mid1, child)
+        self.db.add_to_collection(mid2, parent)
+
+        moved = self.db.move_memes_to_collection([mid1, mid2], [parent, child], target)
+        self.assertEqual(moved, 2)
+        # 源子树内 child 先空、parent 后空，级联清理；子树外的空分组保留
+        ids = {c[0] for c in self.db.get_collections()}
+        self.assertEqual(ids, {target, keep})
+
     def test_move_memes_to_collection_batch(self):
         mid1 = self.db.add_meme("a.png")
         mid2 = self.db.add_meme("b.png")  # 仅属于子分组

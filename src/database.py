@@ -454,6 +454,21 @@ class MemeDB:
                         (mid, to_id),
                     )
                     moved += max(cur.rowcount, 0)
+                # 级联清理源子树内变空的分组：只删无成员且无子分组的叶子空组，
+                # 逐层迭代直到无删除（支持子组先空、父组后空）；仅限 from_ids 范围，
+                # 子树外分组不受影响
+                while True:
+                    deleted = conn.execute(
+                        f"DELETE FROM collections WHERE id IN ({ph_from}) "
+                        "AND id NOT IN ("
+                        "SELECT DISTINCT collection_id FROM meme_collections) "
+                        "AND id NOT IN ("
+                        "SELECT DISTINCT parent_id FROM collections "
+                        "WHERE parent_id IS NOT NULL)",
+                        froms,
+                    ).rowcount
+                    if deleted == 0:
+                        break
                 conn.commit()
                 return moved
             except Exception:
