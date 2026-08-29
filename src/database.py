@@ -7,6 +7,56 @@ from typing import List, Optional, Tuple
 
 from .config import get_config
 
+# 备份恢复候选库预校验所需的表与列（backup.prepare_restore_source 使用）
+_RESTORE_REQUIRED_TABLES = (
+    "memes",
+    "tags",
+    "meme_tags",
+    "collections",
+    "meme_collections",
+    "favorites",
+    "recent_uses",
+)
+# 恢复候选库必需的外键定义：(子表列, 父表, 父表列, ON DELETE 行为)，
+# 缺失会导致恢复后级联删除失效、产生孤儿记录
+_RESTORE_REQUIRED_FOREIGN_KEYS = {
+    "meme_tags": {
+        ("meme_id", "memes", "id", "CASCADE"),
+        ("tag_id", "tags", "id", "CASCADE"),
+    },
+    "meme_collections": {
+        ("meme_id", "memes", "id", "CASCADE"),
+        ("collection_id", "collections", "id", "CASCADE"),
+    },
+    "favorites": {("meme_id", "memes", "id", "CASCADE")},
+    "recent_uses": {("meme_id", "memes", "id", "CASCADE")},
+    "collections": {("parent_id", "collections", "id", "CASCADE")},
+}
+_RESTORE_REQUIRED_COLUMNS = {
+    "memes": {
+        "id",
+        "filename",
+        "file_hash",
+        "original_name",
+        "width",
+        "height",
+        "file_size",
+        "mime_type",
+        "sort_order",
+        "stego_of_hash",
+        "from_stego",
+        "perceptual_hash",
+        "created_at",
+        "updated_at",
+    },
+    "tags": {"id", "name"},
+    "meme_tags": {"meme_id", "tag_id"},
+    "collections": {"id", "name", "parent_id", "sort_order"},
+    "meme_collections": {"meme_id", "collection_id", "sort_order"},
+    "favorites": {"meme_id", "added_at"},
+    "recent_uses": {"meme_id", "used_at"},
+}
+
 
 class MemeDB:
     """SQLite元数据存储，线程安全"""
@@ -92,7 +142,10 @@ class MemeDB:
             CREATE INDEX IF NOT EXISTS idx_memes_name ON memes(filename);
             CREATE INDEX IF NOT EXISTS idx_recent_uses_at ON recent_uses(used_at);
         """)
-        # 迁移旧表：添加可能缺失的列
+        self._migrate(conn)
+
+    def _migrate(self, conn):
+        """迁移旧表：添加可能缺失的列并补建依赖新列的索引（幂等，可重复执行）"""
         migrates = [
             ("memes", "sort_order", "INTEGER DEFAULT 0"),
             ("memes", "stego_of_hash", "TEXT DEFAULT NULL"),
@@ -122,6 +175,107 @@ class MemeDB:
         if hasattr(self._local, "conn") and self._local.conn:
             self._local.conn.close()
             self._local.conn = None
+
+    def backup_to(self, path: str):
+        """WAL 一致快照：经 sqlite backup API 把当前库导出到目标文件"""
+        with self._lock:
+            dest = sqlite3.connect(path)
+            try:
+                self._get_conn().backup(dest)
+                dest.commit()
+            finally:
+                dest.close()
+
+    def has_any_data(self) -> bool:
+        """是否存在任何业务数据（memes/分组/标签/收藏，含 stego 载体行）
+
+        供备份恢复的空库判定。
+        """
+        conn = self._get_conn()
+        for tbl in ("memes", "collections", "tags", "favorites"):
+            if conn.execute(f"SELECT 1 FROM {tbl} LIMIT 1").fetchone():
+                return True
+        return False
+
+    def prepare_restore_source(self, path: str):
+        """候选备份库预校验：integrity_check + 全部表/必需列存在性 + 隔离连接上
+        预迁移 + 孤儿外键检查。
+
+        在 staging 文件的独立连接上操作，不触碰活动库；失败抛 ValueError。
+        """
+        conn = sqlite3.connect(path)
+        # Row 按列名取值：foreign_key_list 的 on_delete 列序存在版本歧义
+        conn.row_factory = sqlite3.Row
+        try:
+            row = conn.execute("PRAGMA integrity_check").fetchone()
+            if not row or row[0] != "ok":
+                raise ValueError(f"integrity_check: {row[0] if row else 'unknown'}")
+            tables = {
+                r[0]
+                for r in conn.execute(
+                    "SELECT name FROM sqlite_master WHERE type='table'"
+                ).fetchall()
+            }
+            missing_tables = [t for t in _RESTORE_REQUIRED_TABLES if t not in tables]
+            if missing_tables:
+                raise ValueError("缺少必需的数据表: " + ", ".join(missing_tables))
+            self._migrate(conn)
+            for tbl, cols in _RESTORE_REQUIRED_COLUMNS.items():
+                have = {
+                    r[1] for r in conn.execute(f"PRAGMA table_info({tbl})").fetchall()
+                }
+                missing_cols = cols - have
+                if missing_cols:
+                    raise ValueError(
+                        f"表 {tbl} 缺少必需列: " + ", ".join(sorted(missing_cols))
+                    )
+            # 外键定义必须存在且带 ON DELETE CASCADE（缺失则级联删除失效）
+            for tbl, required in _RESTORE_REQUIRED_FOREIGN_KEYS.items():
+                actual = set()
+                for r in conn.execute(f"PRAGMA foreign_key_list({tbl})").fetchall():
+                    parent = r["table"]
+                    col_from = r["from"]
+                    col_to = r["to"]
+                    on_delete = r["on_delete"]
+                    if col_to is None:  # 隐式引用父表主键
+                        pk = [
+                            c[1]
+                            for c in conn.execute(
+                                f"PRAGMA table_info({parent})"
+                            ).fetchall()
+                            if c[5] > 0
+                        ]
+                        col_to = pk[0] if pk else None
+                    actual.add((col_from, parent, col_to, on_delete))
+                missing_fks = required - actual
+                if missing_fks:
+                    raise ValueError(f"表 {tbl} 缺少必需的外键定义")
+            fk_issues = conn.execute("PRAGMA foreign_key_check").fetchall()
+            if fk_issues:
+                raise ValueError(f"存在 {len(fk_issues)} 条孤儿外键记录")
+            conn.commit()
+        finally:
+            conn.close()
+
+    def restore_from(self, path: str):
+        """用备份库原子替换当前库内容（backup API，绕过 SQL 层），并补齐旧版本缺失列
+
+        获取 _lock 后、替换前复查空库：所有 MemeDB 写入（含未走 _IMPORT_LOCK 的
+        rescan）都在同一把锁上串行，检查与替换因此原子，绕过前置检查的竞态窗口
+        不可能得手；非空时抛 ValueError 交由 restore_backup 回滚缓存文件。
+        """
+        with self._lock:
+            if self.has_any_data():
+                raise ValueError("恢复期间检测到新数据写入，已中止")
+            src = sqlite3.connect(path)
+            try:
+                src.backup(self._get_conn())
+            finally:
+                src.close()
+            conn = self._get_conn()
+            self._migrate(conn)
+            conn.execute("PRAGMA journal_mode=WAL")
+            conn.commit()
 
     # --- 增删改 ---
 

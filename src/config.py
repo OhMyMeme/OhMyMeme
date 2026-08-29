@@ -68,6 +68,8 @@ class Config:
         "cache_max_size_mb": 500,
         "thumbnail_size": 150,
         "cache_dir": "",  # 自定义表情包存储目录（空=默认 data_dir/cache）
+        # 本地备份
+        "backup_dir": "",  # 自定义备份输出目录（空=默认 data_dir/backups）
         # 云端同步
         "sync_auto_fetch_index": False,
         "sync_auto_sync": False,

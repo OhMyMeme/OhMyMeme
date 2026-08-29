@@ -219,7 +219,8 @@ export function useCollectionBuilder() {
 
   function confirm() {
     const name = collectionName.value.trim()
-    if (!name || memberLoading.value || memberLoadError.value) return
+    // loading 期间分组列表来自上一次会话的残留数据，禁止提交
+    if (!name || loading.value || memberLoading.value || memberLoadError.value) return
     const memeIds = Array.from(selectedIds.value)
     if (onConfirmCallback) {
       onConfirmCallback({ name, memeIds, existingId: selectedId.value })

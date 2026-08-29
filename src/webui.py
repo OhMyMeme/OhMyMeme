@@ -57,7 +57,7 @@ try:
 except ImportError:
     HAS_BOTTLE = False
 
-from . import adb_util, qqnt_extract, tg_stickers, updater
+from . import adb_util, backup, qqnt_extract, tg_stickers, updater
 from . import sync as sync_module
 from .clipboard_util import (
     _is_animated,
@@ -1461,6 +1461,75 @@ _STORAGE_MIGRATE_STATE = {
 _STORAGE_MIGRATE_LOCK = threading.Lock()
 _STORAGE_MIGRATE_THREAD = None
 
+# ─── 本地备份/恢复进度（后台线程 + 轮询） ───
+_BACKUP_STATE = {
+    "kind": "",  # create|restore
+    "status": "idle",  # idle|running|done|error
+    "done": 0,
+    "total": 0,
+    "error": "",
+    "result": None,
+}
+_BACKUP_LOCK = threading.Lock()
+
+
+def _set_backup_state(**kw):
+    with _BACKUP_LOCK:
+        _BACKUP_STATE.update(**kw)
+
+
+def get_backup_progress() -> dict:
+    import copy
+
+    with _BACKUP_LOCK:
+        return copy.deepcopy(_BACKUP_STATE)
+
+
+def start_backup_thread(kind: str, zip_path: str = "") -> bool:
+    """启动备份/恢复后台线程；已有任务运行时返回 False"""
+    if kind not in ("create", "restore"):
+        return False
+    with _BACKUP_LOCK:
+        if _BACKUP_STATE["status"] == "running":
+            return False
+        _BACKUP_STATE.update(
+            kind=kind, status="running", done=0, total=0, error="", result=None
+        )
+    threading.Thread(target=_backup_worker, args=(kind, zip_path), daemon=True).start()
+    return True
+
+
+def _backup_worker(kind: str, zip_path: str):
+    cfg = get_config()
+    db = get_db()
+    cb = _backup_progress_tick
+    try:
+        if kind == "create":
+            result = backup.create_backup(
+                backup.get_backup_dir(cfg), cfg.data_dir, cfg.cache_dir, db, cb
+            )  # create_backup 内部校验 backup_dir 与 cache_dir 的嵌套关系
+        else:
+            # 恢复全程持有导入互斥锁：_do_import/同步 pull 走同一把锁，
+            # 恢复期间的写入请求阻塞等待，避免 add_meme 与整库替换并发
+            with _IMPORT_LOCK:
+                result = backup.restore_backup(
+                    zip_path, cfg.data_dir, cfg.cache_dir, db, cb
+                )
+                if result.get("ok"):
+                    build_manifest()
+    except Exception as e:
+        logger.warning(f"备份任务({kind})失败: {e}")
+        _set_backup_state(status="error", error=str(e))
+        return
+    if result.get("ok"):
+        _set_backup_state(status="done", result=result)
+    else:
+        _set_backup_state(status="error", error=result.get("error", "恢复失败"))
+
+
+def _backup_progress_tick(done, total):
+    _set_backup_state(done=done, total=total)
+
 
 def _set_storage_migrate(**kw):
     with _STORAGE_MIGRATE_LOCK:
@@ -2148,6 +2217,9 @@ class SettingsApi:
         ok, err = _storage_dir_validation(path, str(old), protected)
         if not ok:
             return {"ok": False, "error": err}
+        ok, err = backup.validate_backup_dir(path, backup.get_backup_dir(self._cfg))
+        if not ok:
+            return {"ok": False, "error": f"新存储目录与备份目录冲突: {err}"}
         new = Path(path).resolve()
         try:
             new.mkdir(parents=True, exist_ok=True)
@@ -2181,6 +2253,87 @@ class SettingsApi:
 
     def cancel_storage_migration(self) -> dict:
         return cancel_storage_migration()
+
+    # ─── 本地备份与恢复 ───
+
+    def backup_get_info(self) -> dict:
+        """备份目录与已有备份列表"""
+        d = backup.get_backup_dir(self._cfg)
+        return {
+            "ok": True,
+            "backup_dir": str(d),
+            "custom": bool(self._cfg.get("backup_dir", "")),
+            "list": backup.list_backups(d),
+        }
+
+    def backup_pick_dir(self) -> dict:
+        """选择备份输出目录并立即生效"""
+        try:
+            result = webview.windows[0].create_file_dialog(
+                webview.FileDialog.FOLDER, allow_multiple=False
+            )
+        except Exception:
+            return {"ok": False, "error": "dialog failed"}
+        if not result:
+            return {"ok": False, "cancelled": True}
+        path = result[0] if isinstance(result, (tuple, list)) else result
+        new = Path(path).resolve()
+        try:
+            new.mkdir(parents=True, exist_ok=True)
+        except OSError as e:
+            return {"ok": False, "error": f"创建目录失败: {e}"}
+        if not os.access(new, os.W_OK):
+            return {"ok": False, "error": "目标目录不可写"}
+        ok, err = backup.validate_backup_dir(str(new), self._cfg.cache_dir)
+        if not ok:
+            return {"ok": False, "error": err}
+        self._cfg.set("backup_dir", str(new))
+        self._cfg.save()
+        return {"ok": True, "backup_dir": str(new)}
+
+    def backup_create(self) -> dict:
+        if start_backup_thread("create"):
+            return {"ok": True, "async": True}
+        return {"ok": False, "error": "有备份/恢复任务正在进行"}
+
+    def backup_delete(self, name: str) -> dict:
+        if backup.delete_backup(backup.get_backup_dir(self._cfg), name):
+            return {"ok": True}
+        return {"ok": False, "error": "删除失败：无效的备份文件名或文件不存在"}
+
+    def backup_pick_zip(self) -> dict:
+        """选择要恢复的备份 ZIP 文件"""
+        try:
+            result = webview.windows[0].create_file_dialog(
+                webview.FileDialog.OPEN,
+                allow_multiple=False,
+                file_types=("备份包 (*.zip)",),
+            )
+        except Exception:
+            return {"ok": False, "error": "dialog failed"}
+        if not result:
+            return {"ok": False, "cancelled": True}
+        path = result[0] if isinstance(result, (tuple, list)) else result
+        return {"ok": True, "path": path}
+
+    def backup_restore(self, path: str) -> dict:
+        """从备份 ZIP 恢复；仅允许空库，拒绝时返回当前条数"""
+        if (
+            get_db().has_any_data()
+        ):  # 含 stego 载体行与空分组/标签，任何业务数据都视为非空
+            return {
+                "ok": False,
+                "error": "当前数据库已有表情/分组/标签等数据，恢复仅在空库时可用。"
+                "如需保留现有数据，请先手动备份或使用远端同步。",
+            }
+        if not Path(path).is_file():
+            return {"ok": False, "error": "备份文件不存在"}
+        if start_backup_thread("restore", path):
+            return {"ok": True, "async": True}
+        return {"ok": False, "error": "有备份/恢复任务正在进行"}
+
+    def backup_progress(self) -> dict:
+        return get_backup_progress()
 
     def qqnt_default_dir(self, base: str, qq_number: str) -> dict:
         """按账号生成默认输出目录（昵称+QQ号）"""

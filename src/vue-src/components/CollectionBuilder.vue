@@ -27,7 +27,7 @@ function onBoxKeydown(e: KeyboardEvent) {
 
 <template>
   <div v-if="cb.visible.value" id="cb-overlay">
-    <div id="cb-box" role="dialog" aria-modal="true" aria-labelledby="cb-title" @keydown="onBoxKeydown">
+    <div id="cb-box" :class="{ 'cb-box-pick': isPick }" role="dialog" aria-modal="true" aria-labelledby="cb-title" @keydown="onBoxKeydown">
       <div class="cb-header">
         <h2 id="cb-title">{{ isPick ? pickTitle : '添加分组' }}</h2>
         <div v-if="isPick" class="cb-pick-hint">将{{ cb.pickMode.value === 'move' ? '移动' : '加入' }}已选的 {{ cb.selectedIds.value.size }} 个表情包</div>
@@ -41,8 +41,13 @@ function onBoxKeydown(e: KeyboardEvent) {
             spellcheck="false"
             @focus="cb.showDropdown.value = true"
           />
-          <div v-if="cb.showDropdown.value" id="cb-dropdown" class="cb-dropdown show">
-            <div class="cb-dd-section" v-if="cb.collectionName.value.trim() || cb.selectedId.value == null">新建分组</div>
+          <div
+            v-if="!cb.loading.value && (isPick || cb.showDropdown.value)"
+            id="cb-dropdown"
+            class="cb-dropdown show"
+            :class="{ 'cb-dropdown-inline': isPick }"
+          >
+            <div class="cb-dd-section" v-if="cb.collectionName.value.trim() || (!isPick && cb.selectedId.value == null)">新建分组</div>
             <div v-if="cb.collectionName.value.trim()" class="cb-dd-item cb-dd-new-item" @click="cb.createNew()">
               <span class="cb-dd-new">「{{ cb.collectionName.value }}」</span>
               <span class="cb-dd-hint">创建新分组</span>
@@ -127,7 +132,7 @@ function onBoxKeydown(e: KeyboardEvent) {
 
       <div class="cb-footer">
         <button class="btn btn-secondary" @click="cb.close()">取消</button>
-        <button class="btn btn-primary" :disabled="cb.memberLoading.value || cb.memberLoadError.value || !cb.collectionName.value.trim()" @click="cb.confirm()">{{ confirmLabel }}</button>
+        <button class="btn btn-primary" :disabled="cb.loading.value || cb.memberLoading.value || cb.memberLoadError.value || !cb.collectionName.value.trim()" @click="cb.confirm()">{{ confirmLabel }}</button>
       </div>
     </div>
   </div>
@@ -155,6 +160,46 @@ function onBoxKeydown(e: KeyboardEvent) {
   flex-direction: column;
   overflow: hidden;
   box-shadow: var(--shadow-lg);
+}
+
+/* 选择模式（批量加入/移动分组）：窄弹窗固定高度（受 80vh 限制），
+   分组列表内联常显并弹性伸缩，保证底部按钮始终可达。
+   带 #cb-box/#cb-dropdown 前缀提升优先级，否则被基础规则的 ID/顺序覆盖 */
+#cb-box.cb-box-pick {
+  width: 460px;
+  height: min(520px, 80vh);
+}
+
+#cb-box.cb-box-pick .cb-header {
+  display: flex;
+  flex-direction: column;
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow: hidden;
+}
+
+#cb-box.cb-box-pick .cb-pick-hint {
+  flex-shrink: 0;
+}
+
+#cb-box.cb-box-pick .cb-name-wrap {
+  flex: 1 1 auto;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+}
+
+#cb-dropdown.cb-dropdown-inline {
+  position: static;
+  flex: 1 1 auto;
+  min-height: 0;
+  max-height: none;
+  margin-top: 8px;
+  box-shadow: none;
+}
+
+#cb-box.cb-box-pick .cb-footer {
+  flex-shrink: 0;
 }
 
 .cb-header {

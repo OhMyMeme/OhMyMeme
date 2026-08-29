@@ -66,7 +66,7 @@ function trapSettingsFocus(box, e) {
   }
 }
 // 找当前可见覆盖层（静态 HTML + 动态创建的 update/confirm 弹窗）
-const _SETTINGS_OVERLAY_IDS = ['danger-overlay','sync-progress-overlay','sync-done-overlay','storage-migrate-overlay','qq-import-overlay','qqnt-overlay','tg-import-overlay','dy-import-overlay','wechat-import-overlay','update-overlay'];
+const _SETTINGS_OVERLAY_IDS = ['danger-overlay','sync-progress-overlay','sync-done-overlay','storage-migrate-overlay','backup-progress-overlay','qq-import-overlay','qqnt-overlay','tg-import-overlay','dy-import-overlay','wechat-import-overlay','update-overlay'];
 function visibleSettingsOverlay() {
   for (const id of _SETTINGS_OVERLAY_IDS) {
     const el = document.getElementById(id);
@@ -1846,6 +1846,13 @@ document.addEventListener('keydown', (e) => {
       cancelStorageMigration();
       return;
     }
+    const backupOverlay = document.getElementById('backup-progress-overlay');
+    if (backupOverlay && backupOverlay.style.display === 'flex') {
+      // 运行中不可关闭；完成后允许 Esc 关闭
+      const btn = document.getElementById('btn-backup-progress-close');
+      if (btn && btn.style.display !== 'none') closeBackupProgress();
+      return;
+    }
     closeSettings();
   }
   if (e.key === 'Enter' && e.ctrlKey) saveSettings();
@@ -2026,6 +2033,126 @@ async function initSettings() {
   }
 }
 
+/* ─── 本地备份与恢复 ─── */
+let backupPollTimer = null;
+
+async function loadBackupInfo() {
+  const info = await api('backup_get_info');
+  if (!info || !info.ok) return;
+  const dirEl = document.getElementById('backup-dir');
+  const customEl = document.getElementById('backup-dir-custom');
+  if (dirEl) dirEl.textContent = info.backup_dir;
+  if (customEl) customEl.style.display = info.custom ? 'inline' : 'none';
+  renderBackupList(info.list || []);
+}
+
+function renderBackupList(list) {
+  const wrap = document.getElementById('backup-list');
+  if (!wrap) return;
+  if (!list.length) {
+    wrap.innerHTML = '<div style="font-size:11.5px;color:var(--muted)">暂无备份</div>';
+    return;
+  }
+  wrap.innerHTML = list.map(b => `
+    <div style="display:flex;align-items:center;gap:8px;padding:6px 10px;background:var(--bg);border:1px solid var(--border);border-radius:var(--radius-sm)">
+      <span style="flex:1;font-size:11.5px;color:var(--fg);word-break:break-all">${esc(b.name)}</span>
+      <span style="font-size:11px;color:var(--muted);white-space:nowrap">${formatSize(b.size)}</span>
+      <button class="btn btn-ghost btn-sm backup-delete-btn" data-name="${esc(b.name)}" style="color:var(--danger);border-color:var(--danger)">删除</button>
+    </div>`).join('');
+  // 文件名经 data-* 属性传递，避免拼入内联 onclick 造成注入面
+  wrap.querySelectorAll('.backup-delete-btn').forEach(btn => {
+    btn.addEventListener('click', () => deleteBackupItem(btn.dataset.name));
+  });
+}
+
+async function refreshBackupList() {
+  const info = await api('backup_get_info');
+  if (info && info.ok) renderBackupList(info.list || []);
+}
+
+async function pickBackupDir() {
+  const r = await api('backup_pick_dir');
+  if (r && r.ok) { showToast('备份目录已更新'); loadBackupInfo(); }
+  else if (r && !r.cancelled) showToast(r.error || '设置失败');
+}
+
+async function startBackupCreate() {
+  const r = await api('backup_create');
+  if (!r || !r.ok) { showToast((r && r.error) || '无法开始备份'); return; }
+  rememberSettingsFocus();
+  showBackupProgress('正在备份...');
+  backupPollTimer = setInterval(pollBackupProgress, 300);
+}
+
+function showBackupProgress(title) {
+  const ov = document.getElementById('backup-progress-overlay');
+  if (!ov) return;
+  document.getElementById('backup-progress-title').textContent = title;
+  document.getElementById('backup-progress-text').textContent = '准备中';
+  document.getElementById('backup-progress-bar').style.width = '0%';
+  document.getElementById('backup-progress-pct').textContent = '0%';
+  document.getElementById('btn-backup-progress-close').style.display = 'none';
+  ov.style.display = 'flex';
+}
+
+async function pollBackupProgress() {
+  const p = await api('backup_progress');
+  if (!p) return;
+  const pct = p.total > 0 ? Math.round(p.done * 100 / p.total) : 0;
+  document.getElementById('backup-progress-bar').style.width = pct + '%';
+  document.getElementById('backup-progress-pct').textContent = pct + '%';
+  document.getElementById('backup-progress-text').textContent =
+    p.status === 'done' ? '完成' : (p.status === 'error' ? '失败：' + (p.error || '') : `${p.done} / ${p.total}`);
+  if (p.status === 'running') return;
+  clearInterval(backupPollTimer);
+  backupPollTimer = null;
+  const titleEl = document.getElementById('backup-progress-title');
+  if (p.status === 'done') {
+    titleEl.textContent = p.kind === 'restore' ? '恢复完成' : '备份完成';
+    if (p.kind === 'restore') {
+      document.getElementById('backup-progress-text').textContent = '请重启应用后生效';
+    }
+    refreshBackupList();
+  } else {
+    titleEl.textContent = p.kind === 'restore' ? '恢复失败' : '备份失败';
+  }
+  document.getElementById('btn-backup-progress-close').style.display = 'inline-block';
+}
+
+function closeBackupProgress() {
+  const ov = document.getElementById('backup-progress-overlay');
+  if (ov) ov.style.display = 'none';
+  restoreSettingsFocus();
+}
+
+async function deleteBackupItem(name) {
+  const ok = await showConfirm('删除备份', `确定删除备份「${name}」吗？此操作不可恢复。`);
+  if (!ok) return;
+  const r = await api('backup_delete', name);
+  if (r && r.ok) { showToast('已删除'); refreshBackupList(); }
+  else showToast((r && r.error) || '删除失败');
+}
+
+async function startBackupRestore() {
+  const pick = await api('backup_pick_zip');
+  if (!pick || !pick.ok) {
+    if (pick && !pick.cancelled) showToast(pick.error || '选择文件失败');
+    return;
+  }
+  const ok = await showConfirm('恢复备份', '将从备份 ZIP 恢复全部表情与数据（标签/收藏/分组/排序随库保留）。仅允许在数据库为空时进行，已有数据不会被覆盖。确定继续吗？');
+  if (!ok) return;
+  const r = await api('backup_restore', pick.path);
+  if (!r || !r.ok) {
+    const el = document.getElementById('backup-restore-status');
+    if (el) el.textContent = (r && r.error) || '恢复失败';
+    showToast((r && r.error) || '恢复失败');
+    return;
+  }
+  rememberSettingsFocus();
+  showBackupProgress('正在恢复...');
+  backupPollTimer = setInterval(pollBackupProgress, 300);
+}
+
 /* 左栏分组导航：显示对应分组的 section，隐藏其余 */
 function switchSettingsGroup(group) {
   document.querySelectorAll('#settings-nav .nav-item').forEach(btn => {
@@ -2034,6 +2161,7 @@ function switchSettingsGroup(group) {
   document.querySelectorAll('#settings-content .section').forEach(sec => {
     sec.style.display = (sec.dataset.group === group) ? 'block' : 'none';
   });
+  if (group === 'backup') loadBackupInfo();
   const content = document.getElementById('settings-content');
   if (content) content.scrollTop = 0;
 }
