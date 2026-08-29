@@ -17,6 +17,20 @@ _RESTORE_REQUIRED_TABLES = (
     "favorites",
     "recent_uses",
 )
+# 恢复候选库必需的外键定义：(子表列, 父表, 父表列, ON DELETE 行为)，
+# 缺失会导致恢复后级联删除失效、产生孤儿记录
+_RESTORE_REQUIRED_FOREIGN_KEYS = {
+    "meme_tags": {
+        ("meme_id", "memes", "id", "CASCADE"),
+        ("tag_id", "tags", "id", "CASCADE"),
+    },
+    "meme_collections": {
+        ("meme_id", "memes", "id", "CASCADE"),
+        ("collection_id", "collections", "id", "CASCADE"),
+    },
+    "favorites": {("meme_id", "memes", "id", "CASCADE")},
+    "recent_uses": {("meme_id", "memes", "id", "CASCADE")},
+}
 _RESTORE_REQUIRED_COLUMNS = {
     "memes": {
         "id",
@@ -184,6 +198,8 @@ class MemeDB:
         在 staging 文件的独立连接上操作，不触碰活动库；失败抛 ValueError。
         """
         conn = sqlite3.connect(path)
+        # Row 按列名取值：foreign_key_list 的 on_delete 列序存在版本歧义
+        conn.row_factory = sqlite3.Row
         try:
             row = conn.execute("PRAGMA integrity_check").fetchone()
             if not row or row[0] != "ok":
@@ -207,6 +223,27 @@ class MemeDB:
                     raise ValueError(
                         f"表 {tbl} 缺少必需列: " + ", ".join(sorted(missing_cols))
                     )
+            # 外键定义必须存在且带 ON DELETE CASCADE（缺失则级联删除失效）
+            for tbl, required in _RESTORE_REQUIRED_FOREIGN_KEYS.items():
+                actual = set()
+                for r in conn.execute(f"PRAGMA foreign_key_list({tbl})").fetchall():
+                    parent = r["table"]
+                    col_from = r["from"]
+                    col_to = r["to"]
+                    on_delete = r["on_delete"]
+                    if col_to is None:  # 隐式引用父表主键
+                        pk = [
+                            c[1]
+                            for c in conn.execute(
+                                f"PRAGMA table_info({parent})"
+                            ).fetchall()
+                            if c[5] > 0
+                        ]
+                        col_to = pk[0] if pk else None
+                    actual.add((col_from, parent, col_to, on_delete))
+                missing_fks = required - actual
+                if missing_fks:
+                    raise ValueError(f"表 {tbl} 缺少必需的外键定义")
             fk_issues = conn.execute("PRAGMA foreign_key_check").fetchall()
             if fk_issues:
                 raise ValueError(f"存在 {len(fk_issues)} 条孤儿外键记录")

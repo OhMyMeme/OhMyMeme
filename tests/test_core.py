@@ -1057,6 +1057,68 @@ class TestBackup(unittest.TestCase):
         self.assertIn("缺少必需的数据表", str(ctx.exception))
         self.assertIn("meme_tags", str(ctx.exception))
 
+    def test_restore_rejects_missing_foreign_key_definitions(self):
+        """表与列齐全但外键定义被删除的候选库：预校验拒绝，restore 流程不接受。"""
+        from src import backup
+
+        nofk = self.tmp / "nofk.db"
+        conn = sqlite3.connect(nofk)
+        try:
+            # 与正式 schema 相同的表和列，但全部 REFERENCES 被移除
+            conn.executescript("""
+                CREATE TABLE memes (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    filename TEXT NOT NULL,
+                    file_hash TEXT NOT NULL DEFAULT '',
+                    original_name TEXT NOT NULL DEFAULT '',
+                    width INTEGER DEFAULT 0,
+                    height INTEGER DEFAULT 0,
+                    file_size INTEGER DEFAULT 0,
+                    mime_type TEXT DEFAULT 'image/png',
+                    created_at TEXT NOT NULL DEFAULT (datetime('now','localtime')),
+                    updated_at TEXT NOT NULL DEFAULT (datetime('now','localtime'))
+                );
+                CREATE TABLE tags (id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT NOT NULL UNIQUE);
+                CREATE TABLE meme_tags (
+                    meme_id INTEGER NOT NULL,
+                    tag_id INTEGER NOT NULL,
+                    PRIMARY KEY (meme_id, tag_id)
+                );
+                CREATE TABLE collections (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    name TEXT NOT NULL,
+                    sort_order INTEGER DEFAULT 0
+                );
+                CREATE TABLE meme_collections (
+                    meme_id INTEGER NOT NULL,
+                    collection_id INTEGER NOT NULL,
+                    sort_order INTEGER DEFAULT 0,
+                    PRIMARY KEY (meme_id, collection_id)
+                );
+                CREATE TABLE favorites (
+                    meme_id INTEGER PRIMARY KEY,
+                    added_at TEXT NOT NULL DEFAULT (datetime('now','localtime'))
+                );
+                CREATE TABLE recent_uses (meme_id INTEGER PRIMARY KEY, used_at TEXT NOT NULL);
+            """)
+            conn.commit()
+        finally:
+            conn.close()
+        with self.assertRaises(ValueError) as ctx:
+            self.db.prepare_restore_source(str(nofk))
+        self.assertIn("缺少必需的外键定义", str(ctx.exception))
+
+        # 端到端：restore_backup 不接受该候选库
+        self.backup_dir.mkdir()
+        bad = self.backup_dir / "OhMyMeme-backup-nofk.zip"
+        with zipfile.ZipFile(bad, "w", zipfile.ZIP_STORED) as zf:
+            zf.writestr("backup.json", json.dumps({"file_count": 0}))
+            zf.write(nofk, "db/memes.db")
+        r = backup.restore_backup(bad, self.tmp, self.cache, self.db)
+        self.assertFalse(r["ok"])
+        self.assertIn("缺少必需的外键定义", r["error"])
+        self.assertEqual(list(self.cache.iterdir()), [])
+
     def test_prepare_restore_source_rejects_fk_orphans(self):
         """候选库存在孤儿外键记录（引用被删分组）时拒绝恢复。"""
         cid = None
