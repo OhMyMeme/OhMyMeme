@@ -2281,6 +2281,9 @@ class SettingsApi:
             return {"ok": False, "error": f"创建目录失败: {e}"}
         if not os.access(new, os.W_OK):
             return {"ok": False, "error": "目标目录不可写"}
+        ok, err = backup.validate_backup_dir(str(new), self._cfg.cache_dir)
+        if not ok:
+            return {"ok": False, "error": err}
         self._cfg.set("backup_dir", str(new))
         self._cfg.save()
         return {"ok": True, "backup_dir": str(new)}

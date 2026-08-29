@@ -1073,6 +1073,26 @@ class TestBackup(unittest.TestCase):
         self.assertEqual(self.db.count_all(), 1)  # 竞态写入的记录仍被保留
         self.assertEqual(calls["n"], 2)  # 锁内复查确实执行过
 
+    def test_validate_backup_dir_rejects_cache_nesting(self):
+        """备份目录与 cache_dir 相同/互为嵌套时拒绝，防止备份递归自包含。"""
+        from src import backup
+
+        cache = self.tmp / "cache"  # setUp 已创建
+        nested = cache / "backups"
+        other = self.tmp / "elsewhere"
+        self.assertEqual(
+            backup.validate_backup_dir(nested, cache),
+            (False, "备份目录不能与表情包存储目录相同或互为嵌套"),
+        )
+        self.assertEqual(backup.validate_backup_dir(cache, cache)[0], False)
+        # cache_dir 嵌套在备份目录内同样拒绝
+        self.assertEqual(backup.validate_backup_dir(other, other / "cache")[0], False)
+        # 平级目录放行
+        self.assertEqual(backup.validate_backup_dir(other, cache)[0], True)
+        self.assertEqual(
+            backup.validate_backup_dir(self.tmp / "backups", cache)[0], True
+        )
+
     def test_prepare_restore_source_rejects_missing_tables(self):
         """候选库缺失关系表（meme_tags/favorites 等）时拒绝恢复。"""
         partial = self.tmp / "partial.db"

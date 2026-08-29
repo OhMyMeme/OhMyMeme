@@ -40,6 +40,20 @@ def get_backup_dir(cfg):
     return Path(cfg.data_dir) / "backups"
 
 
+def validate_backup_dir(path, cache_dir) -> tuple:
+    """备份目录不得与表情包存储目录相同或互为嵌套。
+
+    否则 create_backup 遍历 cache_dir 时会把备份 ZIP 打进后续备份（递归
+    自包含、体积滚雪球），restore 也会把旧 ZIP 当普通文件拷回缓存目录。
+    返回 (ok, error)。
+    """
+    p = Path(path).resolve()
+    c = Path(cache_dir).resolve()
+    if p == c or p in c.parents or c in p.parents:
+        return False, "备份目录不能与表情包存储目录相同或互为嵌套"
+    return True, ""
+
+
 def _iter_image_files(cache_dir: Path):
     """遍历 cache_dir 全部图片文件，跳过缩略图子目录"""
     for root, dirs, files in os.walk(cache_dir):
