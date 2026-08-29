@@ -2309,7 +2309,7 @@ class SettingsApi:
 
     def backup_restore(self, path: str) -> dict:
         """从备份 ZIP 恢复；仅允许空库，拒绝时返回当前条数"""
-        count = self._db.count()
+        count = get_db().count()
         if count != 0:
             return {
                 "ok": False,
