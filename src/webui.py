@@ -1507,7 +1507,7 @@ def _backup_worker(kind: str, zip_path: str):
         if kind == "create":
             result = backup.create_backup(
                 backup.get_backup_dir(cfg), cfg.data_dir, cfg.cache_dir, db, cb
-            )
+            )  # create_backup 内部校验 backup_dir 与 cache_dir 的嵌套关系
         else:
             # 恢复全程持有导入互斥锁：_do_import/同步 pull 走同一把锁，
             # 恢复期间的写入请求阻塞等待，避免 add_meme 与整库替换并发
@@ -2217,6 +2217,9 @@ class SettingsApi:
         ok, err = _storage_dir_validation(path, str(old), protected)
         if not ok:
             return {"ok": False, "error": err}
+        ok, err = backup.validate_backup_dir(path, backup.get_backup_dir(self._cfg))
+        if not ok:
+            return {"ok": False, "error": f"新存储目录与备份目录冲突: {err}"}
         new = Path(path).resolve()
         try:
             new.mkdir(parents=True, exist_ok=True)
@@ -2315,11 +2318,12 @@ class SettingsApi:
 
     def backup_restore(self, path: str) -> dict:
         """从备份 ZIP 恢复；仅允许空库，拒绝时返回当前条数"""
-        count = get_db().count_all()  # 含 stego 载体行，仅载体库也视为非空
-        if count != 0:
+        if (
+            get_db().has_any_data()
+        ):  # 含 stego 载体行与空分组/标签，任何业务数据都视为非空
             return {
                 "ok": False,
-                "error": f"当前数据库已有 {count} 条表情，恢复仅在空库时可用。"
+                "error": "当前数据库已有表情/分组/标签等数据，恢复仅在空库时可用。"
                 "如需保留现有数据，请先手动备份或使用远端同步。",
             }
         if not Path(path).is_file():

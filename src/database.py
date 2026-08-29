@@ -186,11 +186,16 @@ class MemeDB:
             finally:
                 dest.close()
 
-    def count_all(self) -> int:
-        """无条件统计 memes 表全部记录（含 stego 载体行），供备份恢复的空库判定"""
+    def has_any_data(self) -> bool:
+        """是否存在任何业务数据（memes/分组/标签/收藏，含 stego 载体行）
+
+        供备份恢复的空库判定。
+        """
         conn = self._get_conn()
-        row = conn.execute("SELECT COUNT(*) FROM memes").fetchone()
-        return row[0] if row else 0
+        for tbl in ("memes", "collections", "tags", "favorites"):
+            if conn.execute(f"SELECT 1 FROM {tbl} LIMIT 1").fetchone():
+                return True
+        return False
 
     def prepare_restore_source(self, path: str):
         """候选备份库预校验：integrity_check + 全部表/必需列存在性 + 隔离连接上
@@ -260,7 +265,7 @@ class MemeDB:
         不可能得手；非空时抛 ValueError 交由 restore_backup 回滚缓存文件。
         """
         with self._lock:
-            if self.count_all() != 0:
+            if self.has_any_data():
                 raise ValueError("恢复期间检测到新数据写入，已中止")
             src = sqlite3.connect(path)
             try:

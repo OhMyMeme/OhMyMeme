@@ -1013,14 +1013,14 @@ class TestBackup(unittest.TestCase):
         self.assertEqual(list(cache2.iterdir()), [])  # 未落任何文件
         self.assertFalse((self.tmp / "backup_restore_tmp").exists())  # staging 已清理
 
-    def test_count_all_includes_stego_carriers(self):
-        """仅含 stego 载体行的库 count() 为 0，恢复必须视为非空拒绝。"""
+    def test_has_any_data_includes_stego_carriers(self):
+        """仅含 stego 载体行的库 count() 为 0，但 has_any_data 为真，拒绝恢复。"""
         from src import backup
 
         mid = self.db.add_meme("carrier.gif")
         self.db.update_meme(mid, stego_of_hash="deadbeef")
         self.assertEqual(self.db.count(), 0)  # search/count 层隐藏载体
-        self.assertEqual(self.db.count_all(), 1)
+        self.assertTrue(self.db.has_any_data())
 
         src_cache = self.tmp / "src_cache"
         src_cache.mkdir()
@@ -1055,22 +1055,22 @@ class TestBackup(unittest.TestCase):
             db2.close()
 
         self.db.add_meme("sneaky.png")  # 前置检查之后才出现的写入
-        real_count_all = self.db.count_all
+        real_has_any_data = self.db.has_any_data
         calls = {"n": 0}
 
-        def fake_count_all():
+        def fake_has_any_data():
             calls["n"] += 1
             if calls["n"] == 1:
-                return 0  # 首次（restore_backup 前置检查）谎报为空
-            return real_count_all()  # restore_from 锁内复查取真实值
+                return False  # 首次（restore_backup 前置检查）谎报为空
+            return real_has_any_data()  # restore_from 锁内复查取真实值
 
-        with mock.patch.object(self.db, "count_all", side_effect=fake_count_all):
+        with mock.patch.object(self.db, "has_any_data", side_effect=fake_has_any_data):
             r = backup.restore_backup(
                 self.backup_dir / r["path"], self.tmp, self.cache, self.db
             )
         self.assertFalse(r["ok"])
         self.assertIn("中止", r["error"])
-        self.assertEqual(self.db.count_all(), 1)  # 竞态写入的记录仍被保留
+        self.assertEqual(self.db.count(), 1)  # 竞态写入的记录仍被保留
         self.assertEqual(calls["n"], 2)  # 锁内复查确实执行过
 
     def test_validate_backup_dir_rejects_cache_nesting(self):

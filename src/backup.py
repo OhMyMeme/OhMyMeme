@@ -64,6 +64,9 @@ def _iter_image_files(cache_dir: Path):
 
 def create_backup(backup_dir, data_dir, cache_dir, db, progress_cb=None) -> dict:
     """创建全量备份 ZIP，返回 {ok, path, file_count, size}"""
+    ok, err = validate_backup_dir(backup_dir, cache_dir)
+    if not ok:
+        return {"ok": False, "error": err}
     backup_dir = Path(backup_dir)
     backup_dir.mkdir(parents=True, exist_ok=True)
     stamp = time.strftime("%Y%m%d-%H%M%S")
@@ -186,6 +189,8 @@ def restore_backup(zip_path, data_dir, cache_dir, db, progress_cb=None) -> dict:
             # 资源限制：成员数 / 单成员解压体积 / 总解压体积 / 支持的压缩类型
             if len(names) > RESTORE_MAX_MEMBERS:
                 return {"ok": False, "error": "备份包成员数超出限制"}
+            if len(names) != len(set(names)):
+                return {"ok": False, "error": "备份包含重复成员名"}
             total_bytes = 0
             for i in zf.infolist():
                 if i.compress_type not in (zipfile.ZIP_STORED, zipfile.ZIP_DEFLATED):
@@ -206,7 +211,9 @@ def restore_backup(zip_path, data_dir, cache_dir, db, progress_cb=None) -> dict:
                         f"实际 {len(members)} 个"
                     ),
                 }
-            total = len(members) * 2 + 2  # 解包 N + 库解包 1 + 移动 N + 落库 1
+            total = (
+                len(members) * 2 + 3
+            )  # 解包 N + 库解包 1 + 候选校验 1 + 移动 N + 落库 1
             done = 0
 
             def tick():
@@ -233,8 +240,8 @@ def restore_backup(zip_path, data_dir, cache_dir, db, progress_cb=None) -> dict:
             except Exception as e:
                 return {"ok": False, "error": f"备份包中的数据库无效: {e}"}
             tick()
-            # 落库前复查空库（含 stego 载体行）：恢复期间用户导入会使库非空，此时中止
-            if db.count_all() != 0:
+            # 落库前复查空库（任一业务表有数据即非空）：恢复期间写入会使库非空，此时中止
+            if db.has_any_data():
                 return {"ok": False, "error": "恢复期间检测到新数据写入，已中止"}
             cache_dir.mkdir(parents=True, exist_ok=True)
             added = []
