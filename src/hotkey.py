@@ -146,16 +146,23 @@ class GlobalHotkey:
             self._active = True
             self._start_keyboard_watchdog()
             if sys.platform == "win32":
-                # 钩子心跳观察者：任何键盘事件（含用户按键与探针）都会刷新时间戳
+                # 钩子心跳观察者：任何键盘事件（含用户按键与探针）都会刷新时间戳。
+                # hook 失败时降级保留 keyboard 后端（仅失去心跳自愈），绝不返回 False
+                # 走 pynput 回退——否则已注册的键盘热键与回退后端并存导致回调重复触发
                 self._hook_last_seen = time.monotonic()
                 self._last_probe_at = 0.0
                 self._probe_pending_at = None
 
-                def _on_any_event(_event):
-                    self._hook_last_seen = time.monotonic()
+                try:
 
-                self._hook_observer = _on_any_event
-                keyboard.hook(self._hook_observer)
+                    def _on_any_event(_event):
+                        self._hook_last_seen = time.monotonic()
+
+                    self._hook_observer = _on_any_event
+                    keyboard.hook(self._hook_observer)
+                except Exception as e:
+                    logger.warning(f"热键心跳观察者注册失败（心跳自愈降级）: {e}")
+                    self._hook_observer = None
             logger.info(f"全局快捷键已注册 (keyboard): {hotkey}")
             _log_hotkey_event("info", "热键已注册 (keyboard): %s" % hotkey)
             return True
@@ -347,9 +354,21 @@ class GlobalHotkey:
                     except Exception:
                         pass
                 self._kill_listening_thread(listener)
-                listener.listening = False
-                listener.start_if_necessary()
+                pt = getattr(listener, "processing_thread", None)
+                if pt is not None and pt.is_alive():
+                    # 处理线程健康（钩子失效场景的常态）：仅替换监听线程，保留
+                    # 原处理线程，避免 start_if_necessary 每次重启泄漏一个阻塞
+                    # 在旧队列上的重复消费者
+                    listener.listening = True
+                    new_lt = threading.Thread(target=listener.listen)
+                    new_lt.daemon = True
+                    listener.listening_thread = new_lt
+                    new_lt.start()
+                else:
+                    listener.listening = False
+                    listener.start_if_necessary()
                 keyboard.add_hotkey(self._hotkey, self._safe_callback, suppress=False)
+                self._reregister_pending = False
                 self._last_probe_at = 0.0
                 self._probe_pending_at = None
                 logger.info(f"键盘钩子已重启并重新注册: {self._hotkey}")
