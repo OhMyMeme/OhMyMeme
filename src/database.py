@@ -92,7 +92,10 @@ class MemeDB:
             CREATE INDEX IF NOT EXISTS idx_memes_name ON memes(filename);
             CREATE INDEX IF NOT EXISTS idx_recent_uses_at ON recent_uses(used_at);
         """)
-        # 迁移旧表：添加可能缺失的列
+        self._migrate(conn)
+
+    def _migrate(self, conn):
+        """迁移旧表：添加可能缺失的列并补建依赖新列的索引（幂等，可重复执行）"""
         migrates = [
             ("memes", "sort_order", "INTEGER DEFAULT 0"),
             ("memes", "stego_of_hash", "TEXT DEFAULT NULL"),
@@ -122,6 +125,29 @@ class MemeDB:
         if hasattr(self._local, "conn") and self._local.conn:
             self._local.conn.close()
             self._local.conn = None
+
+    def backup_to(self, path: str):
+        """WAL 一致快照：经 sqlite backup API 把当前库导出到目标文件"""
+        with self._lock:
+            dest = sqlite3.connect(path)
+            try:
+                self._get_conn().backup(dest)
+                dest.commit()
+            finally:
+                dest.close()
+
+    def restore_from(self, path: str):
+        """用备份库原子替换当前库内容（backup API，绕过 SQL 层），并补齐旧版本缺失列"""
+        with self._lock:
+            src = sqlite3.connect(path)
+            try:
+                src.backup(self._get_conn())
+            finally:
+                src.close()
+            conn = self._get_conn()
+            self._migrate(conn)
+            conn.execute("PRAGMA journal_mode=WAL")
+            conn.commit()
 
     # --- 增删改 ---
 

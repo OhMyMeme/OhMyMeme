@@ -64,6 +64,7 @@ src/              # 主代码
   tg_stickers.py   # Telegram Desktop 缓存表情包提取（tdata 解密 + webm 转 webp + 入库）
   douyin.py        # 抖音表情包下载导入（ABogus 签名 + curl_cffi TLS 指纹 + WebP 原格式入库）
   abogus.py        # ABogus 签名算法（纯 Python，GPL-3.0，源自 TikTokDownloader）
+  backup.py        # 本地备份（ZIP 导出/恢复，仅 PC 间整库迁移，仅允许恢复到空库）
   douyin_dl.py     # 抖音下载 CLI 测试入口（独立运行，不依赖 GUI）
   wechat_probe.py  # 微信收藏表情导入（helper 二进制提取密钥 + AES-CBC 解密 DB + CDN 下载，仅 Windows）
   wechat_keyfinder/ # 微信密钥提取 C++ 辅助二进制源码（CMake 构建）
@@ -234,6 +235,15 @@ tests/
 - **导入限制**：`config.py` 常量 `_IMPORT_MAX_PX=2560`（最长边）/`_IMPORT_MAX_BYTES=20MiB`，超过即拒绝接收；覆盖 `_do_import`、`scan_cache`、同步 `_pull_worker`、LAN `_import_bytes` 四类接收路径，跳过超限文件并计数（前端 toast 提示）
 - **文件夹导入** (`JsApi.import_folder`)：FOLDER 对话框 → `os.walk` 递归收集图片（扩展名过滤）→ **后台线程导入**（`start_import_job` + `_IMPORT_JOB_STATE`，前端 `ImportProgressOverlay` 300ms 轮询进度条 + 取消，取消时 `progress_cb` 返回 False 中断 `_do_import`，保留实际进度）→ `make_collection`（前端导入菜单「自动创建分组」勾选，默认开）时以文件夹名 `create_collection` + 批量 `add_to_collection`（同名分组复用，重复导入并入）。`import_memes`（文件对话框）同样后台化，走同一 job；`import_from_clipboard`（剪贴板，通常单张瞬时）保持同步返回 id。`_do_import` 提供可选 `progress_cb`（逐文件回调，返回 False 中断）
 - **渠道自动分组**：3 个入库渠道导入后调 `WebUI.ensure_import_collection(ids, 固定名)` 自动归入固定名分组——TG→「Telegram」、抖音→「抖音」、微信→「微信」；同一渠道不同时间导入复用同名分组。QQ（导出 ZIP 到外部）、QQNT（提取到输出文件夹）不入库故不建组。`create_collection` 现为「先按 name+parent_id 查已存在→返回既有 id，否则 INSERT」——**不再产生重复空分组**（仓库同名字段多次导入只一个分组，成员靠 meme_collections 的 PRIMARY KEY 去重），测试 `test_ensure_collection_same_name_reused`/`empty_args`
+
+### 本地备份与恢复 (backup.py)
+- **定位**: 仅 PC 间整库迁移（导出 ZIP → 拷贝 → 恢复），手动触发，不做增量/自动清理/加密包；不碰手机 LAN 端
+- **备份** (`create_backup`): 打包 cache_dir 全部原图（跳过 thumbnails，文件名即 hash 前缀跨机稳定）+ memes.db（`MemeDB.backup_to`，sqlite backup API 保证 WAL 一致快照）+ meme-index.json + backup.json 清单（app 版本/导出时间/文件数）；ZIP_STORED 不压缩（图片已是压缩格式）；先写 .tmp 再 os.replace 原子落盘。包结构：`db/memes.db`、`files/<文件名>`、`meme-index.json`、`backup.json`
+- **恢复** (`restore_backup`): 仅允许空库（`count()==0`，SettingsApi 前置校验返回当前条数，落库前 worker 复查防恢复期间写入）；解包到 `data_dir/backup_restore_tmp` staging，成员名安全校验（防路径穿越，只取 files/ 下 basename）+ 文件数与 backup.json 核对（防不完整包）→ 图片移动进 cache_dir（同名覆盖——同名必同内容；孤儿文件保留，下次启动 rescan_cache 自动收编）→ `MemeDB.restore_from` 经 backup API 原子替换库内容（绕过 SQL 层不受外键/迁移影响）+ `_migrate` 补齐旧版本备份缺失列 + 重设 WAL → `build_manifest()`；任一步失败清理 staging 不留半成品
+- **备份目录**: config `backup_dir`（空=默认 data_dir/backups），设置页选择立即生效（校验可创建/可写）
+- **SettingsApi**: `backup_get_info`/`backup_pick_dir`/`backup_create`/`backup_delete`（文件名白名单校验防穿越）/`backup_pick_zip`/`backup_restore`/`backup_progress`；后台线程 + 前端 300ms 轮询进度（`_BACKUP_STATE`，与存储迁移同模式），恢复成功后自动 build_manifest
+- **设置页 UI**: 独立「备份与恢复」导航分组（日志与关于之间）：备份目录选择、立即备份、备份列表（文件名/大小/删除，删除走 showConfirm 危险确认）、从 ZIP 恢复（pick_zip → showConfirm → 恢复）；`backup-progress-overlay` 进度弹窗（运行中不可关闭，完成后"关闭"按钮 + Esc）；列入 _SETTINGS_OVERLAY_IDS 做 Tab 焦点陷阱
+- **测试**: TestBackup 覆盖创建/列表/删除（thumbnails 排除、路径穿越拒绝）、恢复元数据保真（tags/收藏/分组）、孤儿保留与同名覆盖、非空库拒绝（零落盘 + staging 清理）、非法包/非 ZIP（BadZipFile 上抛由 worker 捕获）/文件数不符
 
 ### 剪贴板 (GIF/WebP 直接传送)
 - `_copy_gif_windows` 同时写入三个剪贴板格式:

@@ -1,12 +1,15 @@
 """OhMyMeme 核心模块测试"""
 
+import json
 import re
+import shutil
 import sys
 import tempfile
 import threading
 import time
 import unittest
 import unittest.mock as mock
+import zipfile
 from pathlib import Path
 
 # 确保 src 在导入路径中
@@ -900,6 +903,142 @@ class TestHotkeyWatchdog(unittest.TestCase):
         self.assertIsNone(hk._watchdog_stop)
         self.assertIsNone(hk._safe_callback)
         self.assertEqual(fake_mod.remove_calls, 1)
+
+
+class TestBackup(unittest.TestCase):
+    """本地备份：ZIP 创建/列表/删除/恢复（PC 间整库迁移）"""
+
+    def setUp(self):
+        self.tmp = Path(tempfile.mkdtemp())
+        self.db = MemeDB(self.tmp / "memes.db")
+        self.cache = self.tmp / "cache"
+        self.cache.mkdir()
+        self.backup_dir = self.tmp / "backups"
+
+    def tearDown(self):
+        self.db.close()
+        shutil.rmtree(self.tmp, ignore_errors=True)
+
+    def test_create_list_delete(self):
+        from src import backup
+
+        (self.cache / "abc123.png").write_bytes(b"pngdata")
+        (self.cache / "thumbnails").mkdir()
+        (self.cache / "thumbnails" / "thumb.png").write_bytes(b"thumb")
+        r = backup.create_backup(self.backup_dir, self.tmp, self.cache, self.db)
+        self.assertTrue(r["ok"])
+        self.assertEqual(r["file_count"], 1)  # thumbnails 不入包
+        lst = backup.list_backups(self.backup_dir)
+        self.assertEqual(len(lst), 1)
+        self.assertEqual(lst[0]["name"], r["path"])
+        self.assertTrue(backup.delete_backup(self.backup_dir, lst[0]["name"]))
+        self.assertEqual(backup.list_backups(self.backup_dir), [])
+        # 路径穿越/非法名拒绝
+        self.assertFalse(backup.delete_backup(self.backup_dir, "../evil.zip"))
+        self.assertFalse(backup.delete_backup(self.backup_dir, "other.zip"))
+
+    def test_restore_preserves_metadata(self):
+        from src import backup
+
+        mid = self.db.add_meme("abc123.png", tags=["cat"], width=10, height=10)
+        self.db.toggle_favorite(mid)
+        cid = self.db.create_collection("col")
+        self.db.add_to_collection(mid, cid)
+        (self.cache / "abc123.png").write_bytes(b"pngdata")
+        r = backup.create_backup(self.backup_dir, self.tmp, self.cache, self.db)
+
+        # 第二台设备：全新库与空缓存目录
+        db2 = MemeDB(self.tmp / "memes2.db")
+        try:
+            cache2 = self.tmp / "cache2"
+            cache2.mkdir()
+            r2 = backup.restore_backup(
+                self.backup_dir / r["path"], self.tmp, cache2, db2
+            )
+            self.assertTrue(r2["ok"])
+            self.assertEqual(db2.count(), 1)
+            m = db2.search()[0]
+            self.assertEqual(m["filename"], "abc123.png")
+            self.assertEqual(set(db2.get_meme_tags(m["id"])), {"cat"})
+            self.assertTrue(db2.is_favorite(m["id"]))
+            self.assertEqual(len(db2.search(collection_id=cid)), 1)
+            self.assertTrue((cache2 / "abc123.png").exists())
+        finally:
+            db2.close()
+
+    def test_restore_keeps_orphans_and_overwrites_same_name(self):
+        from src import backup
+
+        (self.cache / "aaa111.png").write_bytes(b"newcontent")
+        r = backup.create_backup(self.backup_dir, self.tmp, self.cache, self.db)
+
+        db2 = MemeDB(self.tmp / "memes2.db")
+        try:
+            cache2 = self.tmp / "cache2"
+            cache2.mkdir()
+            (cache2 / "bbb222.png").write_bytes(b"orphan")  # 孤儿文件
+            (cache2 / "aaa111.png").write_bytes(b"old")  # 同名旧内容
+            r2 = backup.restore_backup(
+                self.backup_dir / r["path"], self.tmp, cache2, db2
+            )
+            self.assertTrue(r2["ok"])
+            # 孤儿保留、同名被备份内容覆盖
+            self.assertEqual((cache2 / "bbb222.png").read_bytes(), b"orphan")
+            self.assertEqual((cache2 / "aaa111.png").read_bytes(), b"newcontent")
+        finally:
+            db2.close()
+
+    def test_restore_rejects_nonempty_db(self):
+        from src import backup
+
+        src_cache = self.tmp / "src_cache"
+        src_cache.mkdir()
+        (src_cache / "aaa111.png").write_bytes(b"data")
+        db2 = MemeDB(self.tmp / "src.db")
+        try:
+            db2.add_meme("aaa111.png")
+            r = backup.create_backup(self.backup_dir, self.tmp, src_cache, db2)
+        finally:
+            db2.close()
+
+        self.db.add_meme("existing.png")  # 目标库非空
+        cache2 = self.tmp / "cache2"
+        cache2.mkdir()
+        r2 = backup.restore_backup(
+            self.backup_dir / r["path"], self.tmp, cache2, self.db
+        )
+        self.assertFalse(r2["ok"])
+        self.assertIn("中止", r2["error"])
+        self.assertEqual(list(cache2.iterdir()), [])  # 未落任何文件
+        self.assertFalse((self.tmp / "backup_restore_tmp").exists())  # staging 已清理
+
+    def test_restore_rejects_invalid_package(self):
+        from src import backup
+
+        self.backup_dir.mkdir()
+        bad = self.backup_dir / "OhMyMeme-backup-x.zip"
+        with zipfile.ZipFile(bad, "w") as zf:
+            zf.writestr("other.txt", "hi")
+        r = backup.restore_backup(bad, self.tmp, self.cache, self.db)
+        self.assertFalse(r["ok"])
+
+        notzip = self.backup_dir / "OhMyMeme-backup-y.zip"
+        notzip.write_bytes(b"junk")
+        with self.assertRaises(zipfile.BadZipFile):
+            backup.restore_backup(notzip, self.tmp, self.cache, self.db)
+
+    def test_restore_rejects_count_mismatch(self):
+        from src import backup
+
+        self.backup_dir.mkdir()
+        bad = self.backup_dir / "OhMyMeme-backup-z.zip"
+        with zipfile.ZipFile(bad, "w", zipfile.ZIP_STORED) as zf:
+            zf.writestr("backup.json", json.dumps({"file_count": 5, "created_at": ""}))
+            zf.writestr("db/memes.db", b"not a real db")
+            zf.writestr("files/aaa111.png", b"data")
+        r = backup.restore_backup(bad, self.tmp, self.cache, self.db)
+        self.assertFalse(r["ok"])
+        self.assertIn("不完整", r["error"])
 
 
 if __name__ == "__main__":
