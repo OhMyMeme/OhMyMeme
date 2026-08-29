@@ -454,6 +454,7 @@ class TestHotkeyWatchdog(unittest.TestCase):
         hk._hook_last_seen = 0.0
         hk._last_probe_at = 0.0
         hk._probe_pending_at = None
+        hk._hook_observer = lambda event: None  # 模拟观察者已注册
         return hk
 
     def test_hook_health_check_probe_timeout_detects_dead_hook(self):
@@ -527,7 +528,7 @@ class TestHotkeyWatchdog(unittest.TestCase):
 
         class FakeListener(object):
             listening = True
-            listening_thread = FakeThread(True)
+            listening_thread = FakeThread(False)  # kill 之后的残留状态
             processing_thread = FakeThread(True)
             started = False
             listened = False
@@ -575,6 +576,97 @@ class TestHotkeyWatchdog(unittest.TestCase):
             self.assertEqual(fake_mod.add_calls, 1)
         finally:
             hk.unregister()
+
+    def test_hook_health_check_disabled_without_observer(self):
+        """降级模式（观察者未注册）下不注入探针、不判死，避免误判重启循环。"""
+        hk = self._fresh_hotkey()
+        hk._hook_observer = None
+        calls = []
+        hk._inject_probe_key = lambda: calls.append(1)
+
+        self.assertFalse(hk._hook_health_check(now=1000.0))
+        self.assertEqual(calls, [])
+        self.assertIsNone(hk._probe_pending_at)
+
+    def test_reregister_listening_only_death_starts_listen_thread(self):
+        """仅监听线程死亡：保留处理线程，单独启动新监听线程（不重建存活线程）。"""
+        fake_mod = self._fake_keyboard_module()
+        fake_mod.add_calls = 0
+        fake_mod.remove_calls = 0
+
+        class FakeThread(object):
+            def __init__(self, alive):
+                self._alive = alive
+
+            def is_alive(self):
+                return self._alive
+
+        class FakeListener(object):
+            listening = True
+            listening_thread = FakeThread(False)  # 仅监听线程死亡
+            processing_thread = FakeThread(True)  # 处理线程存活
+            restarted = False
+            listened = False
+
+            def start_if_necessary(self):
+                self.restarted = True
+
+            def listen(self):
+                self.listened = True
+
+        hk = self._fresh_hotkey()
+        original_pt = FakeListener.processing_thread
+
+        listener = FakeListener()
+        with mock.patch.dict("sys.modules", {"keyboard": fake_mod}):
+            ok = hk._reregister_keyboard(listener)
+            listener.listening_thread.join(timeout=2)
+
+        self.assertTrue(ok)
+        self.assertFalse(listener.restarted)  # 未全量重启
+        self.assertTrue(listener.listened)  # 单独启动了新监听线程
+        self.assertIs(listener.processing_thread, original_pt)  # 处理线程保留
+        self.assertEqual(fake_mod.add_calls, 1)
+
+    def test_reregister_processing_only_death_starts_process_thread(self):
+        """仅处理线程死亡：保留监听线程（钩子仍在），单独启动新处理线程。"""
+        fake_mod = self._fake_keyboard_module()
+        fake_mod.add_calls = 0
+        fake_mod.remove_calls = 0
+
+        class FakeThread(object):
+            def __init__(self, alive):
+                self._alive = alive
+
+            def is_alive(self):
+                return self._alive
+
+        class FakeListener(object):
+            listening = True
+            listening_thread = FakeThread(True)  # 监听线程存活（钩子仍在）
+            processing_thread = FakeThread(False)  # 仅处理线程死亡
+            restarted = False
+            processed = False
+
+            def start_if_necessary(self):
+                self.restarted = True
+
+            def process(self):
+                self.processed = True
+
+        hk = self._fresh_hotkey()
+        original_lt = FakeListener.listening_thread
+
+        listener = FakeListener()
+        with mock.patch.dict("sys.modules", {"keyboard": fake_mod}):
+            ok = hk._reregister_keyboard(listener)
+            listener.processing_thread.join(timeout=2)
+
+        self.assertTrue(ok)
+        self.assertFalse(listener.restarted)  # 未全量重启（避免双钩子）
+        self.assertTrue(listener.processed)  # 单独启动了新处理线程
+        self.assertIs(listener.listening_thread, original_lt)  # 监听线程未重建
+        self.assertEqual(fake_mod.add_calls, 1)
 
     def test_restart_keyboard_listener_failure_sets_pending(self):
         """旧监听线程无法退出时中止重启（避免双钩子），置 pending 待下轮重试。"""

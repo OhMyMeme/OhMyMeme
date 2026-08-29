@@ -213,6 +213,7 @@ class GlobalHotkey:
                         sys.platform == "win32"
                         and self._backend == "keyboard"
                         and self._safe_callback
+                        and self._hook_observer is not None
                         and self._hook_health_check(time.monotonic())
                     ):
                         logger.error("键盘钩子心跳超时（线程存活但钩子已失效）")
@@ -255,10 +256,9 @@ class GlobalHotkey:
                         keyboard.remove_hotkey(self._hotkey)
                     except Exception:
                         pass
-                # 线程崩溃后 listening 标志仍为 True，需重置才能重启线程
+                # 按单线程死亡场景补齐线程，不重建仍存活的线程
                 try:
-                    listener.listening = False
-                    listener.start_if_necessary()
+                    self._ensure_listener_threads(listener)
                 except Exception as e:
                     logger.warning("keyboard 监听可能无法直接重启，改用重新 add: %s", e)
                 try:
@@ -281,6 +281,39 @@ class GlobalHotkey:
                 logger.exception("自动重新注册快捷键失败")
                 return False
 
+    def _ensure_listener_threads(self, listener):
+        """按 keyboard 监听/处理线程的存活状态补齐缺失线程，不重建仍存活的线程。
+
+        - 两者都存活：无需处理
+        - 仅监听线程死：保留处理线程，单独启动新监听线程（listen 会重装钩子）
+        - 仅处理线程死：保留监听线程（钩子仍在），单独启动新处理线程
+        - 两者都死：listening=False + start_if_necessary() 全量重启
+
+        避免重建仍存活的线程：重建监听线程会造成双钩子（每个按键处理两次、
+        热键触发两次），重建处理线程会泄漏重复的队列消费者。
+        """
+        lt = getattr(listener, "listening_thread", None)
+        pt = getattr(listener, "processing_thread", None)
+        lt_alive = lt is not None and lt.is_alive()
+        pt_alive = pt is not None and pt.is_alive()
+        if lt_alive and pt_alive:
+            return
+        if not lt_alive and not pt_alive:
+            listener.listening = False
+            listener.start_if_necessary()
+            return
+        if not lt_alive:
+            listener.listening = True
+            new_lt = threading.Thread(target=listener.listen)
+            new_lt.daemon = True
+            listener.listening_thread = new_lt
+            new_lt.start()
+        else:
+            new_pt = threading.Thread(target=listener.process)
+            new_pt.daemon = True
+            listener.processing_thread = new_pt
+            new_pt.start()
+
     def _inject_probe_key(self):
         """注入一次无害探针按键（F15 按下+抬起），验证钩子是否仍在接收事件"""
         try:
@@ -298,7 +331,11 @@ class GlobalHotkey:
         返回 True 表示本轮检测到钩子死亡；探针每 KEYBOARD_PROBE_INTERVAL 秒注入，
         超时 KEYBOARD_PROBE_TIMEOUT 秒未确认则判死。钩子存活时任何按键都会刷新
         _hook_last_seen，用户正常打字即视为存活，无需依赖探针本身。
+        观察者未注册（hook 失败的降级模式）时无法观测任何事件，直接返回 False
+        避免探针永远"未见事件"造成反复误判重启。
         """
+        if self._hook_observer is None:
+            return False
         if self._probe_pending_at is not None:
             if self._hook_last_seen >= self._probe_pending_at:
                 self._probe_pending_at = None
@@ -354,19 +391,7 @@ class GlobalHotkey:
                     except Exception:
                         pass
                 self._kill_listening_thread(listener)
-                pt = getattr(listener, "processing_thread", None)
-                if pt is not None and pt.is_alive():
-                    # 处理线程健康（钩子失效场景的常态）：仅替换监听线程，保留
-                    # 原处理线程，避免 start_if_necessary 每次重启泄漏一个阻塞
-                    # 在旧队列上的重复消费者
-                    listener.listening = True
-                    new_lt = threading.Thread(target=listener.listen)
-                    new_lt.daemon = True
-                    listener.listening_thread = new_lt
-                    new_lt.start()
-                else:
-                    listener.listening = False
-                    listener.start_if_necessary()
+                self._ensure_listener_threads(listener)
                 keyboard.add_hotkey(self._hotkey, self._safe_callback, suppress=False)
                 self._reregister_pending = False
                 self._last_probe_at = 0.0
