@@ -162,12 +162,13 @@ function onBoxKeydown(e: KeyboardEvent) {
   box-shadow: var(--shadow-lg);
 }
 
-/* 选择模式（批量加入/移动分组）：窄弹窗 + 分组列表内联常显 */
-.cb-box-pick {
+/* 选择模式（批量加入/移动分组）：窄弹窗 + 分组列表内联常显。
+   带 #cb-box/#cb-dropdown 前缀提升优先级，否则被基础规则的 ID/顺序覆盖 */
+#cb-box.cb-box-pick {
   width: 460px;
 }
 
-.cb-dropdown-inline {
+#cb-dropdown.cb-dropdown-inline {
   position: static;
   max-height: 260px;
   margin-top: 8px;
