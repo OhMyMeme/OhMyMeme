@@ -433,6 +433,105 @@ class TestHotkeyWatchdog(unittest.TestCase):
 
         self.assertIs(hotkey._get_file_logger(), hotkey.logger)
 
+    def _fresh_hotkey(self):
+        from src.hotkey import GlobalHotkey
+
+        hk = GlobalHotkey()
+        hk._hotkey = "Ctrl+Alt+N"
+        hk._safe_callback = lambda: None
+        hk._backend = "keyboard"
+        hk._watchdog_stop = threading.Event()
+        hk._hook_last_seen = 0.0
+        hk._last_probe_at = 0.0
+        hk._probe_pending_at = None
+        return hk
+
+    def test_hook_health_check_probe_timeout_detects_dead_hook(self):
+        """探针注入后超时未见任何键盘事件判死；用户按键即视为存活。"""
+        from src.hotkey import KEYBOARD_PROBE_TIMEOUT
+
+        hk = self._fresh_hotkey()
+        calls = []
+        hk._inject_probe_key = lambda: calls.append(1)
+
+        # 第一轮：注入探针，待确认
+        self.assertFalse(hk._hook_health_check(now=100.0))
+        self.assertEqual(len(calls), 1)
+        self.assertEqual(hk._probe_pending_at, 100.0)
+        # 用户按键（或探针事件）上报 → 存活
+        hk._hook_last_seen = 100.5
+        self.assertFalse(hk._hook_health_check(now=105.0))
+        self.assertIsNone(hk._probe_pending_at)
+        # 距上次探针满间隔再次注入
+        self.assertFalse(hk._hook_health_check(now=130.0))
+        self.assertEqual(len(calls), 2)
+        # 注入后超时无任何事件 → 判死
+        hk._hook_last_seen = 0.0
+        self.assertTrue(hk._hook_health_check(now=130.0 + KEYBOARD_PROBE_TIMEOUT))
+        self.assertIsNone(hk._probe_pending_at)
+
+    def test_restart_keyboard_listener_reinstalls_hook(self):
+        """钩子失效重启：结束旧线程→重装钩子→重挂热键。"""
+        fake_mod = self._fake_keyboard_module()
+        fake_mod.add_calls = 0
+        fake_mod.remove_calls = 0
+
+        class FakeThread(object):
+            def is_alive(self):
+                return False
+
+        class FakeListener(object):
+            listening = True
+            listening_thread = FakeThread()
+            started = False
+
+            def start_if_necessary(self):
+                self.started = True
+
+        hk = self._fresh_hotkey()
+        hk._kill_listening_thread = lambda listener: None
+
+        listener = FakeListener()
+        with mock.patch.dict("sys.modules", {"keyboard": fake_mod}):
+            ok = hk._restart_keyboard_listener(listener)
+
+        self.assertTrue(ok)
+        self.assertFalse(hk._reregister_pending)
+        self.assertEqual(fake_mod.remove_calls, 1)
+        self.assertTrue(listener.started)
+        self.assertEqual(fake_mod.add_calls, 1)
+
+    def test_restart_keyboard_listener_failure_sets_pending(self):
+        """旧监听线程无法退出时中止重启（避免双钩子），置 pending 待下轮重试。"""
+        fake_mod = self._fake_keyboard_module()
+        fake_mod.add_calls = 0
+        fake_mod.remove_calls = 0
+
+        class FakeThread(object):
+            def is_alive(self):
+                return True
+
+        class FakeListener(object):
+            listening = True
+            listening_thread = FakeThread()
+
+            def start_if_necessary(self):
+                raise AssertionError("不应重装钩子")
+
+        hk = self._fresh_hotkey()
+
+        def refuse(listener):
+            raise RuntimeError("旧监听线程未能退出")
+
+        hk._kill_listening_thread = refuse
+
+        with mock.patch.dict("sys.modules", {"keyboard": fake_mod}):
+            ok = hk._restart_keyboard_listener(FakeListener())
+
+        self.assertFalse(ok)
+        self.assertTrue(hk._reregister_pending)
+        self.assertEqual(fake_mod.add_calls, 0)
+
     @mock.patch.dict("sys.modules", {"keyboard": None}, clear=False)
     def test_reregister_restarts_listener_and_reattaches(self):
         from src.hotkey import GlobalHotkey
