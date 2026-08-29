@@ -136,6 +136,36 @@ class MemeDB:
             finally:
                 dest.close()
 
+    def count_all(self) -> int:
+        """无条件统计 memes 表全部记录（含 stego 载体行），供备份恢复的空库判定"""
+        conn = self._get_conn()
+        row = conn.execute("SELECT COUNT(*) FROM memes").fetchone()
+        return row[0] if row else 0
+
+    def prepare_restore_source(self, path: str):
+        """候选备份库预校验：integrity_check + 必需表存在性 + 隔离连接上预迁移。
+
+        在 staging 文件的独立连接上操作，不触碰活动库；失败抛 ValueError。
+        """
+        conn = sqlite3.connect(path)
+        try:
+            row = conn.execute("PRAGMA integrity_check").fetchone()
+            if not row or row[0] != "ok":
+                raise ValueError(f"integrity_check: {row[0] if row else 'unknown'}")
+            tables = {
+                r[0]
+                for r in conn.execute(
+                    "SELECT name FROM sqlite_master WHERE type='table'"
+                ).fetchall()
+            }
+            missing = {"memes", "tags", "collections"} - tables
+            if missing:
+                raise ValueError("缺少必需的数据表: " + ", ".join(sorted(missing)))
+            self._migrate(conn)
+            conn.commit()
+        finally:
+            conn.close()
+
     def restore_from(self, path: str):
         """用备份库原子替换当前库内容（backup API，绕过 SQL 层），并补齐旧版本缺失列"""
         with self._lock:

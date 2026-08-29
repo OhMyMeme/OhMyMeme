@@ -1509,11 +1509,14 @@ def _backup_worker(kind: str, zip_path: str):
                 backup.get_backup_dir(cfg), cfg.data_dir, cfg.cache_dir, db, cb
             )
         else:
-            result = backup.restore_backup(
-                zip_path, cfg.data_dir, cfg.cache_dir, db, cb
-            )
-            if result.get("ok"):
-                build_manifest()
+            # 恢复全程持有导入互斥锁：_do_import/同步 pull 走同一把锁，
+            # 恢复期间的写入请求阻塞等待，避免 add_meme 与整库替换并发
+            with _IMPORT_LOCK:
+                result = backup.restore_backup(
+                    zip_path, cfg.data_dir, cfg.cache_dir, db, cb
+                )
+                if result.get("ok"):
+                    build_manifest()
     except Exception as e:
         logger.warning(f"备份任务({kind})失败: {e}")
         _set_backup_state(status="error", error=str(e))
@@ -2309,7 +2312,7 @@ class SettingsApi:
 
     def backup_restore(self, path: str) -> dict:
         """从备份 ZIP 恢复；仅允许空库，拒绝时返回当前条数"""
-        count = get_db().count()
+        count = get_db().count_all()  # 含 stego 载体行，仅载体库也视为非空
         if count != 0:
             return {
                 "ok": False,

@@ -1012,6 +1012,76 @@ class TestBackup(unittest.TestCase):
         self.assertEqual(list(cache2.iterdir()), [])  # 未落任何文件
         self.assertFalse((self.tmp / "backup_restore_tmp").exists())  # staging 已清理
 
+    def test_count_all_includes_stego_carriers(self):
+        """仅含 stego 载体行的库 count() 为 0，恢复必须视为非空拒绝。"""
+        from src import backup
+
+        mid = self.db.add_meme("carrier.gif")
+        self.db.update_meme(mid, stego_of_hash="deadbeef")
+        self.assertEqual(self.db.count(), 0)  # search/count 层隐藏载体
+        self.assertEqual(self.db.count_all(), 1)
+
+        src_cache = self.tmp / "src_cache"
+        src_cache.mkdir()
+        (src_cache / "aaa111.png").write_bytes(b"data")
+        db2 = MemeDB(self.tmp / "src.db")
+        try:
+            db2.add_meme("aaa111.png")
+            r = backup.create_backup(self.backup_dir, self.tmp, src_cache, db2)
+        finally:
+            db2.close()
+
+        cache2 = self.tmp / "cache2"
+        cache2.mkdir()
+        r2 = backup.restore_backup(
+            self.backup_dir / r["path"], self.tmp, cache2, self.db
+        )
+        self.assertFalse(r2["ok"])  # 仅载体库不得被恢复覆盖
+        self.assertEqual(list(cache2.iterdir()), [])
+
+    def test_restore_rejects_oversized_or_unsupported_members(self):
+        """ZIP 安全限制：不支持的压缩类型 / 超大成员拒绝恢复。"""
+        from src import backup
+
+        self.backup_dir.mkdir()
+        # BZIP2 压缩类型
+        bad = self.backup_dir / "OhMyMeme-backup-a.zip"
+        with zipfile.ZipFile(bad, "w") as zf:
+            zf.writestr("backup.json", json.dumps({"file_count": 1}))
+            zf.writestr("db/memes.db", b"db")
+            zi = zipfile.ZipInfo("files/aaa111.png")
+            zf.writestr(zi, b"data", compress_type=zipfile.ZIP_BZIP2)
+        r = backup.restore_backup(bad, self.tmp, self.cache, self.db)
+        self.assertFalse(r["ok"])
+        self.assertIn("压缩类型", r["error"])
+        # 超大成员：调低限制常量后由 file_size 校验拦截
+        big = self.backup_dir / "OhMyMeme-backup-b.zip"
+        with zipfile.ZipFile(big, "w", zipfile.ZIP_STORED) as zf:
+            zf.writestr("backup.json", json.dumps({"file_count": 1}))
+            zf.writestr("db/memes.db", b"db")
+            zf.writestr("files/aaa111.png", b"data")
+        with mock.patch.object(backup, "RESTORE_MAX_MEMBER_BYTES", 2):
+            r2 = backup.restore_backup(big, self.tmp, self.cache, self.db)
+        self.assertFalse(r2["ok"])
+        self.assertIn("超大文件", r2["error"])
+        self.assertEqual(list(self.cache.iterdir()), [])  # 未落任何文件
+
+    def test_restore_rejects_invalid_candidate_db(self):
+        """文件数正确但库文件是垃圾字节：预校验拒绝，缓存零落盘。"""
+        from src import backup
+
+        self.backup_dir.mkdir()
+        bad = self.backup_dir / "OhMyMeme-backup-c.zip"
+        with zipfile.ZipFile(bad, "w", zipfile.ZIP_STORED) as zf:
+            zf.writestr("backup.json", json.dumps({"file_count": 1}))
+            zf.writestr("db/memes.db", b"not a real database")
+            zf.writestr("files/aaa111.png", b"data")
+        r = backup.restore_backup(bad, self.tmp, self.cache, self.db)
+        self.assertFalse(r["ok"])
+        self.assertIn("数据库无效", r["error"])
+        self.assertEqual(list(self.cache.iterdir()), [])
+        self.assertFalse((self.tmp / "backup_restore_tmp").exists())
+
     def test_restore_rejects_invalid_package(self):
         from src import backup
 

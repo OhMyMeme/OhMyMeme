@@ -10,7 +10,6 @@
 import json
 import os
 import shutil
-import sqlite3
 import time
 import zipfile
 from pathlib import Path
@@ -18,6 +17,13 @@ from pathlib import Path
 BACKUP_PREFIX = "OhMyMeme-backup-"
 BACKUP_SUFFIX = ".zip"
 INFO_NAME = "backup.json"
+
+# 恢复安全限制：备份 ZIP 来自用户选择的文件，需防御损坏/恶意包耗尽资源
+RESTORE_MAX_MEMBERS = 100_000
+RESTORE_MAX_MEMBER_BYTES = (
+    64 * 1024 * 1024
+)  # 单成员 64MB（导入链路上限 20MiB，留足余量）
+RESTORE_MAX_TOTAL_BYTES = 20 * 1024 * 1024 * 1024  # 总解压体积 20GB
 
 
 def _app_version() -> str:
@@ -163,6 +169,18 @@ def restore_backup(zip_path, data_dir, cache_dir, db, progress_cb=None) -> dict:
             names = zf.namelist()
             if INFO_NAME not in names or "db/memes.db" not in names:
                 return {"ok": False, "error": "不是有效的 OhMyMeme 备份包"}
+            # 资源限制：成员数 / 单成员解压体积 / 总解压体积 / 支持的压缩类型
+            if len(names) > RESTORE_MAX_MEMBERS:
+                return {"ok": False, "error": "备份包成员数超出限制"}
+            total_bytes = 0
+            for i in zf.infolist():
+                if i.compress_type not in (zipfile.ZIP_STORED, zipfile.ZIP_DEFLATED):
+                    return {"ok": False, "error": "备份包含不支持的压缩类型"}
+                if i.file_size > RESTORE_MAX_MEMBER_BYTES:
+                    return {"ok": False, "error": f"备份包含超大文件: {i.filename}"}
+                total_bytes += i.file_size
+            if total_bytes > RESTORE_MAX_TOTAL_BYTES:
+                return {"ok": False, "error": "备份包解压总体积超出限制"}
             info = json.loads(zf.read(INFO_NAME).decode("utf-8"))
             file_count = info.get("file_count", -1)
             members = [n for n in names if _validate_member(n)]
@@ -194,17 +212,35 @@ def restore_backup(zip_path, data_dir, cache_dir, db, progress_cb=None) -> dict:
             with zf.open("db/memes.db") as src, open(db_target, "wb") as dst:
                 shutil.copyfileobj(src, dst)
             tick()
-            # 落库前复查空库：恢复期间用户导入会使库非空，此时中止
-            if db.count() != 0:
+            # 候选库预校验：完整性 + 表结构 + 隔离连接上预迁移，
+            # 全部通过才允许触碰现网状态（缓存文件与活动库）
+            try:
+                db.prepare_restore_source(str(db_target))
+            except Exception as e:
+                return {"ok": False, "error": f"备份包中的数据库无效: {e}"}
+            tick()
+            # 落库前复查空库（含 stego 载体行）：恢复期间用户导入会使库非空，此时中止
+            if db.count_all() != 0:
                 return {"ok": False, "error": "恢复期间检测到新数据写入，已中止"}
             cache_dir.mkdir(parents=True, exist_ok=True)
-            for f in sorted(files_dir.iterdir()):
-                shutil.move(str(f), str(cache_dir / f.name))
-                tick()
+            added = []
             try:
+                for f in sorted(files_dir.iterdir()):
+                    target = cache_dir / f.name
+                    if not target.exists():
+                        added.append(target)
+                    shutil.move(str(f), str(target))
+                    tick()
                 db.restore_from(str(db_target))
-            except sqlite3.DatabaseError:
-                return {"ok": False, "error": "备份包中的数据库文件无效"}
+            except Exception as e:
+                # 库替换失败：回滚本次新增的缓存文件；
+                # 被同名覆盖的旧文件内容与备份一致，无需还原
+                for t in added:
+                    try:
+                        t.unlink()
+                    except OSError:
+                        pass
+                return {"ok": False, "error": f"恢复失败: {e}"}
             tick()
     finally:
         shutil.rmtree(staging, ignore_errors=True)

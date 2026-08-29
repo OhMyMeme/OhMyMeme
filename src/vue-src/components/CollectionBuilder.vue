@@ -42,7 +42,7 @@ function onBoxKeydown(e: KeyboardEvent) {
             @focus="cb.showDropdown.value = true"
           />
           <div
-            v-if="isPick || cb.showDropdown.value"
+            v-if="!cb.loading.value && (isPick || cb.showDropdown.value)"
             id="cb-dropdown"
             class="cb-dropdown show"
             :class="{ 'cb-dropdown-inline': isPick }"
@@ -132,7 +132,7 @@ function onBoxKeydown(e: KeyboardEvent) {
 
       <div class="cb-footer">
         <button class="btn btn-secondary" @click="cb.close()">取消</button>
-        <button class="btn btn-primary" :disabled="cb.memberLoading.value || cb.memberLoadError.value || !cb.collectionName.value.trim()" @click="cb.confirm()">{{ confirmLabel }}</button>
+        <button class="btn btn-primary" :disabled="cb.loading.value || cb.memberLoading.value || cb.memberLoadError.value || !cb.collectionName.value.trim()" @click="cb.confirm()">{{ confirmLabel }}</button>
       </div>
     </div>
   </div>
@@ -162,17 +162,44 @@ function onBoxKeydown(e: KeyboardEvent) {
   box-shadow: var(--shadow-lg);
 }
 
-/* 选择模式（批量加入/移动分组）：窄弹窗 + 分组列表内联常显。
+/* 选择模式（批量加入/移动分组）：窄弹窗固定高度（受 80vh 限制），
+   分组列表内联常显并弹性伸缩，保证底部按钮始终可达。
    带 #cb-box/#cb-dropdown 前缀提升优先级，否则被基础规则的 ID/顺序覆盖 */
 #cb-box.cb-box-pick {
   width: 460px;
+  height: min(520px, 80vh);
+}
+
+#cb-box.cb-box-pick .cb-header {
+  display: flex;
+  flex-direction: column;
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow: hidden;
+}
+
+#cb-box.cb-box-pick .cb-pick-hint {
+  flex-shrink: 0;
+}
+
+#cb-box.cb-box-pick .cb-name-wrap {
+  flex: 1 1 auto;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
 }
 
 #cb-dropdown.cb-dropdown-inline {
   position: static;
-  max-height: 260px;
+  flex: 1 1 auto;
+  min-height: 0;
+  max-height: none;
   margin-top: 8px;
   box-shadow: none;
+}
+
+#cb-box.cb-box-pick .cb-footer {
+  flex-shrink: 0;
 }
 
 .cb-header {

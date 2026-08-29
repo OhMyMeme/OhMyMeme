@@ -2057,8 +2057,12 @@ function renderBackupList(list) {
     <div style="display:flex;align-items:center;gap:8px;padding:6px 10px;background:var(--bg);border:1px solid var(--border);border-radius:var(--radius-sm)">
       <span style="flex:1;font-size:11.5px;color:var(--fg);word-break:break-all">${esc(b.name)}</span>
       <span style="font-size:11px;color:var(--muted);white-space:nowrap">${formatSize(b.size)}</span>
-      <button class="btn btn-ghost btn-sm" style="color:var(--danger);border-color:var(--danger)" onclick="deleteBackupItem('${esc(b.name)}')">删除</button>
+      <button class="btn btn-ghost btn-sm backup-delete-btn" data-name="${esc(b.name)}" style="color:var(--danger);border-color:var(--danger)">删除</button>
     </div>`).join('');
+  // 文件名经 data-* 属性传递，避免拼入内联 onclick 造成注入面
+  wrap.querySelectorAll('.backup-delete-btn').forEach(btn => {
+    btn.addEventListener('click', () => deleteBackupItem(btn.dataset.name));
+  });
 }
 
 async function refreshBackupList() {
