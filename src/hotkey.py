@@ -1,6 +1,7 @@
 """全局快捷键 - 跨平台热键注册，自动降级容错"""
 
 import logging
+import os
 import sys
 import threading
 import time
@@ -9,6 +10,13 @@ logger = logging.getLogger(__name__)
 
 # keyboard 库监听线程存活检查周期（秒）
 KEYBOARD_WATCH_INTERVAL = 5.0
+
+# Windows 钩子心跳探针：WH_KEYBOARD_LL 会被系统静默摘除（睡眠恢复/回调超时/显示切换），
+# 此时线程仍在泵消息、看门狗的存活检查不可见。每 KEYBOARD_PROBE_INTERVAL 秒注入一次
+# 无害探针键（F15，常规应用不响应），KEYBOARD_PROBE_TIMEOUT 秒内钩子未上报任何键盘
+# 事件（含用户自身按键）即判定钩子失效，重启监听线程重装钩子。
+KEYBOARD_PROBE_INTERVAL = 30.0
+KEYBOARD_PROBE_TIMEOUT = 15.0
 
 # 独立的热键事件日志（追加到 data_dir/hotkey.log，便于日后排查热键失效/自愈）
 _file_logger = None
@@ -26,6 +34,11 @@ def _get_file_logger():
     if _file_logger is not None:
         return _file_logger
     if _file_logger_tried:
+        return logger
+    # pytest 下禁用：测试（TestHotkeyWatchdog/test_startup）会触发注册/重注册日志，
+    # 夹具错误（如 inject-fail）会污染真实 data_dir 的 hotkey.log，误导排障
+    if "PYTEST_CURRENT_TEST" in os.environ:
+        _file_logger_tried = True
         return logger
     with _file_logger_lock:
         if _file_logger is not None:
@@ -79,6 +92,11 @@ class GlobalHotkey:
         self._reregister_lock = threading.Lock()
         # 代次 token：register/unregister 递增，使旧 watchdog 的重注册操作失效
         self._watchdog_gen = 0
+        # Windows 钩子心跳状态：最后事件时间 / 上次探针时间 / 待确认探针时间
+        self._hook_last_seen = 0.0
+        self._last_probe_at = 0.0
+        self._probe_pending_at = None
+        self._hook_observer = None
 
     def register(self, hotkey: str, callback) -> bool:
         """注册全局快捷键，自动尝试 keyboard → pynput → 轮询降级"""
@@ -127,6 +145,24 @@ class GlobalHotkey:
             self._backend = "keyboard"
             self._active = True
             self._start_keyboard_watchdog()
+            if sys.platform == "win32":
+                # 钩子心跳观察者：任何键盘事件（含用户按键与探针）都会刷新时间戳。
+                # hook 失败时降级保留 keyboard 后端（仅失去心跳自愈），绝不返回 False
+                # 走 pynput 回退——否则已注册的键盘热键与回退后端并存导致回调重复触发
+                self._hook_last_seen = time.monotonic()
+                self._last_probe_at = 0.0
+                self._probe_pending_at = None
+
+                try:
+
+                    def _on_any_event(_event):
+                        self._hook_last_seen = time.monotonic()
+
+                    self._hook_observer = _on_any_event
+                    keyboard.hook(self._hook_observer)
+                except Exception as e:
+                    logger.warning(f"热键心跳观察者注册失败（心跳自愈降级）: {e}")
+                    self._hook_observer = None
             logger.info(f"全局快捷键已注册 (keyboard): {hotkey}")
             _log_hotkey_event("info", "热键已注册 (keyboard): %s" % hotkey)
             return True
@@ -158,26 +194,52 @@ class GlobalHotkey:
                     listener = getattr(keyboard, "_listener", None)
                     if listener is None:
                         continue
-                    lt = getattr(listener, "listening_thread", None)
-                    pt = getattr(listener, "processing_thread", None)
-                    dead = (lt is not None and not lt.is_alive()) or (
-                        pt is not None and not pt.is_alive()
-                    )
-                    if dead and self._backend == "keyboard" and self._safe_callback:
-                        logger.error(
-                            "全局快捷键监听/处理线程已退出，尝试自动重新注册热键"
-                        )
-                        _log_hotkey_event(
-                            "error", "监听/处理线程已退出，尝试自动重新注册热键"
-                        )
-                        # 与 unregister 用同一锁互斥：若注销已完成则停止标志已置位，
-                        # 重注册函数会因该标志/代次不符而直接返回，避免注销后被重新挂上
-                        self._reregister_keyboard(listener, gen)
+                    self._watchdog_tick(listener, gen)
                 except Exception:
                     logger.exception("快捷键守护线程检查异常")
 
         t = threading.Thread(target=watch, daemon=True)
         t.start()
+
+    def _watchdog_tick(self, listener, gen):
+        """看门狗单轮检查，按优先级分派恢复动作：
+
+        1. 监听/处理线程死亡 → _reregister_keyboard 补齐线程并重挂热键
+        2. 上次恢复 add_hotkey 失败（_reregister_pending）→ 线程已补齐，重试重挂；
+           否则线程存活、钩子心跳正常时 pending 永远不会被消费，热键将永久失效
+        3. （Windows）钩子心跳超时 → _restart_keyboard_listener 重装钩子
+        """
+        lt = getattr(listener, "listening_thread", None)
+        pt = getattr(listener, "processing_thread", None)
+        dead = (lt is not None and not lt.is_alive()) or (
+            pt is not None and not pt.is_alive()
+        )
+        if dead and self._backend == "keyboard" and self._safe_callback:
+            logger.error("全局快捷键监听/处理线程已退出，尝试自动重新注册热键")
+            _log_hotkey_event("error", "监听/处理线程已退出，尝试自动重新注册热键")
+            # 与 unregister 用同一锁互斥：若注销已完成则停止标志已置位，
+            # 重注册函数会因该标志/代次不符而直接返回，避免注销后被重新挂上
+            self._reregister_keyboard(listener, gen)
+        elif (
+            self._backend == "keyboard"
+            and self._safe_callback
+            and (self._reregister_pending)
+        ):
+            logger.warning("上次自动重注册未完成（_reregister_pending），重试重挂热键")
+            _log_hotkey_event("info", "重试上次未完成的热键重注册")
+            self._reregister_keyboard(listener, gen)
+        elif (
+            sys.platform == "win32"
+            and self._backend == "keyboard"
+            and self._safe_callback
+            and self._hook_observer is not None
+            and self._hook_health_check(time.monotonic())
+        ):
+            logger.error("键盘钩子心跳超时（线程存活但钩子已失效）")
+            _log_hotkey_event(
+                "error", "钩子心跳超时（线程存活但钩子已失效），重启监听线程"
+            )
+            self._restart_keyboard_listener(listener, gen)
 
     def _reregister_keyboard(self, listener, gen=0):
         """重置 keyboard 监听状态并重新注册热键，返回是否成功。
@@ -207,10 +269,9 @@ class GlobalHotkey:
                         keyboard.remove_hotkey(self._hotkey)
                     except Exception:
                         pass
-                # 线程崩溃后 listening 标志仍为 True，需重置才能重启线程
+                # 按单线程死亡场景补齐线程，不重建仍存活的线程
                 try:
-                    listener.listening = False
-                    listener.start_if_necessary()
+                    self._ensure_listener_threads(listener)
                 except Exception as e:
                     logger.warning("keyboard 监听可能无法直接重启，改用重新 add: %s", e)
                 try:
@@ -225,9 +286,136 @@ class GlobalHotkey:
                 self._reregister_pending = False
                 logger.info(f"全局快捷键已自动重新注册: {self._hotkey}")
                 _log_hotkey_event("info", "热键已自动重新注册: %s" % self._hotkey)
+                # 重置心跳状态，下轮立即重新注入探针验证钩子
+                self._last_probe_at = 0.0
+                self._probe_pending_at = None
                 return True
             except Exception:
                 logger.exception("自动重新注册快捷键失败")
+                return False
+
+    def _ensure_listener_threads(self, listener):
+        """按 keyboard 监听/处理线程的存活状态补齐缺失线程，不重建仍存活的线程。
+
+        - 两者都存活：无需处理
+        - 仅监听线程死：保留处理线程，单独启动新监听线程（listen 会重装钩子）
+        - 仅处理线程死：保留监听线程（钩子仍在），单独启动新处理线程
+        - 两者都死：listening=False + start_if_necessary() 全量重启
+
+        避免重建仍存活的线程：重建监听线程会造成双钩子（每个按键处理两次、
+        热键触发两次），重建处理线程会泄漏重复的队列消费者。
+        """
+        lt = getattr(listener, "listening_thread", None)
+        pt = getattr(listener, "processing_thread", None)
+        lt_alive = lt is not None and lt.is_alive()
+        pt_alive = pt is not None and pt.is_alive()
+        if lt_alive and pt_alive:
+            return
+        if not lt_alive and not pt_alive:
+            listener.listening = False
+            listener.start_if_necessary()
+            return
+        if not lt_alive:
+            listener.listening = True
+            new_lt = threading.Thread(target=listener.listen)
+            new_lt.daemon = True
+            listener.listening_thread = new_lt
+            new_lt.start()
+        else:
+            new_pt = threading.Thread(target=listener.process)
+            new_pt.daemon = True
+            listener.processing_thread = new_pt
+            new_pt.start()
+
+    def _inject_probe_key(self):
+        """注入一次无害探针按键（F15 按下+抬起），验证钩子是否仍在接收事件"""
+        try:
+            import ctypes
+
+            user32 = ctypes.windll.user32
+            user32.keybd_event(0x7E, 0, 0, 0)
+            user32.keybd_event(0x7E, 0, 2, 0)  # KEYEVENTF_KEYUP
+        except Exception:
+            pass
+
+    def _hook_health_check(self, now) -> bool:
+        """Windows 钩子心跳：探针注入后未见任何键盘事件（含用户按键）即钩子已失效。
+
+        返回 True 表示本轮检测到钩子死亡；探针每 KEYBOARD_PROBE_INTERVAL 秒注入，
+        超时 KEYBOARD_PROBE_TIMEOUT 秒未确认则判死。钩子存活时任何按键都会刷新
+        _hook_last_seen，用户正常打字即视为存活，无需依赖探针本身。
+        观察者未注册（hook 失败的降级模式）时无法观测任何事件，直接返回 False
+        避免探针永远"未见事件"造成反复误判重启。
+        """
+        if self._hook_observer is None:
+            return False
+        if self._probe_pending_at is not None:
+            if self._hook_last_seen >= self._probe_pending_at:
+                self._probe_pending_at = None
+            elif now - self._probe_pending_at >= KEYBOARD_PROBE_TIMEOUT:
+                self._probe_pending_at = None
+                return True
+        if now - self._last_probe_at >= KEYBOARD_PROBE_INTERVAL:
+            self._last_probe_at = now
+            self._probe_pending_at = now
+            self._inject_probe_key()
+        return False
+
+    def _kill_listening_thread(self, listener):
+        """让旧监听线程退出：其安装的钩子已失效但 GetMessage 仍在泵消息，
+        必须 PostThreadMessage WM_QUIT 结束后才能重装钩子，否则会出现双钩子
+        导致每个按键事件被处理两次。线程未退出时抛异常由调用方中止本次重启。
+        """
+        lt = getattr(listener, "listening_thread", None)
+        if lt is None or not lt.is_alive():
+            return
+        try:
+            import ctypes
+
+            # WM_QUIT = 0x0012，GetMessage 返回 0 使 listen() 循环退出
+            ctypes.windll.user32.PostThreadMessageW(lt.ident, 0x0012, 0, 0)
+            lt.join(timeout=3)
+        except Exception as e:
+            logger.warning("结束旧监听线程失败: %s", e)
+        if lt.is_alive():
+            raise RuntimeError("旧监听线程未能退出，中止重启避免双钩子")
+
+    def _restart_keyboard_listener(self, listener, gen=0) -> bool:
+        """钩子失效但线程存活时的完整重启：结束旧线程→重装钩子→重挂热键。
+
+        与 unregister/_reregister_keyboard 共用 _reregister_lock 与代次/停止校验；
+        失败置 _reregister_pending，守护线程下轮探针会再次检测并重试。
+        """
+        with self._reregister_lock:
+            if gen != self._watchdog_gen:
+                return False
+            stopped = self._safe_callback is None or (
+                self._watchdog_stop is not None
+                and getattr(self._watchdog_stop, "is_set", lambda: False)()
+            )
+            if stopped:
+                return False
+            try:
+                import keyboard
+
+                if self._hotkey:
+                    try:
+                        keyboard.remove_hotkey(self._hotkey)
+                    except Exception:
+                        pass
+                self._kill_listening_thread(listener)
+                self._ensure_listener_threads(listener)
+                keyboard.add_hotkey(self._hotkey, self._safe_callback, suppress=False)
+                self._reregister_pending = False
+                self._last_probe_at = 0.0
+                self._probe_pending_at = None
+                logger.info(f"键盘钩子已重启并重新注册: {self._hotkey}")
+                _log_hotkey_event("info", "钩子已重启并重新注册: %s" % self._hotkey)
+                return True
+            except Exception as e:
+                self._reregister_pending = True
+                logger.warning("钩子重启失败: %s", e)
+                _log_hotkey_event("error", "钩子重启失败: %s" % e)
                 return False
 
     def _try_pynput(self, hotkey: str, callback) -> bool:
@@ -346,8 +534,11 @@ class GlobalHotkey:
 
                     if self._hotkey:
                         keyboard.remove_hotkey(self._hotkey)
+                    if self._hook_observer is not None:
+                        keyboard.unhook(self._hook_observer)
                 except Exception:
                     pass
+                self._hook_observer = None
             elif self._backend == "pynput":
                 if self._listener:
                     try:

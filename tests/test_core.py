@@ -4,6 +4,7 @@ import re
 import sys
 import tempfile
 import threading
+import time
 import unittest
 import unittest.mock as mock
 from pathlib import Path
@@ -186,9 +187,11 @@ class TestDatabase(unittest.TestCase):
         # 孤儿标签一次性修剪
         self.assertEqual(set(self.db.get_all_tags()), {"only2"})
         # 外键级联清理分组成员关系
-        rows = self.db._get_conn().execute(
-            "SELECT 1 FROM meme_collections WHERE meme_id=?", (m1,)
-        ).fetchall()
+        rows = (
+            self.db._get_conn()
+            .execute("SELECT 1 FROM meme_collections WHERE meme_id=?", (m1,))
+            .fetchall()
+        )
         self.assertEqual(len(rows), 0)
         self.assertFalse(self.db.is_favorite(m2))
 
@@ -404,9 +407,10 @@ class TestDatabase(unittest.TestCase):
 class TestHotkeyWatchdog(unittest.TestCase):
     """GlobalHotkey 键盘监听线程守护：自动重注册逻辑（mock keyboard 模块）"""
 
-    def _fake_keyboard_module(self, should_raise=False):
+    def _fake_keyboard_module(self, should_raise=False, hook_raises=False):
         class FakeModule(object):
             add_raises = False
+            hook_raises = False
             add_calls = 0
             remove_calls = 0
 
@@ -420,9 +424,333 @@ class TestHotkeyWatchdog(unittest.TestCase):
             def remove_hotkey(cls, *a, **kw):
                 cls.remove_calls += 1
 
-        if should_raise:
-            FakeModule.add_raises = True
+            @classmethod
+            def hook(cls, *a, **kw):
+                if cls.hook_raises:
+                    raise RuntimeError("hook-fail")
+
+            @classmethod
+            def unhook(cls, *a, **kw):
+                pass
+
+        FakeModule.add_raises = should_raise
+        FakeModule.hook_raises = hook_raises
         return FakeModule
+
+    @mock.patch.dict("sys.modules", {"keyboard": None}, clear=False)
+    def test_file_logger_disabled_under_pytest(self):
+        """pytest 下禁用热键文件日志，测试夹具错误不得写入真实 hotkey.log。"""
+        from src import hotkey
+
+        self.assertIs(hotkey._get_file_logger(), hotkey.logger)
+
+    def _fresh_hotkey(self):
+        from src.hotkey import GlobalHotkey
+
+        hk = GlobalHotkey()
+        hk._hotkey = "Ctrl+Alt+N"
+        hk._safe_callback = lambda: None
+        hk._backend = "keyboard"
+        hk._watchdog_stop = threading.Event()
+        hk._hook_last_seen = 0.0
+        hk._last_probe_at = 0.0
+        hk._probe_pending_at = None
+        hk._hook_observer = lambda event: None  # 模拟观察者已注册
+        return hk
+
+    def test_hook_health_check_probe_timeout_detects_dead_hook(self):
+        """探针注入后超时未见任何键盘事件判死；用户按键即视为存活。"""
+        from src.hotkey import KEYBOARD_PROBE_TIMEOUT
+
+        hk = self._fresh_hotkey()
+        calls = []
+        hk._inject_probe_key = lambda: calls.append(1)
+
+        # 第一轮：注入探针，待确认
+        self.assertFalse(hk._hook_health_check(now=100.0))
+        self.assertEqual(len(calls), 1)
+        self.assertEqual(hk._probe_pending_at, 100.0)
+        # 用户按键（或探针事件）上报 → 存活
+        hk._hook_last_seen = 100.5
+        self.assertFalse(hk._hook_health_check(now=105.0))
+        self.assertIsNone(hk._probe_pending_at)
+        # 距上次探针满间隔再次注入
+        self.assertFalse(hk._hook_health_check(now=130.0))
+        self.assertEqual(len(calls), 2)
+        # 注入后超时无任何事件 → 判死
+        hk._hook_last_seen = 0.0
+        self.assertTrue(hk._hook_health_check(now=130.0 + KEYBOARD_PROBE_TIMEOUT))
+        self.assertIsNone(hk._probe_pending_at)
+
+    def test_restart_keyboard_listener_reinstalls_hook(self):
+        """钩子失效重启：结束旧线程→重装钩子→重挂热键；成功后清 pending。"""
+        fake_mod = self._fake_keyboard_module()
+        fake_mod.add_calls = 0
+        fake_mod.remove_calls = 0
+
+        class FakeThread(object):
+            def is_alive(self):
+                return False
+
+        class FakeListener(object):
+            listening = True
+            listening_thread = FakeThread()
+            started = False
+
+            def start_if_necessary(self):
+                self.started = True
+
+        hk = self._fresh_hotkey()
+        hk._reregister_pending = True  # 此前一次重启失败遗留
+        hk._kill_listening_thread = lambda listener: None
+
+        listener = FakeListener()
+        with mock.patch.dict("sys.modules", {"keyboard": fake_mod}):
+            ok = hk._restart_keyboard_listener(listener)
+
+        self.assertTrue(ok)
+        self.assertFalse(hk._reregister_pending)
+        self.assertEqual(fake_mod.remove_calls, 1)
+        self.assertTrue(listener.started)
+        self.assertEqual(fake_mod.add_calls, 1)
+
+    def test_restart_keyboard_listener_keeps_healthy_processing_thread(self):
+        """处理线程健康时仅替换监听线程，不产生重复的事件消费者。"""
+        fake_mod = self._fake_keyboard_module()
+        fake_mod.add_calls = 0
+        fake_mod.remove_calls = 0
+
+        class FakeThread(object):
+            def __init__(self, alive):
+                self._alive = alive
+
+            def is_alive(self):
+                return self._alive
+
+        class FakeListener(object):
+            listening = True
+            listening_thread = FakeThread(False)  # kill 之后的残留状态
+            processing_thread = FakeThread(True)
+            started = False
+            listened = False
+
+            def start_if_necessary(self):
+                self.started = True
+
+            def listen(self):
+                self.listened = True
+
+        hk = self._fresh_hotkey()
+        hk._kill_listening_thread = lambda listener: None
+        original_pt = FakeListener.processing_thread
+
+        listener = FakeListener()
+        with mock.patch.dict("sys.modules", {"keyboard": fake_mod}):
+            ok = hk._restart_keyboard_listener(listener)
+            if listener.listening_thread is not None:
+                listener.listening_thread.join(timeout=2)
+
+        self.assertTrue(ok)
+        self.assertFalse(listener.started)  # 未走 start_if_necessary
+        self.assertTrue(listener.listening)
+        self.assertTrue(listener.listened)  # 新监听线程已启动
+        # 原处理线程对象被保留（未新建重复消费者）
+        self.assertIs(listener.processing_thread, original_pt)
+        self.assertEqual(fake_mod.add_calls, 1)
+
+    @mock.patch.dict("sys.modules", {"keyboard": None}, clear=False)
+    @mock.patch("sys.platform", "win32")
+    def test_try_keyboard_hook_failure_degrades_gracefully(self):
+        """hook 观察者注册失败：保留 keyboard 后端仅降级心跳，不回落 pynput
+        造成双后端重复触发。"""
+        from src.hotkey import GlobalHotkey
+
+        fake_mod = self._fake_keyboard_module(hook_raises=True)
+        hk = GlobalHotkey()
+        try:
+            with mock.patch.dict("sys.modules", {"keyboard": fake_mod}):
+                ok = hk._try_keyboard("Ctrl+Alt+N", lambda: None)
+
+            self.assertTrue(ok)
+            self.assertEqual(hk._backend, "keyboard")
+            self.assertIsNone(hk._hook_observer)
+            self.assertEqual(fake_mod.add_calls, 1)
+        finally:
+            hk.unregister()
+
+    def test_hook_health_check_disabled_without_observer(self):
+        """降级模式（观察者未注册）下不注入探针、不判死，避免误判重启循环。"""
+        hk = self._fresh_hotkey()
+        hk._hook_observer = None
+        calls = []
+        hk._inject_probe_key = lambda: calls.append(1)
+
+        self.assertFalse(hk._hook_health_check(now=1000.0))
+        self.assertEqual(calls, [])
+        self.assertIsNone(hk._probe_pending_at)
+
+    def test_reregister_listening_only_death_starts_listen_thread(self):
+        """仅监听线程死亡：保留处理线程，单独启动新监听线程（不重建存活线程）。"""
+        fake_mod = self._fake_keyboard_module()
+        fake_mod.add_calls = 0
+        fake_mod.remove_calls = 0
+
+        class FakeThread(object):
+            def __init__(self, alive):
+                self._alive = alive
+
+            def is_alive(self):
+                return self._alive
+
+        class FakeListener(object):
+            listening = True
+            listening_thread = FakeThread(False)  # 仅监听线程死亡
+            processing_thread = FakeThread(True)  # 处理线程存活
+            restarted = False
+            listened = False
+
+            def start_if_necessary(self):
+                self.restarted = True
+
+            def listen(self):
+                self.listened = True
+
+        hk = self._fresh_hotkey()
+        original_pt = FakeListener.processing_thread
+
+        listener = FakeListener()
+        with mock.patch.dict("sys.modules", {"keyboard": fake_mod}):
+            ok = hk._reregister_keyboard(listener)
+            listener.listening_thread.join(timeout=2)
+
+        self.assertTrue(ok)
+        self.assertFalse(listener.restarted)  # 未全量重启
+        self.assertTrue(listener.listened)  # 单独启动了新监听线程
+        self.assertIs(listener.processing_thread, original_pt)  # 处理线程保留
+        self.assertEqual(fake_mod.add_calls, 1)
+
+    def test_reregister_processing_only_death_starts_process_thread(self):
+        """仅处理线程死亡：保留监听线程（钩子仍在），单独启动新处理线程。"""
+        fake_mod = self._fake_keyboard_module()
+        fake_mod.add_calls = 0
+        fake_mod.remove_calls = 0
+
+        class FakeThread(object):
+            def __init__(self, alive):
+                self._alive = alive
+
+            def is_alive(self):
+                return self._alive
+
+        class FakeListener(object):
+            listening = True
+            listening_thread = FakeThread(True)  # 监听线程存活（钩子仍在）
+            processing_thread = FakeThread(False)  # 仅处理线程死亡
+            restarted = False
+            processed = False
+
+            def start_if_necessary(self):
+                self.restarted = True
+
+            def process(self):
+                self.processed = True
+
+        hk = self._fresh_hotkey()
+        original_lt = FakeListener.listening_thread
+
+        listener = FakeListener()
+        with mock.patch.dict("sys.modules", {"keyboard": fake_mod}):
+            ok = hk._reregister_keyboard(listener)
+            listener.processing_thread.join(timeout=2)
+
+        self.assertTrue(ok)
+        self.assertFalse(listener.restarted)  # 未全量重启（避免双钩子）
+        self.assertTrue(listener.processed)  # 单独启动了新处理线程
+        self.assertIs(listener.listening_thread, original_lt)  # 监听线程未重建
+        self.assertEqual(fake_mod.add_calls, 1)
+
+    def test_watchdog_tick_retries_pending_reregistration(self):
+        """add_hotkey 失败置 pending 后，看门狗轮询必须重试（否则热键永久失效）。"""
+        fake_mod = self._fake_keyboard_module()
+        fake_mod.add_calls = 0
+        fake_mod.remove_calls = 0
+
+        class FakeThread(object):
+            def is_alive(self):
+                return True
+
+        class FakeListener(object):
+            listening = True
+            listening_thread = FakeThread()  # 线程已补齐：pending 场景的常态
+            processing_thread = FakeThread()
+
+        hk = self._fresh_hotkey()
+        hk._reregister_pending = True  # 上轮 add_hotkey 失败遗留
+
+        with mock.patch.dict("sys.modules", {"keyboard": fake_mod}):
+            hk._watchdog_tick(FakeListener(), hk._watchdog_gen)
+
+        self.assertFalse(hk._reregister_pending)  # 重试成功
+        self.assertEqual(fake_mod.add_calls, 1)
+
+    def test_watchdog_tick_healthy_state_is_noop(self):
+        """线程存活、无 pending、观察者存活时单轮检查不做任何动作。"""
+        fake_mod = self._fake_keyboard_module()
+        fake_mod.add_calls = 0
+
+        class FakeThread(object):
+            def is_alive(self):
+                return True
+
+        class FakeListener(object):
+            listening = True
+            listening_thread = FakeThread()
+            processing_thread = FakeThread()
+
+        hk = self._fresh_hotkey()
+        hk._reregister_pending = False
+        # 模拟刚注入过探针：间隔未满，不应再次注入
+        hk._last_probe_at = time.monotonic()
+        probe_calls = []
+        hk._inject_probe_key = lambda: probe_calls.append(1)
+
+        with mock.patch.dict("sys.modules", {"keyboard": fake_mod}):
+            hk._watchdog_tick(FakeListener(), hk._watchdog_gen)
+
+        self.assertEqual(fake_mod.add_calls, 0)
+        # 探针在间隔未满时不注入（刚注册不久）
+        self.assertEqual(probe_calls, [])
+
+    def test_restart_keyboard_listener_failure_sets_pending(self):
+        """旧监听线程无法退出时中止重启（避免双钩子），置 pending 待下轮重试。"""
+        fake_mod = self._fake_keyboard_module()
+        fake_mod.add_calls = 0
+        fake_mod.remove_calls = 0
+
+        class FakeThread(object):
+            def is_alive(self):
+                return True
+
+        class FakeListener(object):
+            listening = True
+            listening_thread = FakeThread()
+
+            def start_if_necessary(self):
+                raise AssertionError("不应重装钩子")
+
+        hk = self._fresh_hotkey()
+
+        def refuse(listener):
+            raise RuntimeError("旧监听线程未能退出")
+
+        hk._kill_listening_thread = refuse
+
+        with mock.patch.dict("sys.modules", {"keyboard": fake_mod}):
+            ok = hk._restart_keyboard_listener(FakeListener())
+
+        self.assertFalse(ok)
+        self.assertTrue(hk._reregister_pending)
+        self.assertEqual(fake_mod.add_calls, 0)
 
     @mock.patch.dict("sys.modules", {"keyboard": None}, clear=False)
     def test_reregister_restarts_listener_and_reattaches(self):
