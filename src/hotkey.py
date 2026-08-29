@@ -1,6 +1,7 @@
 """全局快捷键 - 跨平台热键注册，自动降级容错"""
 
 import logging
+import os
 import sys
 import threading
 import time
@@ -26,6 +27,11 @@ def _get_file_logger():
     if _file_logger is not None:
         return _file_logger
     if _file_logger_tried:
+        return logger
+    # pytest 下禁用：测试（TestHotkeyWatchdog/test_startup）会触发注册/重注册日志，
+    # 夹具错误（如 inject-fail）会污染真实 data_dir 的 hotkey.log，误导排障
+    if "PYTEST_CURRENT_TEST" in os.environ:
+        _file_logger_tried = True
         return logger
     with _file_logger_lock:
         if _file_logger is not None:

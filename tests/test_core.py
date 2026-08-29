@@ -186,9 +186,11 @@ class TestDatabase(unittest.TestCase):
         # 孤儿标签一次性修剪
         self.assertEqual(set(self.db.get_all_tags()), {"only2"})
         # 外键级联清理分组成员关系
-        rows = self.db._get_conn().execute(
-            "SELECT 1 FROM meme_collections WHERE meme_id=?", (m1,)
-        ).fetchall()
+        rows = (
+            self.db._get_conn()
+            .execute("SELECT 1 FROM meme_collections WHERE meme_id=?", (m1,))
+            .fetchall()
+        )
         self.assertEqual(len(rows), 0)
         self.assertFalse(self.db.is_favorite(m2))
 
@@ -423,6 +425,13 @@ class TestHotkeyWatchdog(unittest.TestCase):
         if should_raise:
             FakeModule.add_raises = True
         return FakeModule
+
+    @mock.patch.dict("sys.modules", {"keyboard": None}, clear=False)
+    def test_file_logger_disabled_under_pytest(self):
+        """pytest 下禁用热键文件日志，测试夹具错误不得写入真实 hotkey.log。"""
+        from src import hotkey
+
+        self.assertIs(hotkey._get_file_logger(), hotkey.logger)
 
     @mock.patch.dict("sys.modules", {"keyboard": None}, clear=False)
     def test_reregister_restarts_listener_and_reattaches(self):
