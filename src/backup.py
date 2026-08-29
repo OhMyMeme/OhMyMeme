@@ -174,7 +174,7 @@ def restore_backup(zip_path, data_dir, cache_dir, db, progress_cb=None) -> dict:
                         f"实际 {len(members)} 个"
                     ),
                 }
-            total = len(members) + 3
+            total = len(members) * 2 + 2  # 解包 N + 库解包 1 + 移动 N + 落库 1
             done = 0
 
             def tick():

@@ -2298,7 +2298,7 @@ class SettingsApi:
             result = webview.windows[0].create_file_dialog(
                 webview.FileDialog.OPEN,
                 allow_multiple=False,
-                file_types=("备份包 (OhMyMeme-backup-*.zip)", "*.zip"),
+                file_types=("备份包 (*.zip)",),
             )
         except Exception:
             return {"ok": False, "error": "dialog failed"}
