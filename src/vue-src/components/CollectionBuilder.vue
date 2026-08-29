@@ -27,7 +27,7 @@ function onBoxKeydown(e: KeyboardEvent) {
 
 <template>
   <div v-if="cb.visible.value" id="cb-overlay">
-    <div id="cb-box" role="dialog" aria-modal="true" aria-labelledby="cb-title" @keydown="onBoxKeydown">
+    <div id="cb-box" :class="{ 'cb-box-pick': isPick }" role="dialog" aria-modal="true" aria-labelledby="cb-title" @keydown="onBoxKeydown">
       <div class="cb-header">
         <h2 id="cb-title">{{ isPick ? pickTitle : '添加分组' }}</h2>
         <div v-if="isPick" class="cb-pick-hint">将{{ cb.pickMode.value === 'move' ? '移动' : '加入' }}已选的 {{ cb.selectedIds.value.size }} 个表情包</div>
@@ -41,8 +41,13 @@ function onBoxKeydown(e: KeyboardEvent) {
             spellcheck="false"
             @focus="cb.showDropdown.value = true"
           />
-          <div v-if="cb.showDropdown.value" id="cb-dropdown" class="cb-dropdown show">
-            <div class="cb-dd-section" v-if="cb.collectionName.value.trim() || cb.selectedId.value == null">新建分组</div>
+          <div
+            v-if="isPick || cb.showDropdown.value"
+            id="cb-dropdown"
+            class="cb-dropdown show"
+            :class="{ 'cb-dropdown-inline': isPick }"
+          >
+            <div class="cb-dd-section" v-if="cb.collectionName.value.trim() || (!isPick && cb.selectedId.value == null)">新建分组</div>
             <div v-if="cb.collectionName.value.trim()" class="cb-dd-item cb-dd-new-item" @click="cb.createNew()">
               <span class="cb-dd-new">「{{ cb.collectionName.value }}」</span>
               <span class="cb-dd-hint">创建新分组</span>
@@ -155,6 +160,18 @@ function onBoxKeydown(e: KeyboardEvent) {
   flex-direction: column;
   overflow: hidden;
   box-shadow: var(--shadow-lg);
+}
+
+/* 选择模式（批量加入/移动分组）：窄弹窗 + 分组列表内联常显 */
+.cb-box-pick {
+  width: 460px;
+}
+
+.cb-dropdown-inline {
+  position: static;
+  max-height: 260px;
+  margin-top: 8px;
+  box-shadow: none;
 }
 
 .cb-header {
