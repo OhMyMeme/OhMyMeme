@@ -194,39 +194,52 @@ class GlobalHotkey:
                     listener = getattr(keyboard, "_listener", None)
                     if listener is None:
                         continue
-                    lt = getattr(listener, "listening_thread", None)
-                    pt = getattr(listener, "processing_thread", None)
-                    dead = (lt is not None and not lt.is_alive()) or (
-                        pt is not None and not pt.is_alive()
-                    )
-                    if dead and self._backend == "keyboard" and self._safe_callback:
-                        logger.error(
-                            "全局快捷键监听/处理线程已退出，尝试自动重新注册热键"
-                        )
-                        _log_hotkey_event(
-                            "error", "监听/处理线程已退出，尝试自动重新注册热键"
-                        )
-                        # 与 unregister 用同一锁互斥：若注销已完成则停止标志已置位，
-                        # 重注册函数会因该标志/代次不符而直接返回，避免注销后被重新挂上
-                        self._reregister_keyboard(listener, gen)
-                    elif (
-                        sys.platform == "win32"
-                        and self._backend == "keyboard"
-                        and self._safe_callback
-                        and self._hook_observer is not None
-                        and self._hook_health_check(time.monotonic())
-                    ):
-                        logger.error("键盘钩子心跳超时（线程存活但钩子已失效）")
-                        _log_hotkey_event(
-                            "error",
-                            "钩子心跳超时（线程存活但钩子已失效），重启监听线程",
-                        )
-                        self._restart_keyboard_listener(listener, gen)
+                    self._watchdog_tick(listener, gen)
                 except Exception:
                     logger.exception("快捷键守护线程检查异常")
 
         t = threading.Thread(target=watch, daemon=True)
         t.start()
+
+    def _watchdog_tick(self, listener, gen):
+        """看门狗单轮检查，按优先级分派恢复动作：
+
+        1. 监听/处理线程死亡 → _reregister_keyboard 补齐线程并重挂热键
+        2. 上次恢复 add_hotkey 失败（_reregister_pending）→ 线程已补齐，重试重挂；
+           否则线程存活、钩子心跳正常时 pending 永远不会被消费，热键将永久失效
+        3. （Windows）钩子心跳超时 → _restart_keyboard_listener 重装钩子
+        """
+        lt = getattr(listener, "listening_thread", None)
+        pt = getattr(listener, "processing_thread", None)
+        dead = (lt is not None and not lt.is_alive()) or (
+            pt is not None and not pt.is_alive()
+        )
+        if dead and self._backend == "keyboard" and self._safe_callback:
+            logger.error("全局快捷键监听/处理线程已退出，尝试自动重新注册热键")
+            _log_hotkey_event("error", "监听/处理线程已退出，尝试自动重新注册热键")
+            # 与 unregister 用同一锁互斥：若注销已完成则停止标志已置位，
+            # 重注册函数会因该标志/代次不符而直接返回，避免注销后被重新挂上
+            self._reregister_keyboard(listener, gen)
+        elif (
+            self._backend == "keyboard"
+            and self._safe_callback
+            and (self._reregister_pending)
+        ):
+            logger.warning("上次自动重注册未完成（_reregister_pending），重试重挂热键")
+            _log_hotkey_event("info", "重试上次未完成的热键重注册")
+            self._reregister_keyboard(listener, gen)
+        elif (
+            sys.platform == "win32"
+            and self._backend == "keyboard"
+            and self._safe_callback
+            and self._hook_observer is not None
+            and self._hook_health_check(time.monotonic())
+        ):
+            logger.error("键盘钩子心跳超时（线程存活但钩子已失效）")
+            _log_hotkey_event(
+                "error", "钩子心跳超时（线程存活但钩子已失效），重启监听线程"
+            )
+            self._restart_keyboard_listener(listener, gen)
 
     def _reregister_keyboard(self, listener, gen=0):
         """重置 keyboard 监听状态并重新注册热键，返回是否成功。

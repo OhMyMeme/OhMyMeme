@@ -4,6 +4,7 @@ import re
 import sys
 import tempfile
 import threading
+import time
 import unittest
 import unittest.mock as mock
 from pathlib import Path
@@ -667,6 +668,58 @@ class TestHotkeyWatchdog(unittest.TestCase):
         self.assertTrue(listener.processed)  # 单独启动了新处理线程
         self.assertIs(listener.listening_thread, original_lt)  # 监听线程未重建
         self.assertEqual(fake_mod.add_calls, 1)
+
+    def test_watchdog_tick_retries_pending_reregistration(self):
+        """add_hotkey 失败置 pending 后，看门狗轮询必须重试（否则热键永久失效）。"""
+        fake_mod = self._fake_keyboard_module()
+        fake_mod.add_calls = 0
+        fake_mod.remove_calls = 0
+
+        class FakeThread(object):
+            def is_alive(self):
+                return True
+
+        class FakeListener(object):
+            listening = True
+            listening_thread = FakeThread()  # 线程已补齐：pending 场景的常态
+            processing_thread = FakeThread()
+
+        hk = self._fresh_hotkey()
+        hk._reregister_pending = True  # 上轮 add_hotkey 失败遗留
+
+        with mock.patch.dict("sys.modules", {"keyboard": fake_mod}):
+            hk._watchdog_tick(FakeListener(), hk._watchdog_gen)
+
+        self.assertFalse(hk._reregister_pending)  # 重试成功
+        self.assertEqual(fake_mod.add_calls, 1)
+
+    def test_watchdog_tick_healthy_state_is_noop(self):
+        """线程存活、无 pending、观察者存活时单轮检查不做任何动作。"""
+        fake_mod = self._fake_keyboard_module()
+        fake_mod.add_calls = 0
+
+        class FakeThread(object):
+            def is_alive(self):
+                return True
+
+        class FakeListener(object):
+            listening = True
+            listening_thread = FakeThread()
+            processing_thread = FakeThread()
+
+        hk = self._fresh_hotkey()
+        hk._reregister_pending = False
+        # 模拟刚注入过探针：间隔未满，不应再次注入
+        hk._last_probe_at = time.monotonic()
+        probe_calls = []
+        hk._inject_probe_key = lambda: probe_calls.append(1)
+
+        with mock.patch.dict("sys.modules", {"keyboard": fake_mod}):
+            hk._watchdog_tick(FakeListener(), hk._watchdog_gen)
+
+        self.assertEqual(fake_mod.add_calls, 0)
+        # 探针在间隔未满时不注入（刚注册不久）
+        self.assertEqual(probe_calls, [])
 
     def test_restart_keyboard_listener_failure_sets_pending(self):
         """旧监听线程无法退出时中止重启（避免双钩子），置 pending 待下轮重试。"""
