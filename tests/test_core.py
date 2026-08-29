@@ -1040,6 +1040,39 @@ class TestBackup(unittest.TestCase):
         self.assertFalse(r2["ok"])  # 仅载体库不得被恢复覆盖
         self.assertEqual(list(cache2.iterdir()), [])
 
+    def test_restore_from_rechecks_empty_and_preserves_data(self):
+        """模拟竞态：前置空库检查后又有写入，restore_from 锁内复查拒绝且记录保留。"""
+        from src import backup
+
+        src_cache = self.tmp / "src_cache"
+        src_cache.mkdir()
+        (src_cache / "aaa111.png").write_bytes(b"data")
+        db2 = MemeDB(self.tmp / "src.db")
+        try:
+            db2.add_meme("aaa111.png")
+            r = backup.create_backup(self.backup_dir, self.tmp, src_cache, db2)
+        finally:
+            db2.close()
+
+        self.db.add_meme("sneaky.png")  # 前置检查之后才出现的写入
+        real_count_all = self.db.count_all
+        calls = {"n": 0}
+
+        def fake_count_all():
+            calls["n"] += 1
+            if calls["n"] == 1:
+                return 0  # 首次（restore_backup 前置检查）谎报为空
+            return real_count_all()  # restore_from 锁内复查取真实值
+
+        with mock.patch.object(self.db, "count_all", side_effect=fake_count_all):
+            r = backup.restore_backup(
+                self.backup_dir / r["path"], self.tmp, self.cache, self.db
+            )
+        self.assertFalse(r["ok"])
+        self.assertIn("中止", r["error"])
+        self.assertEqual(self.db.count_all(), 1)  # 竞态写入的记录仍被保留
+        self.assertEqual(calls["n"], 2)  # 锁内复查确实执行过
+
     def test_prepare_restore_source_rejects_missing_tables(self):
         """候选库缺失关系表（meme_tags/favorites 等）时拒绝恢复。"""
         partial = self.tmp / "partial.db"
@@ -1087,6 +1120,7 @@ class TestBackup(unittest.TestCase):
                 CREATE TABLE collections (
                     id INTEGER PRIMARY KEY AUTOINCREMENT,
                     name TEXT NOT NULL,
+                    parent_id INTEGER DEFAULT NULL,
                     sort_order INTEGER DEFAULT 0
                 );
                 CREATE TABLE meme_collections (

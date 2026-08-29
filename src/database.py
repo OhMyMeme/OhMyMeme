@@ -30,6 +30,7 @@ _RESTORE_REQUIRED_FOREIGN_KEYS = {
     },
     "favorites": {("meme_id", "memes", "id", "CASCADE")},
     "recent_uses": {("meme_id", "memes", "id", "CASCADE")},
+    "collections": {("parent_id", "collections", "id", "CASCADE")},
 }
 _RESTORE_REQUIRED_COLUMNS = {
     "memes": {
@@ -252,8 +253,15 @@ class MemeDB:
             conn.close()
 
     def restore_from(self, path: str):
-        """用备份库原子替换当前库内容（backup API，绕过 SQL 层），并补齐旧版本缺失列"""
+        """用备份库原子替换当前库内容（backup API，绕过 SQL 层），并补齐旧版本缺失列
+
+        获取 _lock 后、替换前复查空库：所有 MemeDB 写入（含未走 _IMPORT_LOCK 的
+        rescan）都在同一把锁上串行，检查与替换因此原子，绕过前置检查的竞态窗口
+        不可能得手；非空时抛 ValueError 交由 restore_backup 回滚缓存文件。
+        """
         with self._lock:
+            if self.count_all() != 0:
+                raise ValueError("恢复期间检测到新数据写入，已中止")
             src = sqlite3.connect(path)
             try:
                 src.backup(self._get_conn())
