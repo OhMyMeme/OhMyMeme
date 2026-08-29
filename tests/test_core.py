@@ -3,6 +3,7 @@
 import json
 import re
 import shutil
+import sqlite3
 import sys
 import tempfile
 import threading
@@ -1038,6 +1039,47 @@ class TestBackup(unittest.TestCase):
         )
         self.assertFalse(r2["ok"])  # 仅载体库不得被恢复覆盖
         self.assertEqual(list(cache2.iterdir()), [])
+
+    def test_prepare_restore_source_rejects_missing_tables(self):
+        """候选库缺失关系表（meme_tags/favorites 等）时拒绝恢复。"""
+        partial = self.tmp / "partial.db"
+        conn = sqlite3.connect(partial)
+        try:
+            conn.executescript(
+                "CREATE TABLE memes (id INTEGER PRIMARY KEY, filename TEXT);"
+                "CREATE TABLE tags (id INTEGER PRIMARY KEY, name TEXT);"
+            )
+            conn.commit()
+        finally:
+            conn.close()
+        with self.assertRaises(ValueError) as ctx:
+            self.db.prepare_restore_source(str(partial))
+        self.assertIn("缺少必需的数据表", str(ctx.exception))
+        self.assertIn("meme_tags", str(ctx.exception))
+
+    def test_prepare_restore_source_rejects_fk_orphans(self):
+        """候选库存在孤儿外键记录（引用被删分组）时拒绝恢复。"""
+        cid = None
+        src = self.tmp / "candidate.db"
+        db2 = MemeDB(self.tmp / "src.db")
+        try:
+            mid = db2.add_meme("a.png")
+            cid = db2.create_collection("c")
+            db2.add_to_collection(mid, cid)
+            db2.backup_to(str(src))
+        finally:
+            db2.close()
+        # 默认连接外键关闭，可删除被引用行制造孤儿 meme_collections 记录
+        conn = sqlite3.connect(src)
+        try:
+            conn.execute("PRAGMA foreign_keys=OFF")
+            conn.execute("DELETE FROM collections WHERE id=?", (cid,))
+            conn.commit()
+        finally:
+            conn.close()
+        with self.assertRaises(ValueError) as ctx:
+            self.db.prepare_restore_source(str(src))
+        self.assertIn("孤儿外键", str(ctx.exception))
 
     def test_restore_rejects_oversized_or_unsupported_members(self):
         """ZIP 安全限制：不支持的压缩类型 / 超大成员拒绝恢复。"""

@@ -7,6 +7,41 @@ from typing import List, Optional, Tuple
 
 from .config import get_config
 
+# 备份恢复候选库预校验所需的表与列（backup.prepare_restore_source 使用）
+_RESTORE_REQUIRED_TABLES = (
+    "memes",
+    "tags",
+    "meme_tags",
+    "collections",
+    "meme_collections",
+    "favorites",
+    "recent_uses",
+)
+_RESTORE_REQUIRED_COLUMNS = {
+    "memes": {
+        "id",
+        "filename",
+        "file_hash",
+        "original_name",
+        "width",
+        "height",
+        "file_size",
+        "mime_type",
+        "sort_order",
+        "stego_of_hash",
+        "from_stego",
+        "perceptual_hash",
+        "created_at",
+        "updated_at",
+    },
+    "tags": {"id", "name"},
+    "meme_tags": {"meme_id", "tag_id"},
+    "collections": {"id", "name", "parent_id", "sort_order"},
+    "meme_collections": {"meme_id", "collection_id", "sort_order"},
+    "favorites": {"meme_id", "added_at"},
+    "recent_uses": {"meme_id", "used_at"},
+}
+
 
 class MemeDB:
     """SQLite元数据存储，线程安全"""
@@ -143,7 +178,8 @@ class MemeDB:
         return row[0] if row else 0
 
     def prepare_restore_source(self, path: str):
-        """候选备份库预校验：integrity_check + 必需表存在性 + 隔离连接上预迁移。
+        """候选备份库预校验：integrity_check + 全部表/必需列存在性 + 隔离连接上
+        预迁移 + 孤儿外键检查。
 
         在 staging 文件的独立连接上操作，不触碰活动库；失败抛 ValueError。
         """
@@ -158,10 +194,22 @@ class MemeDB:
                     "SELECT name FROM sqlite_master WHERE type='table'"
                 ).fetchall()
             }
-            missing = {"memes", "tags", "collections"} - tables
-            if missing:
-                raise ValueError("缺少必需的数据表: " + ", ".join(sorted(missing)))
+            missing_tables = [t for t in _RESTORE_REQUIRED_TABLES if t not in tables]
+            if missing_tables:
+                raise ValueError("缺少必需的数据表: " + ", ".join(missing_tables))
             self._migrate(conn)
+            for tbl, cols in _RESTORE_REQUIRED_COLUMNS.items():
+                have = {
+                    r[1] for r in conn.execute(f"PRAGMA table_info({tbl})").fetchall()
+                }
+                missing_cols = cols - have
+                if missing_cols:
+                    raise ValueError(
+                        f"表 {tbl} 缺少必需列: " + ", ".join(sorted(missing_cols))
+                    )
+            fk_issues = conn.execute("PRAGMA foreign_key_check").fetchall()
+            if fk_issues:
+                raise ValueError(f"存在 {len(fk_issues)} 条孤儿外键记录")
             conn.commit()
         finally:
             conn.close()
