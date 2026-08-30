@@ -280,19 +280,21 @@ def _list_account_dbs(account_root):
     names = []
     storage = os.path.join(account_root, "db_storage")
     try:
-        for entry in os.listdir(storage):
-            p = os.path.join(storage, entry)
-            if os.path.isfile(p) and entry.lower().endswith(".db"):
-                names.append(entry)
-            elif os.path.isdir(p):
-                for sub in os.listdir(p):
-                    if sub.lower().endswith(".db") and os.path.isfile(
-                        os.path.join(p, sub)
-                    ):
-                        names.append(f"{entry}/{sub}")
+        with os.scandir(storage) as it:
+            for entry in it:
+                if entry.name.lower().endswith(".db") and entry.is_file():
+                    names.append(entry.name)
+                elif entry.is_dir():
+                    with os.scandir(entry.path) as sub_it:
+                        for sub in sub_it:
+                            if sub.name.lower().endswith(".db") and sub.is_file():
+                                names.append(f"{entry.name}/{sub.name}")
+                                break
+                if len(names) >= 30:
+                    return names
     except OSError:
         pass
-    return names[:30]
+    return names
 
 
 def _is_sqlite_header(path):
