@@ -255,7 +255,46 @@ def _find_emoticon_db(account_root):
     for p in candidates:
         if os.path.isfile(p):
             return p
+    return _find_emoticon_db_wide(account_root)
+
+
+def _find_emoticon_db_wide(account_root):
+    """db_storage 一层内兜底查找 emoticon.db（覆盖布局差异）"""
+    storage = os.path.join(account_root, "db_storage")
+    p = os.path.join(storage, "emoticon.db")
+    if os.path.isfile(p):
+        return p
+    try:
+        entries = os.listdir(storage)
+    except OSError:
+        return ""
+    for entry in entries:
+        cand = os.path.join(storage, entry, "emoticon.db")
+        if os.path.isfile(cand):
+            return cand
     return ""
+
+
+def _list_account_dbs(account_root):
+    """列出账号目录 db_storage 内实际存在的 .db 文件（诊断用，有界）"""
+    names = []
+    storage = os.path.join(account_root, "db_storage")
+    try:
+        with os.scandir(storage) as it:
+            for entry in it:
+                if entry.name.lower().endswith(".db") and entry.is_file():
+                    names.append(entry.name)
+                elif entry.is_dir():
+                    with os.scandir(entry.path) as sub_it:
+                        for sub in sub_it:
+                            if sub.name.lower().endswith(".db") and sub.is_file():
+                                names.append(f"{entry.name}/{sub.name}")
+                                break
+                if len(names) >= 30:
+                    return names
+    except OSError:
+        pass
+    return names
 
 
 def _is_sqlite_header(path):
@@ -273,12 +312,14 @@ def _inspect_account(account_root):
     db_path = _find_emoticon_db(account_root)
     if not db_path:
         # 无表情库文件（favorite.db 等非表情索引存在与否都不影响）
+        # db_files 附带实际存在的库名，供前端在 no_database 时诊断真实布局
         return {
             "id": account_id,
             "path": account_root,
             "status": "resource_unmapped",
             "reason": "sticker_index_missing",
             "db_path": "",
+            "db_files": _list_account_dbs(account_root),
         }
     if not _is_sqlite_header(db_path):
         return {
@@ -650,8 +691,19 @@ def inspect_wechat_environment(user_root=None):
         status = "encrypted_index"
         reason = "wechat_index_encrypted"
     elif accounts:
-        status = "no_database"
-        reason = "sticker_index_missing"
+        # 微信 3.x 旧版布局（WeChat Files/<wxid>/Msg/Multi 或 Msg/MicroMsg.db）
+        # 的表情库为 Emotion.db，表结构与 4.x 不同，整条链路不支持，明确引导升级
+        legacy = any(
+            os.path.isdir(os.path.join(a["path"], "Msg", "Multi"))
+            or os.path.isfile(os.path.join(a["path"], "Msg", "MicroMsg.db"))
+            for a in accounts
+        )
+        if legacy:
+            status = "unsupported_version"
+            reason = "wechat_3x_unsupported"
+        else:
+            status = "no_database"
+            reason = "sticker_index_missing"
     else:
         status = "no_accounts"
         reason = "account_root_missing"
