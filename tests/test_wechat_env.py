@@ -89,3 +89,30 @@ def test_no_database_reports_existing_db_files(tmp_path):
     r = wechat_probe.inspect_wechat_environment(str(tmp_path))
     assert r["status"] == "no_database"
     assert r["accounts"][0]["db_files"] == ["favorite/favorite.db"]
+
+
+def test_wechat_3x_layout_reports_unsupported(tmp_path):
+    acc = os.path.join(str(tmp_path), "wxid_old")
+    os.makedirs(os.path.join(acc, "Msg", "Multi"))
+    r = wechat_probe.inspect_wechat_environment(str(tmp_path))
+    assert r["status"] == "unsupported_version"
+    assert r["reason"] == "wechat_3x_unsupported"
+
+
+def test_wechat_3x_micromsg_marker_also_unsupported(tmp_path):
+    acc = os.path.join(str(tmp_path), "wxid_old2")
+    os.makedirs(os.path.join(acc, "Msg"))
+    with open(os.path.join(acc, "Msg", "MicroMsg.db"), "wb") as f:
+        f.write(b"\x00" * 16)
+    r = wechat_probe.inspect_wechat_environment(str(tmp_path))
+    assert r["status"] == "unsupported_version"
+
+
+def test_msg_emoticon_db_still_supported(tmp_path):
+    _make_account(tmp_path, "wxid_m", with_db=False)
+    msg_dir = os.path.join(str(tmp_path), "wxid_m", "Msg")
+    os.makedirs(msg_dir)
+    with open(os.path.join(msg_dir, "emoticon.db"), "wb") as f:
+        f.write(b"SQLite format 3\x00" + b"\x00" * 32)
+    r = wechat_probe.inspect_wechat_environment(str(tmp_path))
+    assert r["status"] == "supported"

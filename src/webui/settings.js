@@ -1447,6 +1447,7 @@ const WECHAT_STATUS_TEXT = {
   default_root_missing: '未找到默认微信文件目录，请手动指定',
   no_accounts: '未检测到账号目录',
   no_database: '已找到账号目录，但未找到表情库（emoticon.db）',
+  wechat_3x_unsupported: '检测到微信 3.x 旧版数据目录（WeChat Files/Msg），暂不支持。请升级微信到 4.x，升级后数据会自动迁移到 xwechat_files，再重新检测',
   unsupported_platform: '仅 Windows 支持',
 };
 

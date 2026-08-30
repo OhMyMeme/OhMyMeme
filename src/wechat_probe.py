@@ -689,8 +689,19 @@ def inspect_wechat_environment(user_root=None):
         status = "encrypted_index"
         reason = "wechat_index_encrypted"
     elif accounts:
-        status = "no_database"
-        reason = "sticker_index_missing"
+        # 微信 3.x 旧版布局（WeChat Files/<wxid>/Msg/Multi 或 Msg/MicroMsg.db）
+        # 的表情库为 Emotion.db，表结构与 4.x 不同，整条链路不支持，明确引导升级
+        legacy = any(
+            os.path.isdir(os.path.join(a["path"], "Msg", "Multi"))
+            or os.path.isfile(os.path.join(a["path"], "Msg", "MicroMsg.db"))
+            for a in accounts
+        )
+        if legacy:
+            status = "unsupported_version"
+            reason = "wechat_3x_unsupported"
+        else:
+            status = "no_database"
+            reason = "sticker_index_missing"
     else:
         status = "no_accounts"
         reason = "account_root_missing"
