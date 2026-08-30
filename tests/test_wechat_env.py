@@ -59,3 +59,33 @@ def test_non_wxid_dir_without_db_ignored_alongside_valid_account(tmp_path):
     _make_account(tmp_path, "wxid_one")
     r = wechat_probe.inspect_wechat_environment(str(tmp_path))
     assert [a["id"] for a in r["accounts"]] == ["wxid_one"]
+
+
+def test_wide_fallback_db_in_other_subdir(tmp_path):
+    _make_account(tmp_path, "acc", with_db=False)
+    db_dir = os.path.join(str(tmp_path), "acc", "db_storage", "emoticon_backup")
+    os.makedirs(db_dir)
+    with open(os.path.join(db_dir, "emoticon.db"), "wb") as f:
+        f.write(b"SQLite format 3\x00" + b"\x00" * 32)
+    r = wechat_probe.inspect_wechat_environment(str(tmp_path))
+    assert r["status"] == "supported"
+
+
+def test_wide_fallback_db_directly_under_db_storage(tmp_path):
+    _make_account(tmp_path, "acc", with_db=False)
+    storage = os.path.join(str(tmp_path), "acc", "db_storage")
+    with open(os.path.join(storage, "emoticon.db"), "wb") as f:
+        f.write(b"SQLite format 3\x00" + b"\x00" * 32)
+    r = wechat_probe.inspect_wechat_environment(str(tmp_path))
+    assert r["status"] == "supported"
+
+
+def test_no_database_reports_existing_db_files(tmp_path):
+    _make_account(tmp_path, "wxid_x", with_db=False)
+    fav_dir = os.path.join(str(tmp_path), "wxid_x", "db_storage", "favorite")
+    os.makedirs(fav_dir)
+    with open(os.path.join(fav_dir, "favorite.db"), "wb") as f:
+        f.write(b"SQLite format 3\x00" + b"\x00" * 32)
+    r = wechat_probe.inspect_wechat_environment(str(tmp_path))
+    assert r["status"] == "no_database"
+    assert r["accounts"][0]["db_files"] == ["favorite/favorite.db"]

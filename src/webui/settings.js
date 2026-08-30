@@ -1442,6 +1442,14 @@ function wechatSelectedAccount() {
   return sel && sel.value ? sel.value : null;
 }
 
+const WECHAT_STATUS_TEXT = {
+  account_root_missing: '目录不存在，请手动指定微信文件目录',
+  default_root_missing: '未找到默认微信文件目录，请手动指定',
+  no_accounts: '未检测到账号目录',
+  no_database: '已找到账号目录，但未找到表情库（emoticon.db）',
+  unsupported_platform: '仅 Windows 支持',
+};
+
 async function inspectWechat() {
   const btn = document.getElementById('btn-wechat-inspect');
   const status = document.getElementById('wechat-status');
@@ -1456,7 +1464,14 @@ async function inspectWechat() {
       status.textContent = '已检测到 ' + r.account_directory_count + ' 个账号，其中 ' + accounts.length + ' 个可用';
       status.className = '';
     } else {
-      status.textContent = r.reason || r.status || '未检测到';
+      let msg = WECHAT_STATUS_TEXT[r.status] || WECHAT_STATUS_TEXT[r.reason] || r.reason || r.status || '未检测到';
+      if (r.status === 'no_database') {
+        const withFiles = (r.accounts || []).find(a => (a.db_files || []).length);
+        if (withFiles) {
+          msg += '，该目录下实际存在的数据库：' + withFiles.db_files.join('、');
+        }
+      }
+      status.textContent = msg;
       status.className = 'error';
     }
     wechatRenderAccounts(r);
