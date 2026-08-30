@@ -19,6 +19,7 @@ ftp_test/
 .idea/
 *.swp
 *.swo
+.zcode/
 
 # OS
 .DS_Store
