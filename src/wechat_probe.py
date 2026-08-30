@@ -232,14 +232,15 @@ def _find_wechat_root():
 
 
 def _find_account_dirs(root):
-    """查找微信账号目录（wxid_ 开头）"""
+    """查找微信账号目录（wxid_ 开头或含表情库）"""
     accounts = []
     try:
         for entry in os.listdir(root):
-            if entry.startswith("wxid_"):
-                p = os.path.join(root, entry)
-                if os.path.isdir(p):
-                    accounts.append(p)
+            p = os.path.join(root, entry)
+            if not os.path.isdir(p):
+                continue
+            if entry.startswith("wxid_") or _find_emoticon_db(p):
+                accounts.append(p)
     except OSError:
         pass
     return accounts
@@ -634,7 +635,7 @@ def inspect_wechat_environment(user_root=None):
             "accounts": [],
         }
     root_name = os.path.basename(root)
-    if root_name.startswith("wxid_"):
+    if root_name.startswith("wxid_") or _find_emoticon_db(root):
         accounts = [_inspect_account(root)]
     else:
         accounts = []
