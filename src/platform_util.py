@@ -33,6 +33,7 @@ def acquire_single_instance() -> bool:
                 return True
             _single_instance_handle = handle
             return ctypes.get_last_error() != 183
+        import errno
         import fcntl
 
         uid = os.getuid() if hasattr(os, "getuid") else 0
@@ -40,9 +41,11 @@ def acquire_single_instance() -> bool:
         fd = os.open(str(lock_path), os.O_RDWR | os.O_CREAT, 0o644)
         try:
             fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
-        except OSError:
+        except OSError as e:
             os.close(fd)
-            return False
+            if e.errno in (errno.EAGAIN, errno.EWOULDBLOCK, errno.EACCES):
+                return False
+            raise
         _single_instance_handle = fd
         return True
     except Exception:
