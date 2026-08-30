@@ -15,6 +15,7 @@ from .database import get_db
 from .hotkey import GlobalHotkey
 from .platform_util import (
     _startup_folder_path,
+    acquire_single_instance,
     is_auto_start_enabled,
     set_auto_start,
 )
@@ -241,6 +242,19 @@ def main():
     console.setLevel(logging.DEBUG if args.debug else logging.INFO)
     console.setFormatter(logging.Formatter("[%(levelname)s] %(name)s: %(message)s"))
     root.addHandler(console)
+
+    if not acquire_single_instance():
+        logger.warning("检测到 OhMyMeme 已在运行，退出当前实例")
+        if os.name == "nt":
+            try:
+                import ctypes
+
+                ctypes.windll.user32.MessageBoxW(
+                    None, "OhMyMeme 已在运行", "OhMyMeme", 0x40
+                )
+            except Exception:
+                pass
+        sys.exit(0)
 
     if args.startup_debug:
         logger.info("=== debug-startup ===")

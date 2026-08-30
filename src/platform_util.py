@@ -1,12 +1,52 @@
-"""平台工具 - 开机自启、系统相关"""
+"""平台工具 - 开机自启、单实例、系统相关"""
 
 import os
 import platform
 import subprocess
 import sys
+import tempfile
 from pathlib import Path
 
 APP_NAME = "OhMyMeme"
+
+_single_instance_handle = None
+
+
+def acquire_single_instance() -> bool:
+    """单实例互斥（Windows 命名 mutex / POSIX flock 锁文件），已有实例返回 False"""
+    global _single_instance_handle
+    system = platform.system()
+    try:
+        if system == "Windows":
+            import ctypes
+            from ctypes import wintypes
+
+            kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+            kernel32.CreateMutexW.restype = wintypes.HANDLE
+            kernel32.CreateMutexW.argtypes = [
+                wintypes.LPCWSTR,
+                wintypes.BOOL,
+                wintypes.LPCWSTR,
+            ]
+            handle = kernel32.CreateMutexW(None, False, APP_NAME + "_SingleInstance")
+            if not handle:
+                return True
+            _single_instance_handle = handle
+            return ctypes.get_last_error() != 183
+        import fcntl
+
+        uid = os.getuid() if hasattr(os, "getuid") else 0
+        lock_path = Path(tempfile.gettempdir()) / f"{APP_NAME.lower()}-{uid}.lock"
+        fd = os.open(str(lock_path), os.O_RDWR | os.O_CREAT, 0o644)
+        try:
+            fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except OSError:
+            os.close(fd)
+            return False
+        _single_instance_handle = fd
+        return True
+    except Exception:
+        return True
 
 
 def is_wsl() -> bool:
