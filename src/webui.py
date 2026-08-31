@@ -1550,10 +1550,63 @@ def cancel_storage_migration():
     return {"ok": True}
 
 
-def start_storage_migration_thread(new_dir: Path):
+def _storage_migrate_manifest_path() -> Path:
+    """迁移清单文件路径（崩溃后续跑依据）"""
+    return get_config().data_dir / "storage_migration.json"
+
+
+def _write_storage_migration_manifest(old: Path, new: Path):
+    import json
+
+    try:
+        with open(_storage_migrate_manifest_path(), "w", encoding="utf-8") as f:
+            json.dump({"old": str(old), "new": str(new)}, f)
+    except OSError:
+        pass
+
+
+def _clear_storage_migration_manifest():
+    try:
+        _storage_migrate_manifest_path().unlink(missing_ok=True)
+    except OSError:
+        pass
+
+
+def resume_pending_storage_migration():
+    """启动自愈：存在未完成迁移清单则后台幂等续迁，成功前不阻塞启动"""
+    import json
+
+    manifest = _storage_migrate_manifest_path()
+    try:
+        if not manifest.is_file():
+            return
+        with open(manifest, "r", encoding="utf-8") as f:
+            data = json.load(f)
+        old, new = Path(data["old"]), Path(data["new"])
+    except (OSError, ValueError, KeyError) as e:
+        logger.warning("storage migration manifest invalid: %s", e)
+        _clear_storage_migration_manifest()
+        return
+    if not start_storage_migration_thread(new, old_override=old):
+        return
+
+    def _watch():
+        global _STORAGE_MIGRATE_THREAD
+        thread = _STORAGE_MIGRATE_THREAD
+        if thread is not None:
+            thread.join()
+        if _STORAGE_MIGRATE_STATE["status"] != "done":
+            # 目标盘不可用等：放弃自愈并清除清单，保持旧配置
+            logger.warning("storage migration resume failed, keeping old cache_dir")
+            _clear_storage_migration_manifest()
+
+    threading.Thread(target=_watch, daemon=True).start()
+
+
+def start_storage_migration_thread(new_dir: Path, old_override: Path = None):
     """后台迁移 cache_dir 文件到 new_dir，避免阻塞桥接与 UI"""
     global _STORAGE_MIGRATE_THREAD
-    old = get_config().cache_dir
+    old = old_override or get_config().cache_dir
     with _STORAGE_MIGRATE_LOCK:
         if _STORAGE_MIGRATE_STATE["status"] == "running":
             return False
@@ -1568,6 +1621,7 @@ def start_storage_migration_thread(new_dir: Path):
             error="",
             cancel_requested=False,
         )
+    _write_storage_migration_manifest(old, new_dir)
     _STORAGE_MIGRATE_THREAD = threading.Thread(
         target=_storage_migrate_worker,
         args=(old, new_dir),
@@ -1578,12 +1632,18 @@ def start_storage_migration_thread(new_dir: Path):
 
 
 def _storage_migrate_worker(old: Path, new: Path):
-    """两阶段迁移：预检冲突 → 逐文件移动（含取消支持）"""
+    """三阶段迁移：复制（源只读）→ 切换配置 → 清理源；全程幂等可续跑
+
+    阶段1 只写新目录，崩溃/取消只需清理本次新副本（源完好无分裂）；
+    阶段2 写配置是唯一切换点，此后新目录已完整；阶段3 删源失败仅残留
+    旧目录冗余文件（rescan 只扫 cache_dir，无害）。
+    """
     import shutil
 
-    moved_pairs = []
+    copied_pairs = []
+    created_dsts = []  # 本次运行实际新建的目标（取消/失败时清理，不动既有文件）
     try:
-        # 阶段一：扫描 + 预检冲突
+        # 阶段一：扫描 + 复制（幂等：dst 已存在且大小一致视为已复制）
         plan = []
         for root, dirs, files in os.walk(str(old)):
             rel = os.path.relpath(root, str(old))
@@ -1595,56 +1655,40 @@ def _storage_migrate_worker(old: Path, new: Path):
                 dst = (new if rel == "." else new / rel) / name
                 plan.append((src, dst))
         total = len(plan)
-        _set_storage_migrate(total=total, message="预检目标目录...")
-        if plan:
-            collisions = [
-                {
-                    "name": os.path.basename(src),
-                    "path": os.path.relpath(src, str(old)),
-                }
-                for src, dst in plan
-                if dst.exists()
-            ]
-            if collisions:
-                _set_storage_migrate(
-                    status="error",
-                    message="目标目录已存在同名文件，未迁移",
-                    error="目标目录已存在 %d 个同名文件" % len(collisions),
-                    failed=[],
-                )
-                return
-        moved = 0
+        _set_storage_migrate(total=total, message="复制文件到新目录...")
+        conflicts = []
         for src, dst in plan:
             with _STORAGE_MIGRATE_LOCK:
                 cancel_requested = _STORAGE_MIGRATE_STATE["cancel_requested"]
             if cancel_requested:
-                for s, d in reversed(moved_pairs):
-                    try:
-                        shutil.move(str(d), s)
-                    except OSError:
-                        pass
-                _set_storage_migrate(
-                    status="cancelled", message="已取消，已回滚已移动文件"
-                )
-                return
+                break
+            try:
+                src_size = os.path.getsize(src)
+            except OSError:
+                continue
+            if dst.exists():
+                if dst.stat().st_size == src_size:
+                    copied_pairs.append((src, dst))
+                    moved = len(copied_pairs)
+                    _set_storage_migrate(
+                        progress=int(moved * 100 / total) if total else 100,
+                        moved=moved,
+                        current=os.path.basename(src),
+                    )
+                    continue
+                conflicts.append(dst)
+                continue
             dst.parent.mkdir(parents=True, exist_ok=True)
             # 排他创建目标（O_EXCL：目标已存在则抛 FileExistsError，
-            # 防 precheck→write 期间并发覆盖既有文件），O_WRONLY 确保 fd 可写
+            # 防 precheck→write 期间并发覆盖既有文件）
             try:
                 fd = os.open(str(dst), os.O_CREAT | os.O_WRONLY | os.O_EXCL, 0o644)
             except FileExistsError:
-                # 迁移期间目标被其他进程新建：并发冲突，整批回滚并报清晰错误
-                for s, d in reversed(moved_pairs):
-                    try:
-                        shutil.move(str(d), s)
-                    except OSError:
-                        pass
-                _set_storage_migrate(
-                    status="error",
-                    message="迁移失败：目标目录出现同名文件（与进程冲突），已回滚",
-                    error=f"目标已存在: {dst}",
-                )
-                return
+                if dst.stat().st_size == src_size:
+                    copied_pairs.append((src, dst))
+                    continue
+                conflicts.append(dst)
+                continue
             try:
                 with os.fdopen(fd, "wb") as out_f, open(src, "rb") as in_f:
                     shutil.copyfileobj(in_f, out_f)
@@ -1654,23 +1698,59 @@ def _storage_migrate_worker(old: Path, new: Path):
                 except OSError:
                     pass
                 raise
-            try:
-                os.unlink(src)
-            except OSError:
-                pass  # 源删除失败不阻断（目标已排他写入成功）
-            moved_pairs.append((src, dst))
-            moved += 1
+            copied_pairs.append((src, dst))
+            created_dsts.append(dst)
+            moved = len(copied_pairs)
             _set_storage_migrate(
                 progress=int(moved * 100 / total) if total else 100,
                 moved=moved,
                 current=os.path.basename(src),
             )
-        # 迁移成功后写入新配置（回滚场景不写入，保持旧目录）
+        with _STORAGE_MIGRATE_LOCK:
+            cancel_requested = _STORAGE_MIGRATE_STATE["cancel_requested"]
+        if conflicts:
+            for d in created_dsts:
+                try:
+                    d.unlink()
+                except OSError:
+                    pass
+            _set_storage_migrate(
+                status="error",
+                message="目标目录已存在同名但内容不同的文件，未迁移",
+                error=f"目标已存在内容不同的同名文件: {conflicts[0]} 等 "
+                f"{len(conflicts)} 个",
+            )
+            _clear_storage_migration_manifest()
+            return
+        if cancel_requested:
+            for d in created_dsts:
+                try:
+                    d.unlink()
+                except OSError:
+                    pass
+            _set_storage_migrate(status="cancelled", message="已取消，目录保持原状")
+            _clear_storage_migration_manifest()
+            return
+        # 阶段二：切换配置（唯一危险点，此后新目录已完整）
         get_config().set("cache_dir", str(new))
         get_config().save()
+        # 阶段三：清理源文件（失败仅残留，不阻断不回滚）
+        failed = []
+        for src, _dst in copied_pairs:
+            try:
+                os.unlink(src)
+            except OSError as e:
+                failed.append(
+                    {"name": os.path.basename(src), "path": src, "error": str(e)}
+                )
         _set_storage_migrate(
-            status="done", progress=100, message="迁移完成", current=""
+            status="done",
+            progress=100,
+            message="迁移完成",
+            current="",
+            failed=failed,
         )
+        _clear_storage_migration_manifest()
         try:
             if len(webview.windows) > 0:
                 webview.windows[0].evaluate_js("refreshMemes();")
@@ -1678,13 +1758,14 @@ def _storage_migrate_worker(old: Path, new: Path):
             pass
     except Exception as e:
         logger.error("storage migrate error: %s", e)
-        # 回滚已移动文件，保持旧目录完整
-        for s, d in reversed(moved_pairs):
+        # 阶段一失败：源未动，仅清理本次新建副本即回到原状（既有文件不动）
+        for d in created_dsts:
             try:
-                shutil.move(str(d), s)
+                d.unlink()
             except OSError:
                 pass
         _set_storage_migrate(status="error", message="迁移失败", error=str(e))
+        _clear_storage_migration_manifest()
 
 
 class SettingsApi:
