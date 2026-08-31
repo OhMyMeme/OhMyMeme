@@ -1642,6 +1642,7 @@ def _storage_migrate_worker(old: Path, new: Path):
 
     copied_pairs = []
     created_dsts = []  # 本次运行实际新建的目标（取消/失败时清理，不动既有文件）
+    config_switched = False  # 阶段2 配置已切换时禁止清理新目录文件
     try:
         # 阶段一：扫描 + 复制（幂等：dst 已存在且大小一致视为已复制）
         plan = []
@@ -1734,6 +1735,7 @@ def _storage_migrate_worker(old: Path, new: Path):
         # 阶段二：切换配置（唯一危险点，此后新目录已完整）
         get_config().set("cache_dir", str(new))
         get_config().save()
+        config_switched = True
         # 阶段三：清理源文件（失败仅残留，不阻断不回滚）
         failed = []
         for src, _dst in copied_pairs:
@@ -1758,12 +1760,14 @@ def _storage_migrate_worker(old: Path, new: Path):
             pass
     except Exception as e:
         logger.error("storage migrate error: %s", e)
-        # 阶段一失败：源未动，仅清理本次新建副本即回到原状（既有文件不动）
-        for d in created_dsts:
-            try:
-                d.unlink()
-            except OSError:
-                pass
+        # 配置未切换时源未动，仅清理本次新建副本即回到原状（既有文件不动）；
+        # 配置已切换则新目录已完整，禁止删除新目录文件
+        if not config_switched:
+            for d in created_dsts:
+                try:
+                    d.unlink()
+                except OSError:
+                    pass
         _set_storage_migrate(status="error", message="迁移失败", error=str(e))
         _clear_storage_migration_manifest()
 
