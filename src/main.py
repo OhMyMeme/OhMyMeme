@@ -128,9 +128,17 @@ class OhMyMemeApp:
         except Exception as e:
             logger.debug("ADB init: %s", e)
 
+        # 6. 上次存储迁移未完成则后台幂等续迁（不阻塞启动）
+        try:
+            from .webui import resume_pending_storage_migration
+
+            resume_pending_storage_migration()
+        except Exception as e:
+            logger.debug("storage migration resume: %s", e)
+
         logger.info(f"{__app_name__} v{__version__} 已启动")
 
-        # 5. 启动 WebView GUI 循环（阻塞主线程）
+        # 7. 启动 WebView GUI 循环（阻塞主线程）
         try:
             self._webui.start()
         except Exception as e:

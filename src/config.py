@@ -222,11 +222,27 @@ class Config:
         self._dirty = True
 
     def save(self):
-        """持久化到磁盘（加锁，防止 pywebview 多线程并发写坏文件）"""
+        """持久化到磁盘（加锁 + 原子替换：先写临时文件再 os.replace，
+        避免写入中途失败/断电破坏原配置文件）"""
+        import tempfile
+
         with self._lock:
             self._path.parent.mkdir(parents=True, exist_ok=True)
-            with open(self._path, "w", encoding="utf-8") as f:
-                json.dump(self._data, f, ensure_ascii=False, indent=2)
+            fd, tmp = tempfile.mkstemp(
+                prefix=".config-",
+                suffix=".tmp",
+                dir=str(self._path.parent),
+            )
+            try:
+                with os.fdopen(fd, "w", encoding="utf-8") as f:
+                    json.dump(self._data, f, ensure_ascii=False, indent=2)
+                os.replace(tmp, self._path)
+            except BaseException:
+                try:
+                    os.unlink(tmp)
+                except OSError:
+                    pass
+                raise
             self._dirty = False
 
     @property
