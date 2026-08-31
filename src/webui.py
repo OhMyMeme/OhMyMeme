@@ -1668,7 +1668,9 @@ def _storage_migrate_worker(old: Path, new: Path):
             except OSError:
                 continue
             if dst.exists():
-                if dst.stat().st_size == src_size:
+                if dst.stat().st_size == src_size and _file_sha256(src) == _file_sha256(
+                    str(dst)
+                ):
                     copied_pairs.append((src, dst))
                     moved = len(copied_pairs)
                     _set_storage_migrate(

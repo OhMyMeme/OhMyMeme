@@ -106,6 +106,18 @@ def test_conflict_keeps_source_intact(env):
     assert st["status"] == "error"
     assert "同名" in st["error"]
     assert (env["old"] / "a.gif").read_bytes() == b"A" * 100  # 源完好
+
+
+def test_same_size_different_content_is_conflict(env):
+    # 关键：仅比较大小时会被误判为"已复制"，哈希校验才能识别为冲突
+    env["new"].mkdir()
+    (env["new"] / "a.gif").write_bytes(b"X" * 100)  # 同大小但内容不同
+    st = _run_sync(env)
+    assert st["status"] == "error"
+    assert "同名" in st["error"]
+    assert (env["old"] / "a.gif").read_bytes() == b"A" * 100  # 源完好不删
+    assert (env["old"] / "sub" / "b.png").exists()
+    assert not env["cfg"].saved.get("cache_dir")  # 配置未切换
     assert (env["old"] / "sub" / "b.png").exists()
     assert not env["cfg"].saved.get("cache_dir")  # 配置未切换
     assert not webui._storage_migrate_manifest_path().exists()
