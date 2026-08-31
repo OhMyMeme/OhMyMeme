@@ -1637,14 +1637,19 @@ def _storage_migrate_worker(old: Path, new: Path):
     阶段1 只写新目录，崩溃/取消只需清理本次新副本（源完好无分裂）；
     阶段2 写配置是唯一切换点，此后新目录已完整；阶段3 删源失败仅残留
     旧目录冗余文件（rescan 只扫 cache_dir，无害）。
+
+    文件复制采用"迁移临时文件 + 原子提交"：先写入 dst 同目录的
+    .migrating 临时文件，完成后 os.replace 原子提交到 dst，避免写入中途
+    崩溃在最终路径留下半写文件（恢复时只需删除临时文件，不回滚已提交文件）。
     """
     import shutil
 
     copied_pairs = []
     created_dsts = []  # 本次运行实际新建的目标（取消/失败时清理，不动既有文件）
     config_switched = False  # 阶段2 配置已切换时禁止清理新目录文件
+    migrating_suffix = ".migrating"
     try:
-        # 阶段一：扫描 + 复制（幂等：dst 已存在且大小一致视为已复制）
+        # 阶段一：扫描 + 复制（幂等：dst 已存在且内容一致视为已复制）
         plan = []
         for root, dirs, files in os.walk(str(old)):
             rel = os.path.relpath(root, str(old))
@@ -1667,46 +1672,73 @@ def _storage_migrate_worker(old: Path, new: Path):
                 src_size = os.path.getsize(src)
             except OSError:
                 continue
+            dst.parent.mkdir(parents=True, exist_ok=True)
+            tmp_dst = dst.parent / (dst.name + migrating_suffix)
+            # 清理上次中断留下的同路径临时文件（恢复入口）
+            if tmp_dst.exists():
+                tmp_dst.unlink()
             if dst.exists():
                 if dst.stat().st_size == src_size and _file_sha256(src) == _file_sha256(
                     str(dst)
                 ):
                     copied_pairs.append((src, dst))
-                    moved = len(copied_pairs)
                     _set_storage_migrate(
-                        progress=int(moved * 100 / total) if total else 100,
-                        moved=moved,
+                        progress=int(len(copied_pairs) * 100 / total) if total else 100,
+                        moved=len(copied_pairs),
                         current=os.path.basename(src),
                     )
                     continue
                 conflicts.append(dst)
                 continue
-            dst.parent.mkdir(parents=True, exist_ok=True)
-            # 排他创建目标（O_EXCL：目标已存在则抛 FileExistsError，
-            # 防 precheck→write 期间并发覆盖既有文件）
             try:
-                fd = os.open(str(dst), os.O_CREAT | os.O_WRONLY | os.O_EXCL, 0o644)
-            except FileExistsError:
-                if dst.stat().st_size == src_size:
+                with open(src, "rb") as in_f, open(tmp_dst, "wb") as out_f:
+                    shutil.copyfileobj(in_f, out_f)
+            except Exception:
+                # 写入中途失败：仅删除本次临时文件，最终路径未触及
+                if tmp_dst.exists():
+                    tmp_dst.unlink()
+                raise
+            # 原子提交到最终路径（os.replace 同文件系统原子；不覆盖既有目标）
+            if dst.exists():
+                # 提交瞬间目标出现：校验内容，一致则视为已复制否则冲突
+                tmp_dst.unlink()
+                if dst.stat().st_size == src_size and _file_sha256(src) == _file_sha256(
+                    str(dst)
+                ):
                     copied_pairs.append((src, dst))
+                    _set_storage_migrate(
+                        progress=int(len(copied_pairs) * 100 / total) if total else 100,
+                        moved=len(copied_pairs),
+                        current=os.path.basename(src),
+                    )
                     continue
                 conflicts.append(dst)
                 continue
             try:
-                with os.fdopen(fd, "wb") as out_f, open(src, "rb") as in_f:
-                    shutil.copyfileobj(in_f, out_f)
-            except Exception:
-                try:
-                    os.unlink(str(dst))  # 清理复制中途失败留下的半写孤儿目标
-                except OSError:
-                    pass
-                raise
+                os.replace(str(tmp_dst), str(dst))
+            except OSError:
+                # 提交瞬间目标出现（极小窗口）：回退到内容校验
+                if (
+                    dst.exists()
+                    and dst.stat().st_size == src_size
+                    and _file_sha256(src) == _file_sha256(str(dst))
+                ):
+                    tmp_dst.unlink()
+                    copied_pairs.append((src, dst))
+                    _set_storage_migrate(
+                        progress=int(len(copied_pairs) * 100 / total) if total else 100,
+                        moved=len(copied_pairs),
+                        current=os.path.basename(src),
+                    )
+                    continue
+                tmp_dst.unlink()
+                conflicts.append(dst)
+                continue
             copied_pairs.append((src, dst))
             created_dsts.append(dst)
-            moved = len(copied_pairs)
             _set_storage_migrate(
-                progress=int(moved * 100 / total) if total else 100,
-                moved=moved,
+                progress=int(len(copied_pairs) * 100 / total) if total else 100,
+                moved=len(copied_pairs),
                 current=os.path.basename(src),
             )
         with _STORAGE_MIGRATE_LOCK:
@@ -1737,7 +1769,15 @@ def _storage_migrate_worker(old: Path, new: Path):
         # 阶段二：切换配置（唯一危险点，此后新目录已完整）
         get_config().set("cache_dir", str(new))
         get_config().save()
-        config_switched = True
+        # 依据磁盘上实际持久化的 cache_dir 判断是否已切换（原子保存保证一致，
+        # 但异常路径下以磁盘为准，避免误判为未切换而删除新目录）
+        try:
+            import json as _json
+
+            on_disk = _json.loads(get_config()._path.read_text(encoding="utf-8"))
+            config_switched = on_disk.get("cache_dir") == str(new)
+        except Exception:
+            config_switched = False
         # 阶段三：清理源文件（失败仅残留，不阻断不回滚）
         failed = []
         for src, _dst in copied_pairs:
