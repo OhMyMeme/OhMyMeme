@@ -1060,14 +1060,11 @@ class JsApi:
 
     def import_memes(self) -> bool:
         # 通过系统文件对话框选择导入（后台执行，避免大数量导入阻塞界面）
-        try:
-            result = webview.windows[0].create_file_dialog(
-                webview.FileDialog.OPEN,
-                allow_multiple=True,
-                file_types=("图片文件 (*.png;*.jpg;*.jpeg;*.gif;*.webp;*.bmp)",),
-            )
-        except Exception:
-            return {"ok": False}
+        result = self._dialog(
+            webview.FileDialog.OPEN,
+            allow_multiple=True,
+            file_types=("图片文件 (*.png;*.jpg;*.jpeg;*.gif;*.webp;*.bmp)",),
+        )
         if not result:
             return {"ok": False, "cancelled": True}
         paths = list(result)
@@ -1077,12 +1074,7 @@ class JsApi:
 
     def import_folder(self, make_collection=True) -> dict:
         """选择文件夹并导入其中全部图片；make_collection 时以文件夹名创建分组"""
-        try:
-            result = webview.windows[0].create_file_dialog(
-                webview.FileDialog.FOLDER, allow_multiple=False
-            )
-        except Exception:
-            return {"ok": False, "error": "无法打开目录选择对话框"}
+        result = self._dialog(webview.FileDialog.FOLDER)
         if not result:
             return {"ok": False, "cancelled": True}
         folder = result[0] if isinstance(result, (tuple, list)) else result
@@ -2059,14 +2051,11 @@ class SettingsApi:
         st = adb_util.get_qq_progress()
         if st["status"] != "done" or not st["zip_path"]:
             return {"ok": False, "error": "no zip ready"}
-        try:
-            result = webview.windows[0].create_file_dialog(
-                webview.FileDialog.SAVE,
-                allow_multiple=False,
-                file_types=("ZIP 文件 (*.zip)",),
-            )
-        except Exception:
-            return {"ok": False, "error": "dialog failed"}
+        result = self._dialog(
+            webview.FileDialog.SAVE,
+            allow_multiple=False,
+            file_types=("ZIP 文件 (*.zip)",),
+        )
         if not result:
             return {"ok": False, "error": "cancelled"}
         import shutil
@@ -2092,21 +2081,12 @@ class SettingsApi:
 
     def export_logs(self) -> dict:
         """导出本次运行收集的日志（DEBUG 级）到用户选择的位置"""
-        win = self._webui._settings_window or (
-            webview.windows[0] if webview.windows else None
+        result = self._dialog(
+            webview.FileDialog.SAVE,
+            allow_multiple=False,
+            save_filename="OhMyMeme-logs.txt",
+            file_types=("文本文件 (*.txt)",),
         )
-        if not win:
-            return {"ok": False, "error": "no window"}
-        try:
-            result = win.create_file_dialog(
-                webview.FileDialog.SAVE,
-                allow_multiple=False,
-                save_filename="OhMyMeme-logs.txt",
-                file_types=("文本文件 (*.txt)",),
-            )
-        except Exception as e:
-            logger.warning(f"export_logs dialog error: {e!r}")
-            return {"ok": False, "error": "dialog failed"}
         if not result:
             return {"ok": False, "error": "cancelled"}
         dst = result[0] if isinstance(result, (tuple, list)) else result
@@ -2135,12 +2115,7 @@ class SettingsApi:
 
     def pick_tg_tdata(self) -> dict:
         """手动选择 Telegram Desktop tdata 目录（校验并持久化）"""
-        try:
-            result = webview.windows[0].create_file_dialog(
-                webview.FileDialog.FOLDER, allow_multiple=False
-            )
-        except Exception:
-            return {"ok": False, "error": "无法打开目录选择对话框"}
+        result = self._dialog(webview.FileDialog.FOLDER)
         if not result:
             return {"ok": False, "cancelled": True}
         path = result[0] if isinstance(result, (tuple, list)) else result
@@ -2194,12 +2169,7 @@ class SettingsApi:
 
     def pick_wechat_root(self):
         """手动选择微信文件根目录"""
-        try:
-            result = webview.windows[0].create_file_dialog(
-                webview.FileDialog.FOLDER, allow_multiple=False
-            )
-        except Exception:
-            return {"ok": False, "error": "无法打开目录选择对话框"}
+        result = self._dialog(webview.FileDialog.FOLDER)
         if not result:
             return {"ok": False, "cancelled": True}
         path = result[0] if isinstance(result, (tuple, list)) else result
@@ -2252,14 +2222,11 @@ class SettingsApi:
 
     def qqnt_pick_ini(self) -> dict:
         """选择 UserDataInfo.ini，保存到配置并返回环境状态"""
-        try:
-            result = webview.windows[0].create_file_dialog(
-                webview.FileDialog.OPEN,
-                allow_multiple=False,
-                file_types=("INI Files (*.ini);;All Files (*)",),
-            )
-        except Exception:
-            return {"ok": False}
+        result = self._dialog(
+            webview.FileDialog.OPEN,
+            allow_multiple=False,
+            file_types=("INI Files (*.ini);;All Files (*)",),
+        )
         if not result:
             return {"ok": False, "cancelled": True}
         path = result[0] if isinstance(result, (tuple, list)) else result
@@ -2270,12 +2237,7 @@ class SettingsApi:
 
     def qqnt_pick_userdata(self) -> dict:
         """选择用户数据目录，保存到配置并返回环境状态"""
-        try:
-            result = webview.windows[0].create_file_dialog(
-                webview.FileDialog.FOLDER, allow_multiple=False
-            )
-        except Exception:
-            return {"ok": False}
+        result = self._dialog(webview.FileDialog.FOLDER)
         if not result:
             return {"ok": False, "cancelled": True}
         path = result[0] if isinstance(result, (tuple, list)) else result
@@ -2285,12 +2247,7 @@ class SettingsApi:
 
     def qqnt_pick_base(self) -> dict:
         """选择保存基础目录"""
-        try:
-            result = webview.windows[0].create_file_dialog(
-                webview.FileDialog.FOLDER, allow_multiple=False
-            )
-        except Exception:
-            return {"ok": False}
+        result = self._dialog(webview.FileDialog.FOLDER)
         if not result:
             return {"ok": False, "cancelled": True}
         path = result[0] if isinstance(result, (tuple, list)) else result
@@ -2324,34 +2281,35 @@ class SettingsApi:
             "total_size": total,
         }
 
-    def _pick_folder(self, title: str = "选择文件夹") -> str:
-        """以设置窗口为 owner 打开目录选择对话框，返回路径或空串（取消/失败）"""
+    def _dialog(self, kind, **kw):
+        """以设置窗口为 owner 打开文件对话框，返回原始 result（None 表示取消/失败）。
+
+        对话框关闭后自动恢复设置窗口前台焦点，避免主窗口抢焦遮挡设置页。
+        kind: webview.FileDialog.FOLDER / OPEN / SAVE
+        其余关键字透传给 create_file_dialog。
+        """
         win = self._webui._settings_window
         if win is None:
             win = webview.windows[0] if webview.windows else None
         if win is None:
-            return ""
+            return None
         try:
-            result = win.create_file_dialog(
-                webview.FileDialog.FOLDER, allow_multiple=False
-            )
+            result = win.create_file_dialog(kind, **kw)
         except Exception:
-            return ""
-        if not result:
-            return ""
-        path = result[0] if isinstance(result, (tuple, list)) else result
+            return None
         # 对话框关闭后焦点可能回到主窗口，恢复设置窗口到前台
         try:
             self._webui.focus_settings_window()
         except Exception:
             pass
-        return path
+        return result
 
     def pick_storage_dir(self):
         """选择新的表情包存储目录（只返回路径，不立即生效）"""
-        path = self._pick_folder()
-        if not path:
+        result = self._dialog(webview.FileDialog.FOLDER)
+        if not result:
             return {"ok": False, "cancelled": True}
+        path = result[0] if isinstance(result, (tuple, list)) else result
         return {"ok": True, "path": path}
 
     def apply_storage_dir(self, path, move_files=False):
@@ -2412,12 +2370,7 @@ class SettingsApi:
 
     def backup_pick_dir(self) -> dict:
         """选择备份输出目录并立即生效"""
-        try:
-            result = webview.windows[0].create_file_dialog(
-                webview.FileDialog.FOLDER, allow_multiple=False
-            )
-        except Exception:
-            return {"ok": False, "error": "dialog failed"}
+        result = self._dialog(webview.FileDialog.FOLDER)
         if not result:
             return {"ok": False, "cancelled": True}
         path = result[0] if isinstance(result, (tuple, list)) else result
@@ -2447,14 +2400,11 @@ class SettingsApi:
 
     def backup_pick_zip(self) -> dict:
         """选择要恢复的备份 ZIP 文件"""
-        try:
-            result = webview.windows[0].create_file_dialog(
-                webview.FileDialog.OPEN,
-                allow_multiple=False,
-                file_types=("备份包 (*.zip)",),
-            )
-        except Exception:
-            return {"ok": False, "error": "dialog failed"}
+        result = self._dialog(
+            webview.FileDialog.OPEN,
+            allow_multiple=False,
+            file_types=("备份包 (*.zip)",),
+        )
         if not result:
             return {"ok": False, "cancelled": True}
         path = result[0] if isinstance(result, (tuple, list)) else result
@@ -2529,14 +2479,11 @@ class SettingsApi:
             return False
 
     def import_memes(self) -> dict:
-        try:
-            result = webview.windows[0].create_file_dialog(
-                webview.FileDialog.OPEN,
-                allow_multiple=True,
-                file_types=("图片文件 (*.png;*.jpg;*.jpeg;*.gif;*.webp;*.bmp)",),
-            )
-        except Exception:
-            return {"ok": False}
+        result = self._dialog(
+            webview.FileDialog.OPEN,
+            allow_multiple=True,
+            file_types=("图片文件 (*.png;*.jpg;*.jpeg;*.gif;*.webp;*.bmp)",),
+        )
         if not result:
             return {"ok": False, "cancelled": True}
         r = self._webui._do_import(result)
