@@ -3365,6 +3365,7 @@ class WebUI:
             visible = self._visible
             if visible:
                 self._visible = False
+                self._hotkey_session = False
                 self._hide_on_gui()
                 return
             if self._cfg.get("hotkey_show_at_mouse", False):
