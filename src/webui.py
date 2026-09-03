@@ -273,6 +273,16 @@ class JsApi:
         self._drag_origin = None
         self._drag_last_move = 0.0
 
+    def _dialog(self, kind, **kw):
+        """主窗口上下文打开文件对话框（owner 为主窗口，无需焦点恢复）"""
+        win = webview.windows[0] if webview.windows else None
+        if win is None:
+            return None
+        try:
+            return win.create_file_dialog(kind, **kw)
+        except Exception:
+            return None
+
     def search_memes(
         self, keyword="", tags=None, collection_id=None, offset=0, limit=200
     ):
@@ -1060,14 +1070,11 @@ class JsApi:
 
     def import_memes(self) -> bool:
         # 通过系统文件对话框选择导入（后台执行，避免大数量导入阻塞界面）
-        try:
-            result = webview.windows[0].create_file_dialog(
-                webview.FileDialog.OPEN,
-                allow_multiple=True,
-                file_types=("图片文件 (*.png;*.jpg;*.jpeg;*.gif;*.webp;*.bmp)",),
-            )
-        except Exception:
-            return {"ok": False}
+        result = self._dialog(
+            webview.FileDialog.OPEN,
+            allow_multiple=True,
+            file_types=("图片文件 (*.png;*.jpg;*.jpeg;*.gif;*.webp;*.bmp)",),
+        )
         if not result:
             return {"ok": False, "cancelled": True}
         paths = list(result)
@@ -1077,12 +1084,7 @@ class JsApi:
 
     def import_folder(self, make_collection=True) -> dict:
         """选择文件夹并导入其中全部图片；make_collection 时以文件夹名创建分组"""
-        try:
-            result = webview.windows[0].create_file_dialog(
-                webview.FileDialog.FOLDER, allow_multiple=False
-            )
-        except Exception:
-            return {"ok": False, "error": "无法打开目录选择对话框"}
+        result = self._dialog(webview.FileDialog.FOLDER)
         if not result:
             return {"ok": False, "cancelled": True}
         folder = result[0] if isinstance(result, (tuple, list)) else result
@@ -2059,14 +2061,11 @@ class SettingsApi:
         st = adb_util.get_qq_progress()
         if st["status"] != "done" or not st["zip_path"]:
             return {"ok": False, "error": "no zip ready"}
-        try:
-            result = webview.windows[0].create_file_dialog(
-                webview.FileDialog.SAVE,
-                allow_multiple=False,
-                file_types=("ZIP 文件 (*.zip)",),
-            )
-        except Exception:
-            return {"ok": False, "error": "dialog failed"}
+        result = self._dialog(
+            webview.FileDialog.SAVE,
+            allow_multiple=False,
+            file_types=("ZIP 文件 (*.zip)",),
+        )
         if not result:
             return {"ok": False, "error": "cancelled"}
         import shutil
@@ -2092,21 +2091,12 @@ class SettingsApi:
 
     def export_logs(self) -> dict:
         """导出本次运行收集的日志（DEBUG 级）到用户选择的位置"""
-        win = self._webui._settings_window or (
-            webview.windows[0] if webview.windows else None
+        result = self._dialog(
+            webview.FileDialog.SAVE,
+            allow_multiple=False,
+            save_filename="OhMyMeme-logs.txt",
+            file_types=("文本文件 (*.txt)",),
         )
-        if not win:
-            return {"ok": False, "error": "no window"}
-        try:
-            result = win.create_file_dialog(
-                webview.FileDialog.SAVE,
-                allow_multiple=False,
-                save_filename="OhMyMeme-logs.txt",
-                file_types=("文本文件 (*.txt)",),
-            )
-        except Exception as e:
-            logger.warning(f"export_logs dialog error: {e!r}")
-            return {"ok": False, "error": "dialog failed"}
         if not result:
             return {"ok": False, "error": "cancelled"}
         dst = result[0] if isinstance(result, (tuple, list)) else result
@@ -2135,12 +2125,7 @@ class SettingsApi:
 
     def pick_tg_tdata(self) -> dict:
         """手动选择 Telegram Desktop tdata 目录（校验并持久化）"""
-        try:
-            result = webview.windows[0].create_file_dialog(
-                webview.FileDialog.FOLDER, allow_multiple=False
-            )
-        except Exception:
-            return {"ok": False, "error": "无法打开目录选择对话框"}
+        result = self._dialog(webview.FileDialog.FOLDER)
         if not result:
             return {"ok": False, "cancelled": True}
         path = result[0] if isinstance(result, (tuple, list)) else result
@@ -2194,12 +2179,7 @@ class SettingsApi:
 
     def pick_wechat_root(self):
         """手动选择微信文件根目录"""
-        try:
-            result = webview.windows[0].create_file_dialog(
-                webview.FileDialog.FOLDER, allow_multiple=False
-            )
-        except Exception:
-            return {"ok": False, "error": "无法打开目录选择对话框"}
+        result = self._dialog(webview.FileDialog.FOLDER)
         if not result:
             return {"ok": False, "cancelled": True}
         path = result[0] if isinstance(result, (tuple, list)) else result
@@ -2252,14 +2232,11 @@ class SettingsApi:
 
     def qqnt_pick_ini(self) -> dict:
         """选择 UserDataInfo.ini，保存到配置并返回环境状态"""
-        try:
-            result = webview.windows[0].create_file_dialog(
-                webview.FileDialog.OPEN,
-                allow_multiple=False,
-                file_types=("INI Files (*.ini);;All Files (*)",),
-            )
-        except Exception:
-            return {"ok": False}
+        result = self._dialog(
+            webview.FileDialog.OPEN,
+            allow_multiple=False,
+            file_types=("INI Files (*.ini);;All Files (*)",),
+        )
         if not result:
             return {"ok": False, "cancelled": True}
         path = result[0] if isinstance(result, (tuple, list)) else result
@@ -2270,12 +2247,7 @@ class SettingsApi:
 
     def qqnt_pick_userdata(self) -> dict:
         """选择用户数据目录，保存到配置并返回环境状态"""
-        try:
-            result = webview.windows[0].create_file_dialog(
-                webview.FileDialog.FOLDER, allow_multiple=False
-            )
-        except Exception:
-            return {"ok": False}
+        result = self._dialog(webview.FileDialog.FOLDER)
         if not result:
             return {"ok": False, "cancelled": True}
         path = result[0] if isinstance(result, (tuple, list)) else result
@@ -2285,12 +2257,7 @@ class SettingsApi:
 
     def qqnt_pick_base(self) -> dict:
         """选择保存基础目录"""
-        try:
-            result = webview.windows[0].create_file_dialog(
-                webview.FileDialog.FOLDER, allow_multiple=False
-            )
-        except Exception:
-            return {"ok": False}
+        result = self._dialog(webview.FileDialog.FOLDER)
         if not result:
             return {"ok": False, "cancelled": True}
         path = result[0] if isinstance(result, (tuple, list)) else result
@@ -2324,14 +2291,32 @@ class SettingsApi:
             "total_size": total,
         }
 
+    def _dialog(self, kind, **kw):
+        """以设置窗口为 owner 打开文件对话框，返回原始 result（None 表示取消/失败）。
+
+        对话框关闭后自动恢复设置窗口前台焦点，避免主窗口抢焦遮挡设置页。
+        kind: webview.FileDialog.FOLDER / OPEN / SAVE
+        其余关键字透传给 create_file_dialog。
+        """
+        win = self._webui._settings_window
+        if win is None:
+            win = webview.windows[0] if webview.windows else None
+        if win is None:
+            return None
+        try:
+            result = win.create_file_dialog(kind, **kw)
+        except Exception:
+            return None
+        # 对话框关闭后焦点可能回到主窗口，恢复设置窗口到前台
+        try:
+            self._webui.focus_settings_window()
+        except Exception:
+            pass
+        return result
+
     def pick_storage_dir(self):
         """选择新的表情包存储目录（只返回路径，不立即生效）"""
-        try:
-            result = webview.windows[0].create_file_dialog(
-                webview.FileDialog.FOLDER, allow_multiple=False
-            )
-        except Exception:
-            return {"ok": False, "error": "dialog failed"}
+        result = self._dialog(webview.FileDialog.FOLDER)
         if not result:
             return {"ok": False, "cancelled": True}
         path = result[0] if isinstance(result, (tuple, list)) else result
@@ -2395,12 +2380,7 @@ class SettingsApi:
 
     def backup_pick_dir(self) -> dict:
         """选择备份输出目录并立即生效"""
-        try:
-            result = webview.windows[0].create_file_dialog(
-                webview.FileDialog.FOLDER, allow_multiple=False
-            )
-        except Exception:
-            return {"ok": False, "error": "dialog failed"}
+        result = self._dialog(webview.FileDialog.FOLDER)
         if not result:
             return {"ok": False, "cancelled": True}
         path = result[0] if isinstance(result, (tuple, list)) else result
@@ -2430,14 +2410,11 @@ class SettingsApi:
 
     def backup_pick_zip(self) -> dict:
         """选择要恢复的备份 ZIP 文件"""
-        try:
-            result = webview.windows[0].create_file_dialog(
-                webview.FileDialog.OPEN,
-                allow_multiple=False,
-                file_types=("备份包 (*.zip)",),
-            )
-        except Exception:
-            return {"ok": False, "error": "dialog failed"}
+        result = self._dialog(
+            webview.FileDialog.OPEN,
+            allow_multiple=False,
+            file_types=("备份包 (*.zip)",),
+        )
         if not result:
             return {"ok": False, "cancelled": True}
         path = result[0] if isinstance(result, (tuple, list)) else result
@@ -2512,14 +2489,11 @@ class SettingsApi:
             return False
 
     def import_memes(self) -> dict:
-        try:
-            result = webview.windows[0].create_file_dialog(
-                webview.FileDialog.OPEN,
-                allow_multiple=True,
-                file_types=("图片文件 (*.png;*.jpg;*.jpeg;*.gif;*.webp;*.bmp)",),
-            )
-        except Exception:
-            return {"ok": False}
+        result = self._dialog(
+            webview.FileDialog.OPEN,
+            allow_multiple=True,
+            file_types=("图片文件 (*.png;*.jpg;*.jpeg;*.gif;*.webp;*.bmp)",),
+        )
         if not result:
             return {"ok": False, "cancelled": True}
         r = self._webui._do_import(result)
@@ -3229,6 +3203,8 @@ class WebUI:
         self._started = False
         self._pending_hide = False
         self._hotkey_session = False
+        self._last_toggle_ms = 0
+        self._window_state_lock = threading.Lock()
         self._on_hotkey_change_cb = None
         self._update_debug = update_debug
         self._silent_start = silent_start
@@ -3324,71 +3300,101 @@ class WebUI:
 
     # 显示主窗口并清理非热键会话状态
     def show(self):
-        self._visible = True
-        self._hotkey_session = False
-        if self._window:
-            try:
-                self._window.on_top = True  # 置顶一下提升 z-order，随即复位不长期置顶
-                self._window.on_top = False
-                if callable(self._window.show):
-                    self._window.show()
-                if callable(self._window.focus):
-                    self._window.focus()
-                self._window.evaluate_js("focusSearch()")
-            except Exception as e:
-                logger.warning(f"show window error: {e}")
+        """显示主窗口（线程安全：持锁完成状态更新 + 原生窗口操作）"""
+        if self._window is None:
+            return
+        with self._window_state_lock:
+            self._visible = True
+            self._hotkey_session = False
+            self._show_on_gui()
+
+    def _show_on_gui(self):
+        """必须在 _window_state_lock 内调用（状态与窗口操作原子化）"""
+        try:
+            self._window.on_top = True  # 置顶一下提升 z-order，随即复位不长期置顶
+            self._window.on_top = False
+            if callable(self._window.show):
+                self._window.show()
+            if callable(self._window.focus):
+                self._window.focus()
+            self._window.evaluate_js("focusSearch()")
+        except Exception:
+            pass
 
     def hide(self):
-        self._visible = False
-        self._hotkey_session = False
-        if self._window:
-            try:
-                self._save_window_position()
-                if callable(self._window.hide):
-                    self._window.hide()
-            except Exception as e:
-                logger.warning(f"hide window error: {e}")
+        """隐藏主窗口（线程安全：持锁完成状态更新 + 原生窗口操作）"""
+        if self._window is None:
+            return
+        with self._window_state_lock:
+            self._visible = False
+            self._hotkey_session = False
+            self._hide_on_gui()
+
+    def _hide_on_gui(self):
+        """必须在 _window_state_lock 内调用（状态与窗口操作原子化）"""
+        try:
+            self._save_window_position()
+            if callable(self._window.hide):
+                self._window.hide()
+        except Exception:
+            pass
 
     def toggle(self):
-        if self._visible:
+        with self._window_state_lock:
+            visible = self._visible
+        if visible:
             self.hide()
         else:
             self.show()
 
     def toggle_safe(self):
-        # show/hide 底层为 Invoke 调度，任意线程调用均安全
         if self._window:
             self.toggle()
 
+    _HOTKEY_DEBOUNCE_S = 0.25
+
     def toggle_hotkey_safe(self):
-        """按热键专用定位规则安全切换窗口"""
+        """按热键专用定位规则安全切换窗口（去抖 + 持锁 + 状态与窗口操作原子化）"""
         if not self._window:
             return
-        if self._visible:
-            self.hide()
-            return
-        if self._cfg.get("hotkey_show_at_mouse", False):
-            try:
-                position = self._get_hotkey_window_position()
-                if position is not None:
-                    self._window.move(*position)
-            except Exception as e:
-                logger.warning("hotkey window move error: %s", e)
-        self.show()
-        self._hotkey_session = True
+        now = time.monotonic()
+        with self._window_state_lock:
+            if now - self._last_toggle_ms < self._HOTKEY_DEBOUNCE_S:
+                return
+            self._last_toggle_ms = now
+            visible = self._visible
+            if visible:
+                self._visible = False
+                self._hotkey_session = False
+                self._hide_on_gui()
+                return
+            if self._cfg.get("hotkey_show_at_mouse", False):
+                try:
+                    position = self._get_hotkey_window_position()
+                    if position is not None:
+                        self._window.move(*position)
+                except Exception:
+                    pass
+            self._visible = True
+            self._show_on_gui()
+            # 在锁内设置 _hotkey_session，避免 show 与 schedule_hide 之间的竞争窗口
+            self._hotkey_session = True
 
     def schedule_hide(self):
-        if not self._hotkey_session:
-            return False
-        self._pending_hide = True
+        with self._window_state_lock:
+            if not self._hotkey_session:
+                return False
+            self._pending_hide = True
         if self._window:
             self._run_on_gui(0.1, self._process_pending_hide)
         return True
 
     def _process_pending_hide(self):
-        if self._pending_hide:
+        with self._window_state_lock:
+            if not self._pending_hide:
+                return
             self._pending_hide = False
-            self.hide()
+        self.hide()
 
     def _run_on_gui(self, delay: float, func):
         """延时在 GUI 线程执行（pywebview Window 无 after 方法）"""
@@ -3984,6 +3990,21 @@ class WebUI:
         except Exception as e:
             logger.warning(f"create settings window error: {e}")
             return False
+
+    def focus_settings_window(self):
+        """把设置窗口重新拉到前台（对话框关闭后恢复焦点用）"""
+        win = self._settings_window
+        if win is None:
+            return
+        try:
+            win.on_top = True  # 置顶一下提升 z-order，随即复位不长期置顶
+            win.on_top = False
+            if callable(win.show):
+                win.show()
+            if callable(win.focus):
+                win.focus()
+        except Exception:
+            pass
 
     def close_settings(self):
         if self._settings_window:
