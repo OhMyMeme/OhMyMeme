@@ -273,6 +273,16 @@ class JsApi:
         self._drag_origin = None
         self._drag_last_move = 0.0
 
+    def _dialog(self, kind, **kw):
+        """主窗口上下文打开文件对话框（owner 为主窗口，无需焦点恢复）"""
+        win = webview.windows[0] if webview.windows else None
+        if win is None:
+            return None
+        try:
+            return win.create_file_dialog(kind, **kw)
+        except Exception:
+            return None
+
     def search_memes(
         self, keyword="", tags=None, collection_id=None, offset=0, limit=200
     ):
