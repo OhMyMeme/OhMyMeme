@@ -2324,17 +2324,34 @@ class SettingsApi:
             "total_size": total,
         }
 
-    def pick_storage_dir(self):
-        """选择新的表情包存储目录（只返回路径，不立即生效）"""
+    def _pick_folder(self, title: str = "选择文件夹") -> str:
+        """以设置窗口为 owner 打开目录选择对话框，返回路径或空串（取消/失败）"""
+        win = self._webui._settings_window
+        if win is None:
+            win = webview.windows[0] if webview.windows else None
+        if win is None:
+            return ""
         try:
-            result = webview.windows[0].create_file_dialog(
+            result = win.create_file_dialog(
                 webview.FileDialog.FOLDER, allow_multiple=False
             )
         except Exception:
-            return {"ok": False, "error": "dialog failed"}
+            return ""
         if not result:
-            return {"ok": False, "cancelled": True}
+            return ""
         path = result[0] if isinstance(result, (tuple, list)) else result
+        # 对话框关闭后焦点可能回到主窗口，恢复设置窗口到前台
+        try:
+            self._webui.focus_settings_window()
+        except Exception:
+            pass
+        return path
+
+    def pick_storage_dir(self):
+        """选择新的表情包存储目录（只返回路径，不立即生效）"""
+        path = self._pick_folder()
+        if not path:
+            return {"ok": False, "cancelled": True}
         return {"ok": True, "path": path}
 
     def apply_storage_dir(self, path, move_files=False):
@@ -3229,6 +3246,8 @@ class WebUI:
         self._started = False
         self._pending_hide = False
         self._hotkey_session = False
+        self._last_toggle_ms = 0
+        self._window_state_lock = threading.Lock()
         self._on_hotkey_change_cb = None
         self._update_debug = update_debug
         self._silent_start = silent_start
@@ -3324,47 +3343,82 @@ class WebUI:
 
     # 显示主窗口并清理非热键会话状态
     def show(self):
-        self._visible = True
-        self._hotkey_session = False
-        if self._window:
-            try:
-                self._window.on_top = True  # 置顶一下提升 z-order，随即复位不长期置顶
-                self._window.on_top = False
-                if callable(self._window.show):
-                    self._window.show()
-                if callable(self._window.focus):
-                    self._window.focus()
-                self._window.evaluate_js("focusSearch()")
-            except Exception as e:
-                logger.warning(f"show window error: {e}")
+        with self._window_state_lock:
+            self._visible = True
+            self._hotkey_session = False
+        self._do_show()
+
+    def _do_show(self):
+        if self._window is None:
+            return
+        if threading.current_thread() is threading.main_thread():
+            self._show_on_gui()
+        else:
+            self._run_on_gui(0, self._show_on_gui)
+
+    def _show_on_gui(self):
+        if self._window is None:
+            return
+        try:
+            self._window.on_top = True  # 置顶一下提升 z-order，随即复位不长期置顶
+            self._window.on_top = False
+            if callable(self._window.show):
+                self._window.show()
+            if callable(self._window.focus):
+                self._window.focus()
+            self._window.evaluate_js("focusSearch()")
+        except Exception:
+            pass
 
     def hide(self):
-        self._visible = False
-        self._hotkey_session = False
-        if self._window:
-            try:
-                self._save_window_position()
-                if callable(self._window.hide):
-                    self._window.hide()
-            except Exception as e:
-                logger.warning(f"hide window error: {e}")
+        with self._window_state_lock:
+            self._visible = False
+            self._hotkey_session = False
+        self._do_hide()
+
+    def _do_hide(self):
+        if self._window is None:
+            return
+        if threading.current_thread() is threading.main_thread():
+            self._hide_on_gui()
+        else:
+            self._run_on_gui(0, self._hide_on_gui)
+
+    def _hide_on_gui(self):
+        if self._window is None:
+            return
+        try:
+            self._save_window_position()
+            if callable(self._window.hide):
+                self._window.hide()
+        except Exception:
+            pass
 
     def toggle(self):
-        if self._visible:
+        with self._window_state_lock:
+            visible = self._visible
+        if visible:
             self.hide()
         else:
             self.show()
 
     def toggle_safe(self):
-        # show/hide 底层为 Invoke 调度，任意线程调用均安全
         if self._window:
             self.toggle()
 
+    _HOTKEY_DEBOUNCE_S = 0.25
+
     def toggle_hotkey_safe(self):
-        """按热键专用定位规则安全切换窗口"""
+        """按热键专用定位规则安全切换窗口（去抖 + 持锁）"""
         if not self._window:
             return
-        if self._visible:
+        now = time.monotonic()
+        with self._window_state_lock:
+            if now - self._last_toggle_ms < self._HOTKEY_DEBOUNCE_S:
+                return
+            self._last_toggle_ms = now
+            visible = self._visible
+        if visible:
             self.hide()
             return
         if self._cfg.get("hotkey_show_at_mouse", False):
@@ -3372,23 +3426,27 @@ class WebUI:
                 position = self._get_hotkey_window_position()
                 if position is not None:
                     self._window.move(*position)
-            except Exception as e:
-                logger.warning("hotkey window move error: %s", e)
+            except Exception:
+                pass
         self.show()
-        self._hotkey_session = True
+        with self._window_state_lock:
+            self._hotkey_session = True
 
     def schedule_hide(self):
-        if not self._hotkey_session:
-            return False
-        self._pending_hide = True
+        with self._window_state_lock:
+            if not self._hotkey_session:
+                return False
+            self._pending_hide = True
         if self._window:
             self._run_on_gui(0.1, self._process_pending_hide)
         return True
 
     def _process_pending_hide(self):
-        if self._pending_hide:
+        with self._window_state_lock:
+            if not self._pending_hide:
+                return
             self._pending_hide = False
-            self.hide()
+        self.hide()
 
     def _run_on_gui(self, delay: float, func):
         """延时在 GUI 线程执行（pywebview Window 无 after 方法）"""
@@ -3984,6 +4042,21 @@ class WebUI:
         except Exception as e:
             logger.warning(f"create settings window error: {e}")
             return False
+
+    def focus_settings_window(self):
+        """把设置窗口重新拉到前台（对话框关闭后恢复焦点用）"""
+        win = self._settings_window
+        if win is None:
+            return
+        try:
+            win.on_top = True  # 置顶一下提升 z-order，随即复位不长期置顶
+            win.on_top = False
+            if callable(win.show):
+                win.show()
+            if callable(win.focus):
+                win.focus()
+        except Exception:
+            pass
 
     def close_settings(self):
         if self._settings_window:
