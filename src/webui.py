@@ -3300,22 +3300,16 @@ class WebUI:
 
     # 显示主窗口并清理非热键会话状态
     def show(self):
+        """显示主窗口（线程安全：持锁完成状态更新 + 原生窗口操作）"""
+        if self._window is None:
+            return
         with self._window_state_lock:
             self._visible = True
             self._hotkey_session = False
-        self._do_show()
-
-    def _do_show(self):
-        if self._window is None:
-            return
-        if threading.current_thread() is threading.main_thread():
             self._show_on_gui()
-        else:
-            self._run_on_gui(0, self._show_on_gui)
 
     def _show_on_gui(self):
-        if self._window is None:
-            return
+        """必须在 _window_state_lock 内调用（状态与窗口操作原子化）"""
         try:
             self._window.on_top = True  # 置顶一下提升 z-order，随即复位不长期置顶
             self._window.on_top = False
@@ -3328,22 +3322,16 @@ class WebUI:
             pass
 
     def hide(self):
+        """隐藏主窗口（线程安全：持锁完成状态更新 + 原生窗口操作）"""
+        if self._window is None:
+            return
         with self._window_state_lock:
             self._visible = False
             self._hotkey_session = False
-        self._do_hide()
-
-    def _do_hide(self):
-        if self._window is None:
-            return
-        if threading.current_thread() is threading.main_thread():
             self._hide_on_gui()
-        else:
-            self._run_on_gui(0, self._hide_on_gui)
 
     def _hide_on_gui(self):
-        if self._window is None:
-            return
+        """必须在 _window_state_lock 内调用（状态与窗口操作原子化）"""
         try:
             self._save_window_position()
             if callable(self._window.hide):
@@ -3366,7 +3354,7 @@ class WebUI:
     _HOTKEY_DEBOUNCE_S = 0.25
 
     def toggle_hotkey_safe(self):
-        """按热键专用定位规则安全切换窗口（去抖 + 持锁）"""
+        """按热键专用定位规则安全切换窗口（去抖 + 持锁 + 状态与窗口操作原子化）"""
         if not self._window:
             return
         now = time.monotonic()
@@ -3375,18 +3363,20 @@ class WebUI:
                 return
             self._last_toggle_ms = now
             visible = self._visible
-        if visible:
-            self.hide()
-            return
-        if self._cfg.get("hotkey_show_at_mouse", False):
-            try:
-                position = self._get_hotkey_window_position()
-                if position is not None:
-                    self._window.move(*position)
-            except Exception:
-                pass
-        self.show()
-        with self._window_state_lock:
+            if visible:
+                self._visible = False
+                self._hide_on_gui()
+                return
+            if self._cfg.get("hotkey_show_at_mouse", False):
+                try:
+                    position = self._get_hotkey_window_position()
+                    if position is not None:
+                        self._window.move(*position)
+                except Exception:
+                    pass
+            self._visible = True
+            self._show_on_gui()
+            # 在锁内设置 _hotkey_session，避免 show 与 schedule_hide 之间的竞争窗口
             self._hotkey_session = True
 
     def schedule_hide(self):
