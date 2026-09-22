@@ -584,3 +584,17 @@ def test_validate_image_bytes_rejects_zero_dimension_and_accepts_magic():
     assert validate_image_bytes(_png_bytes()) == ".png"
     with pytest.raises(FetchRejected):
         validate_image_bytes(b"RIFF0000WEBP", max_pixels=2560)
+
+
+def test_fake_ip_proxy_range_is_allowed_but_other_private_ranges_are_not():
+    # Clash/Surge fake-IP 解析到 RFC 2544 基准网段时放行更新检查
+    from ohmymeme.core.adapters import fetch_policy_validation as validation
+
+    assert validation._safe_ip("198.18.0.7") is True
+    assert validation._safe_ip("198.19.255.254") is True
+    assert validation._safe_ip("8.8.8.8") is True
+    assert validation._safe_ip("192.168.1.1") is False
+    assert validation._safe_ip("10.0.0.1") is False
+    assert validation._safe_ip("127.0.0.1") is False
+    assert validation._safe_ip("169.254.1.1") is False
+    assert validation._safe_ip("::ffff:198.18.0.7") is False

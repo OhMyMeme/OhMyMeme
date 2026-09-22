@@ -45,7 +45,7 @@ def _get_file_logger():
             return _file_logger
         _file_logger_tried = True
         try:
-            from .config import get_config
+            from ohmymeme.core.config import get_config
 
             cfg = get_config()
             data_dir = cfg.data_dir

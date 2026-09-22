@@ -27,6 +27,7 @@ _PROXY_NAMES = (
     "all_proxy",
 )
 _PROXY_LOCK = threading.RLock()
+_FAKE_IP_RANGE = ipaddress.ip_network("198.18.0.0/15")
 
 
 class _DefaultRedirect:
@@ -67,6 +68,9 @@ def _safe_ip(ip_text: str) -> bool:
         raise FetchRejected("resolver returned invalid address") from error
     if ip.version == 6 and ip.ipv4_mapped is not None:
         return False
+    if ip.version == 4 and ip in _FAKE_IP_RANGE:
+        # Clash/Surge 等代理的 fake-IP 会把公网域名解析到 RFC 2544 基准网段
+        return True
     return bool(
         ip.is_global
         and not ip.is_loopback
