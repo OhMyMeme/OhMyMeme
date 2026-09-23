@@ -156,3 +156,58 @@ def test_missing_plugin_reports_seed_error(tmp_path):
     with pytest.raises(seeding.PluginSeedError) as error:
         ui_injection.read_contributions(tmp_path / "data", "community.missing")
     assert error.value.reason == "plugin_missing"
+
+
+def _panel_injections():
+    return [
+        {
+            "point": "plugin_detail.panel",
+            "label": "设置",
+            "fields": [
+                {
+                    "key": "endpoint",
+                    "type": "string",
+                    "label": "地址",
+                    "required": True,
+                },
+                {"key": "timeout", "type": "int", "label": "超时", "required": False},
+                {"key": "active", "type": "bool", "label": "启用", "required": False},
+                {"key": "token", "type": "secret", "label": "令牌", "required": False},
+            ],
+            "actions": [],
+        }
+    ]
+
+
+def test_panel_config_round_trip_and_type_guards(tmp_path):
+    from ohmymeme.core.config import Config
+    from ohmymeme.core.plugins.runtime import ui_config
+
+    cfg = Config(tmp_path / "config.json", tmp_path / "data")
+    injections = _panel_injections()
+    applied = ui_config.apply_values(
+        cfg,
+        "community.demo",
+        injections,
+        {"endpoint": "https://x", "timeout": 5, "active": True, "token": "s3"},
+    )
+    assert applied["endpoint"] == "https://x"
+    assert applied["active"] is True
+    assert applied["token"] == {"configured": True}
+    values = ui_config.read_values(cfg, "community.demo", injections)
+    assert values["timeout"] == 5
+    assert values["token"] == {"configured": True}
+    with pytest.raises(ValueError):
+        ui_config.apply_values(cfg, "community.demo", injections, {"timeout": "5"})
+    with pytest.raises(ValueError):
+        ui_config.apply_values(cfg, "community.demo", injections, {"unknown": 1})
+
+
+def test_resolve_asset_confines_to_package(tmp_path):
+    package = tmp_path / "pkg"
+    (package / "ui").mkdir(parents=True)
+    (package / "ui" / "index.html").write_text("<html></html>", encoding="utf-8")
+    assert ui_injection.resolve_asset(package, "ui/index.html") is not None
+    assert ui_injection.resolve_asset(package, "../secret.txt") is None
+    assert ui_injection.resolve_asset(package, "/etc/passwd") is None
+    assert ui_injection.resolve_asset(package, "ui/missing.html") is None

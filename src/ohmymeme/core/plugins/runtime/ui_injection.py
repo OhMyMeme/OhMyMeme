@@ -201,3 +201,23 @@ def load_ui_actions(package_dir):
 def read_contributions(data_dir, plugin_id):
     entry = seeding.resolve_plugin(data_dir, plugin_id)
     return load_contributions(entry["package_dir"])
+
+
+# 解析 iframe 静态资源；越界或不存在返回 None
+def resolve_asset(package_dir, relative):
+    if not isinstance(relative, str) or not relative:
+        return None
+    candidate = Path(relative)
+    if (
+        candidate.is_absolute()
+        or ".." in candidate.parts
+        or relative.startswith(("/", "\\", "."))
+    ):
+        return None
+    root = Path(package_dir).resolve()
+    target = (root / candidate).resolve()
+    if target != root and root not in target.parents:
+        return None
+    if not target.is_file():
+        return None
+    return target

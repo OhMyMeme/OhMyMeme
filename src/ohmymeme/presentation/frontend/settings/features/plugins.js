@@ -3,10 +3,17 @@ async function initPluginsPanel() {
   const root = document.getElementById('plugin-list');
   if (!root) return;
   try {
-    const resp = await fetch('/api/plugins');
-    if (!resp.ok) throw new Error(String(resp.status));
-    const data = await resp.json();
+    const [pluginsResp, uiResp] = await Promise.all([
+      fetch('/api/plugins'),
+      fetch('/api/plugins/ui'),
+    ]);
+    if (!pluginsResp.ok) throw new Error(String(pluginsResp.status));
+    const data = await pluginsResp.json();
+    const contributions = uiResp.ok
+      ? ((await uiResp.json()).contributions || [])
+      : [];
     renderPluginList(root, data.plugins || []);
+    renderPluginDetails(root, contributions);
   } catch (error) {
     root.textContent = '插件列表加载失败';
   }
@@ -34,7 +41,7 @@ function renderPluginList(root, plugins) {
     const uninstall = plugin.origin === 'bundled' ? '' :
       '<button class="btn btn-danger-outline btn-sm" onclick="uninstallPlugin(\'' +
       esc(plugin.id) + '\')">卸载</button>';
-    return '<div class="plugin-row">' +
+    return '<div class="plugin-row" data-plugin-row="' + esc(plugin.id) + '">' +
       '<span class="plugin-info">' +
       '<span class="plugin-name">' + esc(plugin.label) + '</span>' +
       '<span class="plugin-meta">' + esc(plugin.id) + ' · ' + esc(meta) + '</span>' +
@@ -297,4 +304,194 @@ async function callInjectedAction(provider, action, fields) {
   } catch (error) {
     showToast('执行失败：' + (error.message || error));
   }
+}
+
+/* Plugin detail panels and sandboxed frames */
+function renderPluginDetails(root, contributions) {
+  const grouped = {};
+  contributions.forEach((item) => {
+    (grouped[item.provider] = grouped[item.provider] || []).push(item.injection);
+  });
+  Object.entries(grouped).forEach(([provider, injections]) => {
+    const row = root.querySelector(
+      '[data-plugin-row="' + CSS.escape(provider) + '"]'
+    );
+    if (!row) return;
+    const actions = row.querySelector('.plugin-actions');
+    if (!actions) return;
+    const toggle = document.createElement('button');
+    toggle.className = 'btn btn-secondary btn-sm';
+    toggle.textContent = '详情';
+    const detail = document.createElement('div');
+    detail.className = 'plugin-detail';
+    detail.style.display = 'none';
+    toggle.onclick = () => togglePluginDetail(toggle, detail, provider, injections);
+    actions.insertBefore(toggle, actions.firstChild);
+    row.parentNode.insertBefore(detail, row.nextSibling);
+  });
+}
+
+async function togglePluginDetail(toggle, detail, provider, injections) {
+  if (detail.style.display !== 'none') {
+    detail.style.display = 'none';
+    toggle.textContent = '详情';
+    return;
+  }
+  detail.innerHTML = '';
+  for (const injection of injections) {
+    if (injection.point === 'plugin_detail.panel') {
+      detail.appendChild(await renderConfigPanel(provider, injection));
+    } else if (injection.point === 'plugin_detail.iframe') {
+      detail.appendChild(renderIframeSection(provider, injection));
+    }
+  }
+  detail.style.display = 'flex';
+  toggle.textContent = '收起';
+}
+
+async function renderConfigPanel(provider, panel) {
+  const box = document.createElement('div');
+  box.className = 'plugin-config';
+  const title = document.createElement('div');
+  title.className = 'section-title';
+  title.textContent = panel.label;
+  box.appendChild(title);
+  let values = {};
+  try {
+    const resp = await fetch(
+      '/api/plugins/ui/config?provider=' + encodeURIComponent(provider)
+    );
+    if (resp.ok) values = (await resp.json()).values || {};
+  } catch (error) {
+    values = {};
+  }
+  const fields = document.createElement('div');
+  fields.className = 'import-injected-fields';
+  panel.fields.forEach((field) => {
+    const wrap = renderInjectedField(field);
+    const input = wrap.querySelector('[data-inject-field]');
+    const value = values[field.key];
+    if (input && field.type === 'bool') input.checked = value === true;
+    else if (input && field.type === 'secret') {
+      input.placeholder = value && value.configured ? '已配置（留空保持不变）' : '';
+    } else if (input && value !== undefined && value !== null) {
+      input.value = String(value);
+    }
+    fields.appendChild(wrap);
+  });
+  box.appendChild(fields);
+  const actions = document.createElement('div');
+  actions.className = 'plugin-actions';
+  const save = document.createElement('button');
+  save.className = 'btn btn-primary btn-sm';
+  save.textContent = '保存配置';
+  save.onclick = async () => {
+    try {
+      const resp = await fetch('/api/plugins/ui/config', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          provider,
+          values: collectInjectedPayload(fields),
+        }),
+      });
+      const data = await resp.json();
+      if (!resp.ok || !data.ok) throw new Error(data.error || '保存失败');
+      showToast('配置已保存');
+    } catch (error) {
+      showToast('保存失败：' + (error.message || error));
+    }
+  };
+  actions.appendChild(save);
+  box.appendChild(actions);
+  return box;
+}
+
+function renderIframeSection(provider, injection) {
+  const box = document.createElement('div');
+  box.className = 'plugin-config';
+  const title = document.createElement('div');
+  title.className = 'section-title';
+  title.textContent = injection.label || '自定义界面';
+  const button = document.createElement('button');
+  button.className = 'btn btn-secondary btn-sm';
+  button.textContent = '加载自定义界面';
+  const holder = document.createElement('div');
+  button.onclick = () => {
+    if (holder.dataset.loaded) return;
+    holder.dataset.loaded = '1';
+    holder.appendChild(mountInjectedIframe(provider, injection));
+    button.disabled = true;
+    button.textContent = '已加载';
+  };
+  box.appendChild(title);
+  box.appendChild(button);
+  box.appendChild(holder);
+  return box;
+}
+
+function mountInjectedIframe(provider, injection) {
+  const frame = document.createElement('iframe');
+  frame.className = 'plugin-ui-frame';
+  frame.setAttribute('sandbox', 'allow-scripts');
+  frame.style.height = (injection.height || 360) + 'px';
+  const rate = { start: Date.now(), count: 0 };
+  const entry = injection.entry
+    .split('/')
+    .map((part) => encodeURIComponent(part))
+    .join('/');
+  const onMessage = (event) => {
+    if (event.source !== frame.contentWindow) return;
+    const data = event.data;
+    if (!data || typeof data !== 'object') return;
+    if (data.type === 'ready') {
+      frame.contentWindow.postMessage({ type: 'init', provider }, '*');
+      return;
+    }
+    if (data.type !== 'call' || typeof data.name !== 'string') return;
+    const now = Date.now();
+    if (now - rate.start > 1000) {
+      rate.start = now;
+      rate.count = 0;
+    }
+    rate.count += 1;
+    if (rate.count > 20) return;
+    let size = 0;
+    try {
+      size = JSON.stringify(data).length;
+    } catch (error) {
+      return;
+    }
+    if (size > 65536) return;
+    callDeclaredAction(provider, data.name, data.payload || {}).then(
+      (result) =>
+        frame.contentWindow.postMessage(
+          { type: 'result', id: data.id, result },
+          '*'
+        ),
+      (error) =>
+        frame.contentWindow.postMessage(
+          {
+            type: 'error',
+            id: data.id,
+            error: String((error && error.message) || error),
+          },
+          '*'
+        )
+    );
+  };
+  window.addEventListener('message', onMessage);
+  frame.src = '/api/plugins/' + encodeURIComponent(provider) + '/ui/' + entry;
+  return frame;
+}
+
+async function callDeclaredAction(provider, name, payload) {
+  const resp = await fetch('/api/plugins/ui/action', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ provider, name, payload }),
+  });
+  const data = await resp.json();
+  if (!resp.ok || !data.ok) throw new Error(data.error || '动作失败');
+  return data.result;
 }

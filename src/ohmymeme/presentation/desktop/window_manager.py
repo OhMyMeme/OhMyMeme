@@ -2032,6 +2032,65 @@ class WebUI:
                 return {"ok": False, "error": str(error)}
             return {"ok": True, "result": result}
 
+        @app.route("/api/plugins/ui/config")
+        def plugin_ui_config_read():
+            # 读取声明过的面板字段；secret 只回是否已配置
+            from ohmymeme.core.plugins.runtime import ui_config, ui_injection
+
+            provider = bottle.request.query.get("provider") or ""
+            try:
+                injections = ui_injection.read_contributions(
+                    self._cfg.data_dir, provider
+                )
+                values = ui_config.read_values(self._cfg, provider, injections)
+            except Exception as error:
+                bottle.response.status = 400
+                return {"ok": False, "error": str(error)}
+            return {"ok": True, "values": values}
+
+        @app.route("/api/plugins/ui/config", method="POST")
+        def plugin_ui_config_write():
+            # 仅写入声明过的字段，类型按声明严格转换
+            from ohmymeme.core.plugins.runtime import ui_config, ui_injection
+
+            payload = bottle.request.json or {}
+            provider = payload.get("provider")
+            values = payload.get("values") or {}
+            try:
+                injections = ui_injection.read_contributions(
+                    self._cfg.data_dir, provider
+                )
+                applied = ui_config.apply_values(
+                    self._cfg, provider, injections, values
+                )
+                self._cfg.save()
+            except Exception as error:
+                bottle.response.status = 400
+                return {"ok": False, "error": str(error)}
+            return {"ok": True, "values": applied}
+
+        @app.route("/api/plugins/<plugin_id>/ui/<path:asset>")
+        def plugin_ui_asset(plugin_id, asset):
+            # iframe 静态资源：只允许包内相对路径，CSP 禁止外部资源
+            from ohmymeme.core.plugins.runtime import seeding, ui_injection
+
+            try:
+                entry = seeding.resolve_plugin(self._cfg.data_dir, plugin_id)
+            except Exception:
+                bottle.response.status = 404
+                return "not found"
+            target = ui_injection.resolve_asset(entry["package_dir"], asset)
+            if target is None:
+                bottle.response.status = 404
+                return "not found"
+            bottle.response.set_header(
+                "Content-Security-Policy",
+                "default-src 'none'; script-src 'unsafe-inline'; "
+                "style-src 'unsafe-inline'; img-src data:",
+            )
+            bottle.response.set_header("Cache-Control", "no-store")
+            return bottle.static_file(str(target), root=str(entry["package_dir"]))
+
         @app.route("/api/contributors")
         def serve_contributors():
             # 代理贡献者 SVG：剥离白色背景矩形，适配深色主题
