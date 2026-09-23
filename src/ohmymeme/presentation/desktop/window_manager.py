@@ -1861,6 +1861,12 @@ class WebUI:
                         "origin": record.get("origin", ""),
                         "version": version,
                         "enabled": provider_id not in disabled,
+                        "available": bool(active)
+                        and (
+                            seeding.plugins_dir(self._cfg.data_dir)
+                            / provider_id
+                            / str(active)
+                        ).is_dir(),
                         "versions": [],
                     }
                 )
@@ -1965,6 +1971,66 @@ class WebUI:
                 cache = getattr(self, name, None)
                 if isinstance(cache, dict):
                     cache.pop(plugin_id, None)
+
+        @app.route("/api/plugins/ui")
+        def plugin_ui_contributions():
+            # 聚合已装插件的声明式贡献；无效 ui.json 只隔离该插件
+            from ohmymeme.core.plugins.runtime import seeding, ui_injection
+
+            disabled = self._cfg.get("disabled_plugins", None)
+            disabled = set(disabled) if isinstance(disabled, (list, tuple)) else set()
+            contributions = []
+            for row in seeding.installed_plugins(self._cfg.data_dir):
+                try:
+                    injections = ui_injection.read_contributions(
+                        self._cfg.data_dir, row["id"]
+                    )
+                except Exception as error:
+                    logger.warning("plugin ui rejected: %s (%s)", row["id"], error)
+                    continue
+                for injection in injections:
+                    contributions.append(
+                        {
+                            "provider": row["id"],
+                            "available": True,
+                            "enabled": row["id"] not in disabled,
+                            "injection": injection,
+                        }
+                    )
+            return {"contributions": contributions}
+
+        @app.route("/api/plugins/ui/action", method="POST")
+        def plugin_ui_action():
+            # 动作必须已在 ui.json 声明；执行仍走 worker allowlist
+            from ohmymeme.core.plugins.runtime import ui_injection
+
+            payload = bottle.request.json or {}
+            provider = payload.get("provider")
+            name = payload.get("name")
+            arguments = payload.get("payload") or {}
+            try:
+                injections = ui_injection.read_contributions(
+                    self._cfg.data_dir, provider
+                )
+            except Exception as error:
+                bottle.response.status = 400
+                return {"ok": False, "error": str(error)}
+            allowed = {
+                action["name"]
+                for item in injections
+                for action in item.get("actions", ())
+            }
+            if name not in allowed:
+                bottle.response.status = 400
+                return {"ok": False, "error": "action not declared"}
+            try:
+                result = self._container.plugin_runtime.call_ui_action(
+                    provider, name, arguments
+                )
+            except Exception as error:
+                bottle.response.status = 502
+                return {"ok": False, "error": str(error)}
+            return {"ok": True, "result": result}
 
         @app.route("/api/contributors")
         def serve_contributors():

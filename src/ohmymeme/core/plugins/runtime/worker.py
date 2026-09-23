@@ -231,6 +231,7 @@ class PluginWorker:
         self._op_thread = None
         self._sync_sessions = {}
         self._lan_sessions = {}
+        self._ui_actions = frozenset()
 
     def attach(self, channel):
         self._channel = channel
@@ -246,6 +247,8 @@ class PluginWorker:
         if method == "operation.cancel":
             self._handle_operation_cancel(params)
             return {"ok": True}
+        if method == "ui.action":
+            return self._handle_ui_action(params)
         if method == "sync.open":
             return self._handle_sync_open(params)
         if method == "sync.call":
@@ -328,6 +331,13 @@ class PluginWorker:
             entry,
             PluginCapabilities(tuple(plugin.get("capabilities") or ())),
         )
+        try:
+            from ohmymeme.core.plugins.runtime.ui_injection import load_ui_actions
+
+            self._ui_actions = load_ui_actions(package_dir)
+        except Exception:
+            # 无效 ui.json 不影响插件运行，只让 UI 动作不可用
+            self._ui_actions = frozenset()
 
     # 允许的同步查询：固定方法名 + 按签名注入宿主回调
     def _handle_query(self, params):
@@ -410,6 +420,23 @@ class PluginWorker:
                 stop()
             except Exception:
                 logger.exception("plugin stop failed")
+
+    # 执行插件声明过的 UI 动作（allowlist 来自 ui.json）
+    def _handle_ui_action(self, params):
+        name = params.get("name")
+        if name not in self._ui_actions:
+            raise RpcError(protocol.ERROR_UNSUPPORTED, "unknown ui action")
+        handler = getattr(self._instance, "handle_ui_action", None)
+        if not callable(handler):
+            raise RpcError(protocol.ERROR_UNSUPPORTED, "ui action unavailable")
+        try:
+            return _jsonable(handler(str(name), dict(params.get("payload") or {})))
+        except Exception as error:
+            raise RpcError(
+                type(error).__name__,
+                str(error),
+                {"exception": type(error).__name__},
+            ) from None
 
     # 打开同步 backend 会话
     def _handle_sync_open(self, params):

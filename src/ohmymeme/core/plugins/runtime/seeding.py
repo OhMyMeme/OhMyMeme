@@ -7,7 +7,6 @@ import importlib.util
 import json
 import logging
 import os
-import re
 import shutil
 import sys
 import tempfile
@@ -25,12 +24,6 @@ PLUGIN_META_FILENAME = "plugin.json"
 _SKIP_PARTS = {"__pycache__"}
 _SKIP_SUFFIXES = {".pyc", ".pyo"}
 OFFICIAL_IDS = frozenset(provider for provider, _, _ in CANONICAL_PROVIDERS)
-_ALLOWED_KINDS = ("source", "sync", "transport")
-_VERSION_PATTERN = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$")
-_ENTRY_PATTERN = re.compile(r"^[A-Za-z_][A-Za-z0-9_.]*:create_plugin$")
-_MAX_MEMBERS = 2000
-_MAX_MEMBER_BYTES = 64 * 1024 * 1024
-_MAX_TOTAL_BYTES = 512 * 1024 * 1024
 
 
 class PluginSeedError(RuntimeError):
@@ -254,54 +247,36 @@ def _read_plugin_meta(zip_file):
     return meta
 
 
-# 校验第三方包元数据并归一化
+# version 直接作为目录名，仅拒绝路径语义
+def _valid_version(version):
+    return (
+        isinstance(version, str)
+        and bool(version)
+        and version not in (".", "..")
+        and "/" not in version
+        and "\\" not in version
+        and not version.startswith(".")
+    )
+
+
+# 校验并归一化最小 meta：id/version/entry 必填，name 可选
 def _validate_meta(meta):
     plugin_id = meta.get("id")
     version = meta.get("version")
     entry = meta.get("entry")
-    kind = meta.get("kind", "")
-    if (
-        not isinstance(plugin_id, str)
-        or "." not in plugin_id
-        or plugin_id in OFFICIAL_IDS
-    ):
+    # 官方 ID 是分发身份，第三方不得占用（正确性约束，非安全校验）
+    if not isinstance(plugin_id, str) or not plugin_id or plugin_id in OFFICIAL_IDS:
         raise PluginSeedError("invalid_plugin_id", str(plugin_id))
-    if not isinstance(version, str) or not _VERSION_PATTERN.match(version):
+    if not _valid_version(version):
         raise PluginSeedError("invalid_version", str(version))
-    if not isinstance(entry, str) or not _ENTRY_PATTERN.match(entry):
+    if not isinstance(entry, str) or ":" not in entry:
         raise PluginSeedError("invalid_entry", str(entry))
-    if kind not in _ALLOWED_KINDS:
-        raise PluginSeedError("invalid_kind", str(kind))
-    if type(meta.get("api_version")) is not int or meta.get("api_version") != 1:
-        raise PluginSeedError("invalid_api_version", str(meta.get("api_version")))
-    capabilities = meta.get("capabilities") or []
     return {
         "id": plugin_id,
         "name": str(meta.get("name") or plugin_id),
         "version": version,
         "entry": entry,
-        "kind": kind,
-        "api_version": 1,
-        "capabilities": [item for item in capabilities if isinstance(item, str)],
     }
-
-
-# 拒绝路径穿越、符号链接与超限成员
-def _check_members(zip_file):
-    members = zip_file.infolist()
-    if not members or len(members) > _MAX_MEMBERS:
-        raise PluginSeedError("invalid_package", "member count")
-    total = 0
-    for info in members:
-        name = info.filename.replace("\\", "/")
-        candidate = Path(name)
-        if candidate.is_absolute() or ".." in candidate.parts:
-            raise PluginSeedError("unsafe_package", name)
-        if (info.external_attr >> 16) & 0o170000 == 0o120000:
-            raise PluginSeedError("unsafe_package", "symlink " + name)
-        total += info.file_size
-        if info.file_size > _MAX_MEMBER_BYTES or total > _MAX_TOTAL_BYTES:
-            raise PluginSeedError("invalid_package", "package too large")
 
 
 # 安装或更新第三方 ZIP 包，返回解析后的版本信息
@@ -312,7 +287,6 @@ def install_plugin(data_dir, archive_path):
     except (OSError, zipfile.BadZipFile) as error:
         raise PluginSeedError("invalid_package", str(error)) from error
     with zip_file:
-        _check_members(zip_file)
         meta = _validate_meta(_read_plugin_meta(zip_file))
         plugin_id = meta["id"]
         version = meta["version"]
@@ -342,9 +316,6 @@ def install_plugin(data_dir, archive_path):
     versions[version] = {
         "version": version,
         "entry": meta["entry"],
-        "kind": meta["kind"],
-        "package_root": meta["entry"].split(":", 1)[0],
-        "capabilities": meta["capabilities"],
         "origin": "installed",
         "name": meta["name"],
     }
@@ -370,7 +341,7 @@ def uninstall_plugin(data_dir, plugin_id):
 
 # 切换活动版本（回滚/前进）；版本必须已安装
 def activate_version(data_dir, plugin_id, version):
-    if not isinstance(version, str) or not _VERSION_PATTERN.match(version):
+    if not _valid_version(version):
         raise PluginSeedError("invalid_version", str(version))
     state = read_state(data_dir)
     entries = dict(state.get("plugins") or {})

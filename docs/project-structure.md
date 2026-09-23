@@ -32,7 +32,8 @@ OhMyMeme/
 │   ├── sync.webdav/                               WebDAV 同步插件分发包
 │   └── transport.lan/                             局域网传输插件分发包
 ├── docs/                                         [source]
-│   ├── plugin-runtime-plan.md                     子进程插件体系落地计划（未实施）
+│   ├── plugin-runtime-plan.md                     子进程插件体系落地计划与实施状态
+│   ├── plugin-ui-injection-plan.md                插件 UI 注入点规划（声明式 + iframe，待实施）
 │   ├── project-structure.md                       本项目结构地图
 │   └── wechat_keyfinder_protocol.md               Python 与微信 C++ 辅助程序协议
 ├── fixtures/                                     [test]

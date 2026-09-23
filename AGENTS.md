@@ -118,7 +118,7 @@ tests/
 - 返回类型: `str` / `int` / `bool` / `dict` / `list`，错误返回 `None` 或 `{"ok": false, "error": "..."}`
 - 图片传输: 缩略图通过 `/api/thumb/{id}` HTTP 路径渲染，不通过 JS API JSON
 - 固定插件动作边界位于 `presentation/desktop/api/plugin_dispatch.py`：四个导入 provider 经 runtime 调度，sync/LAN 仍由宿主固定映射处理；ADB/手机版 QQ 不进入该边界。公开方法/默认值/返回对象/取消/进度/固定 UI 必须保持兼容。`pick_wechat_root` 是零参数方法。
-- 插件在独立 worker 进程中运行，宿主只传窄配置、按操作密钥与 operation 临时目录；禁止把完整 Config、WebUI、DB 或宿主持久路径传给插件，禁止任意 execute、动态 Bridge 注册或 HTML/脚本/UI DSL。安装仅限本地 ZIP（`seeding.install_plugin`，官方 ID/路径穿越/符号链接拒绝），卸载仅限第三方，重载 = 停止 worker 后按磁盘版本重新加载。
+- 插件在独立 worker 进程中运行，宿主只传窄配置、按操作密钥与 operation 临时目录；禁止把完整 Config、WebUI、DB 或宿主持久路径传给插件，禁止任意 execute、动态 Bridge 注册或 HTML/脚本/UI DSL。安装仅限本地 ZIP（`seeding.install_plugin`，meta 最小化：仅 id/version/entry，官方 ID 不得占用；不做包安全校验），卸载仅限第三方，重载 = 停止 worker 后按磁盘版本重新加载。
 - ABI/action 矩阵由 `scripts/plugin_abi_matrix.py --write` 从固定动作、Bridge/facade 和实际调用方生成至 `docs/plugin-{abi,action}-matrix.json`，`--check` 校验 `schemas/plugin/abi-matrix.schema.json` 并执行离线 facade/dispatcher 探针；未知 action、错参数、无效结果及 provider 缺失/禁用/不兼容必须拒绝或返回原哨兵，不得调用其他 provider。
 
 ## 官方插件文档与重组边界

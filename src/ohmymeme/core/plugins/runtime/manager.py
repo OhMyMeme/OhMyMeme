@@ -661,6 +661,15 @@ class PluginRuntimeManager:
         record.initial_progress = result.get("progress")
         return record
 
+    # 执行插件声明过的 UI 动作（worker 按 ui.json allowlist 校验）
+    def call_ui_action(self, plugin_id, name, payload=None):
+        worker = self.ensure(plugin_id)
+        return worker.channel.call(
+            "ui.action",
+            {"name": str(name), "payload": dict(payload or {})},
+            timeout=REQUEST_TIMEOUT,
+        )
+
     # 打开同步 backend 会话，供宿主 backends 适配层逐方法调用
     def open_backend(self, provider_id, config, secrets, enabled=None):
         if enabled is not None and provider_id not in enabled:

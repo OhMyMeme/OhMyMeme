@@ -311,3 +311,11 @@ select:hover { border-color: var(--border-light); }
 .plugin-actions { display: flex; align-items: center; gap: 6px; flex-shrink: 0; }
 .plugin-actions .btn { padding: 3px 8px; font-size: 11.5px; }
 .plugin-version { font-size: 11.5px; max-width: 90px; }
+.import-injected { display: flex; flex-direction: column; gap: 8px; }
+.import-row-disabled { opacity: 0.55; }
+.import-row-missing { opacity: 0.55; border-color: var(--danger); }
+.import-status { font-size: 11px; color: var(--muted); margin-left: 8px; white-space: nowrap; }
+.import-injected-row { flex-direction: column; align-items: stretch; cursor: default; gap: 8px; }
+.import-injected-fields { display: flex; flex-wrap: wrap; gap: 8px; }
+.injected-field { display: flex; flex-direction: column; gap: 4px; font-size: 11.5px; color: var(--muted); min-width: 150px; }
+.injected-field input, .injected-field select { font-size: 12px; }

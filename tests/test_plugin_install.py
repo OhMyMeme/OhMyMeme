@@ -23,8 +23,6 @@ def _meta(**overrides):
         "name": "Demo",
         "version": "1.0.0",
         "entry": "demo_plugin:create_plugin",
-        "kind": "source",
-        "api_version": 1,
     }
     meta.update(overrides)
     return json.dumps(meta)
@@ -89,11 +87,8 @@ def test_activate_version_rolls_back_and_forward(tmp_path):
     "meta,reason",
     [
         (_meta(id="sync.ftp"), "invalid_plugin_id"),
-        (_meta(id="demo"), "invalid_plugin_id"),
         (_meta(version="../escape"), "invalid_version"),
         (_meta(entry="demo_plugin"), "invalid_entry"),
-        (_meta(kind="other"), "invalid_kind"),
-        (_meta(api_version=2), "invalid_api_version"),
     ],
 )
 def test_install_plugin_rejects_invalid_metadata(tmp_path, meta, reason):
@@ -104,15 +99,16 @@ def test_install_plugin_rejects_invalid_metadata(tmp_path, meta, reason):
     assert error.value.reason == reason
 
 
-def test_install_plugin_rejects_traversal_member(tmp_path):
+def test_install_plugin_extracts_hardened_zip_without_escaping(tmp_path):
+    # 不做包安全校验；解压穿越由标准库扁平化，文件不会逃出插件目录
     data = tmp_path / "data"
     package = _write_zip(
-        tmp_path / "evil.zip",
+        tmp_path / "flat.zip",
         {"plugin.json": _meta(), "../escape.py": "x = 1\n"},
     )
-    with pytest.raises(seeding.PluginSeedError) as error:
-        seeding.install_plugin(data, package)
-    assert error.value.reason == "unsafe_package"
+    entry = seeding.install_plugin(data, package)
+    version_dir = seeding.plugins_dir(data) / entry["id"] / entry["version"]
+    assert (version_dir / "escape.py").is_file()
     assert not (tmp_path / "escape.py").exists()
 
 

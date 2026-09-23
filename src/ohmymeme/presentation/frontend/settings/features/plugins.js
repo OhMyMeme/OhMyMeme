@@ -130,3 +130,171 @@ async function rollbackPlugin(pluginId) {
     showToast('切换失败：' + (error.message || error));
   }
 }
+
+/* Import injections */
+const IMPORT_SOURCE_ROWS = {
+  'source.qqnt': '[onclick="startQQNTWizard()"]',
+  'source.telegram': '[onclick="openTGImportDialog()"]',
+  'source.douyin': '[onclick="openDYImportDialog()"]',
+  'source.wechat': '[onclick="openWechatImportDialog()"]',
+};
+
+async function initImportSources() {
+  const container = document.getElementById('import-injected');
+  if (!container) return;
+  let sources = [];
+  let contributions = [];
+  try {
+    const [sourceResp, uiResp] = await Promise.all([
+      fetch('/api/plugins'),
+      fetch('/api/plugins/ui'),
+    ]);
+    if (sourceResp.ok) sources = (await sourceResp.json()).plugins || [];
+    if (uiResp.ok) contributions = (await uiResp.json()).contributions || [];
+  } catch (error) {
+    return;
+  }
+  annotateImportSources(sources);
+  renderInjectedImports(container, contributions, sources);
+}
+
+function annotateImportSources(sources) {
+  const byId = {};
+  sources.forEach((plugin) => { byId[plugin.id] = plugin; });
+  Object.entries(IMPORT_SOURCE_ROWS).forEach(([id, selector]) => {
+    const row = document.querySelector(selector);
+    const source = byId[id];
+    if (!row || !source) return;
+    row.querySelectorAll('.import-status').forEach((node) => node.remove());
+    row.classList.remove('import-row-disabled', 'import-row-missing');
+    row.disabled = false;
+    if (!source.available) {
+      row.classList.add('import-row-missing');
+      row.disabled = true;
+      addImportStatus(row, '不可用：缺少插件包');
+    } else if (!source.enabled) {
+      row.classList.add('import-row-disabled');
+      row.disabled = true;
+      addImportStatus(row, '已禁用（重启生效）');
+    }
+  });
+}
+
+function addImportStatus(row, text) {
+  const span = document.createElement('span');
+  span.className = 'import-status';
+  span.textContent = text;
+  row.appendChild(span);
+}
+
+function renderInjectedImports(container, contributions, sources) {
+  const enabled = {};
+  sources.forEach((plugin) => { enabled[plugin.id] = plugin.enabled; });
+  container.innerHTML = '';
+  contributions
+    .filter((item) => item.injection.point === 'imports.row')
+    .forEach((item) => {
+      const injection = item.injection;
+      const wrapper = document.createElement('div');
+      wrapper.className = 'import-row import-injected-row' +
+        (item.enabled ? '' : ' import-row-disabled');
+      const info = document.createElement('span');
+      info.className = 'plugin-info';
+      const name = document.createElement('span');
+      name.className = 'import-name';
+      name.textContent = injection.label;
+      info.appendChild(name);
+      if (injection.description) {
+        const meta = document.createElement('span');
+        meta.className = 'plugin-meta';
+        meta.textContent = injection.description;
+        info.appendChild(meta);
+      }
+      if (!item.enabled) {
+        const status = document.createElement('span');
+        status.className = 'import-status';
+        status.textContent = '已禁用（重启生效）';
+        info.appendChild(status);
+      }
+      wrapper.appendChild(info);
+      const fields = document.createElement('div');
+      fields.className = 'import-injected-fields';
+      injection.fields.forEach((field) => {
+        fields.appendChild(renderInjectedField(field));
+      });
+      wrapper.appendChild(fields);
+      const actions = document.createElement('div');
+      actions.className = 'plugin-actions';
+      injection.actions.forEach((action) => {
+        const button = document.createElement('button');
+        button.className = 'btn btn-primary btn-sm';
+        button.textContent = action.label;
+        button.onclick = () => callInjectedAction(item.provider, action, fields);
+        actions.appendChild(button);
+      });
+      wrapper.appendChild(actions);
+      container.appendChild(wrapper);
+    });
+}
+
+function renderInjectedField(field) {
+  const wrap = document.createElement('label');
+  wrap.className = 'injected-field';
+  const label = document.createElement('span');
+  label.textContent = field.label + (field.required ? ' *' : '');
+  wrap.appendChild(label);
+  let input;
+  if (field.type === 'enum') {
+    input = document.createElement('select');
+    (field.options || []).forEach((option) => {
+      const item = document.createElement('option');
+      item.value = option;
+      item.textContent = option;
+      input.appendChild(item);
+    });
+  } else {
+    input = document.createElement('input');
+    if (field.type === 'secret') input.type = 'password';
+    if (field.type === 'bool') input.type = 'checkbox';
+    if (field.default !== undefined && field.default !== null) {
+      if (field.type === 'bool') input.checked = field.default === true;
+      else input.value = String(field.default);
+    }
+    if (field.placeholder) input.placeholder = field.placeholder;
+  }
+  input.dataset.injectField = field.key;
+  input.dataset.injectType = field.type;
+  wrap.appendChild(input);
+  return wrap;
+}
+
+function collectInjectedPayload(fields) {
+  const payload = {};
+  fields.querySelectorAll('[data-inject-field]').forEach((input) => {
+    if (input.dataset.injectType === 'bool') {
+      payload[input.dataset.injectField] = input.checked;
+    } else {
+      payload[input.dataset.injectField] = input.value;
+    }
+  });
+  return payload;
+}
+
+async function callInjectedAction(provider, action, fields) {
+  try {
+    const resp = await fetch('/api/plugins/ui/action', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        provider,
+        name: action.name,
+        payload: collectInjectedPayload(fields),
+      }),
+    });
+    const data = await resp.json();
+    if (!resp.ok || !data.ok) throw new Error(data.error || '动作失败');
+    showToast(action.kind === 'query' ? '查询完成' : '已执行：' + action.label);
+  } catch (error) {
+    showToast('执行失败：' + (error.message || error));
+  }
+}
