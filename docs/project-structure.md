@@ -313,7 +313,7 @@ app/container.py
 许可证和发布范围由 `docs/plugin-license-matrix.json`、`NOTICE`、`LICENSES/` 与 `THIRD-PARTY-NOTICES/` 记录。外部下载的微信 helper 及其 CMake/OpenSSL 输入不随制品交付；本地 helper 源码映射不构成外部 helper EXE 的来源到二进制可复现性证明。
 
 不提供 marketplace 或不受信任插件沙箱。
-第三方插件仅支持本地 ZIP 安装、卸载与重启生效的启用管理，亦不支持动态 provider、动态 Bridge 或 HTML/JS UI 贡献。
+第三方插件仅支持本地 ZIP 安装、卸载与重启生效的启用管理。UI 侧开放声明式 UI 注入白名单（插件 `ui.json` 只声明导入区行与插件详情面板，字段类型受宿主白名单约束并整条校验），以及插件详情页沙箱 iframe（显式加载、CSP、postMessage 动作 allowlist）；不提供任意 HTML/JS 注入宿主 DOM、动态 provider 发现或动态 Bridge。
 
 ## 推荐阅读顺序
 

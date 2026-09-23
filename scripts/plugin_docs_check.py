@@ -61,6 +61,10 @@ DOCUMENT_FACTS = (
         "unsupported extension features",
         "不提供 marketplace 或不受信任插件沙箱",
     ),
+    (
+        "plugin ui injections",
+        "声明式 UI 注入白名单",
+    ),
 )
 UNSUPPORTED_EXTENSION_FEATURES = (
     "marketplace",

@@ -108,7 +108,8 @@ def _normalize_injection(value, index):
         entry = value.get("entry")
         candidate = Path(entry) if isinstance(entry, str) else None
         if (
-            candidate is None
+            not entry
+            or candidate is None
             or candidate.is_absolute()
             or ".." in candidate.parts
             or entry.startswith(("/", "\\", "."))

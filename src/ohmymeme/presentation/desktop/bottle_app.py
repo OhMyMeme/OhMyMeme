@@ -24,6 +24,13 @@ def install_security_hooks(app, bottle, port: int):
     def set_security_headers():
         bottle.response.headers["X-Content-Type-Options"] = "nosniff"
         bottle.response.headers["Referrer-Policy"] = "no-referrer"
-        bottle.response.headers["X-Frame-Options"] = "DENY"
+        # 插件详情沙箱 iframe 需要允许同源嵌入，其余响应保持 DENY
+        frame_asset = (
+            bottle.request.path.startswith("/api/plugins/")
+            and "/ui/" in bottle.request.path
+        )
+        bottle.response.headers["X-Frame-Options"] = (
+            "SAMEORIGIN" if frame_asset else "DENY"
+        )
         if bottle.request.path.startswith("/api/"):
             bottle.response.headers["Cache-Control"] = "no-store"

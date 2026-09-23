@@ -105,7 +105,7 @@ tests/
 ```
 
 ## js_api 桥接规范
-- Todo11 固定 UI 边界：`api/ui_contributions.py` 严格校验宿主 `src/webui/plugin-ui.json`，生产 Bottle `/api/plugin-ui` 只返回有效快照；设置页 `initSettings` → `installPluginUI` 在任何 DOM 绑定前整体验证，原来源行/同步面板/固定 API 参数与进度读取实际消费该数据。数据从 Todo6 action 矩阵生成，`plugin_ui_dispatch.py --check` 校验 schema/fixture/产物一致性；保持原 SVG、文本、布局、公开 Bridge/取消/结果，手机版 QQ/ADB 不参与。禁止 UI 记录持久化到 Config、任意额外字段、HTML/脚本/动态 Bridge 或 DOM 注入，不提供通用 renderer/DSL。
+- Todo11 固定 UI 边界：`api/ui_contributions.py` 严格校验宿主 `src/webui/plugin-ui.json`，生产 Bottle `/api/plugin-ui` 只返回有效快照；设置页 `initSettings` → `installPluginUI` 在任何 DOM 绑定前整体验证，原来源行/同步面板/固定 API 参数与进度读取实际消费该数据。数据从 Todo6 action 矩阵生成，`plugin_ui_dispatch.py --check` 校验 schema/fixture/产物一致性；保持原 SVG、文本、布局、公开 Bridge/取消/结果，手机版 QQ/ADB 不参与。固定九条投影之外，另开声明式 UI 注入白名单：插件 `ui.json` 只声明 `imports.row`/`plugin_detail.panel` 与 `plugin_detail.iframe`，字段类型受白名单约束、宿主渲染；详情页 iframe 需用户显式加载、`sandbox="allow-scripts"`、严格 CSP、固定 postMessage 协议与 `ui.action` 动作 allowlist。禁止 UI 记录持久化到 Config、任意额外字段、任意 HTML/JS 注入宿主 DOM、动态 Bridge 或通用 renderer/DSL。
 - 子进程运行时：`core/plugins/runtime/`（protocol/channel/process_tree/manager/worker/seeding）负责 worker 生命周期与固定 RPC；四个导入源经 operation RPC 执行，`app/runtime_imports.py` 保持宿主导入 worker 的公开形状但执行体在 worker。宿主保留 coordinator 线程、sink、昵称缓存与外部导出投影，插件只写 operation staging。
 - `plugins/sync.{ftp,s3,r2,webdav}` 在后端会话 RPC（`sync.open/call/close`）中执行网络实现；`services/sync/backends.py` 保留宿主 staging、布尔校验、列表过滤、脱敏与 push/pull 编排。leases、manifest/order、hash 和 pull commit 全留宿主；`connect_ftp` 旧连接 ABI 已删除。
 - `plugins/transport.lan` 在 worker 内持有 socket/UDP 发现/IP_PKTINFO；宿主经 `RuntimeLanTransport/RuntimeLanConnection` 代理读写字节，`services/lan/server.py` 保留安全/审批/命令与协调器所有权。
@@ -131,7 +131,7 @@ tests/
 - 九个 provider 的 source/frozen 分发基线由 `scripts/plugin_packaging.py` 校验，只覆盖源码、入口元数据与 staging，不等同于对最终冻结可执行文件的实际构建验证。`scripts/plugin_docs_check.py` 消费 inventory、`config/plugin-manifest.json` 和 `README.md`/`AGENTS.md`/`docs/project-structure.md`；其无效输入为 `fixtures/plugin-parity/inventory-invalid.json`、`fixtures/plugin-parity/docs-invalid/README.md` 与 `fixtures/plugin-parity/docs-conflicting-nonfeatures/README.md`。
 - 外部下载的微信 helper 及其 CMake/OpenSSL 输入不随制品交付；本地 helper 源码映射不构成外部 helper EXE 的来源到二进制可复现性证明。不得把 source/frozen staging 或许可证证据表述为最终 helper 或最终冻结可执行文件的实际构建证明。
 - 不提供 marketplace 或不受信任插件沙箱。
-- 第三方插件仅支持本地 ZIP 安装、卸载与重启生效的启用管理；不增加动态 provider 发现、任意执行、动态 Bridge、HTML/JS UI 贡献或通用插件 DSL。
+- 第三方插件仅支持本地 ZIP 安装、卸载与重启生效的启用管理；不增加动态 provider 发现、任意执行、动态 Bridge 或通用插件 DSL。UI 仅限声明式 UI 注入白名单与插件详情页沙箱 iframe。
 
 ## 关键实现细节
 

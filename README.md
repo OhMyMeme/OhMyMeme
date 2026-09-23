@@ -66,7 +66,7 @@
 - 九个 provider 的 parity 基线只允许 ids、timestamps、temporary paths、thread ordering 差异；`scripts/plugin_docs_check.py` 读取 Todo1 inventory、canonical manifest 和三份架构文档，防止文档脱离当前入口和边界；`fixtures/plugin-parity/docs-invalid/` 与 `fixtures/plugin-parity/docs-conflicting-nonfeatures/` 分别覆盖缺失事实和矛盾非功能声明。
 - 许可证、来源和发布范围见 `docs/plugin-license-matrix.json`、`NOTICE`、`LICENSES/` 与 `THIRD-PARTY-NOTICES/`。外部下载的微信 helper 及其 CMake/OpenSSL 输入不随制品交付；本地 helper 源码映射不构成外部 helper EXE 的来源到二进制可复现性证明。
 - 这是固定官方包的重组边界，不提供 marketplace 或不受信任插件沙箱。
-- 第三方插件仅支持本地 ZIP 安装、卸载与重启生效的启用管理；也不接收动态 Bridge、HTML/JS UI 或任意执行能力。
+- 第三方插件仅支持本地 ZIP 安装、卸载与重启生效的启用管理；也不接收动态 Bridge、任意 HTML/JS 注入或任意执行能力。UI 仅限声明式 UI 注入白名单（`ui.json`）与插件详情页沙箱 iframe。
 
 `plugins/source.qqnt` 是实际 QQNT 算法包，入口为 `ohmymeme_plugin_qqnt:create_plugin`（`ohmymeme.plugins.v1`）。实例通过 operation 临时目录和 `ImportSink` 工作；昵称缓存、用户输出路径、外部导出覆盖校验、线程和数据库生命周期均属于宿主。旧 `ohmymeme.integrations.imports.qqnt` 保留兼容接口。完整九包源码安装与 frozen 收集由 `scripts/plugin_packaging.py` 统一校验。
 
@@ -143,11 +143,11 @@ npx vite build     # 构建 Vue 前端 → src/webui/dist/ohmymeme.js
 
 ### 固定插件兼容边界
 
-设置页通过只读 `/api/plugin-ui` 消费 `src/webui/plugin-ui.json` 的九个固定宿主 UI 投影。`api/ui_contributions.py` 逐字段严格校验既有 label/icon/screen/handler、action 参数 schema 与进度映射，`initSettings` 验证整份数据后才绑定原来源行和同步面板；SVG、布局、取消/结果和 Bridge 公开签名不变。UI 数据由 `scripts/plugin_ui_dispatch.py --write-host --actions docs/plugin-action-matrix.json` 从 Todo6 固定矩阵生成，再运行 `mise exec -- npm run build:settings` 拼接；`--check` 同时核对矩阵、schema、fixture 和产物是否过期。不加载插件 UI 代码，不支持额外字段、HTML/JS、动态 Bridge/DOM 注入；UI 记录不进入 Config，手机版 QQ/ADB 仍在边界外。
+设置页通过只读 `/api/plugin-ui` 消费 `src/webui/plugin-ui.json` 的九个固定宿主 UI 投影。`api/ui_contributions.py` 逐字段严格校验既有 label/icon/screen/handler、action 参数 schema 与进度映射，`initSettings` 验证整份数据后才绑定原来源行和同步面板；SVG、布局、取消/结果和 Bridge 公开签名不变。UI 数据由 `scripts/plugin_ui_dispatch.py --write-host --actions docs/plugin-action-matrix.json` 从 Todo6 固定矩阵生成，再运行 `mise exec -- npm run build:settings` 拼接；`--check` 同时核对矩阵、schema、fixture 和产物是否过期。固定投影之外，插件 UI 仅经声明式 UI 注入白名单（`ui.json`：导入区行、详情面板，字段类型受白名单约束）与详情页沙箱 iframe（显式加载、严格 CSP、postMessage 动作 allowlist）接入；不加载任意插件 HTML 到宿主 DOM，不支持额外字段、动态 Bridge/DOM 注入；UI 记录不进入 Config，手机版 QQ/ADB 仍在边界外。
 
 桌面 Bridge 的四个导入入口（QQNT、Telegram、抖音、微信）经宿主 `HostDispatcher`、`PluginRegistry` 与 `HostActionAdapter` 调度，保留原方法、参数默认值、成功/取消对象及进度字段。当前内置适配器继续调用已有实现；显式缺失、禁用或不兼容的 provider 仅返回该方法的旧失败哨兵，不改用其他 provider。同步与 LAN 保持宿主固定动作映射，手机版 QQ/ADB 不参与插件分派。
 
-`docs/plugin-abi-matrix.json` 与 `docs/plugin-action-matrix.json` 固定现有契约及调用方，可用 `mise exec -- python scripts/plugin_abi_matrix.py --check --abi docs/plugin-abi-matrix.json --actions docs/plugin-action-matrix.json --report <报告路径>` 离线核对。适配器属于宿主，不作为插件上下文传递；官方插件为可信进程内代码，只接收对应操作参数和窄端口，不接收完整 Config、WebUI、数据库或宿主持久目录。此边界不支持任意命令、动态 Bridge 方法、HTML/脚本贡献、市场、热重载或沙箱。
+`docs/plugin-abi-matrix.json` 与 `docs/plugin-action-matrix.json` 固定现有契约及调用方，可用 `mise exec -- python scripts/plugin_abi_matrix.py --check --abi docs/plugin-abi-matrix.json --actions docs/plugin-action-matrix.json --report <报告路径>` 离线核对。适配器属于宿主，不作为插件上下文传递；官方插件在独立 worker 进程中运行，只接收对应操作参数和窄端口，不接收完整 Config、WebUI、数据库或宿主持久目录。此边界不支持任意命令、动态 Bridge 方法、任意脚本贡献或市场；不受信任代码沙箱不提供，插件详情页 iframe 仅为受限沙箱。
 
 ### 源码目录与依赖方向
 

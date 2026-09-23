@@ -36,19 +36,19 @@ function renderPluginList(root, plugins) {
       versions.map((v) => '<option value="' + esc(v) + '"' +
         (v === plugin.version ? ' selected' : '') + '>' + esc(v) + '</option>').join('') +
       '</select>' +
-      '<button class="btn btn-secondary btn-sm" onclick="rollbackPlugin(\'' +
-      esc(plugin.id) + '\')">切换</button>';
+      '<button class="btn btn-secondary btn-sm" data-plugin-action="rollback" data-plugin-id="' +
+      esc(plugin.id) + '">切换</button>';
     const uninstall = plugin.origin === 'bundled' ? '' :
-      '<button class="btn btn-danger-outline btn-sm" onclick="uninstallPlugin(\'' +
-      esc(plugin.id) + '\')">卸载</button>';
+      '<button class="btn btn-danger-outline btn-sm" data-plugin-action="uninstall" data-plugin-id="' +
+      esc(plugin.id) + '">卸载</button>';
     return '<div class="plugin-row" data-plugin-row="' + esc(plugin.id) + '">' +
       '<span class="plugin-info">' +
       '<span class="plugin-name">' + esc(plugin.label) + '</span>' +
       '<span class="plugin-meta">' + esc(plugin.id) + ' · ' + esc(meta) + '</span>' +
       '</span>' +
       '<span class="plugin-actions">' + rollback + uninstall +
-      '<button class="btn btn-secondary btn-sm" onclick="reloadPlugin(\'' +
-      esc(plugin.id) + '\')">重载</button>' +
+      '<button class="btn btn-secondary btn-sm" data-plugin-action="reload" data-plugin-id="' +
+      esc(plugin.id) + '">重载</button>' +
       '<input type="checkbox" data-plugin-id="' + esc(plugin.id) + '"' + checked +
       ' aria-label="启用插件">' +
       '</span>' +
@@ -56,6 +56,14 @@ function renderPluginList(root, plugins) {
   }).join('');
   root.querySelectorAll('input[data-plugin-id]').forEach((input) => {
     input.addEventListener('change', () => { _settingsDirty = true; });
+  });
+  root.querySelectorAll('[data-plugin-action]').forEach((button) => {
+    button.addEventListener('click', () => {
+      const pluginId = button.dataset.pluginId;
+      if (button.dataset.pluginAction === 'rollback') rollbackPlugin(pluginId);
+      else if (button.dataset.pluginAction === 'uninstall') uninstallPlugin(pluginId);
+      else reloadPlugin(pluginId);
+    });
   });
 }
 
@@ -263,6 +271,7 @@ function renderInjectedField(field) {
     input = document.createElement('input');
     if (field.type === 'secret') input.type = 'password';
     if (field.type === 'bool') input.type = 'checkbox';
+    if (field.type === 'int') input.type = 'number';
     if (field.default !== undefined && field.default !== null) {
       if (field.type === 'bool') input.checked = field.default === true;
       else input.value = String(field.default);
@@ -278,8 +287,12 @@ function renderInjectedField(field) {
 function collectInjectedPayload(fields) {
   const payload = {};
   fields.querySelectorAll('[data-inject-field]').forEach((input) => {
-    if (input.dataset.injectType === 'bool') {
+    const type = input.dataset.injectType;
+    if (type === 'bool') {
       payload[input.dataset.injectField] = input.checked;
+    } else if (type === 'int') {
+      const parsed = Number.parseInt(input.value, 10);
+      payload[input.dataset.injectField] = Number.isNaN(parsed) ? 0 : parsed;
     } else {
       payload[input.dataset.injectField] = input.value;
     }
@@ -333,6 +346,10 @@ function renderPluginDetails(root, contributions) {
 
 async function togglePluginDetail(toggle, detail, provider, injections) {
   if (detail.style.display !== 'none') {
+    detail.querySelectorAll('iframe').forEach((frame) => {
+      if (frame._cleanup) frame._cleanup();
+    });
+    detail.innerHTML = '';
     detail.style.display = 'none';
     toggle.textContent = '详情';
     return;
@@ -403,6 +420,22 @@ async function renderConfigPanel(provider, panel) {
     }
   };
   actions.appendChild(save);
+  (panel.actions || []).forEach((action) => {
+    const button = document.createElement('button');
+    button.className = 'btn btn-secondary btn-sm';
+    button.textContent = action.label;
+    button.onclick = () => {
+      callDeclaredAction(
+        provider,
+        action.name,
+        collectInjectedPayload(fields)
+      ).then(
+        () => showToast('已执行：' + action.label),
+        (error) => showToast('执行失败：' + ((error && error.message) || error))
+      );
+    };
+    actions.appendChild(button);
+  });
   box.appendChild(actions);
   return box;
 }
@@ -481,6 +514,7 @@ function mountInjectedIframe(provider, injection) {
     );
   };
   window.addEventListener('message', onMessage);
+  frame._cleanup = () => window.removeEventListener('message', onMessage);
   frame.src = '/api/plugins/' + encodeURIComponent(provider) + '/ui/' + entry;
   return frame;
 }

@@ -1842,6 +1842,10 @@ class WebUI:
             from ohmymeme.core.plugins.runtime import seeding
             from ohmymeme.presentation.desktop.api.ui_contributions import SCREENS
 
+            try:
+                seeding.seed_official_plugins(self._cfg.data_dir)
+            except Exception:
+                logger.exception("official plugin seeding failed")
             labels = {provider: label for provider, label, *_ in SCREENS}
             disabled = self._cfg.get("disabled_plugins", None)
             disabled = set(disabled) if isinstance(disabled, (list, tuple)) else set()
@@ -2008,6 +2012,11 @@ class WebUI:
             provider = payload.get("provider")
             name = payload.get("name")
             arguments = payload.get("payload") or {}
+            disabled = self._cfg.get("disabled_plugins", None)
+            disabled = set(disabled) if isinstance(disabled, (list, tuple)) else set()
+            if provider in disabled:
+                bottle.response.status = 403
+                return {"ok": False, "error": "provider_disabled"}
             try:
                 injections = ui_injection.read_contributions(
                     self._cfg.data_dir, provider
@@ -2038,6 +2047,11 @@ class WebUI:
             from ohmymeme.core.plugins.runtime import ui_config, ui_injection
 
             provider = bottle.request.query.get("provider") or ""
+            disabled = self._cfg.get("disabled_plugins", None)
+            disabled = set(disabled) if isinstance(disabled, (list, tuple)) else set()
+            if provider in disabled:
+                bottle.response.status = 403
+                return {"ok": False, "error": "provider_disabled"}
             try:
                 injections = ui_injection.read_contributions(
                     self._cfg.data_dir, provider
@@ -2056,6 +2070,11 @@ class WebUI:
             payload = bottle.request.json or {}
             provider = payload.get("provider")
             values = payload.get("values") or {}
+            disabled = self._cfg.get("disabled_plugins", None)
+            disabled = set(disabled) if isinstance(disabled, (list, tuple)) else set()
+            if provider in disabled:
+                bottle.response.status = 403
+                return {"ok": False, "error": "provider_disabled"}
             try:
                 injections = ui_injection.read_contributions(
                     self._cfg.data_dir, provider
@@ -2069,27 +2088,38 @@ class WebUI:
                 return {"ok": False, "error": str(error)}
             return {"ok": True, "values": applied}
 
-        @app.route("/api/plugins/<plugin_id>/ui/<path:asset>")
+        @app.route("/api/plugins/<plugin_id>/ui/<asset:path>")
         def plugin_ui_asset(plugin_id, asset):
-            # iframe 静态资源：只允许包内相对路径，CSP 禁止外部资源
+            # iframe 静态资源：只放行声明过的入口，CSP 禁止外部资源
             from ohmymeme.core.plugins.runtime import seeding, ui_injection
 
             try:
                 entry = seeding.resolve_plugin(self._cfg.data_dir, plugin_id)
+                injections = ui_injection.load_contributions(entry["package_dir"])
             except Exception:
+                bottle.response.status = 404
+                return "not found"
+            allowed = {
+                item["entry"]
+                for item in injections
+                if item.get("point") == "plugin_detail.iframe"
+            }
+            if asset not in allowed:
                 bottle.response.status = 404
                 return "not found"
             target = ui_injection.resolve_asset(entry["package_dir"], asset)
             if target is None:
                 bottle.response.status = 404
                 return "not found"
-            bottle.response.set_header(
-                "Content-Security-Policy",
+            response = bottle.static_file(str(target), root=str(entry["package_dir"]))
+            csp = (
                 "default-src 'none'; script-src 'unsafe-inline'; "
-                "style-src 'unsafe-inline'; img-src data:",
+                "style-src 'unsafe-inline'; img-src data:"
             )
-            bottle.response.set_header("Cache-Control", "no-store")
-            return bottle.static_file(str(target), root=str(entry["package_dir"]))
+            response.set_header("Content-Security-Policy", csp)
+            response.set_header("Cache-Control", "no-store")
+            bottle.response.set_header("Content-Security-Policy", csp)
+            return response
 
         @app.route("/api/contributors")
         def serve_contributors():
