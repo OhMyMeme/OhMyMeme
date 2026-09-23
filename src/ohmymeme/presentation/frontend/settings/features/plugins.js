@@ -183,10 +183,10 @@ function annotateImportSources(sources) {
     row.querySelectorAll('.import-status').forEach((node) => node.remove());
     row.classList.remove('import-row-disabled', 'import-row-missing');
     row.disabled = false;
+    row.style.display = '';
     if (!source.available) {
-      row.classList.add('import-row-missing');
-      row.disabled = true;
-      addImportStatus(row, '不可用：缺少插件包');
+      // 没有对应插件包时直接隐藏入口，不显示禁用态
+      row.style.display = 'none';
     } else if (!source.enabled) {
       row.classList.add('import-row-disabled');
       row.disabled = true;

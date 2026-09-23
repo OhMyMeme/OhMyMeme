@@ -85,9 +85,7 @@ test('settings import area reflects source status and injected rows', async ({ p
     await expect(qqnt).toBeDisabled()
 
     const telegram = page.locator('[onclick="openTGImportDialog()"]')
-    await expect(telegram).toHaveClass(/import-row-missing/)
-    await expect(telegram.locator('.import-status')).toHaveText('不可用：缺少插件包')
-    await expect(telegram).toBeDisabled()
+    await expect(telegram).toBeHidden()
 
     const douyin = page.locator('[onclick="openDYImportDialog()"]')
     await expect(douyin).not.toHaveClass(/import-row-disabled|import-row-missing/)
