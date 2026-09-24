@@ -32,7 +32,7 @@ logger = logging.getLogger(__name__)
 
 # helper 二进制完整性校验（重编译 helper 后必须同步更新）
 _WECHAT_KEYFINDER_SHA256 = {
-    "Windows": "874916c82d037cd727641aea9fe974db049dfd7f9f081575576e5a22b6a719db",
+    "Windows": "82732c333e929865fcf645bb98b2a59d85f76fdc008547d289a83f7aa01d9b25",
 }
 
 _WECHAT_STATE = {
@@ -133,6 +133,16 @@ def _is_frozen():
 
 _DEV_BUILD_LOCK = threading.Lock()
 _DEV_BUILD_DONE = False
+# 冷启动首次构建可能较慢，超时仅用于兜底防止无限期挂起（打包态不走此路径）
+_DEV_CMAKE_CONFIGURE_TIMEOUT = 300
+_DEV_CMAKE_BUILD_TIMEOUT = 900
+
+
+def _cmake_failure_tail(result):
+    """截取 cmake 输出尾部用于告警（失败原因通常只在末尾几行）"""
+    text = (result.stderr or "") + (result.stdout or "")
+    tail = text.strip()[-300:]
+    return f": {tail}" if tail else ""
 
 
 def _ensure_dev_helper():
@@ -172,16 +182,30 @@ def _ensure_dev_helper():
                 "-DWKF_ENABLE_TEST_KEY=OFF",
             ],
             capture_output=True,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            timeout=_DEV_CMAKE_CONFIGURE_TIMEOUT,
         )
         if configured.returncode != 0:
-            logger.warning("wechat_keyfinder 配置失败，微信导入不可用")
+            logger.warning(
+                "wechat_keyfinder 配置失败，微信导入不可用%s",
+                _cmake_failure_tail(configured),
+            )
             return
         built = subprocess.run(
             ["cmake", "--build", str(build_dir), "--config", "Release"],
             capture_output=True,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            timeout=_DEV_CMAKE_BUILD_TIMEOUT,
         )
         if built.returncode != 0:
-            logger.warning("wechat_keyfinder 构建失败，微信导入不可用")
+            logger.warning(
+                "wechat_keyfinder 构建失败，微信导入不可用%s",
+                _cmake_failure_tail(built),
+            )
             return
         # 与 build.py 一致：只认确定的 Release 输出路径，拷回源码目录供后续解析
         produced = build_dir / "Release" / "wechat_keyfinder.exe"
@@ -192,6 +216,10 @@ def _ensure_dev_helper():
             return
         shutil.copy2(produced, src_dir / _binary_name())
         logger.info("wechat_keyfinder 构建完成")
+    except subprocess.TimeoutExpired as e:
+        # TimeoutExpired 非 OSError 子类，须单独捕获：否则会穿透到调用方
+        # （ensure_wechat_keyfinder -> 导入流程），变成异常中断而非「不可用」告警
+        logger.warning("wechat_keyfinder 构建超时（%ss），微信导入不可用", e.timeout)
     except OSError as e:
         logger.warning("wechat_keyfinder 构建失败: %s", e)
 

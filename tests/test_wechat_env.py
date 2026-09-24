@@ -1,5 +1,7 @@
+import logging
 import os
 import platform
+import subprocess
 
 import pytest
 
@@ -216,6 +218,66 @@ def test_source_run_skips_pinned_hash(tmp_path, monkeypatch):
     exe.write_bytes(b"locally built helper")
     monkeypatch.setattr(wechat_probe, "_WECHAT_KEYFINDER_SHA256", {"Windows": "0" * 64})
     assert wechat_probe.verify_binary_integrity(str(exe)) is True
+
+
+def _arm_dev_build(tmp_path, monkeypatch):
+    """让 _ensure_dev_helper 走到 cmake 构建分支（无 helper + 假 cmake）"""
+    _mock_windows(monkeypatch, frozen=False)
+    monkeypatch.delenv("PYTEST_CURRENT_TEST", raising=False)
+    monkeypatch.setattr(wechat_probe, "_DEV_BUILD_DONE", False)
+    stub = tmp_path / "wechat_probe_stub.py"
+    stub.write_text("", encoding="utf-8")
+    (tmp_path / "wechat_keyfinder").mkdir(exist_ok=True)
+    monkeypatch.setattr(wechat_probe, "__file__", str(stub))
+    monkeypatch.setattr(
+        wechat_probe.shutil, "which", lambda name, *a, **k: "/fake/cmake"
+    )
+
+
+def test_dev_build_timeout_is_handled(tmp_path, monkeypatch, caplog):
+    """cmake 超时必须降级为告警
+
+    TimeoutExpired 不是 OSError 子类，若漏捕获会穿透到调用方
+    （ensure_wechat_keyfinder -> 导入流程），变成异常中断而非「不可用」提示。
+    """
+
+    def boom(cmd, **kw):
+        raise subprocess.TimeoutExpired(cmd=cmd, timeout=kw.get("timeout"))
+
+    _arm_dev_build(tmp_path, monkeypatch)
+    monkeypatch.setattr(wechat_probe.subprocess, "run", boom)
+    with caplog.at_level(logging.WARNING):
+        wechat_probe._ensure_dev_helper()  # 不得抛出
+    assert "超时" in caplog.text
+
+
+def test_dev_build_passes_timeouts_to_cmake(tmp_path, monkeypatch):
+    """两次 cmake 调用都必须带 timeout，否则可能无限期挂起"""
+    seen = []
+
+    def record(cmd, **kw):
+        seen.append(kw.get("timeout"))
+        return subprocess.CompletedProcess(cmd, 1, stdout="", stderr="stop here")
+
+    _arm_dev_build(tmp_path, monkeypatch)
+    monkeypatch.setattr(wechat_probe.subprocess, "run", record)
+    wechat_probe._ensure_dev_helper()
+    assert seen and all(t is not None for t in seen), f"缺少 timeout: {seen}"
+
+
+def test_dev_build_failure_reports_cmake_output(tmp_path, monkeypatch, caplog):
+    """构建失败时告警须带 cmake 输出，否则失败原因不可见"""
+    detail = "CMake Error: could not find any instance of Visual Studio"
+
+    def fail(cmd, **kw):
+        return subprocess.CompletedProcess(cmd, 1, stdout="", stderr=detail)
+
+    _arm_dev_build(tmp_path, monkeypatch)
+    monkeypatch.setattr(wechat_probe.subprocess, "run", fail)
+    with caplog.at_level(logging.WARNING):
+        wechat_probe._ensure_dev_helper()
+    assert "无 Visual Studio" in caplog.text or detail in caplog.text
+    assert "配置失败" in caplog.text
 
 
 def test_locate_uses_source_tree_in_dev_mode(tmp_path, monkeypatch):
