@@ -67,7 +67,8 @@ src/              # 主代码
   backup.py        # 本地备份（ZIP 导出/恢复，仅 PC 间整库迁移，仅允许恢复到空库）
   douyin_dl.py     # 抖音下载 CLI 测试入口（独立运行，不依赖 GUI）
   wechat_probe.py  # 微信收藏表情导入（helper 二进制提取密钥 + AES-CBC 解密 DB + CDN 下载，仅 Windows）
-  wechat_keyfinder/ # 微信密钥提取 C++ 辅助二进制源码（CMake 构建）
+  wechat_keyfinder/ # 微信密钥提取 C++ 辅助二进制源码（CMake+MSVC 构建，无 OpenSSL 依赖；
+                   # .rc 提供版本资源；helper 随安装包内置，不随 Release 单独分发）
   vue-src/       # Vue 3 前端源码（Vite 构建，产物到 webui/dist/ohmymeme.js）
     App.vue      # 根组件：标题栏/搜索/侧边栏/面包屑/标签栏/网格/分页
     main.ts      # 入口：挂载 + window.focusSearch 全局（快捷键呼出聚焦搜索）
@@ -384,7 +385,11 @@ tests/
 - **GPL-3.0 合规**: `abogus.py` 按 GPL-3.0 分发（头部含原作者署名与协议链接），整体作品再分发需按 GPL-3.0 处理
 
 ### 微信导入 (wechat_probe.py + wechat_keyfinder)
-- **架构**: 独立 C++ 二进制 `wechat_keyfinder` 处理 Windows 进程内存取证（读取微信进程内存提取密钥），Python 侧通过 subprocess + JSON 协议协调完成 DB 解密/SQLite 查询/CDN 下载/入库；仅 Windows
+- **架构**: 独立 C++ 二进制 `wechat_keyfinder` 处理 Windows 进程内存取证（**只读**读取微信进程内存提取密钥），Python 侧通过 subprocess + JSON 协议协调完成 DB 解密/SQLite 查询/CDN 下载/入库；仅 Windows
+- **随包分发（防误报关键）**: helper 由 `build.py` 的 `build_keyfinder_helper()` 在打包前用 cmake+MSVC 编译（源码/资源更新时自动重编译，cmake 缺失或失败仅告警不阻断），经 `--add-binary` 打进 `_internal/src/wechat_keyfinder/`；`wechat_probe` 的 `_bundled_binary_path()`/`_offsets_path()` 优先从 `sys._MEIPASS` 解析（开发态回退源码目录）。**不再运行时从 GitHub 下载 exe**（旧 `_WECHAT_KEYFINDER_URLS`/`_download_task`/`_get_wechat_dir` 已移除）——「未签名 exe + 运行时公网下载 + 读进程内存」是被 Defender 重点标记的组合
+- **SHA-256 构建期注入**: MSVC 构建非确定性（嵌入时间戳），故 `build.py` 的 `pin_keyfinder_hash()` 按**实际产物**计算哈希并改写 `_WECHAT_KEYFINDER_SHA256`，PyInstaller 打包后由 `unpin_keyfinder_hash()` 还原源文件（与 `set_version` 同模式，`finally` 保证还原；正则未命中即抛错，避免产物带过期哈希导致运行期必失败）。校验意义在于检测**安装后被篡改**，而非绑定某个特定构建
+- **去特征化**: 已删除 `scan_memory_for_urls` 快照扫描死代码（生产恒传 `--no-snapshot` 从不执行，但其 `kNonStoreEmoticonTable`/`md5 IN(`/`vweixinf.tc.qq.com` 字符串是最强静态信号）及 `scan_overlap` 配置项；`--key` 测试分支改为编译期开关 `WKF_ENABLE_TEST_KEY`（默认 OFF，发布产物不含）；`.rc` 提供 CompanyName/ProductName/FileDescription 版本资源（消除「无签名+零元数据」特征）
+- **无 OpenSSL 依赖**: 仅需 PBKDF2-HMAC-SHA512 与 HMAC-SHA512 两个原语，源码内自包含实现（`namespace sha512`）替代 OpenSSL，避免静态 libcrypto 的体积膨胀（产物体积 4.07MB → 92KB）与额外静态特征面；正确性由 23 个标准向量（含块边界 0/1/55/56/111/112/113/127/128/129/255/256/1000 与 HMAC 128B key、真实调用形态）与 Python hashlib/hmac 逐字节比对验证
 - **目录层级**: 微信文件目录（root，默认 `%USERPROFILE%\Documents\xwechat_files` 或 `\WeChat Files`）→ 账号目录（root 下 `wxid_*` 文件夹，每个微信账号一个）→ `db_storage/emoticon/emoticon.db`（表情库，加密）+ `db_storage/favorite/favorite.db`（收藏库）
 - **环境检测** (`inspect_wechat_environment`): 传入路径 basename 以 `wxid_` 开头或 `_find_emoticon_db` 命中则视为单账号，否则扫描子目录收集 `wxid_*` 前缀或含表情库的账号目录；每账号 `_inspect_account` 检查 DB 是否存在且为 SQLite header（否则 `encrypted_index`）；返回 `{status, reason, root, root_exists, account_directory_count, accounts: [{id, path, status, reason, db_path}]}`
 - **账号选择**: `_pick_account` 未指定且多账号时返回 None，调用方报 `multiple_accounts` 引导前端选择；`list_wechat_stickers`/`start_wechat_import`/`_wechat_worker` 支持 `account_path` 参数指定账号
@@ -392,8 +397,8 @@ tests/
 - **账号目录识别不依赖 `wxid_` 前缀**：`_find_account_dirs` 收集「`wxid_` 前缀子目录 ∪ `_find_emoticon_db` 命中（`db_storage/emoticon/emoticon.db` 或 `Msg/emoticon.db` 存在）的子目录」；`_find_emoticon_db` 两个固定候选未命中时在 `db_storage` 一层内兜底查 `emoticon.db`（`db_storage/emoticon.db` 或 `db_storage/*/emoticon.db`，覆盖布局差异）；`inspect_wechat_environment` 对用户所选目录本身同理放宽（前缀或含表情库即视为单账号目录）。`_inspect_account` 在 db 缺失时附带 `db_files`（`db_storage` 内实际存在的 `.db` 清单，有界 30 条），前端 `no_database` 时翻译为中文提示并展示该清单用于诊断真实布局；检测到微信 3.x 旧版布局（账号目录含 `Msg/Multi` 或 `Msg/MicroMsg.db`，表情库为 `Msg/Emotion.db`）时返回 `unsupported_version`/`wechat_3x_unsupported`，前端引导升级微信 4.x（Emotion.db 的 `CustomEmotion` 表、3.x SQLCipher 页布局与密钥内存格式均与 4.x 不同，整条链路不支持）。测试 `tests/test_wechat_env.py`
 - **DB 解密** (`_decrypt_database`): AES-256-CBC 逐页解密（每页 4096 字节，页 1 带 16 字节偏移，IV 取页尾 80 字节偏移处），首页替换为 "SQLite format 3" header；**合并 WAL**（`_apply_wal`）：微信运行中表结构与记录在 `emoticon.db-wal` 里，按 WAL 帧（24B 头 + 4096B 加密页）解密并回写到对应页，主文件旧快照 + WAL 帧 = 完整数据
 - **元数据查询** (`_query_sticker_metadata`): SQLite 查询 `kNonStoreEmoticonTable`（type/md5/aes_key/cdn_url/encrypt_url/extern_url），返回 md5+url+aes_key 列表
-- **下载校验** (`_download_sticker`): urllib 下载 → 魔数识别扩展名（PNG/JPG/GIF/WebP/BMP）→ 带 `aes_key` 时 AES-128-CBC 解密（IV=key）；`_detect_image_ext` 校验合法才返回。**防 SSRF**：仅允许白名单 CDN 主机（`vweixinf.tc.qq.com`/`wxapp.tc.qq.com`），解析后拒绝回环/私网/链路本地地址，重定向逐目标复检
-- **完整性校验**: `verify_binary_integrity` 执行前校验二进制 SHA-256，未配置真实哈希（占位符 `PLACEHOLDER_UPDATE_ON_RELEASE`）时**默认拒绝执行**；开发/本地测试可用环境变量 `OHMYMEME_INSECURE_SKIP_HELPER_HASH=1` 跳过。**发布前必须**用 `certutil -hashfile wechat_keyfinder.exe SHA256` 计算真实哈希填入 `_WECHAT_KEYFINDER_SHA256` 并移除占位符
+- **下载校验** (`_download_sticker`): urllib 下载 → 超限拒绝 → **明文优先**（`_detect_image_ext` 命中即原样返回）→ 非明文且带 `aes_key` 时才 AES-128-CBC 解密（IV=key）→ 再次魔数校验。**明文必须优先判定**：`cdn_url`（`/20401/`）恒定返回明文图片，旧实现先按 `aes_key` 存在且 `len(data) % 16 == 0` 无条件解密，会把明文解坏后判为非法而静默丢弃——实测全量 328 个里恰好丢 20 个（≈1/16，与概率吻合）；长度非 16 倍数者因跳过解密分支而侥幸成功，掩盖了该 bug。回归测试见 `tests/test_wechat_env.py` 的 `test_plaintext_16_multiple_survives_with_aes_key`（对旧逻辑必然失败）。**防 SSRF**：仅允许白名单 CDN 主机（`vweixinf.tc.qq.com`/`wxapp.tc.qq.com`），解析后拒绝回环/私网/链路本地地址，重定向逐目标复检
+- **完整性校验**: `verify_binary_integrity` 执行前校验二进制 SHA-256，哈希不匹配或未配置时**拒绝执行**（`ensure_wechat_keyfinder` 返回空串，前端报 `no_binary`）；开发/本地测试可用 `OHMYMEME_INSECURE_SKIP_HELPER_HASH=1` 跳过。哈希由构建期自动注入，无需手工 `certutil`（见上「SHA-256 构建期注入」）
 - **前端 UI**: 设置页「导入」分组下 `.import-row` 列表行（硬编码 SVG 图标 + 名称），点击微信行弹出对话框（目录选择 + 环境检测 + 多账号下拉 → 进度覆盖层）
 
 ## 构建 & 测试
@@ -409,6 +414,7 @@ python scripts/build.py  # PyInstaller + InnoSetup 完整构建
 python scripts/build.py --lang en  # 指定语言构建
 ```
 - **构建自动编译 Vue 前端**: `build.py` 的 `ensure_vue_frontend()` 在打包前检查 `src/webui/dist/ohmymeme.js`（被 gitignore，CI 全新检出缺失），缺失时自动 `npm ci`（有 lockfile，否则 `npm install`）→ `npx vite build`，失败则中止构建；构建机需 node/npm（GitHub Actions runner 预装），dist 已存在时直接跳过
+- **构建自动编译 wechat_keyfinder**: `build.py` 的 `build_keyfinder_helper()` 在打包前用 cmake+MSVC 编译 helper 并 `--add-binary` 打入产物（`*.exe` 被 gitignore，CI 全新检出缺失，故必须构建期产出）；无需 OpenSSL。**Windows 构建机需 cmake + MSVC**（GitHub Actions 的 `windows-latest` 预装；本机可用 VS BuildTools）。`build.yml`/`nightly.yml` 的 windows job 在打包后增加「Verify bundled wechat_keyfinder helper」步骤，校验产物中 helper 存在且带版本资源，缺失即 fail（避免静默产出无微信导入功能的安装包）
 - **Linux 打包（GTK）**: `--linux` 时 `build.py` 自动传 `--additional-hooks-dir scripts/hooks`（收集 WebKit2/Soup typelib）并 `--collect-all gi`，把 PyGObject/GTK 打进产物，脱离系统 python3-gi 运行；构建机需装 `python3-gi gir1.2-webkit2-4.1 libgirepository1.0-dev libgirepository-2.0-dev gobject-introspection` 并 `pip install PyGObject`（对应 `build.yml`/`nightly.yml` build-linux job）；**PyGObject ≥3.52 硬依赖 girepository-2.0**（Ubuntu 24.04 对应 `libgirepository-2.0-dev`），只装 1.0-dev 会在 meson 元数据阶段报 `Dependency 'girepository-2.0' is required but not found`；deb `Depends: python3-gi, gir1.2-webkit2-4.1 | gir1.2-webkit2-4.0`
 
 **前端架构**：主窗口为 Vue 3（`vue-src/`，Vite 构建 IIFE 单文件），设置窗口仍为 vanilla（`webui/settings.*`，独立 webview）。修改主窗口前端后需 `npx vite build` 再运行。

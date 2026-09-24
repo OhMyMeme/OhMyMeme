@@ -10,17 +10,22 @@ endif()
 
 add_executable(wechat_keyfinder wechat_keyfinder.cpp)
 
-# 仅使用 OpenSSL Crypto API（EVP/HMAC/PBKDF2），静态链接 libcrypto
-# （OpenSSL 官方安装包的 libcrypto_static.lib），避免运行时缺失 libcrypto-3-x64.dll。
-# 注意：OpenSSL-Win64 的静态库位于 lib/VC/x64/MD/，是用动态 CRT(/MD)
-# 编译的，故 exe 必须也用 /MD，否则链接报 __imp_* 无法解析。
-set(OPENSSL_USE_STATIC_LIBS TRUE)
-find_package(OpenSSL REQUIRED)
-target_link_libraries(wechat_keyfinder OpenSSL::Crypto)
+if(WIN32)
+    # 版本资源（发布者/产品/描述），避免"无签名+零元数据"特征组合
+    target_sources(wechat_keyfinder PRIVATE wechat_keyfinder.rc)
+endif()
 
+# 测试用 --key 注入：发布构建必须保持 OFF（发布产物不得含该分支）
+option(WKF_ENABLE_TEST_KEY "Enable the test-only --key argument" OFF)
+if(WKF_ENABLE_TEST_KEY)
+    target_compile_definitions(wechat_keyfinder PRIVATE WKF_ENABLE_TEST_KEY)
+    message(WARNING "WKF_ENABLE_TEST_KEY=ON: 构建产物包含测试用 --key 分支，禁止用于发布")
+endif()
+
+# 仅需 SHA-512 系原语（PBKDF2-HMAC-SHA512 / HMAC-SHA512），源码内自包含实现，
+# 不依赖 OpenSSL：避免链接静态 libcrypto 导致的体积膨胀与额外的静态特征面，
+# 同时让构建只需 MSVC（CI 无需预装 OpenSSL）。
 if(MSVC)
     # 源码为 UTF-8：强制 /utf-8，避免代码页(如 936)误读中文注释为 \ 续行吞掉代码
     target_compile_options(wechat_keyfinder PRIVATE /utf-8)
-    # 与 OpenSSL 静态库保持一致使用动态 CRT(/MD)；仍为单文件 exe（无 OpenSSL DLL）
-    set_property(TARGET wechat_keyfinder PROPERTY MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>DLL")
 endif()

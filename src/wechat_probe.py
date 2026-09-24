@@ -5,7 +5,7 @@
   Python -> AES-256-CBC 解密数据库 -> SQLite 查询 -> CDN 下载 -> _do_import 入库
 
 安全：
-  - 二进制执行前校验 SHA-256（防篡改），未配置真实哈希默认拒绝执行
+  - helper 随安装包分发（不再运行时下载），执行前校验 SHA-256（防篡改）
   - 90s 超时
   - 仅 Windows 可用
 """
@@ -24,24 +24,15 @@ import subprocess
 import sys
 import tempfile
 import threading
-import time
 import urllib.request
 from pathlib import Path
 from urllib.parse import urlparse
 
 logger = logging.getLogger(__name__)
 
-# 二进制完整性校验（发布时更新）
+# helper 二进制完整性校验（重编译 helper 后必须同步更新）
 _WECHAT_KEYFINDER_SHA256 = {
-    "Windows": "72f281c6b7638735b13c2c80f8de92034f49ce0e20d75feb6640c8c6e0dd4e31",
-}
-
-# 下载源（GitHub Releases）
-_WECHAT_KEYFINDER_URLS = {
-    "Windows": (
-        "https://github.com/ZE514/OhMyMeme/releases/download/v0.6.3/"
-        "wechat_keyfinder-windows-x64.exe"
-    ),
+    "Windows": "a04accc574b0648d2214304cd9e5cfecbb94b0dff5fe10e115c8100bba2397af",
 }
 
 _WECHAT_STATE = {
@@ -104,15 +95,6 @@ def _reset_state():
     )
 
 
-def _get_wechat_dir():
-    """微信导入辅助文件目录"""
-    if platform.system() == "Windows":
-        base = os.environ.get("LOCALAPPDATA", Path.home() / "AppData" / "Local")
-    else:
-        base = Path.home() / ".local" / "share"
-    return Path(base) / "OhMyMeme" / ".wechat"
-
-
 def _binary_name():
     """helper 二进制文件名"""
     if platform.system() == "Windows":
@@ -120,24 +102,33 @@ def _binary_name():
     return "wechat_keyfinder"
 
 
-def _download_url():
-    """helper 二进制下载地址"""
-    return _WECHAT_KEYFINDER_URLS.get(platform.system(), "")
+def _bundled_binary_path():
+    """随安装包分发的 helper 路径（PyInstaller onefile 时位于 _MEIPASS）"""
+    name = _binary_name()
+    base = getattr(sys, "_MEIPASS", None)
+    if base:
+        candidate = Path(base) / "src" / "wechat_keyfinder" / name
+        if candidate.is_file():
+            return str(candidate)
+    candidate = Path(__file__).resolve().parent / "wechat_keyfinder" / name
+    if candidate.is_file():
+        return str(candidate)
+    return ""
 
 
 def _offsets_path():
-    """offsets.json 配置路径"""
-    return Path(__file__).parent.parent / "config" / "offsets.json"
+    """offsets.json 配置路径（随包分发，优先取冻结资源目录）"""
+    base = getattr(sys, "_MEIPASS", None)
+    if base:
+        candidate = Path(base) / "config" / "offsets.json"
+        if candidate.is_file():
+            return candidate
+    return Path(__file__).resolve().parent.parent / "config" / "offsets.json"
 
 
 def detect_wechat_keyfinder():
-    """检测本地 helper 二进制路径，不存在返回空串"""
-    binary = _binary_name()
-    wechat_dir = _get_wechat_dir()
-    candidate = wechat_dir / binary
-    if candidate.exists():
-        return str(candidate)
-    return ""
+    """检测 helper 二进制路径，不存在返回空串（仅随包内置位置）"""
+    return _bundled_binary_path()
 
 
 def verify_binary_integrity(path):
@@ -160,58 +151,16 @@ def verify_binary_integrity(path):
     return True
 
 
-_DL_LOCK = threading.Lock()
-_DL_ACTIVE = False
-
-
 def ensure_wechat_keyfinder():
-    """确保 helper 二进制可用，返回路径或空串（单实例下载）"""
-    global _DL_ACTIVE
-    cached = detect_wechat_keyfinder()
-    if cached and verify_binary_integrity(cached):
-        return cached
-    if not _download_url():
-        return ""
-    with _DL_LOCK:
-        if not _DL_ACTIVE:
-            _DL_ACTIVE = True
-            threading.Thread(target=_download_task, daemon=True).start()
-    waited = 0
-    while waited < 60:
-        time.sleep(0.5)
-        waited += 0.5
-        cached = detect_wechat_keyfinder()
-        if cached and verify_binary_integrity(cached):
-            return cached
+    """确保 helper 二进制可用，返回路径或空串（随包内置，校验通过才返回）"""
+    candidate = detect_wechat_keyfinder()
+    if candidate and verify_binary_integrity(candidate):
+        return candidate
+    if candidate:
+        logger.error("wechat_keyfinder 完整性校验未通过: %s", candidate)
+    else:
+        logger.error("wechat_keyfinder 缺失（安装包不完整或平台不支持）")
     return ""
-
-
-def _download_task():
-    """后台下载 helper 二进制（唯一临时路径，校验通过后替换目标）"""
-    global _DL_ACTIVE
-    try:
-        url = _download_url()
-        if not url:
-            return
-        wechat_dir = _get_wechat_dir()
-        wechat_dir.mkdir(parents=True, exist_ok=True)
-        dest = wechat_dir / _binary_name()
-        tmp = wechat_dir / (dest.name + f".tmp{os.getpid()}")
-        req = urllib.request.Request(url, headers={"User-Agent": "OhMyMeme"})
-        with urllib.request.urlopen(req, timeout=60) as src:
-            with open(tmp, "wb") as f:
-                shutil.copyfileobj(src, f)
-        if verify_binary_integrity(str(tmp)):
-            tmp.replace(dest)
-            logger.info("wechat_keyfinder downloaded to %s", dest)
-        else:
-            tmp.unlink(missing_ok=True)
-            logger.error("wechat_keyfinder download integrity check failed")
-    except Exception as e:
-        logger.error("wechat_keyfinder download failed: %s", e)
-    finally:
-        with _DL_LOCK:
-            _DL_ACTIVE = False
 
 
 def _find_wechat_root():
@@ -341,7 +290,7 @@ def _inspect_account(account_root):
 def _run_keyfinder(binary_path, db_path, pid=None):
     """执行 helper 二进制，返回 JSON 结果"""
     config_path = str(_offsets_path())
-    cmd = [binary_path, "--config", config_path, "--db-path", db_path, "--no-snapshot"]
+    cmd = [binary_path, "--config", config_path, "--db-path", db_path]
     if pid:
         cmd += ["--pid", str(pid)]
     kw = {"capture_output": True, "timeout": 90}
@@ -635,6 +584,9 @@ def _download_sticker(url, aes_key=None):
             data = resp.read(_MAX_DOWNLOAD + 1)
         if len(data) > _MAX_DOWNLOAD:
             return None
+        # 明文优先：cdn_url 恒定返回明文图片，长度恰为 16 倍数时才解密会毁掉数据
+        if _detect_image_ext(data):
+            return data
         if aes_key:
             from cryptography.hazmat.backends import default_backend
             from cryptography.hazmat.primitives.ciphers import Cipher, algorithms, modes

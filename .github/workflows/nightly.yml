@@ -23,6 +23,15 @@ jobs:
           pip install pyinstaller
       - name: Build with PyInstaller
         run: python scripts/build.py --build-only --nightly
+      - name: Verify bundled wechat_keyfinder helper
+        shell: pwsh
+        run: |
+          $helper = "dist/OhMyMeme/_internal/src/wechat_keyfinder/wechat_keyfinder.exe"
+          if (-not (Test-Path $helper)) {
+            Write-Error "wechat_keyfinder helper missing from build output: $helper"
+            exit 1
+          }
+          Write-Host "helper OK: $((Get-Item $helper).Length) bytes"
       - name: Install InnoSetup
         run: |
           choco install innosetup --no-progress

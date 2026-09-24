@@ -10,7 +10,6 @@
   "max_cipher_scan_bytes": 536870912,
   "max_scan_region": 536870912,
   "scan_chunk_size": 4194304,
-  "scan_overlap": 2048,
   "mac_salt_xor_byte": "0x3a",
   "pbkdf2_iterations": 2,
   "mac_input_length": 4016,
