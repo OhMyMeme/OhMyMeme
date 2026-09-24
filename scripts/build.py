@@ -89,6 +89,49 @@ _MSGS = {
         "zh": "已固定 wechat_keyfinder SHA-256: %s",
         "en": "Pinned wechat_keyfinder SHA-256: %s",
     },
+    "verify_no_dist": {
+        "zh": "错误: 未找到产物目录 %s，请先执行打包",
+        "en": "ERROR: build output directory not found: %s (run the build first)",
+    },
+    "verify_missing": {
+        "zh": "错误: 产物中未找到 wechat_keyfinder.exe（微信导入功能将不可用），已搜索 %s",
+        "en": "ERROR: wechat_keyfinder.exe missing from build output "
+        "(WeChat import would be unavailable); searched %s",
+    },
+    "verify_found": {
+        "zh": "已找到 helper: %s（%d 字节）",
+        "en": "helper found: %s (%d bytes)",
+    },
+    "verify_runs": {
+        "zh": "helper 可正常执行（--help 退出码 0）",
+        "en": "helper executes correctly (--help exited 0)",
+    },
+    "verify_run_failed": {
+        "zh": "错误: helper 执行失败（退出码 %s）",
+        "en": "ERROR: helper failed to run (exit code %s)",
+    },
+    "verify_run_error": {
+        "zh": "错误: 无法执行 helper: %s",
+        "en": "ERROR: cannot execute helper: %s",
+    },
+    "verify_no_version": {
+        "zh": "错误: helper 缺失版本资源 CompanyName（当前: %s）——"
+              "无元数据会让产物退回被 Defender 误报的特征",
+        "en": "ERROR: helper has no version resource CompanyName (got: %s) — "
+        "missing metadata reintroduces the Defender false-positive signal",
+    },
+    "verify_version_ok": {
+        "zh": "版本资源正常: CompanyName=%s",
+        "en": "version resource OK: CompanyName=%s",
+    },
+    "verify_ok": {
+        "zh": "helper 校验通过",
+        "en": "helper verification passed",
+    },
+    "verify_failed": {
+        "zh": "helper 校验未通过",
+        "en": "helper verification failed",
+    },
 }
 
 _lang = "zh"
@@ -211,6 +254,114 @@ def pin_keyfinder_hash(exe_path):
 def unpin_keyfinder_hash(original):
     """还原 wechat_probe.py 中被打包时注入的 helper 哈希"""
     (SRC_DIR / "wechat_probe.py").write_text(original, encoding="utf-8")
+
+
+def read_pe_version_strings(path):
+    """读取 PE 版本资源中的字符串字段（仅 Windows；不可用时返回空 dict）"""
+    if not IS_WINDOWS:
+        return {}
+    import ctypes
+    from ctypes import wintypes
+
+    ver = ctypes.WinDLL("version", use_last_error=True)
+    ver.GetFileVersionInfoSizeW.argtypes = [
+        wintypes.LPCWSTR,
+        ctypes.POINTER(wintypes.DWORD),
+    ]
+    ver.GetFileVersionInfoSizeW.restype = wintypes.DWORD
+    ver.GetFileVersionInfoW.argtypes = [
+        wintypes.LPCWSTR,
+        wintypes.DWORD,
+        wintypes.DWORD,
+        ctypes.c_void_p,
+    ]
+    ver.GetFileVersionInfoW.restype = wintypes.BOOL
+    ver.VerQueryValueW.argtypes = [
+        ctypes.c_void_p,
+        wintypes.LPCWSTR,
+        ctypes.POINTER(ctypes.c_void_p),
+        ctypes.POINTER(wintypes.UINT),
+    ]
+    ver.VerQueryValueW.restype = wintypes.BOOL
+
+    size = ver.GetFileVersionInfoSizeW(str(path), None)
+    if not size:
+        return {}
+    buf = ctypes.create_string_buffer(size)
+    if not ver.GetFileVersionInfoW(str(path), 0, size, buf):
+        return {}
+
+    ptr = ctypes.c_void_p()
+    length = wintypes.UINT()
+    if (
+        not ver.VerQueryValueW(
+            buf, "\\VarFileInfo\\Translation", ctypes.byref(ptr), ctypes.byref(length)
+        )
+        or length.value < 4
+    ):
+        return {}
+    words = ctypes.cast(ptr, ctypes.POINTER(wintypes.WORD))
+    lang, codepage = words[0], words[1]
+
+    out = {}
+    for name in ("CompanyName", "FileDescription", "OriginalFilename"):
+        sub = "\\StringFileInfo\\%04x%04x\\%s" % (lang, codepage, name)
+        val = ctypes.c_void_p()
+        vlen = wintypes.UINT()
+        if ver.VerQueryValueW(buf, sub, ctypes.byref(val), ctypes.byref(vlen)):
+            if val.value:
+                out[name] = ctypes.wstring_at(val, vlen.value).rstrip("\x00")
+    return out
+
+
+def verify_keyfinder_bundle():
+    """校验打包产物中的 helper（build.yml / nightly.yml 共用）
+
+    三个检查，覆盖已知的失败模式：
+      1. 存在 —— helper 是否随 --add-binary 进入产物（否则用户侧微信导入全废）
+      2. 可执行 —— `--help` 退出码为 0。替代原先的体积阈值：既能发现截断/
+         架构不符/缺失依赖，也不会因合法体积变化而误报
+      3. 版本资源 —— CompanyName 必须在，缺失即退回被 Defender 重点标记的
+         「无元数据」特征（本次改动的起因）
+    按文件名在产物树内查找而非硬编码 `_internal/...`，以免 PyInstaller
+    调整布局后此处静默失效。
+    """
+    bin_name = "wechat_keyfinder.exe" if IS_WINDOWS else "wechat_keyfinder"
+    root = BUILD_DIR / APP_NAME
+    if not root.is_dir():
+        print(L("verify_no_dist", root))
+        return False
+    matches = [p for p in root.rglob(bin_name) if p.is_file()]
+    if not matches:
+        print(L("verify_missing", root))
+        return False
+    helper = matches[0]
+    print(L("verify_found", helper, helper.stat().st_size))
+
+    errors = []
+    if IS_WINDOWS:
+        try:
+            proc = subprocess.run(
+                [str(helper), "--help"], capture_output=True, timeout=30
+            )
+            if proc.returncode != 0:
+                errors.append(L("verify_run_failed", proc.returncode))
+            else:
+                print(L("verify_runs"))
+        except subprocess.TimeoutExpired:
+            errors.append(L("verify_run_error", "超时（30s）"))
+        except OSError as e:
+            errors.append(L("verify_run_error", e))
+
+        company = read_pe_version_strings(helper).get("CompanyName", "")
+        if company != APP_NAME:
+            errors.append(L("verify_no_version", company or "(空)"))
+        else:
+            print(L("verify_version_ok", company))
+
+    for e in errors:
+        print(e)
+    return not errors
 
 
 def find_iscc():
@@ -613,6 +764,9 @@ if __name__ == "__main__":
     parser.add_argument("--allow-missing-keyfinder", action="store_true",
                         help="Continue even if the wechat_keyfinder helper cannot be built "
                              "(local development only; the packaged app loses WeChat import)")
+    parser.add_argument("--verify-helper", action="store_true",
+                        help="Verify the bundled wechat_keyfinder helper in dist/ "
+                             "(used by CI after packaging; exits non-zero on failure)")
     parser.add_argument("--package", choices=["all", "appimage", "deb", "rpm"], default="all",
                         help="Linux package type to build (default: all)")
     parser.add_argument("--arch", choices=["arm64", "x86_64", "aarch64"], default=None,
@@ -646,6 +800,12 @@ if __name__ == "__main__":
         target = "Darwin"
     else:
         target = platform.system()
+
+    # --- helper 校验模式（CI 打包后调用；不触发版本改写等构建副作用）---
+    if args.verify_helper:
+        ok = verify_keyfinder_bundle()
+        print(L("verify_ok") if ok else L("verify_failed"))
+        sys.exit(0 if ok else 1)
 
     # --- version override / nightly ---
     base_version = get_version()
