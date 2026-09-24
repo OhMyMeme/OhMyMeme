@@ -5,7 +5,9 @@ import pytest
 
 from src import wechat_probe
 
-pytestmark = pytest.mark.skipif(
+# 仅平台相关的用例需要跳过；helper 分发 / 完整性 / 下载判定等用例与平台无关，
+# 通过 mock 平台与冻结态后可在 Ubuntu CI 上真实执行（此前整模块跳过导致零覆盖）。
+windows_only = pytest.mark.skipif(
     platform.system() != "Windows", reason="微信导入仅支持 Windows"
 )
 
@@ -20,6 +22,7 @@ def _make_account(root, name, with_db=True, plaintext=True):
             f.write(header + b"\x00" * 32)
 
 
+@windows_only
 def test_account_without_wxid_prefix_detected(tmp_path):
     _make_account(tmp_path, "custom_nickname")
     r = wechat_probe.inspect_wechat_environment(str(tmp_path))
@@ -27,6 +30,7 @@ def test_account_without_wxid_prefix_detected(tmp_path):
     assert [a["id"] for a in r["accounts"]] == ["custom_nickname"]
 
 
+@windows_only
 def test_wxid_prefix_account_still_detected(tmp_path):
     _make_account(tmp_path, "wxid_abc123")
     r = wechat_probe.inspect_wechat_environment(str(tmp_path))
@@ -34,6 +38,7 @@ def test_wxid_prefix_account_still_detected(tmp_path):
     assert [a["id"] for a in r["accounts"]] == ["wxid_abc123"]
 
 
+@windows_only
 def test_selected_account_dir_without_wxid_prefix(tmp_path):
     _make_account(tmp_path, "my_account")
     r = wechat_probe.inspect_wechat_environment(str(tmp_path) + os.sep + "my_account")
@@ -41,6 +46,7 @@ def test_selected_account_dir_without_wxid_prefix(tmp_path):
     assert r["accounts"][0]["id"] == "my_account"
 
 
+@windows_only
 def test_dir_without_emoticon_db_not_account(tmp_path):
     os.makedirs(os.path.join(str(tmp_path), "random_folder"))
     r = wechat_probe.inspect_wechat_environment(str(tmp_path))
@@ -48,12 +54,14 @@ def test_dir_without_emoticon_db_not_account(tmp_path):
     assert r["accounts"] == []
 
 
+@windows_only
 def test_encrypted_index_without_wxid_prefix(tmp_path):
     _make_account(tmp_path, "old_wechat", plaintext=False)
     r = wechat_probe.inspect_wechat_environment(str(tmp_path))
     assert r["status"] == "encrypted_index"
 
 
+@windows_only
 def test_non_wxid_dir_without_db_ignored_alongside_valid_account(tmp_path):
     os.makedirs(os.path.join(str(tmp_path), "backup_old"))
     _make_account(tmp_path, "wxid_one")
@@ -61,6 +69,7 @@ def test_non_wxid_dir_without_db_ignored_alongside_valid_account(tmp_path):
     assert [a["id"] for a in r["accounts"]] == ["wxid_one"]
 
 
+@windows_only
 def test_wide_fallback_db_in_other_subdir(tmp_path):
     _make_account(tmp_path, "acc", with_db=False)
     db_dir = os.path.join(str(tmp_path), "acc", "db_storage", "emoticon_backup")
@@ -71,6 +80,7 @@ def test_wide_fallback_db_in_other_subdir(tmp_path):
     assert r["status"] == "supported"
 
 
+@windows_only
 def test_wide_fallback_db_directly_under_db_storage(tmp_path):
     _make_account(tmp_path, "acc", with_db=False)
     storage = os.path.join(str(tmp_path), "acc", "db_storage")
@@ -80,6 +90,7 @@ def test_wide_fallback_db_directly_under_db_storage(tmp_path):
     assert r["status"] == "supported"
 
 
+@windows_only
 def test_no_database_reports_existing_db_files(tmp_path):
     _make_account(tmp_path, "wxid_x", with_db=False)
     fav_dir = os.path.join(str(tmp_path), "wxid_x", "db_storage", "favorite")
@@ -91,6 +102,7 @@ def test_no_database_reports_existing_db_files(tmp_path):
     assert r["accounts"][0]["db_files"] == ["favorite/favorite.db"]
 
 
+@windows_only
 def test_wechat_3x_layout_reports_unsupported(tmp_path):
     acc = os.path.join(str(tmp_path), "wxid_old")
     os.makedirs(os.path.join(acc, "Msg", "Multi"))
@@ -99,6 +111,7 @@ def test_wechat_3x_layout_reports_unsupported(tmp_path):
     assert r["reason"] == "wechat_3x_unsupported"
 
 
+@windows_only
 def test_wechat_3x_micromsg_marker_also_unsupported(tmp_path):
     acc = os.path.join(str(tmp_path), "wxid_old2")
     os.makedirs(os.path.join(acc, "Msg"))
@@ -108,6 +121,7 @@ def test_wechat_3x_micromsg_marker_also_unsupported(tmp_path):
     assert r["status"] == "unsupported_version"
 
 
+@windows_only
 def test_msg_emoticon_db_still_supported(tmp_path):
     _make_account(tmp_path, "wxid_m", with_db=False)
     msg_dir = os.path.join(str(tmp_path), "wxid_m", "Msg")
@@ -118,8 +132,15 @@ def test_msg_emoticon_db_still_supported(tmp_path):
     assert r["status"] == "supported"
 
 
+def _mock_windows(monkeypatch, frozen=True):
+    """把平台与冻结态固定为「Windows + 发布产物」，使用例可在任意 CI 平台执行"""
+    monkeypatch.setattr(wechat_probe.platform, "system", lambda: "Windows")
+    monkeypatch.setattr(wechat_probe.sys, "frozen", frozen, raising=False)
+
+
 def test_bundled_binary_resolved_from_meipass(tmp_path, monkeypatch):
-    """冻结环境下 helper 应优先从 _MEIPASS 解析（随包分发）"""
+    """冻结环境下 helper 应从 _MEIPASS 解析（随包分发）"""
+    _mock_windows(monkeypatch)
     fake_meipass = tmp_path / "_internal"
     target_dir = fake_meipass / "src" / "wechat_keyfinder"
     target_dir.mkdir(parents=True)
@@ -132,6 +153,7 @@ def test_bundled_binary_resolved_from_meipass(tmp_path, monkeypatch):
 
 def test_bundled_binary_missing_returns_empty(tmp_path, monkeypatch):
     """helper 缺失时返回空串（而非抛错），供上层提示安装包不完整"""
+    _mock_windows(monkeypatch)
     monkeypatch.setattr(wechat_probe.sys, "_MEIPASS", str(tmp_path), raising=False)
     monkeypatch.setattr(wechat_probe, "_bundled_binary_path", lambda: "")
     assert wechat_probe.detect_wechat_keyfinder() == ""
@@ -149,7 +171,8 @@ def test_offsets_resolved_from_meipass(tmp_path, monkeypatch):
 
 
 def test_integrity_rejects_tampered_binary(tmp_path, monkeypatch):
-    """完整性校验必须拒绝与固定哈希不符的文件"""
+    """发布态下完整性校验必须拒绝与固定哈希不符的文件"""
+    _mock_windows(monkeypatch)
     exe = tmp_path / "wechat_keyfinder.exe"
     exe.write_bytes(b"not the real binary")
     monkeypatch.setattr(
@@ -161,7 +184,8 @@ def test_integrity_rejects_tampered_binary(tmp_path, monkeypatch):
 
 
 def test_ensure_returns_empty_on_integrity_failure(tmp_path, monkeypatch):
-    """哈希不匹配时 ensure 不得返回路径（防篡改后执行）"""
+    """发布态下哈希不匹配时 ensure 不得返回路径（防篡改后执行）"""
+    _mock_windows(monkeypatch)
     exe = tmp_path / "wechat_keyfinder.exe"
     exe.write_bytes(b"tampered")
     monkeypatch.setattr(wechat_probe, "_bundled_binary_path", lambda: str(exe))
@@ -170,15 +194,41 @@ def test_ensure_returns_empty_on_integrity_failure(tmp_path, monkeypatch):
 
 
 def test_pinned_hash_accepts_matching_binary(tmp_path, monkeypatch):
-    """固定哈希与文件一致时应放行（正常发布路径）"""
+    """发布态下固定哈希与文件一致时应放行（正常发布路径）"""
     import hashlib
 
+    _mock_windows(monkeypatch)
     exe = tmp_path / "wechat_keyfinder.exe"
     payload = b"MZ fake but stable"
     exe.write_bytes(payload)
     digest = hashlib.sha256(payload).hexdigest()
     monkeypatch.setattr(wechat_probe, "_WECHAT_KEYFINDER_SHA256", {"Windows": digest})
     assert wechat_probe.verify_binary_integrity(str(exe)) is True
+
+
+def test_source_run_skips_pinned_hash(tmp_path, monkeypatch):
+    """源码运行使用本地构建产物，其哈希与随包固定值必然不同，应跳过比对
+
+    否则开发者自行编译 helper 后仍会因哈希不匹配而无法使用微信导入。
+    """
+    _mock_windows(monkeypatch, frozen=False)
+    exe = tmp_path / "wechat_keyfinder.exe"
+    exe.write_bytes(b"locally built helper")
+    monkeypatch.setattr(wechat_probe, "_WECHAT_KEYFINDER_SHA256", {"Windows": "0" * 64})
+    assert wechat_probe.verify_binary_integrity(str(exe)) is True
+
+
+def test_locate_uses_source_tree_in_dev_mode(tmp_path, monkeypatch):
+    """开发态 helper 从源码目录解析（不依赖 _MEIPASS）"""
+    _mock_windows(monkeypatch, frozen=False)
+    src_dir = tmp_path / "wechat_keyfinder"
+    src_dir.mkdir()
+    fake_module = tmp_path / "wechat_probe_stub.py"
+    fake_module.write_text("", encoding="utf-8")
+    exe = src_dir / "wechat_keyfinder.exe"
+    exe.write_bytes(b"MZ")
+    monkeypatch.setattr(wechat_probe, "__file__", str(fake_module))
+    assert wechat_probe._bundled_binary_path() == str(exe)
 
 
 # --- _download_sticker：明文优先判定（回归：长度恰为 16 倍数时被无谓解密毁坏）---

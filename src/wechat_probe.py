@@ -32,7 +32,7 @@ logger = logging.getLogger(__name__)
 
 # helper 二进制完整性校验（重编译 helper 后必须同步更新）
 _WECHAT_KEYFINDER_SHA256 = {
-    "Windows": "a04accc574b0648d2214304cd9e5cfecbb94b0dff5fe10e115c8100bba2397af",
+    "Windows": "874916c82d037cd727641aea9fe974db049dfd7f9f081575576e5a22b6a719db",
 }
 
 _WECHAT_STATE = {
@@ -126,13 +126,91 @@ def _offsets_path():
     return Path(__file__).resolve().parent.parent / "config" / "offsets.json"
 
 
+def _is_frozen():
+    """是否为打包产物（发布态）——区分随包哈希校验与开发态本地构建"""
+    return bool(getattr(sys, "frozen", False))
+
+
+_DEV_BUILD_LOCK = threading.Lock()
+_DEV_BUILD_DONE = False
+
+
+def _ensure_dev_helper():
+    """源码运行时按需构建 helper（打包环境跳过；失败仅告警）
+
+    与 main._ensure_vue_frontend 同思路：开发态缺构建产物时自动补一次，避免
+    新克隆仓库执行 python -m src 时微信导入静默不可用。pytest 下跳过，避免
+    测试期间触发编译（沿用 hotkey.py 的 PYTEST_CURRENT_TEST 守卫）。
+    """
+    global _DEV_BUILD_DONE
+    if _is_frozen() or platform.system() != "Windows":
+        return
+    if "PYTEST_CURRENT_TEST" in os.environ:
+        return
+    with _DEV_BUILD_LOCK:
+        if _DEV_BUILD_DONE:
+            return
+        _DEV_BUILD_DONE = True
+    src_dir = Path(__file__).resolve().parent / "wechat_keyfinder"
+    if (src_dir / _binary_name()).is_file():
+        return
+    if not shutil.which("cmake"):
+        logger.warning("wechat_keyfinder 缺失且未找到 cmake，微信导入不可用")
+        return
+    build_dir = Path(__file__).resolve().parent.parent / "build" / "wechat_keyfinder"
+    logger.info("wechat_keyfinder 缺失，尝试用 cmake 构建（开发态）...")
+    try:
+        configured = subprocess.run(
+            [
+                "cmake",
+                "-S",
+                str(src_dir),
+                "-B",
+                str(build_dir),
+                "-A",
+                "x64",
+                "-DWKF_ENABLE_TEST_KEY=OFF",
+            ],
+            capture_output=True,
+        )
+        if configured.returncode != 0:
+            logger.warning("wechat_keyfinder 配置失败，微信导入不可用")
+            return
+        built = subprocess.run(
+            ["cmake", "--build", str(build_dir), "--config", "Release"],
+            capture_output=True,
+        )
+        if built.returncode != 0:
+            logger.warning("wechat_keyfinder 构建失败，微信导入不可用")
+            return
+        # 与 build.py 一致：只认确定的 Release 输出路径，拷回源码目录供后续解析
+        produced = build_dir / "Release" / "wechat_keyfinder.exe"
+        if not produced.is_file():
+            produced = build_dir / "wechat_keyfinder.exe"
+        if not produced.is_file():
+            logger.warning("wechat_keyfinder 未产出可执行文件")
+            return
+        shutil.copy2(produced, src_dir / _binary_name())
+        logger.info("wechat_keyfinder 构建完成")
+    except OSError as e:
+        logger.warning("wechat_keyfinder 构建失败: %s", e)
+
+
 def detect_wechat_keyfinder():
     """检测 helper 二进制路径，不存在返回空串（仅随包内置位置）"""
     return _bundled_binary_path()
 
 
 def verify_binary_integrity(path):
-    """校验二进制 SHA-256；未配置真实哈希默认拒绝（开发用环境变量跳过）"""
+    """校验二进制 SHA-256；未配置真实哈希默认拒绝（开发用环境变量跳过）
+
+    发布态（sys.frozen）始终严格比对随包注入的哈希。源码运行用的是本地构建
+    产物，其哈希与随包固定值必然不同（MSVC 构建非确定性），故开发态不比对
+    固定值——该哈希描述的是打包产物，此处的防篡改目标是发布件而非工作副本。
+    """
+    if not _is_frozen():
+        logger.debug("源码运行：跳过 wechat_keyfinder 固定哈希比对")
+        return True
     expected = _WECHAT_KEYFINDER_SHA256.get(platform.system(), "")
     if not expected or expected == "PLACEHOLDER_UPDATE_ON_RELEASE":
         if os.environ.get("OHMYMEME_INSECURE_SKIP_HELPER_HASH") == "1":
@@ -153,6 +231,7 @@ def verify_binary_integrity(path):
 
 def ensure_wechat_keyfinder():
     """确保 helper 二进制可用，返回路径或空串（随包内置，校验通过才返回）"""
+    _ensure_dev_helper()
     candidate = detect_wechat_keyfinder()
     if candidate and verify_binary_integrity(candidate):
         return candidate

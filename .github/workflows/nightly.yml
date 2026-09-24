@@ -31,7 +31,17 @@ jobs:
             Write-Error "wechat_keyfinder helper missing from build output: $helper"
             exit 1
           }
-          Write-Host "helper OK: $((Get-Item $helper).Length) bytes"
+          $size = (Get-Item $helper).Length
+          if ($size -lt 20000) {
+            Write-Error "wechat_keyfinder helper looks wrong (size=$size)"
+            exit 1
+          }
+          $vi = (Get-Item $helper).VersionInfo
+          if ($vi.CompanyName -ne "OhMyMeme") {
+            Write-Error "wechat_keyfinder helper missing version resource"
+            exit 1
+          }
+          Write-Host "helper OK: $size bytes, CompanyName=$($vi.CompanyName)"
       - name: Install InnoSetup
         run: |
           choco install innosetup --no-progress

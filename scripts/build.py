@@ -67,14 +67,23 @@ _MSGS = {
         "zh": "警告: 未找到 %s，微信导入功能在产物中将不可用（先编译 src/wechat_keyfinder）",
         "en": "WARNING: %s not found; WeChat import will be unavailable in the build (compile src/wechat_keyfinder first)",
     },
+    "keyfinder_required": {
+        "zh": "错误: 构建 wechat_keyfinder 失败。helper 随包内置，缺失会导致微信导入不可用，"
+              "故中止打包。请安装 cmake + MSVC（VS BuildTools 即可）后重试；"
+              "仅本地开发可加 --allow-missing-keyfinder 跳过此检查。",
+        "en": "ERROR: building wechat_keyfinder failed. The helper ships inside the installer, "
+              "so packaging aborts to avoid producing a build without WeChat import support. "
+              "Install cmake + MSVC (VS BuildTools is enough) and retry; "
+              "local development only may pass --allow-missing-keyfinder to skip this check.",
+    },
     "keyfinder_no_cmake": {
-        "zh": "警告: 未找到 cmake，跳过 wechat_keyfinder 编译，微信导入功能在产物中将不可用",
-        "en": "WARNING: cmake not found; skipping wechat_keyfinder build, WeChat import will be unavailable",
+        "zh": "错误: 未找到 cmake，无法构建 wechat_keyfinder",
+        "en": "ERROR: cmake not found, cannot build wechat_keyfinder",
     },
     "keyfinder_building": {"zh": "编译 wechat_keyfinder...", "en": "Building wechat_keyfinder..."},
     "keyfinder_build_failed": {
-        "zh": "警告: wechat_keyfinder 编译失败，微信导入功能在产物中将不可用",
-        "en": "WARNING: wechat_keyfinder build failed; WeChat import will be unavailable",
+        "zh": "错误: wechat_keyfinder 编译失败",
+        "en": "ERROR: wechat_keyfinder build failed",
     },
     "keyfinder_pinned": {
         "zh": "已固定 wechat_keyfinder SHA-256: %s",
@@ -117,29 +126,30 @@ def set_version(v: str):
     init_py.write_text(new_content, encoding="utf-8")
 
 
-def build_keyfinder_helper():
+def build_keyfinder_helper(allow_missing=False):
     """编译 wechat_keyfinder helper（Windows 专用，cmake + MSVC）
 
-    helper 不再随 Release 单独分发，改为随安装包内置，故需在打包前构建。
-    源码或资源更新时自动重编译；cmake 缺失或编译失败仅告警（微信导入不可用），
-    不阻断整体构建。返回可执行文件路径，失败返回 None。
+    helper 不再随 Release 单独分发，改为随安装包内置，故必须在打包前构建。
+    每次都重新配置并构建 Release 产物：不复用已存在的 exe，也不按修改时间挑选
+    输出——否则可能把 Debug 或带 WKF_ENABLE_TEST_KEY 的开发产物打进发布包。
+    cmake 缺失或构建失败时默认中止（静默产出一个微信导入不可用的安装包比构建
+    失败更糟）；仅本地开发可用 allow_missing 显式放行。返回可执行文件路径，
+    allow_missing 且无法构建时返回 None。
     """
     if not IS_WINDOWS:
         return None
     src_dir = SRC_DIR / "wechat_keyfinder"
     exe = src_dir / "wechat_keyfinder.exe"
-    inputs = [
-        src_dir / "wechat_keyfinder.cpp",
-        src_dir / "wechat_keyfinder.rc",
-        src_dir / "CMakeLists.txt",
-    ]
-    if exe.is_file() and all(
-        p.is_file() and exe.stat().st_mtime >= p.stat().st_mtime for p in inputs
-    ):
-        return exe
+
+    def give_up(reason):
+        print(reason)
+        if allow_missing:
+            return None
+        print(L("keyfinder_required"))
+        sys.exit(1)
+
     if not shutil.which("cmake"):
-        print(L("keyfinder_no_cmake"))
-        return exe if exe.is_file() else None
+        return give_up(L("keyfinder_no_cmake"))
 
     build_dir = PROJECT_ROOT / "build" / "wechat_keyfinder"
     print(L("keyfinder_building"))
@@ -153,16 +163,15 @@ def build_keyfinder_helper():
             cwd=str(PROJECT_ROOT),
         )
     if result.returncode != 0:
-        print(L("keyfinder_build_failed"))
-        return exe if exe.is_file() else None
+        return give_up(L("keyfinder_build_failed"))
 
-    produced = sorted(
-        build_dir.rglob("wechat_keyfinder.exe"), key=lambda p: p.stat().st_mtime
-    )
-    if not produced:
-        print(L("keyfinder_build_failed"))
-        return exe if exe.is_file() else None
-    shutil.copy2(produced[-1], exe)
+    # 只认本次构建的确定路径（VS 生成器为 <build>/Release/，单配置生成器为 <build>/）
+    produced = build_dir / "Release" / "wechat_keyfinder.exe"
+    if not produced.is_file():
+        produced = build_dir / "wechat_keyfinder.exe"
+    if not produced.is_file():
+        return give_up(L("keyfinder_build_failed"))
+    shutil.copy2(produced, exe)
     return exe
 
 
@@ -601,6 +610,9 @@ if __name__ == "__main__":
                         help="Only build installer (assumes PyInstaller already ran)")
     parser.add_argument("--build-only", action="store_true",
                         help="Only run PyInstaller, skip installer")
+    parser.add_argument("--allow-missing-keyfinder", action="store_true",
+                        help="Continue even if the wechat_keyfinder helper cannot be built "
+                             "(local development only; the packaged app loses WeChat import)")
     parser.add_argument("--package", choices=["all", "appimage", "deb", "rpm"], default="all",
                         help="Linux package type to build (default: all)")
     parser.add_argument("--arch", choices=["arm64", "x86_64", "aarch64"], default=None,
@@ -667,7 +679,9 @@ if __name__ == "__main__":
         else:
             # helper 随包分发：先在打包前编译，并按实际产物注入哈希（构建后还原）
             if target == "Windows":
-                keyfinder = build_keyfinder_helper()
+                keyfinder = build_keyfinder_helper(
+                    allow_missing=args.allow_missing_keyfinder
+                )
                 if keyfinder:
                     keyfinder_original = pin_keyfinder_hash(keyfinder)
             version = build_pyinstaller(target=target)
