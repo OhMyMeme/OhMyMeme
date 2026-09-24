@@ -29,3 +29,16 @@ if(MSVC)
     # 源码为 UTF-8：强制 /utf-8，避免代码页(如 936)误读中文注释为 \ 续行吞掉代码
     target_compile_options(wechat_keyfinder PRIVATE /utf-8)
 endif()
+
+# 单元测试：SHA-512/HMAC/PBKDF2 已知答案向量 + 密钥提取路径端到端。
+# 默认 OFF，使打包构建（build.py 调 cmake --build）不连带编译测试；
+# CI 的 check.yml keyfinder-tests job 以 -DWKF_BUILD_TESTS=ON 显式开启。
+option(WKF_BUILD_TESTS "Build wechat_keyfinder unit tests" OFF)
+if(WKF_BUILD_TESTS)
+    enable_testing()
+    add_executable(wechat_keyfinder_test test_wechat_keyfinder.cpp)
+    if(MSVC)
+        target_compile_options(wechat_keyfinder_test PRIVATE /utf-8)
+    endif()
+    add_test(NAME wechat_keyfinder_test COMMAND wechat_keyfinder_test)
+endif()
