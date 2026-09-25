@@ -40,9 +40,40 @@ def _is_animated(path: str) -> bool:
         return False
 
 
+def _has_alpha(img) -> bool:
+    """判断图片是否带透明通道"""
+    if img.mode in ("RGBA", "LA"):
+        return True
+    return img.mode == "P" and "transparency" in img.info
+
+
+def _file_md5(path: str) -> str:
+    """计算文件字节摘要，供转换产物缓存键使用"""
+    md5 = hashlib.md5()
+    with open(path, "rb") as f:
+        for chunk in iter(lambda: f.read(65536), b""):
+            md5.update(chunk)
+    return md5.hexdigest()
+
+
 # 重采样 WebP 编码参数（参与缓存键：改这里旧缓存自动失效）
 _RESIZE_WEBP_QUALITY = 90
 _RESIZE_CACHE_VERSION = 1
+# 避免 WebP 时的输出编码参数（参与缓存键：改这里旧缓存自动失效）
+_RESIZE_JPG_QUALITY = 90
+_AVOID_WEBP_CACHE_VERSION = 1
+
+
+def _is_valid_image(path: str, fmt: str) -> bool:
+    """校验图片文件是否完整有效且格式匹配"""
+    try:
+        with PILImage.open(path) as im:
+            if im.format != fmt:
+                return False
+            im.verify()
+        return True
+    except Exception:
+        return False
 
 
 def _is_valid_webp(path: str) -> bool:
@@ -57,8 +88,8 @@ def _is_valid_webp(path: str) -> bool:
         return False
 
 
-def _resize_static_to_webp(image_path: str, max_side: int):
-    """超限的静态图重采样为 WebP 临时文件；不适用或失败返回 None"""
+def _resize_static_to_webp(image_path: str, max_side: int, avoid_webp: bool = False):
+    """超限的静态图重采样；避免 WebP 时输出 JPG/PNG，不适用或失败返回 None"""
     if not HAS_PIL:
         return None
     try:
@@ -68,24 +99,40 @@ def _resize_static_to_webp(image_path: str, max_side: int):
         w, h = img.size
         if max(w, h) <= max_side:
             return None
-        md5 = hashlib.md5()
-        with open(image_path, "rb") as f:
-            for chunk in iter(lambda: f.read(65536), b""):
-                md5.update(chunk)
+        md5 = _file_md5(image_path)
         # 故意不删除：CF_HDROP 指向该路径，QQ 粘贴时才读文件；
         # 缓存键含编码参数与版本号（改编码逻辑自动失效），命中时校验完整性
-        tmp_path = os.path.join(
-            tempfile.gettempdir(),
-            f"ohmm_resize_{md5.hexdigest()}_{max_side}"
-            f"_q{_RESIZE_WEBP_QUALITY}_v{_RESIZE_CACHE_VERSION}.webp",
-        )
-        if os.path.isfile(tmp_path) and _is_valid_webp(tmp_path):
+        if avoid_webp:
+            # 带透明的图转 PNG 保留 alpha，其余转 JPG
+            fmt = "PNG" if _has_alpha(img) else "JPEG"
+            ext = ".png" if fmt == "PNG" else ".jpg"
+            tmp_path = os.path.join(
+                tempfile.gettempdir(),
+                f"ohmm_resize_{md5}_{max_side}_v{_AVOID_WEBP_CACHE_VERSION}{ext}",
+            )
+        else:
+            fmt = "WEBP"
+            tmp_path = os.path.join(
+                tempfile.gettempdir(),
+                f"ohmm_resize_{md5}_{max_side}"
+                f"_q{_RESIZE_WEBP_QUALITY}_v{_RESIZE_CACHE_VERSION}.webp",
+            )
+        if os.path.isfile(tmp_path) and _is_valid_image(tmp_path, fmt):
             return tmp_path
         ratio = max_side / float(max(w, h))
         img = img.resize(
             (max(1, int(w * ratio)), max(1, int(h * ratio))), PILImage.LANCZOS
         )
-        img.convert("RGBA").save(tmp_path, format="WEBP", quality=_RESIZE_WEBP_QUALITY)
+        if fmt == "WEBP":
+            img.convert("RGBA").save(
+                tmp_path, format="WEBP", quality=_RESIZE_WEBP_QUALITY
+            )
+        elif fmt == "PNG":
+            img.convert("RGBA").save(tmp_path, format="PNG", optimize=True)
+        else:
+            img.convert("RGB").save(
+                tmp_path, format="JPEG", quality=_RESIZE_JPG_QUALITY, optimize=True
+            )
         return tmp_path
     except Exception as e:
         logger.warning(f"_resize_static_to_webp: {e}")
@@ -94,14 +141,7 @@ def _resize_static_to_webp(image_path: str, max_side: int):
 
 def _is_valid_gif(path: str) -> bool:
     """校验 GIF 文件是否完整有效"""
-    try:
-        with PILImage.open(path) as im:
-            if im.format != "GIF":
-                return False
-            im.verify()
-        return True
-    except Exception:
-        return False
+    return _is_valid_image(path, "GIF")
 
 
 def _make_stego_gif(image_path: str, max_side: int):
@@ -183,12 +223,133 @@ def _static_to_gif(image_path: str, max_side: int):
 # convert_image_mode_x：返回处理完图片在 cache 中的路径
 
 
-def convert_image_mode_1(image_path: str, resize_max: int) -> str:
+def _flatten_to_rgb(img):
+    """带透明的图合成到白底，否则直接转 RGB"""
+    if _has_alpha(img):
+        rgba = img.convert("RGBA")
+        bg = PILImage.new("RGB", rgba.size, (255, 255, 255))
+        bg.paste(rgba, mask=rgba.split()[-1])
+        return bg
+    return img.convert("RGB")
+
+
+def _animated_webp_to_gif(image_path: str, max_side: int = 0):
+    """动图 WebP 转为动画 GIF 临时文件；不适用或失败返回 None
+
+    max_side 为最长边上限（0 表示不限制）：GIF 无帧间压缩且逐帧整幅写入，
+    体积随像素数增长，长动画可远超源 WebP，故按上限等比缩小（永不放大）
+    """
+    if not HAS_PIL:
+        return None
+    try:
+        img = PILImage.open(image_path)
+        if not getattr(img, "is_animated", False):
+            return None
+        md5 = _file_md5(image_path)
+        # 故意不删除：CF_HDROP 指向该路径，微信粘贴时才读文件；
+        # 缓存键含尺寸上限与版本号（改编码逻辑自动失效），命中时校验完整性
+        tmp_path = os.path.join(
+            tempfile.gettempdir(),
+            f"ohmm_webp_gif_{md5}_{max_side}_v{_AVOID_WEBP_CACHE_VERSION}.gif",
+        )
+        if os.path.isfile(tmp_path) and _is_valid_gif(tmp_path):
+            return tmp_path
+        loop = img.info.get("loop")
+        frames, durations = [], []
+        for i in range(img.n_frames):
+            img.seek(i)
+            img.load()
+            frames.append(img.convert("RGBA"))
+            # 帧延时保真，仅设 20ms 下限（0 值会导致编码异常，过短播放器无法区分）
+            durations.append(max(20, int(img.info.get("duration", 0) or 0)))
+        if not frames:
+            return None
+        if max_side and max(frames[0].size) > max_side:
+            ratio = max_side / float(max(frames[0].size))
+            size = (
+                max(1, int(frames[0].width * ratio)),
+                max(1, int(frames[0].height * ratio)),
+            )
+            frames = [f.resize(size, PILImage.LANCZOS) for f in frames]
+        # disposal=2 逐帧清空画布，避免透明区域透出上一帧形成残影
+        frames[0].save(
+            tmp_path,
+            format="GIF",
+            save_all=True,
+            append_images=frames[1:],
+            duration=durations,
+            loop=loop if loop is not None else 0,
+            disposal=2,
+            optimize=True,
+        )
+        if os.path.isfile(tmp_path) and _is_valid_gif(tmp_path):
+            return tmp_path
+        return None
+    except Exception as e:
+        logger.warning(f"_animated_webp_to_gif: {e}")
+        return None
+
+
+def _static_webp_to_jpg(image_path: str):
+    """静态 WebP 转为 JPG 临时文件（带透明时合成白底）；不适用或失败返回 None"""
+    if not HAS_PIL:
+        return None
+    try:
+        img = PILImage.open(image_path)
+        if getattr(img, "is_animated", False):
+            return None
+        md5 = _file_md5(image_path)
+        # 故意不删除：CF_HDROP 指向该路径，微信粘贴时才读文件；
+        # 缓存键含编码参数与版本号（改编码逻辑自动失效），命中时校验完整性
+        tmp_path = os.path.join(
+            tempfile.gettempdir(),
+            f"ohmm_webp_jpg_{md5}_q{_RESIZE_JPG_QUALITY}"
+            f"_v{_AVOID_WEBP_CACHE_VERSION}.jpg",
+        )
+        if os.path.isfile(tmp_path) and _is_valid_image(tmp_path, "JPEG"):
+            return tmp_path
+        _flatten_to_rgb(img).save(
+            tmp_path, format="JPEG", quality=_RESIZE_JPG_QUALITY, optimize=True
+        )
+        return tmp_path
+    except Exception as e:
+        logger.warning(f"_static_webp_to_jpg: {e}")
+        return None
+
+
+def convert_avoid_webp(image_path: str, max_side: int = 0) -> str:
+    """复制产物兜底：WebP 动图转 GIF、静态转 JPG；非 WebP、转换失败或异常时原样返回
+
+    max_side 仅约束动图转 GIF 的最长边（0 不限制）；静态转 JPG 保持原分辨率，
+    以维持「不处理」模式不缩放原图的既有语义
+    """
+    if not HAS_PIL:
+        return image_path
+    try:
+        with PILImage.open(image_path) as img:
+            if img.format != "WEBP":
+                return image_path
+            animated = bool(getattr(img, "is_animated", False))
+    except Exception as e:
+        logger.warning(f"convert_avoid_webp: {e}")
+        return image_path
+    if animated:
+        converted = _animated_webp_to_gif(image_path, max_side)
+    else:
+        converted = _static_webp_to_jpg(image_path)
+    if not converted:
+        logger.warning(f"WebP 转换失败，回退原文件: {os.path.basename(image_path)}")
+    return converted or image_path
+
+
+def convert_image_mode_1(
+    image_path: str, resize_max: int, avoid_webp: bool = False
+) -> str:
     if not os.path.isfile(image_path):
         logger.warning(f"convert_image_mode_1: file not found {image_path}")
         return ""
 
-    resized = _resize_static_to_webp(image_path, resize_max)
+    resized = _resize_static_to_webp(image_path, resize_max, avoid_webp)
     if resized:
         image_path = resized
 
@@ -851,12 +1012,16 @@ def _copy_image_linux(image_path: str, ext: str) -> bool:
         import subprocess
 
         abs_path = os.path.abspath(image_path)
-        # WebP 直接传原文件，动图（GIF）用 image/gif MIME
+        # 按扩展名映射 MIME；GIF/WebP 需区分动图判定，其余静态图按格式标注
         ext = os.path.splitext(image_path)[1].lower()
         if ext == ".webp":
             mime = "image/webp"
-        elif _is_animated(image_path):
+        elif ext == ".gif" or _is_animated(image_path):
             mime = "image/gif"
+        elif ext in (".jpg", ".jpeg"):
+            mime = "image/jpeg"
+        elif ext == ".bmp":
+            mime = "image/bmp"
         else:
             mime = "image/png"
         # 尝试 xclip

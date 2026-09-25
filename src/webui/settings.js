@@ -291,6 +291,8 @@ async function getSettings() {
   if (to) to.checked = s.try_original_image === true;  // DeepSeek V4 Flash
   const cm = document.getElementById('s-copy-mode');
   if (cm) cm.value = String(s.copy_resize_mode ?? 1);
+  const caw = document.getElementById('s-copy-avoid-webp');
+  if (caw) caw.checked = s.copy_avoid_webp === true;
   if (as) as.checked = s.auto_start === true;
   if (ss) ss.checked = s.silent_start === true;
   const unc = document.getElementById('s-show-uncategorized');
@@ -595,6 +597,7 @@ async function saveSettings() {
   const gif = document.getElementById('s-gif')?.checked !== false;
   const try_original = document.getElementById('s-try-original')?.checked === true;  // DeepSeek V4 Flash
   const copy_mode = parseInt(document.getElementById('s-copy-mode')?.value || '1', 10);
+  const copy_avoid_webp = document.getElementById('s-copy-avoid-webp')?.checked === true;
   const hotkey_show_at_mouse = document.getElementById('s-hotkey-show-at-mouse')?.checked === true;
   const auto_start = document.getElementById('s-auto-start')?.checked === true;
   const silent_start = document.getElementById('s-silent-start')?.checked === true;
@@ -610,6 +613,7 @@ async function saveSettings() {
     hotkey, hotkey_show_at_mouse, auto_play_gif: gif, hover_to_play: hover_play,
     try_original_image: try_original,  // DeepSeek V4 Flash
     copy_resize_mode: copy_mode,
+    copy_avoid_webp,
     auto_start, silent_start, show_uncategorized, record_recent_use,
     show_startup_animation,
     lan_port, lan_secret,
@@ -638,6 +642,8 @@ async function resetSettings() {
     if (to) to.checked = false;
     const cm = document.getElementById('s-copy-mode');
     if (cm) cm.value = String(s.copy_resize_mode ?? 1);
+    const caw2 = document.getElementById('s-copy-avoid-webp');
+    if (caw2) caw2.checked = s.copy_avoid_webp === true;
     if (as) as.checked = s.auto_start === true;
     if (ss) ss.checked = s.silent_start === true;
     toggleSilentStart();

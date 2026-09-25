@@ -61,6 +61,7 @@ from . import adb_util, backup, qqnt_extract, tg_stickers, updater
 from . import sync as sync_module
 from .clipboard_util import (
     _is_animated,
+    convert_avoid_webp,
     convert_image_mode_1,
     convert_image_mode_2,
     convert_image_mode_3,
@@ -513,13 +514,17 @@ class JsApi:
             return {"ok": False, "status": "copy_failed"}
         resize_mode = int(self._cfg.get("copy_resize_mode", 1) or 0)
         resize_max = int(self._cfg.get("copy_resize_max", 200) or 200)
+        avoid_webp = bool(self._cfg.get("copy_avoid_webp", False))
         match resize_mode:
             case 1:
-                path = convert_image_mode_1(path, resize_max) or path
+                path = convert_image_mode_1(path, resize_max, avoid_webp) or path
             case 2:
                 path = convert_image_mode_2(path, resize_max) or path
             case 3:
                 path = convert_image_mode_3(path, resize_max) or path
+        # 复制微信等应用会把 WebP 当文件，故兜底把残余 WebP 转为 GIF/JPG
+        if avoid_webp:
+            path = convert_avoid_webp(path, resize_max)
         ok = copy_image_to_clipboard(path)
         if not ok:
             return {"ok": False, "status": "copy_failed"}
@@ -1234,6 +1239,7 @@ class JsApi:
             "show_uncategorized": d.get("show_uncategorized", True),
             "record_recent_use": d.get("record_recent_use", True),
             "show_startup_animation": d.get("show_startup_animation", True),
+            "copy_avoid_webp": d.get("copy_avoid_webp", False),
         }
 
     def save_settings(self, settings: dict):
@@ -1911,6 +1917,7 @@ class SettingsApi:
             "show_startup_animation": d.get("show_startup_animation", True),
             "tg_tdata_path": d.get("tg_tdata_path", ""),
             "hover_to_play": d.get("hover_to_play", False),
+            "copy_avoid_webp": d.get("copy_avoid_webp", False),
         }
 
     def _safe_refresh(self, js_function: str) -> dict:
@@ -2007,6 +2014,7 @@ class SettingsApi:
             "show_startup_animation": True,
             "tg_tdata_path": self._cfg.get("tg_tdata_path", ""),
             "hover_to_play": self._cfg.get("hover_to_play", False),
+            "copy_avoid_webp": self._cfg.get("copy_avoid_webp", False),
         }
 
     def move_window(self, dx: int, dy: int):
