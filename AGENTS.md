@@ -77,7 +77,7 @@ src/              # 主代码
     utils/       # api 桥接 + esc + renderMarkdown
     composables/ # useMemes 状态 / useDragSort 拖拽 / useContextMenu / useCollectionBuilder
     components/  # Pager/TagEditor/ImportMenu/ImportProgressOverlay/SyncOverlay/
-                 # ContextMenu/CollectionBuilder/CollectionTreeNode/UpdateDialog/SimilarImportDialog
+                 # ContextMenu/CollectionBuilder/CollectionTreeNode/UpdateDialog/SimilarImportDialog/SetupGuide
   webui/          # 前端静态文件
     vue.html      # 主窗口入口（Vue），Bottle 优先加载
     dist/ohmymeme.js # Vite 构建产物（gitignored）
@@ -309,6 +309,8 @@ tests/
 - 右键表情包 → 加入分组 → 弹窗列出当前大分组下的子分组
 
 ### 主窗口 UI/UX
+- **设置向导（SetupGuide.vue）**：`loadInitData` 后若 `state.guideOk` 为假（`get_init_data` 的 `guide_ok` = 清单 `guide == "ok"`，新装/旧版升级均未标记）则启动即 `setupGuide.show()`；启动动画遮罩 z-index 2000 更高，动画结束后自然露出。7 步流程 welcome→hotkey→autostart→gif→sync→import→done，每步「下一步」即时 `api('save_settings', {...})`（hotkey/auto_start/auto_play_gif/sync_type），import 步打开主窗口导入菜单（`@open-import-menu`→`showImportMenu`）或跳设置页；**关闭即完成**：任意关闭（ESC/遮罩/×/完成）都调 `api('complete_guide')` 写清单标记，下次启动不再弹。焦点管理复用 `rememberFocus/restoreFocus/trapTabFocus`（z-index 350，低于启动动画 2000、导入菜单 400、高于更新弹窗 300）。**`manifest.build()` 必须保留既有 `guide` 字段**——清单随导入/删除频繁重建，丢了标记向导会反复弹。重跑入口：设置页「基础设置」→「打开设置向导」（`SettingsApi.open_guide` **同步**执行：限时 5s 逐个 `evaluate_js("window.showGuide&&showGuide();")` → `self._webui.show()`，两步各用 daemon 线程 + `join(timeout)` 兜底，任一步挂起也能返回、不与随后的设置窗口关闭并发；前端成功 toast 后 `closeSettings()` 关闭设置窗，保证主窗口与向导完整可见）
+- **标题栏 logo 返回主页**：`#titlebar .logo` 点击 `goHome()`（清空搜索/标签/分组筛选 + `clearSelection` + `search()`），`onTitlebarMouseDown` 排除 `.logo` 不影响窗口拖拽
 - **折叠侧边栏分组可辨识**：`CollectionTreeNode.vue` 在折叠态（`collapsed`）以 `.tree-avatar`（26px 圆角块，取分组名首 1-2 字符，`avatarText` computed）替代统一文件夹图标，active 行高亮；展开态保持原图标
 - **功能发现性**：meme 卡左上 `.fav-btn` 心形快捷收藏（hover/active/focus-visible 显示，selectMode/sortEnabled 时隐藏，`@click.stop`+`@pointerdown.stop`，调 `JsApi.toggle_favorite` 并本地翻转 `meme.favorited` 后 `refreshCollections`）；侧边栏树行 hover 显示 `.tree-more`「⋯」按钮（展开态，`@click.stop` 发 folder-context 复用右键菜单）
 - **空状态**：`#empty` 从 kaomoji 改为 SVG 插画（`.empty-svg`）+「导入表情包」按钮（`showImportMenu`）

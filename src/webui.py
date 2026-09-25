@@ -70,6 +70,7 @@ from .clipboard_util import (
 from .config import _IMPORT_MAX_BYTES, _IMPORT_MAX_PX, get_config
 from .database import get_db
 from .manifest import build as build_manifest
+from .manifest import guide_ok, set_guide_ok
 
 logger = logging.getLogger(__name__)
 
@@ -463,7 +464,13 @@ class JsApi:
             "collections": collections,
             "show_startup_animation": self._cfg.get("show_startup_animation", True),
             "startup_bg_color": _STARTUP_BG_COLOR,
+            "guide_ok": guide_ok(),
         }
+
+    def complete_guide(self) -> dict:
+        """设置向导完成：写入清单 guide=ok 标记"""
+        set_guide_ok()
+        return {"ok": True}
 
     def get_meme_path(self, meme_id: int) -> str:
         """返回表情本地文件路径（供拖拽到外部应用），不存在返回空串"""
@@ -1941,6 +1948,39 @@ class SettingsApi:
         """设置窗口同步完成后刷新主窗口分组树"""
         return self._safe_refresh("refreshCollections")
 
+    def open_guide(self) -> bool:
+        """设置页入口：同步打开向导并显示主窗口。
+
+        两步各限时执行（后台线程 join 超时兜底），任一步挂起也不阻塞本方法返回，
+        避免前端 Promise 永不 resolve 表现为「按钮无响应」。同步执行保证与随后的
+        设置窗口关闭不并发，防止窗口操作竞态导致 UI 冻结。
+        """
+        win = getattr(self._webui, "_window", None)
+        if win is None:
+            return False
+
+        def _call(fn, name: str, timeout: float = 5.0) -> bool:
+            box: dict = {}
+
+            def _run():
+                try:
+                    box["ok"] = fn()
+                except Exception as e:
+                    logger.warning("open_guide %s failed: %s", name, e)
+                    box["ok"] = False
+
+            t = threading.Thread(target=_run, daemon=True)
+            t.start()
+            t.join(timeout)
+            if t.is_alive():
+                logger.warning("open_guide %s timed out (%ss)", name, timeout)
+                return False
+            return box.get("ok", False) is not False
+
+        ok = _call(lambda: win.evaluate_js("window.showGuide && showGuide();"), "eval")
+        _call(self._webui.show, "show")
+        return ok
+
     def save_settings(self, settings: dict):
         if isinstance(settings, dict):
             if "auto_start" in settings:
@@ -2802,7 +2842,6 @@ def _import_job_worker(webui, files, names, make_collection, folder_name, my_tok
             if collection_id > 0:
                 for mid in ids:
                     db.add_to_collection(mid, collection_id)
-                from .manifest import build as build_manifest
 
                 build_manifest()
         _set_import_job_current(

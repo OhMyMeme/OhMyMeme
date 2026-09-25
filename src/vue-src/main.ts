@@ -11,6 +11,7 @@ declare global {
     refreshTags: () => void
     refreshCollections: () => void
     showLanDeviceConfirm: (device: any) => void
+    showGuide: () => void
   }
 }
 

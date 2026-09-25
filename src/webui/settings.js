@@ -623,6 +623,24 @@ async function saveSettings() {
   _settingsDirty = false;
 }
 
+// 打开设置向导：聚焦主窗口并显示向导覆盖层；成功后关闭设置窗口保证主窗口可见
+async function openSetupGuide() {
+  try {
+    const ok = await api('open_guide');
+    if (ok === true) {
+      showToast('已在主窗口打开设置向导');
+      closeSettings();
+    } else if (ok === false) {
+      showToast('打开向导失败');
+    } else {
+      showToast('打开向导失败：接口未就绪，请重启软件');
+    }
+  } catch (e) {
+    console.error('openSetupGuide error', e);
+    showToast('打开向导失败');
+  }
+}
+
 async function resetSettings() {
   const s = await api('reset_settings');
   if (s) {

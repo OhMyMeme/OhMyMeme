@@ -13,6 +13,7 @@ import ImportProgressOverlay from './components/ImportProgressOverlay.vue'
 import InputDialog from './components/InputDialog.vue'
 import Pager from './components/Pager.vue'
 import SimilarImportDialog from './components/SimilarImportDialog.vue'
+import SetupGuide from './components/SetupGuide.vue'
 import SyncOverlay from './components/SyncOverlay.vue'
 import TagEditor from './components/TagEditor.vue'
 import UpdateDialog from './components/UpdateDialog.vue'
@@ -26,6 +27,11 @@ const updateDialog = ref<InstanceType<typeof UpdateDialog> | null>(null)
 const inputDialog = ref<InstanceType<typeof InputDialog> | null>(null)
 const confirmDialog = ref<InstanceType<typeof ConfirmDialog> | null>(null)
 const similarImportDialog = ref<InstanceType<typeof SimilarImportDialog> | null>(null)
+const setupGuide = ref<InstanceType<typeof SetupGuide> | null>(null)
+
+function showSetupGuide() {
+  setupGuide.value?.show()
+}
 
 // 统一确认对话框（替代原生 confirm，风格与重构主题一致）
 async function confirmAsk(title: string, message: string): Promise<boolean> {
@@ -95,6 +101,8 @@ onMounted(() => {
   window.refreshMemes = () => { search() }
   window.refreshTags = refreshTags
   window.refreshCollections = refreshCollections
+  // 设置页「设置向导」按钮入口（SettingsApi.open_guide 调用）
+  window.showGuide = showSetupGuide
 })
 // 网格列数由 CSS repeat(auto-fill, minmax(112px, 1fr)) 随容器宽度自适应
 
@@ -209,6 +217,15 @@ function clearSearch() {
   search()
 }
 
+// 点击标题栏 logo 返回主页：清空搜索/标签/分组筛选
+function goHome() {
+  setSearch('')
+  state.activeTags.clear()
+  state.activeCollection = null
+  clearSelection()
+  search()
+}
+
 let searchTimer: ReturnType<typeof setTimeout>
 function debounceSearch() {
   clearTimeout(searchTimer)
@@ -284,7 +301,7 @@ function hideWindow() {
 
 async function onTitlebarMouseDown(e: MouseEvent) {
   if (e.button !== 0) return
-  if ((e.target as HTMLElement).closest('.title-btn') || (e.target as HTMLElement).closest('.icon-btn') || (e.target as HTMLElement).closest('.sidebar-toggle')) return
+  if ((e.target as HTMLElement).closest('.title-btn') || (e.target as HTMLElement).closest('.icon-btn') || (e.target as HTMLElement).closest('.sidebar-toggle') || (e.target as HTMLElement).closest('.logo')) return
   try {
     const gen = dragGeneration
     const nativeDrag = await window.pywebview?.api?.start_window_drag(e.button + 1, e.screenX, e.screenY)
@@ -898,6 +915,8 @@ onUnmounted(() => {
 
 ;(async () => {
   await loadInitData()
+  // 清单无 guide=ok（新装或旧版升级）时启动即弹设置向导；启动动画遮罩 z-index 更高，动画结束后自然露出
+  if (!state.guideOk) setupGuide.value?.show()
   // 动画开启时：播放期间即加载后续内容（动画天然覆盖桥接稳定时间），去除 300ms 延时；
   // 动画关闭时：不播放动画，降级为 300ms 延时
   const runBackground = async () => {
@@ -928,7 +947,7 @@ onUnmounted(() => {
   <div id="app">
     <header id="titlebar" @mousedown="onTitlebarMouseDown">
       <div class="titlebar__left">
-        <div class="logo">OhMy<span>Meme</span></div>
+        <div class="logo" title="返回主页" @click="goHome">OhMy<span>Meme</span></div>
       </div>
       <span class="spacer"></span>
       <div class="titlebar__actions">
@@ -1122,6 +1141,7 @@ onUnmounted(() => {
   <InputDialog ref="inputDialog" />
   <ConfirmDialog ref="confirmDialog" />
   <SimilarImportDialog ref="similarImportDialog" />
+  <SetupGuide ref="setupGuide" @open-import-menu="showImportMenu" />
   <ContextMenu
     :visible="ctx.visible.value" :x="ctx.x.value" :y="ctx.y.value"
     :items="ctx.items.value" :trigger="ctx.trigger.value"

@@ -18,6 +18,7 @@ const state = reactive({
   loading: false,
   showStartupAnimation: true,
   startupBgColor: '#000000',
+  guideOk: true,
 })
 
 let searchGen = 0
@@ -41,6 +42,7 @@ export function useMemes() {
       state.pageCount = Math.max(1, Math.ceil(state.total / MEME_PAGE))
       state.showStartupAnimation = data.show_startup_animation !== false
       state.startupBgColor = data.startup_bg_color || '#000000'
+      state.guideOk = data.guide_ok !== false
     }
   }
 

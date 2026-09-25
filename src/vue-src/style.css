@@ -78,6 +78,8 @@ body {
   letter-spacing: -0.02em;
   margin-left: 4px;
   font-feature-settings: "cv11", "ss01";
+  cursor: pointer;
+  user-select: none;
 }
 
 #titlebar .logo span {
