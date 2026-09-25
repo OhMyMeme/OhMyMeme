@@ -57,7 +57,7 @@ try:
 except ImportError:
     HAS_BOTTLE = False
 
-from . import adb_util, backup, qqnt_extract, tg_stickers, updater
+from . import adb_util, ai_tagging, backup, qqnt_extract, tg_stickers, updater
 from . import sync as sync_module
 from .clipboard_util import (
     _is_animated,
@@ -68,7 +68,7 @@ from .clipboard_util import (
     copy_image_to_clipboard,
 )
 from .config import _IMPORT_MAX_BYTES, _IMPORT_MAX_PX, get_config
-from .database import get_db
+from .database import _load_json_list, get_db
 from .manifest import build as build_manifest
 
 logger = logging.getLogger(__name__)
@@ -287,15 +287,31 @@ class JsApi:
     def search_memes(
         self, keyword="", tags=None, collection_id=None, offset=0, limit=200
     ):
-        """搜索表情，支持 offset/limit 分页"""
+        """搜索表情，支持 offset/limit 分页
+
+        语义检索：开了 AI 且库中有向量、且有关键词时，优先按含义检索；
+        嵌入未配置/无向量/调用失败一律静默回退原有关键字搜索，保证
+        未启用 AI 的用户行为完全不变。
+        """
         if tags is not None and len(tags) == 0:
             tags = None
         fav_only = collection_id == -2
         recent_only = collection_id == -3
         uncategorized = collection_id == -4
         cid = None if (fav_only or recent_only or uncategorized) else collection_id
+        semantic_ids = None
+        if keyword and not recent_only:
+            semantic_ids = self._semantic_search_ids(
+                keyword, tags, cid, fav_only, uncategorized
+            )
         if recent_only:
             rows = self._db.get_recent(limit, offset)
+        elif semantic_ids is not None:
+            # 语义命中的 id 已按相似度排好序，取当前页切片再装配
+            page_ids = semantic_ids[offset : offset + limit]
+            rows = self._db.get_by_ids(page_ids)
+            order = {mid: i for i, mid in enumerate(page_ids)}
+            rows.sort(key=lambda r: order.get(int(r["id"]), 0))
         else:
             if cid is not None and cid > 0:
                 cid = self._get_collection_ids_recursive(cid)
@@ -347,12 +363,81 @@ class JsApi:
                     "favorited": r["id"] in favorited_ids,
                     "auto_play_gif": auto_gif,
                     "hover_to_play": hover_play,
+                    "ai_status": r.get("ai_status"),
                 }
             )
         return result
 
+    def _semantic_search_ids(self, keyword, tags, cid, fav_only, uncategorized):
+        """语义检索：返回按相似度降序的 meme id 列表；不可用时返回 None
+
+        返回 None 表示「走原有关键字路径」——包括未开 AI、未配嵌入、
+        库中没有向量、嵌入调用失败等所有情况。调用方据此回退，
+        保证语义能力是增强而非替代。
+        """
+        cfg = self._cfg
+        if not cfg.get("ai_enabled") or not cfg.get("ai_embed_enabled"):
+            return None
+        endpoint = cfg.get("ai_embed_endpoint", "") or ""
+        model = cfg.get("ai_embed_model", "") or ""
+        if not endpoint or not model:
+            return None
+        scope_cid = cid
+        if scope_cid is not None and scope_cid > 0:
+            scope_cid = self._get_collection_ids_recursive(scope_cid)
+        try:
+            query_vec = _query_embedding(
+                endpoint, cfg.get("ai_embed_api_key", "") or "", model, keyword
+            )
+            if not query_vec:
+                return None
+            vec_rows = self._db.get_embedding_rows()
+            if not vec_rows:
+                return None
+            pairs = []
+            for r in vec_rows:
+                vec = ai_tagging.unpack_vector(
+                    r.get("embedding"), r.get("embedding_dim")
+                )
+                if vec:
+                    pairs.append((int(r["id"]), vec))
+            if not pairs:
+                return None
+            # 先在当前视图范围内过滤，再排序取前 k：若先取全局 top_k 再过滤，
+            # 在某分组内搜索时这 k 条可能全在分组外，过滤后为空会导致语义
+            # 检索在该视图中静默失效（回退关键字）。
+            allowed = set(
+                self._db.filter_ids_by_scope(
+                    [mid for mid, _vec in pairs],
+                    tags=tags,
+                    collection_id=scope_cid,
+                    favorite_only=fav_only,
+                    uncategorized_only=uncategorized,
+                )
+            )
+            if not allowed:
+                return None
+            pairs = [(mid, vec) for mid, vec in pairs if mid in allowed]
+            top_k = max(1, int(cfg.get("ai_embed_top_k", 30) or 30))
+            min_score = _embed_min_score(cfg)
+            ranked = ai_tagging.cosine_topk(query_vec, pairs, top_k)
+            # 最低相似度过滤：低于阈值的候选按不相关丢弃，否则库里只有几十条时
+            # top_k=30 相当于把半个库当结果返回，不相关项必然混入。top_k 仍是
+            # 上限，真正的返回条数由「实际相关数」决定。
+            ranked = [(mid, score) for mid, score in ranked if score >= min_score]
+            if not ranked:
+                # 一个都不够相关时回退关键字搜索，避免语义冷门词变成空结果页
+                return None
+            return [mid for mid, _score in ranked]
+        except Exception as e:
+            logger.warning("语义检索失败，回退关键字搜索: %s", e)
+            return None
+
     def count_memes(self, keyword="", tags=None, collection_id=None) -> int:
-        """统计符合搜索条件（关键字/标签/分组/收藏/最近使用）的表情总数，供分页"""
+        """统计符合搜索条件（关键字/标签/分组/收藏/最近使用）的表情总数，供分页
+
+        语义检索生效时以语义命中数为准，否则前端分页会与实际结果对不上。
+        """
         if tags is not None and len(tags) == 0:
             tags = None
         fav_only = collection_id == -2
@@ -361,6 +446,12 @@ class JsApi:
         if recent_only:
             return self._db.count_recent()
         cid = None if (fav_only or recent_only or uncategorized) else collection_id
+        if keyword and not recent_only:
+            semantic_ids = self._semantic_search_ids(
+                keyword, tags, cid, fav_only, uncategorized
+            )
+            if semantic_ids is not None:
+                return len(semantic_ids)
         if cid is not None and cid > 0:
             cid = self._get_collection_ids_recursive(cid)
         return self._db.count(
@@ -442,6 +533,7 @@ class JsApi:
                     "favorited": r["id"] in favorited_ids,
                     "auto_play_gif": auto_gif,
                     "hover_to_play": hover_play,
+                    "ai_status": r.get("ai_status"),
                 }
             )
         sys_cols = [
@@ -1194,6 +1286,59 @@ class JsApi:
 
         lan.confirm_device(bool(approved))
         return {"ok": True}
+
+    # --- AI 智能（主窗口入口；实现集中在模块级函数与 SettingsApi）---
+
+    def ai_summary(self) -> dict:
+        """AI 概览：统计 + 待审核建议 id，供主窗口角标"""
+        return get_ai_summary()
+
+    def ai_get_settings(self) -> dict:
+        """AI 开关状态（主窗口据总开关决定是否显示入口）
+
+        只回传开关布尔值，不下发 api_key 等密钥：主窗口并不需要它们，
+        而 webview 桥的返回值对页面脚本可见，透传全量配置等于把已解密的
+        密钥暴露给主窗口。设置页回填走 SettingsApi.ai_get_settings 独立通道。
+        """
+        s = self._webui._settings_api.ai_get_settings().get("settings") or {}
+        return {
+            "ok": True,
+            "settings": {
+                "ai_enabled": bool(s.get("ai_enabled")),
+                "ai_tag_enabled": bool(s.get("ai_tag_enabled")),
+                "ai_embed_enabled": bool(s.get("ai_embed_enabled")),
+            },
+        }
+
+    def ai_tag_start(self, meme_ids=None) -> dict:
+        """开始打标；不传表示处理全部待打标"""
+        return self._webui._settings_api.ai_tag_start(meme_ids)
+
+    def ai_tag_get_progress(self) -> dict:
+        return get_ai_tag_progress()
+
+    def ai_tag_cancel(self) -> dict:
+        return ai_tag_cancel()
+
+    def ai_tag_retry_failed(self) -> dict:
+        return self._webui._settings_api.ai_tag_retry_failed()
+
+    def ai_review_items(self, limit: int = 0) -> dict:
+        """待审核建议列表（含各表情已有标签）"""
+        return get_ai_review_items(limit)
+
+    def ai_detail(self, meme_id: int) -> dict:
+        """某表情的 AI 解读（主窗口右键「查看 AI 解读」）"""
+        return get_ai_detail(meme_id)
+
+    def ai_tag_apply(self, meme_id: int, payload: dict = None) -> dict:
+        return self._webui._settings_api.ai_tag_apply(meme_id, payload)
+
+    def ai_tag_apply_all(self) -> dict:
+        return self._webui._settings_api.ai_tag_apply_all()
+
+    def ai_tag_discard(self, meme_ids=None) -> dict:
+        return self._webui._settings_api.ai_tag_discard(meme_ids)
 
     def get_settings(self) -> dict:
         d = self._cfg.to_dict()
@@ -2061,6 +2206,146 @@ class SettingsApi:
         adb_util.start_qq_import()
         return {"ok": True}
 
+    # ~~~ AI 打标 / 嵌入 ~~~
+
+    def ai_get_settings(self) -> dict:
+        """回传全部 ai_* 配置（密钥已解密），供设置页回填"""
+        keys = [k for k in self._cfg.DEFAULTS if k.startswith("ai_")]
+        return {"ok": True, "settings": {k: self._cfg.get(k) for k in keys}}
+
+    def ai_tag_test_connection(self) -> dict:
+        """用极小图测试视觉端点连通性（区分未配置/网络/鉴权/模型错误）"""
+        cfg = self._cfg
+        endpoint = cfg.get("ai_tag_endpoint", "") or ""
+        model = cfg.get("ai_tag_model", "") or ""
+        if not endpoint or not model:
+            return {"ok": False, "error": "请先填写端点与模型名"}
+        try:
+            prompt = ai_tagging.build_prompt([{"filename": "test"}])
+            # 32x32 纯色 PNG：足够小以免浪费额度，又满足拒收 1x1 的视觉服务
+            tiny = _AI_TEST_IMAGE
+            ai_tagging.call_vision(
+                endpoint,
+                cfg.get("ai_tag_api_key", "") or "",
+                model,
+                prompt,
+                [tiny],
+                max(5, int(cfg.get("ai_tag_timeout", 30) or 30)),
+            )
+            return {"ok": True, "message": "连接成功"}
+        except Exception as e:
+            return {"ok": False, "error": str(e)}
+
+    def ai_tag_start(self, meme_ids=None) -> dict:
+        """开始打标（不传 meme_ids 表示处理全部待打标）"""
+        if not self._cfg.get("ai_enabled"):
+            return {"ok": False, "error": "AI 功能未启用"}
+        return start_ai_tag_job(self._webui, meme_ids)
+
+    def ai_tag_get_progress(self) -> dict:
+        return get_ai_tag_progress()
+
+    def ai_tag_cancel(self) -> dict:
+        return ai_tag_cancel()
+
+    def ai_tag_retry_failed(self) -> dict:
+        """只看失败项：把 failed 重置为待处理后重新入队"""
+        db = get_db()
+        ids = db.list_ai_failed_ids()
+        if not ids:
+            return {"ok": False, "error": "没有失败的打标记录"}
+        if self._cfg.get("ai_tag_review_mode", True):
+            db.clear_ai_error(ids)
+        return start_ai_tag_job(self._webui, ids)
+
+    def ai_tag_suggestions(self, limit: int = 0) -> dict:
+        """取待审核建议（审核模式）"""
+        db = get_db()
+        return {"ok": True, "items": db.list_ai_suggestions(limit)}
+
+    def ai_review_items(self, limit: int = 0) -> dict:
+        """审核用建议列表（含各表情已有标签；设置窗口与主窗口共用同一契约）"""
+        return get_ai_review_items(limit)
+
+    def ai_tag_apply(self, meme_id: int, payload: dict = None) -> dict:
+        """应用单条建议（用户审核确认后调用）"""
+        db = get_db()
+        if payload is None:
+            items = db.list_ai_suggestions()
+            payload = next((i for i in items if i["meme_id"] == int(meme_id)), None)
+        if not payload:
+            return {"ok": False, "error": "未找到该表情的建议"}
+        try:
+            db.apply_ai_result(int(meme_id), payload)
+        except Exception as e:
+            return {"ok": False, "error": str(e)}
+        _notify_main_ai_badges()
+        return {"ok": True}
+
+    def ai_tag_apply_all(self) -> dict:
+        """应用全部待审核建议"""
+        db = get_db()
+        items = db.list_ai_suggestions()
+        applied = 0
+        failed = 0
+        for item in items:
+            try:
+                db.apply_ai_result(item["meme_id"], item)
+                applied += 1
+            except Exception as e:
+                logger.warning("apply suggestion failed %s: %s", item["meme_id"], e)
+                failed += 1
+        _notify_main_ai_badges()
+        return {"ok": True, "applied": applied, "failed": failed}
+
+    def ai_tag_discard(self, meme_ids=None) -> dict:
+        """丢弃建议（不写库）"""
+        db = get_db()
+        n = db.discard_ai_suggestions(meme_ids)
+        _notify_main_ai_badges()
+        return {"ok": True, "discarded": n}
+
+    def ai_get_stats(self) -> dict:
+        """AI 统计（打标各状态 + 待审核 + 向量）"""
+        db = get_db()
+        stats = db.ai_stats()
+        stats.update(db.embed_stats())
+        return {"ok": True, "stats": stats}
+
+    def ai_embed_test_connection(self) -> dict:
+        """测试嵌入端点连通性"""
+        cfg = self._cfg
+        endpoint = cfg.get("ai_embed_endpoint", "") or ""
+        model = cfg.get("ai_embed_model", "") or ""
+        if not endpoint or not model:
+            return {"ok": False, "error": "请先填写端点与模型名"}
+        try:
+            vecs = ai_tagging.embed_texts(
+                endpoint, cfg.get("ai_embed_api_key", "") or "", model, ["测试"]
+            )
+            if not vecs:
+                return {"ok": False, "error": "端点未返回向量"}
+            return {"ok": True, "message": "连接成功（维度 %d）" % len(vecs[0])}
+        except Exception as e:
+            return {"ok": False, "error": str(e)}
+
+    def ai_embed_start(self, meme_ids=None) -> dict:
+        if not self._cfg.get("ai_enabled"):
+            return {"ok": False, "error": "AI 功能未启用"}
+        return start_ai_embed_job(self._webui, meme_ids)
+
+    def ai_embed_get_progress(self) -> dict:
+        return get_ai_embed_progress()
+
+    def ai_embed_cancel(self) -> dict:
+        return ai_embed_cancel()
+
+    def ai_embed_rebuild(self, model: str = None) -> dict:
+        """换模型后清空旧向量（不触发重新生成，调用方需接 ai_embed_start）"""
+        db = get_db()
+        cleared = db.clear_embeddings(model)
+        return {"ok": True, "cleared": cleared}
+
     def get_qq_import_progress(self) -> dict:
         return adb_util.get_qq_progress()
 
@@ -2728,6 +3013,56 @@ def get_import_progress() -> dict:
         return dict(_IMPORT_JOB_STATE)
 
 
+# ~~~ 语义检索：查询向量缓存 ~~~（避免同词反复调用嵌入接口，省额度降延迟）
+_QUERY_VEC_CACHE = {}
+_QUERY_VEC_CACHE_MAX = 64
+_QUERY_VEC_LOCK = threading.Lock()
+
+# 最低相似度默认值（绝对下界）：实测 text-embedding-3-small 在本机 54 条库上
+# 成对余弦中位 0.505、最低 0.287，各条目身最近邻最低 0.551。0.35 取得偏保守
+# ——刻意低于「真相关项」的分数带，只当噪声地板用（不同模型的分数分布差异很
+# 大，阈值过硬会误杀相关项，故只作默认值、可经 ai_embed_min_score 调整）。
+_DEFAULT_EMBED_MIN_SCORE = 0.35
+
+
+def _embed_min_score(cfg):
+    """取最低相似度阈值（非法值退回默认，允许调低到 0 以关闭过滤）"""
+    try:
+        val = float(cfg.get("ai_embed_min_score", _DEFAULT_EMBED_MIN_SCORE))
+    except (TypeError, ValueError):
+        return _DEFAULT_EMBED_MIN_SCORE
+    if val < 0:
+        return _DEFAULT_EMBED_MIN_SCORE
+    return val
+
+
+def _query_embedding(endpoint, api_key, model, keyword):
+    """取查询文本的归一化向量（带进程内小缓存；失败返回空列表由调用方回退）"""
+    text = (keyword or "").strip()
+    if not text:
+        return []
+    key = (endpoint, model, text)
+    with _QUERY_VEC_LOCK:
+        hit = _QUERY_VEC_CACHE.get(key)
+    if hit is not None:
+        return hit
+    try:
+        vecs = ai_tagging.embed_texts(endpoint, api_key, model, [text])
+    except Exception as e:
+        logger.warning("查询向量生成失败: %s", e)
+        return []
+    if not vecs:
+        return []
+    vec = ai_tagging.l2_normalize(vecs[0])
+    with _QUERY_VEC_LOCK:
+        if len(_QUERY_VEC_CACHE) >= _QUERY_VEC_CACHE_MAX:
+            # 简单的容量控制：清掉最早插入的一批，避免无限增长
+            for k in list(_QUERY_VEC_CACHE.keys())[: _QUERY_VEC_CACHE_MAX // 2]:
+                _QUERY_VEC_CACHE.pop(k, None)
+        _QUERY_VEC_CACHE[key] = vec
+    return vec
+
+
 def cancel_import_job():
     global _IMPORT_JOB_CANCEL
     with _IMPORT_JOB_LOCK:
@@ -2823,6 +3158,475 @@ def _import_job_worker(webui, files, names, make_collection, folder_name, my_tok
         with _IMPORT_JOB_LOCK:
             if _IMPORT_JOB_STATE.get("token") == my_token:
                 _IMPORT_JOB_CANCEL = False
+
+
+# ~~~ AI 打标 / 嵌入 后台任务状态 ~~~（与 _IMPORT_JOB_STATE 同模式：token 代次隔离）
+_AI_TAG_STATE = {
+    "status": "idle",  # idle|running|done|error|cancelled
+    "progress": 0,
+    "message": "",
+    "current": "",
+    "done": 0,
+    "total": 0,
+    "suggested": 0,  # 已产出建议数（审核模式）或已应用数
+    "failed": 0,
+    "error": "",
+    "token": None,
+}
+_AI_EMBED_STATE = {
+    "status": "idle",
+    "progress": 0,
+    "message": "",
+    "done": 0,
+    "total": 0,
+    "embedded": 0,
+    "failed": 0,
+    "error": "",
+    "token": None,
+}
+_AI_LOCK = threading.Lock()
+_AI_TAG_CANCEL = False
+_AI_EMBED_CANCEL = False
+
+
+def _notify_main_ai_badges():
+    """打标/嵌入结束后通知主窗口刷新 AI 角标（主窗口未开或未定义时静默跳过）"""
+    js = "window.refreshAiBadges && window.refreshAiBadges();"
+    try:
+        if len(webview.windows) > 0:
+            webview.windows[0].evaluate_js(js)
+    except Exception:
+        logger.debug("refreshAiBadges 调用失败", exc_info=True)
+
+
+# 连通性测试用极小图（32x32 纯色 PNG）。不用 1x1 占位是因其会被部分视觉服务拒收。
+# base64 必须是完整 PNG（IHDR + IDAT + IEND 齐全），否则网关会回
+# INVALID_ARGUMENT: Unable to process input image
+_AI_TEST_IMAGE = (
+    "data:image/png;base64,"
+    "iVBORw0KGgoAAAANSUhEUgAAACAAAAAgCAIAAAD8GO2jAAAAKElEQVR42u3NQQEAAAQEMCS/6Erw"
+    "2wqsk9SnqWcCgUAgEAgEAoHgygK+PQHAs0oJIwAAAABJRU5ErkJggg=="
+)
+
+
+def _set_ai_state(state, my_token=None, **kw):
+    """更新 AI 任务状态；给定 token 时仅当代次匹配才写入（旧 worker 不污染新任务）"""
+    with _AI_LOCK:
+        if my_token is not None and state.get("token") != my_token:
+            return False
+        state.update(**kw)
+        return True
+
+
+def get_ai_tag_progress():
+    """打标进度（前端轮询）"""
+    with _AI_LOCK:
+        return dict(_AI_TAG_STATE)
+
+
+def get_ai_embed_progress():
+    """嵌入进度（前端轮询）"""
+    with _AI_LOCK:
+        return dict(_AI_EMBED_STATE)
+
+
+def get_ai_review_items(limit=0):
+    """审核用建议列表：附上各表情已有标签（供弹窗只读展示，避免逐条往返）"""
+    db = get_db()
+    items = db.list_ai_suggestions(limit)
+    for it in items:
+        try:
+            it["existing_tags"] = db.get_meme_tags(it["meme_id"]) or []
+        except Exception:
+            it["existing_tags"] = []
+    return {"ok": True, "items": items}
+
+
+def get_ai_summary():
+    """AI 概览：统计 + 待审核建议（供角标与设置页首屏一次取齐）"""
+    db = get_db()
+    stats = db.ai_stats()
+    stats.update(db.embed_stats())
+    return {
+        "ok": True,
+        "stats": stats,
+        "pending_review": int(stats.get("pending_review", 0) or 0),
+        "pending_ids": [it["meme_id"] for it in db.list_ai_suggestions()],
+    }
+
+
+def get_ai_detail(meme_id):
+    """某表情的 AI 解读（含人工标签，供弹窗对比展示）"""
+    db = get_db()
+    conn = db._get_conn()
+    row = conn.execute(
+        "SELECT ai_name, ai_description, ai_visible_text, ai_emotions, "
+        "ai_intents, ai_status, ai_error, ai_provider, ai_analyzed_at "
+        "FROM memes WHERE id=?",
+        (int(meme_id),),
+    ).fetchone()
+    if row is None:
+        return {"ok": False, "error": "表情不存在"}
+    data = dict(row)
+    return {
+        "ok": True,
+        "detail": {
+            "name": data.get("ai_name") or "",
+            "description": data.get("ai_description") or "",
+            "visible_text": data.get("ai_visible_text") or "",
+            "emotions": _load_json_list(data.get("ai_emotions")),
+            "intents": _load_json_list(data.get("ai_intents")),
+            "status": data.get("ai_status"),
+            "error": data.get("ai_error") or "",
+            "provider": data.get("ai_provider") or "",
+            "analyzed_at": data.get("ai_analyzed_at") or "",
+            "tags": db.get_meme_tags(int(meme_id)) or [],
+        },
+    }
+
+
+def ai_tag_cancel():
+    """请求取消打标任务"""
+    global _AI_TAG_CANCEL
+    with _AI_LOCK:
+        if _AI_TAG_STATE["status"] != "running":
+            return {"ok": False, "error": "没有正在进行的打标任务"}
+        _AI_TAG_CANCEL = True
+    return {"ok": True}
+
+
+def ai_embed_cancel():
+    """请求取消嵌入任务"""
+    global _AI_EMBED_CANCEL
+    with _AI_LOCK:
+        if _AI_EMBED_STATE["status"] != "running":
+            return {"ok": False, "error": "没有正在进行的嵌入任务"}
+        _AI_EMBED_CANCEL = True
+    return {"ok": True}
+
+
+def _ai_tag_worker(webui, meme_ids, my_token):
+    """后台执行 AI 打标：分批送图 -> 解析 -> 暂存建议（审核模式不写库）"""
+    global _AI_TAG_CANCEL
+    cfg = get_config()
+    db = get_db()
+    review = bool(cfg.get("ai_tag_review_mode", True))
+    batch_size = max(1, int(cfg.get("ai_tag_batch_size", 4) or 4))
+    max_edge = max(128, int(cfg.get("ai_tag_max_edge", 1024) or 1024))
+    timeout = max(5, int(cfg.get("ai_tag_timeout", 30) or 30))
+    style = cfg.get("ai_tag_style", "general") or "general"
+    endpoint = cfg.get("ai_tag_endpoint", "") or ""
+    api_key = cfg.get("ai_tag_api_key", "") or ""
+    model = cfg.get("ai_tag_model", "") or ""
+
+    try:
+        if not endpoint or not model:
+            _set_ai_state(
+                _AI_TAG_STATE, my_token, status="error", error="未配置 AI 端点或模型"
+            )
+            return
+        if meme_ids:
+            rows = [{"id": i} for i in meme_ids]
+        else:
+            rows = db.list_ai_pending()
+        # 补文件名并按实际存在的文件过滤（文件缺失的图直接标记失败，不占批次）
+        items = []
+        missing = []
+        for r in rows:
+            rec = db.get_by_id(r["id"]) if not r.get("filename") else r
+            fname = (rec or {}).get("filename") or ""
+            path = webui._find_meme_file(fname) if fname else ""
+            if not path:
+                missing.append(r["id"])
+                continue
+            items.append({"id": r["id"], "filename": fname, "path": path})
+        if missing:
+            db.mark_ai_failed(missing, "找不到图片文件")
+        total = len(items)
+        _set_ai_state(
+            _AI_TAG_STATE,
+            my_token,
+            total=total,
+            failed=len(missing),
+            message="开始打标",
+        )
+        if total == 0:
+            _set_ai_state(
+                _AI_TAG_STATE,
+                my_token,
+                status="done",
+                progress=100,
+                message="没有待打标的表情",
+            )
+            return
+        db.mark_ai_running([it["id"] for it in items])
+        done = 0
+        suggested = 0
+        failed = len(missing)
+        for start in range(0, total, batch_size):
+            with _AI_LOCK:
+                if _AI_TAG_CANCEL or _AI_TAG_STATE.get("token") != my_token:
+                    break
+            chunk = items[start : start + batch_size]
+            images = []
+            usable = []
+            for it in chunk:
+                try:
+                    url = ai_tagging.encode_image_for_vision(it["path"], max_edge)
+                except Exception as e:
+                    logger.warning("encode failed %s: %s", it["filename"], e)
+                    url = None
+                if url:
+                    images.append(url)
+                    usable.append(it)
+                else:
+                    # 跳过该图（GIF 解码失败等），不影响同批其他图
+                    db.mark_ai_failed([it["id"]], "图片无法解码")
+                    failed += 1
+            if usable:
+                try:
+                    prompt = ai_tagging.build_prompt(usable, style)
+                    text = ai_tagging.call_vision(
+                        endpoint, api_key, model, prompt, images, timeout
+                    )
+                    parsed = ai_tagging.parse_response(text, usable)
+                    by_index = {p["image_index"]: p for p in parsed}
+                    for pos, it in enumerate(usable):
+                        payload = by_index.get(pos + 1)
+                        if not payload:
+                            db.mark_ai_failed([it["id"]], "模型未返回该图结果")
+                            failed += 1
+                            continue
+                        payload = dict(payload)
+                        payload["provider"] = model
+                        if review:
+                            db.store_ai_suggestion(it["id"], payload)
+                        else:
+                            db.apply_ai_result(it["id"], payload)
+                        suggested += 1
+                except Exception as e:
+                    logger.warning("ai tag batch failed: %s", e)
+                    db.mark_ai_failed([it["id"] for it in usable], str(e))
+                    failed += len(usable)
+            done += len(chunk)
+            _set_ai_state(
+                _AI_TAG_STATE,
+                my_token,
+                done=done,
+                suggested=suggested,
+                failed=failed,
+                progress=int(done * 100 / total),
+                current=chunk[-1]["filename"],
+                message="已处理 %d/%d" % (done, total),
+            )
+        with _AI_LOCK:
+            cancelled = _AI_TAG_CANCEL
+        _set_ai_state(
+            _AI_TAG_STATE,
+            my_token,
+            status="cancelled" if cancelled else "done",
+            progress=100 if not cancelled else _AI_TAG_STATE.get("progress", 0),
+            message="已取消" if cancelled else "打标完成",
+        )
+    except Exception as e:
+        logger.error("ai tag job error: %s", e)
+        _set_ai_state(
+            _AI_TAG_STATE, my_token, status="error", error=str(e), message="打标失败"
+        )
+    finally:
+        with _AI_LOCK:
+            if _AI_TAG_STATE.get("token") == my_token:
+                _AI_TAG_CANCEL = False
+        _notify_main_ai_badges()
+
+
+def start_ai_tag_job(webui, meme_ids=None):
+    """启动后台打标，立即返回；前端轮询 get_ai_tag_progress()"""
+    import secrets
+
+    global _AI_TAG_CANCEL
+    with _AI_LOCK:
+        if _AI_TAG_STATE["status"] == "running":
+            return {"ok": False, "error": "已有打标任务在进行"}
+        token = secrets.token_hex(6)
+        _AI_TAG_CANCEL = False
+        _AI_TAG_STATE.update(
+            token=token,
+            status="running",
+            progress=0,
+            message="准备中",
+            current="",
+            done=0,
+            total=0,
+            suggested=0,
+            failed=0,
+            error="",
+        )
+    threading.Thread(
+        target=_ai_tag_worker,
+        args=(webui, list(meme_ids or []), token),
+        daemon=True,
+    ).start()
+    return {"ok": True}
+
+
+def _embed_text_of(db, meme_id):
+    """取某表情的嵌入源文本（含其全部标签，人工标签也是强语义信号）"""
+    conn = db._get_conn()
+    row = conn.execute(
+        "SELECT ai_name, ai_description, ai_visible_text, ai_emotions, ai_intents "
+        "FROM memes WHERE id=?",
+        (meme_id,),
+    ).fetchone()
+    if row is None:
+        return ""
+    data = dict(row)
+    data["tags"] = db.get_meme_tags(meme_id)
+    return ai_tagging.build_embed_text(data)
+
+
+def _ai_embed_worker(webui, meme_ids, my_token):
+    """后台生成向量：按 hash 幂等跳过未变者，批量调用嵌入接口"""
+    global _AI_EMBED_CANCEL
+    cfg = get_config()
+    db = get_db()
+    batch_size = max(1, int(cfg.get("ai_embed_batch_size", 32) or 32))
+    endpoint = cfg.get("ai_embed_endpoint", "") or ""
+    api_key = cfg.get("ai_embed_api_key", "") or ""
+    model = cfg.get("ai_embed_model", "") or ""
+
+    try:
+        if not endpoint or not model:
+            _set_ai_state(
+                _AI_EMBED_STATE, my_token, status="error", error="未配置嵌入端点或模型"
+            )
+            return
+        rows = db.list_embed_pending()
+        if meme_ids:
+            wanted = {int(i) for i in meme_ids}
+            rows = [r for r in rows if r["id"] in wanted]
+        # 幂等：源文本未变的跳过（这是省钱的关键）
+        todo = []
+        skipped = 0
+        for r in rows:
+            text = _embed_text_of(db, r["id"])
+            if not text:
+                skipped += 1
+                continue
+            h = ai_tagging.text_hash(text)
+            if r.get("embedding_text_hash") == h and r.get("embedding") is not None:
+                skipped += 1
+                continue
+            todo.append((r["id"], text, h))
+        total = len(todo)
+        _set_ai_state(_AI_EMBED_STATE, my_token, total=total, message="开始生成向量")
+        if total == 0:
+            _set_ai_state(
+                _AI_EMBED_STATE,
+                my_token,
+                status="done",
+                progress=100,
+                message="没有需要生成向量的表情",
+            )
+            return
+        done = 0
+        embedded = 0
+        failed = 0
+        for start in range(0, total, batch_size):
+            with _AI_LOCK:
+                if _AI_EMBED_CANCEL or _AI_EMBED_STATE.get("token") != my_token:
+                    break
+            chunk = todo[start : start + batch_size]
+            try:
+                vecs = ai_tagging.embed_texts(
+                    endpoint, api_key, model, [c[1] for c in chunk]
+                )
+            except Exception as e:
+                logger.warning("embed batch failed: %s", e)
+                failed += len(chunk)
+                done += len(chunk)
+                _set_ai_state(
+                    _AI_EMBED_STATE,
+                    my_token,
+                    done=done,
+                    embedded=embedded,
+                    failed=failed,
+                    progress=int(done * 100 / total),
+                    message="已处理 %d/%d" % (done, total),
+                )
+                continue
+            for (mid, _text, h), vec in zip(chunk, vecs):
+                try:
+                    norm = ai_tagging.l2_normalize(vec)
+                    db.apply_embedding(
+                        mid, ai_tagging.pack_vector(norm), model, len(norm), h
+                    )
+                    embedded += 1
+                except Exception as e:
+                    logger.warning("apply embedding failed %s: %s", mid, e)
+                    failed += 1
+            done += len(chunk)
+            _set_ai_state(
+                _AI_EMBED_STATE,
+                my_token,
+                done=done,
+                embedded=embedded,
+                failed=failed,
+                progress=int(done * 100 / total),
+                message="已处理 %d/%d" % (done, total),
+            )
+        with _AI_LOCK:
+            cancelled = _AI_EMBED_CANCEL
+        _set_ai_state(
+            _AI_EMBED_STATE,
+            my_token,
+            status="cancelled" if cancelled else "done",
+            progress=100 if not cancelled else _AI_EMBED_STATE.get("progress", 0),
+            message="已取消" if cancelled else "向量生成完成",
+        )
+    except Exception as e:
+        logger.error("ai embed job error: %s", e)
+        _set_ai_state(
+            _AI_EMBED_STATE,
+            my_token,
+            status="error",
+            error=str(e),
+            message="向量生成失败",
+        )
+    finally:
+        with _AI_LOCK:
+            if _AI_EMBED_STATE.get("token") == my_token:
+                _AI_EMBED_CANCEL = False
+        _notify_main_ai_badges()
+
+
+def start_ai_embed_job(webui, meme_ids=None):
+    """启动后台生成向量，立即返回；前端轮询 get_ai_embed_progress()"""
+    import secrets
+
+    global _AI_EMBED_CANCEL
+    with _AI_LOCK:
+        if _AI_EMBED_STATE["status"] == "running":
+            return {"ok": False, "error": "已有向量生成任务在进行"}
+        token = secrets.token_hex(6)
+        _AI_EMBED_CANCEL = False
+        _AI_EMBED_STATE.update(
+            token=token,
+            status="running",
+            progress=0,
+            message="准备中",
+            done=0,
+            total=0,
+            embedded=0,
+            failed=0,
+            error="",
+        )
+    threading.Thread(
+        target=_ai_embed_worker,
+        args=(webui, list(meme_ids or []), token),
+        daemon=True,
+    ).start()
+    return {"ok": True}
 
 
 def start_import_job(webui, files, names, make_collection=False, folder_name=""):

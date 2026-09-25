@@ -5,6 +5,8 @@ import { useDragSort } from './composables/useDragSort'
 import { useContextMenu, type MenuItem } from './composables/useContextMenu'
 import { useCollectionBuilder, flattenCollections, type CollectionOption } from './composables/useCollectionBuilder'
 import ContextMenu from './components/ContextMenu.vue'
+import AiInfoDialog from './components/AiInfoDialog.vue'
+import AiReviewDialog from './components/AiReviewDialog.vue'
 import CollectionBuilder from './components/CollectionBuilder.vue'
 import CollectionTreeNode from './components/CollectionTreeNode.vue'
 import ConfirmDialog from './components/ConfirmDialog.vue'
@@ -26,6 +28,19 @@ const updateDialog = ref<InstanceType<typeof UpdateDialog> | null>(null)
 const inputDialog = ref<InstanceType<typeof InputDialog> | null>(null)
 const confirmDialog = ref<InstanceType<typeof ConfirmDialog> | null>(null)
 const similarImportDialog = ref<InstanceType<typeof SimilarImportDialog> | null>(null)
+const aiInfoDialog = ref<InstanceType<typeof AiInfoDialog> | null>(null)
+const aiReviewDialog = ref<InstanceType<typeof AiReviewDialog> | null>(null)
+
+// AI 状态：总开关关闭时零入口；pendingIds 是独立表 ai_suggestions 的 meme_id 集合
+const aiEnabled = ref(false)
+const aiTagEnabled = ref(false)
+const aiEmbedEnabled = ref(false)
+const aiPendingIds = ref<Set<number>>(new Set())
+const aiPendingCount = ref(0)
+// 语义检索可用时搜索框提示自然语言，否则保持原提示（避免未开 AI 的用户困惑）
+const searchPlaceholder = computed(() =>
+  aiEnabled.value && aiEmbedEnabled.value ? '搜索表情包，也可用一句话描述…' : '搜索表情包...'
+)
 
 // 统一确认对话框（替代原生 confirm，风格与重构主题一致）
 async function confirmAsk(title: string, message: string): Promise<boolean> {
@@ -95,6 +110,12 @@ onMounted(() => {
   window.refreshMemes = () => { search() }
   window.refreshTags = refreshTags
   window.refreshCollections = refreshCollections
+  // 设置页打完标/应用完建议后由后端 evaluate_js 调用，刷新角标
+  window.refreshAiBadges = async () => {
+    await loadAiSettings()
+    await refreshAiPending()
+    search(false)
+  }
 })
 // 网格列数由 CSS repeat(auto-fill, minmax(112px, 1fr)) 随容器宽度自适应
 
@@ -182,6 +203,82 @@ function showToast(msg: string) {
   el.textContent = msg
   el.classList.add('show')
   setTimeout(() => el.classList.remove('show'), 1600)
+}
+
+// ---- AI 接线 ----
+
+// 读取总开关与子开关（主窗口据总开关决定是否出现入口）
+async function loadAiSettings() {
+  try {
+    const r = await window.pywebview?.api?.ai_get_settings()
+    if (r && r.ok && r.settings) {
+      aiEnabled.value = r.settings.ai_enabled === true
+      aiTagEnabled.value = r.settings.ai_tag_enabled === true
+      aiEmbedEnabled.value = r.settings.ai_embed_enabled === true
+    }
+  } catch (_) {}
+}
+
+// 待审核建议是独立表，不是 meme 字段，故单独维护 id 集合供角标使用
+async function refreshAiPending() {
+  if (!aiEnabled.value) {
+    aiPendingIds.value = new Set()
+    aiPendingCount.value = 0
+    return
+  }
+  try {
+    const r = await window.pywebview?.api?.ai_summary()
+    if (r && r.ok) {
+      aiPendingIds.value = new Set(r.pending_ids || [])
+      aiPendingCount.value = r.pending_review || 0
+    }
+  } catch (_) {}
+}
+
+async function aiStartForMeme(memeId: number) {
+  const r = await window.pywebview?.api?.ai_tag_start([memeId])
+  if (r && r.ok) {
+    showToast('已开始 tagging')
+    aiWatchTagProgress()
+  } else {
+    showToast((r && r.error) || 'tagging 启动失败')
+  }
+}
+
+// 单张 tagging 后轮询到终态，刷新角标与卡片（search(false) 保留当前页）
+function aiWatchTagProgress() {
+  let nullCount = 0
+  const timer = setInterval(async () => {
+    const s = await window.pywebview?.api?.ai_tag_get_progress()
+    if (!s) {
+      if (++nullCount > 20) {
+        clearInterval(timer)
+        showToast('tagging 状态读取中断')
+      }
+      return
+    }
+    nullCount = 0
+    if (!s.status || s.status === 'idle' || s.status === 'running') return
+    clearInterval(timer)
+    if (s.status === 'done') {
+      showToast('tagging 完成')
+      refreshAiPending()
+      search(false)
+    } else if (s.status === 'cancelled') {
+      showToast('tagging 已取消')
+    } else {
+      showToast('tagging 失败：' + (s.error || '未知错误'))
+    }
+  }, 500)
+}
+
+async function openAiReview() {
+  await aiReviewDialog.value?.open()
+}
+
+function onAiApplied() {
+  refreshAiPending()
+  search(false)
 }
 
 // 卡片悬停快速收藏（右键菜单外的一键入口）
@@ -327,13 +424,21 @@ function onMemeRightClick(e: MouseEvent, meme: Meme) {
   const items: MenuItem[] = [
     { action: 'rename', label: '重命名' },
     { action: 'favorite', label: meme.favorited ? '取消收藏' : '收藏' },
-    { action: 'tag', label: '打标签' },
+    { action: 'tag', label: 'tag' },
     { action: 'collection', label: '添加分组' },
   ]
   if (state.activeCollection && state.activeCollection > 0) {
     items.push({ action: 'remove-collection', label: '移出该分组' })
   }
   items.push({ action: 'add-to-subgroup', label: '加入分组' })
+  // AI 入口：总开关关闭时完全不出现（零入口）
+  if (aiEnabled.value) {
+    items.push({ action: 'ai-tag', label: 'AI tagging', disabled: !aiTagEnabled.value })
+    items.push({ action: 'ai-detail', label: '查看 AI 解读' })
+    if (aiPendingCount.value > 0) {
+      items.push({ action: 'ai-review', label: '审核 AI 建议（' + aiPendingCount.value + '）' })
+    }
+  }
   if (state.activeCollection === -3) {
     items.push({ action: 'remove-recent', label: '从最近使用中删除' })
   }
@@ -354,9 +459,11 @@ function onFolderRightClick(e: MouseEvent, folderId: number, folderName: string)
   ctx.show(items, { folderId, folderName, isFolder: true }, e.clientX, e.clientY)
 }
 
-// 右键「加入分组」子菜单：表情上下文任意视图可用，列出全部分组树（子分组带「父/子」路径）
-// 文件夹上下文（新建子分组）保持旧行为：仅列当前分组的子分组；均走缓存的 state.collections，无桥接等待
-function onShowSubmenu(_items: any[], x: number, y: number) {
+// 右键子菜单分派：目前唯一子菜单父项是 add-to-subgroup，它承载两种语义，
+// 由 trigger.isFolder 区分——文件夹右键=新建子分组，表情右键=加入分组。
+// action 为后续新增第二个子菜单项预留（届时在此按 action 分支）。
+function onShowSubmenu(action: string, x: number, y: number) {
+  if (action !== 'add-to-subgroup') return
   const trigger = ctx.trigger.value
   const targetCol = state.activeCollection && state.activeCollection > 0 ? state.activeCollection : null
   const sub: { action: string; label: string }[] = []
@@ -407,6 +514,12 @@ async function onCtxAction(action: string) {
       break
     }
     case 'collection': { showCollectionBuilder(t.memeId); break }
+    case 'ai-tag': { await aiStartForMeme(t.memeId); break }
+    case 'ai-detail': {
+      await aiInfoDialog.value?.open(t.memeId, t.filename, t.memeName)
+      break
+    }
+    case 'ai-review': { await openAiReview(); break }
     case 'add-to-subgroup': { /* 子菜单在 hover 时加载，点击走 subgroup-N / __new-subgroup__ */ break }
     case '__new-subgroup__': {
       // 文件夹上下文：在右键的分组下新建子分组（不涉及表情）
@@ -600,7 +713,7 @@ function batchMoveToCollection() {
   }, 'move', ids, fromId)
 }
 
-// 批量打标签：合并追加语义（不清空各表情已有标签）
+// 批量 tag：合并追加语义（不清空各表情已有标签）
 async function batchTag() {
   const ids = [...state.selectedIds]
   if (ids.length === 0) return
@@ -610,7 +723,7 @@ async function batchTag() {
   try {
     result = await window.pywebview?.api?.batch_add_tags(ids, tags)
   } catch (_) {
-    showToast('批量打标签失败')
+    showToast('批量 tag 失败')
     return
   }
   if (result?.ok) {
@@ -618,7 +731,7 @@ async function batchTag() {
     refreshTags()
     search()
   } else {
-    showToast('批量打标签失败')
+    showToast('批量 tag 失败')
   }
 }
 
@@ -906,6 +1019,9 @@ onUnmounted(() => {
     await search()
     await refreshTags()
     await refreshCollections()
+    // AI 是可选能力：先读开关再决定是否查待审数量，失败静默不阻塞启动
+    await loadAiSettings()
+    await refreshAiPending()
   }
   const prefersReducedMotion = !!(window.matchMedia && window.matchMedia('(prefers-reduced-motion: reduce)').matches)
   if (state.showStartupAnimation && !prefersReducedMotion) {
@@ -975,7 +1091,7 @@ onUnmounted(() => {
               <line x1="3" y1="6" x2="21" y2="6"/><line x1="3" y1="12" x2="21" y2="12"/><line x1="3" y1="18" x2="21" y2="18"/>
             </svg>
           </button>
-          <input id="search" type="text" placeholder="搜索表情包..." :value="state.searchQuery" @input="onSearchInput" autofocus spellcheck="false">
+          <input id="search" type="text" :placeholder="searchPlaceholder" :value="state.searchQuery" @input="onSearchInput" autofocus spellcheck="false">
           <button v-if="state.searchQuery" class="search-clear" title="清除搜索" aria-label="清除搜索" @click="clearSearch">×</button>
         </div>
 
@@ -1017,7 +1133,7 @@ onUnmounted(() => {
           <button class="btn btn-sm" :disabled="state.memes.length === 0" @click="selectAllVisible">全选当前页</button>
           <button class="btn btn-sm btn-secondary" :disabled="state.selectedIds.size === 0" @click="clearSelection">取消选择</button>
           <button class="btn btn-sm" :disabled="state.selectedIds.size === 0" @click="batchAddToCollection">加入分组</button>
-          <button class="btn btn-sm" :disabled="state.selectedIds.size === 0" @click="batchTag">打标签</button>
+          <button class="btn btn-sm" :disabled="state.selectedIds.size === 0" @click="batchTag">tag</button>
           <button v-if="state.activeCollection && state.activeCollection > 0" class="btn btn-sm" :disabled="state.selectedIds.size === 0" @click="batchMoveToCollection">移动到分组</button>
           <button class="btn btn-sm btn-danger" :disabled="state.selectedIds.size === 0" @click="batchDelete">批量删除</button>
         </div>
@@ -1094,6 +1210,8 @@ onUnmounted(() => {
                   </button>
                   <span v-if="meme.from_stego" class="gif-badge stego-badge">隐写导入</span>
                   <span v-else-if="meme.is_animated" class="gif-badge">{{ meme.is_gif ? 'GIF' : 'WebP' }}</span>
+                  <span v-if="aiEnabled && aiTagEnabled && !meme.ai_status" class="gif-badge ai-pending-badge">待 tagging</span>
+                  <span v-if="aiEnabled && aiPendingIds.has(meme.id)" class="gif-badge ai-review-badge">AI 待审</span>
                   <span class="meme-name">{{ meme.name }}</span>
                 </div>
               </drag-select-option>
@@ -1122,6 +1240,8 @@ onUnmounted(() => {
   <InputDialog ref="inputDialog" />
   <ConfirmDialog ref="confirmDialog" />
   <SimilarImportDialog ref="similarImportDialog" />
+  <AiInfoDialog ref="aiInfoDialog" />
+  <AiReviewDialog ref="aiReviewDialog" @applied="onAiApplied" @toast="showToast" />
   <ContextMenu
     :visible="ctx.visible.value" :x="ctx.x.value" :y="ctx.y.value"
     :items="ctx.items.value" :trigger="ctx.trigger.value"

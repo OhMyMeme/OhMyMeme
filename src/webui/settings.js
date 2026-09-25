@@ -66,7 +66,7 @@ function trapSettingsFocus(box, e) {
   }
 }
 // 找当前可见覆盖层（静态 HTML + 动态创建的 update/confirm 弹窗）
-const _SETTINGS_OVERLAY_IDS = ['danger-overlay','sync-progress-overlay','sync-done-overlay','storage-migrate-overlay','backup-progress-overlay','qq-import-overlay','qqnt-overlay','tg-import-overlay','dy-import-overlay','wechat-import-overlay','update-overlay'];
+const _SETTINGS_OVERLAY_IDS = ['danger-overlay','sync-progress-overlay','sync-done-overlay','storage-migrate-overlay','backup-progress-overlay','qq-import-overlay','qqnt-overlay','tg-import-overlay','dy-import-overlay','wechat-import-overlay','ai-review-overlay','ai-tag-progress-overlay','ai-embed-progress-overlay','update-overlay'];
 function visibleSettingsOverlay() {
   for (const id of _SETTINGS_OVERLAY_IDS) {
     const el = document.getElementById(id);
@@ -185,7 +185,9 @@ let lanPollTimer = null;
 function showConfirm(title, message) {
   return new Promise(resolve => {
     const overlay = document.createElement('div');
-    overlay.style.cssText = 'position:fixed;inset:0;background:rgba(0,0,0,.55);display:flex;align-items:center;justify-content:center;z-index:200;animation:fadeIn .15s';
+    // 动态确认层必须在所有静态覆盖层（均为 z-index:400）之上，
+    // 否则从覆盖层内调用时会被其全屏遮罩压住、Promise 永不 settle
+    overlay.style.cssText = 'position:fixed;inset:0;background:rgba(0,0,0,.55);display:flex;align-items:center;justify-content:center;z-index:900;animation:fadeIn .15s';
     overlay.onclick = (e) => { if (e.target === overlay) { overlay.remove(); resolve(false); } };
     const box = document.createElement('div');
     box.setAttribute('role', 'dialog');
@@ -355,6 +357,7 @@ async function getSettings() {
   checkConnectivity();  // DeepSeek V4 Flash
   loadStorageInfo();
   refreshLanStatus();
+  loadAiSettings();  // AI 配置走独立通道 ai_get_settings（get_settings 是白名单，不含 ai_* 键）
   _settingsDirty = false;
   return true;
 }
@@ -617,7 +620,8 @@ async function saveSettings() {
     auto_start, silent_start, show_uncategorized, record_recent_use,
     show_startup_animation,
     lan_port, lan_secret,
-    ...sync
+    ...sync,
+    ...collectAiSettings()
   });
   showToast('设置已保存');
   _settingsDirty = false;
@@ -703,6 +707,8 @@ async function resetSettings() {
     await api('lan_stop');
     await api('lan_set_allow_secret_config', false);
     refreshLanStatus();
+    // AI 配置回默认（后端 reset 已把 ai_* 恢复默认，此处同步界面并收起分区）
+    await loadAiSettings();
     showToast('已恢复默认设置');
     _settingsDirty = false;
   }
@@ -777,7 +783,8 @@ async function showUploadWarning() {
   if (sync.sync_hide_upload_warning) return true;
   return new Promise(resolve => {
     const overlay = document.createElement('div');
-    overlay.style.cssText = 'position:fixed;inset:0;background:rgba(0,0,0,.55);display:flex;align-items:center;justify-content:center;z-index:200;animation:fadeIn .15s';
+    // 同 showConfirm：动态层须在所有静态覆盖层（z-index:400）之上
+    overlay.style.cssText = 'position:fixed;inset:0;background:rgba(0,0,0,.55);display:flex;align-items:center;justify-content:center;z-index:900;animation:fadeIn .15s';
     overlay.onclick = (e) => { if (e.target === overlay) { overlay.remove(); resolve(false); } };
     const box = document.createElement('div');
     box.setAttribute('role', 'dialog');
@@ -1875,6 +1882,22 @@ document.addEventListener('keydown', (e) => {
       if (btn && btn.style.display !== 'none') closeBackupProgress();
       return;
     }
+    const aiReviewOverlay = document.getElementById('ai-review-overlay');
+    if (aiReviewOverlay && aiReviewOverlay.style.display === 'flex') {
+      closeAiReviewDialog();
+      return;
+    }
+    const aiTagOverlay = document.getElementById('ai-tag-progress-overlay');
+    if (aiTagOverlay && aiTagOverlay.style.display === 'flex') {
+      // 与「后台运行」同语义：仅关层，轮询继续，任务照常跑完
+      hideAiTagProgress();
+      return;
+    }
+    const aiEmbedOverlay = document.getElementById('ai-embed-progress-overlay');
+    if (aiEmbedOverlay && aiEmbedOverlay.style.display === 'flex') {
+      hideAiEmbedProgress();
+      return;
+    }
     closeSettings();
   }
   if (e.key === 'Enter' && e.ctrlKey) saveSettings();
@@ -2175,6 +2198,600 @@ async function startBackupRestore() {
   backupPollTimer = setInterval(pollBackupProgress, 300);
 }
 
+/* ~~~ AI ~~~ */
+let aiTagPollTimer = null;
+let aiEmbedPollTimer = null;
+let aiReviewItems = [];
+let aiReviewIndex = 0;
+let aiReviewTags = [];
+
+function aiVal(id) {
+  const el = document.getElementById(id);
+  return el ? el.value : '';
+}
+
+function aiChecked(id) {
+  const el = document.getElementById(id);
+  return el ? el.checked === true : false;
+}
+
+function aiNum(id, dflt) {
+  const v = parseInt(aiVal(id), 10);
+  return isNaN(v) ? dflt : v;
+}
+
+// 阈值是小数，不能走 aiNum（parseInt 会把 0.35 截成 0）
+function aiFloat(id, dflt) {
+  const v = parseFloat(aiVal(id));
+  return isNaN(v) ? dflt : v;
+}
+
+// 总开关：关闭时隐藏全部 AI 配置（零入口），开启后按各子开关独立展开
+function toggleAiEnabled() {
+  const on = aiChecked('s-ai-enabled');
+  const cfg = document.getElementById('ai-config-sections');
+  const embed = document.getElementById('ai-embed-section');
+  const stats = document.getElementById('ai-stats-section');
+  const hint = document.getElementById('ai-disabled-hint');
+  if (cfg) cfg.style.display = on ? 'block' : 'none';
+  if (embed) embed.style.display = on ? 'block' : 'none';
+  if (stats) stats.style.display = on ? 'block' : 'none';
+  if (hint) hint.style.display = on ? 'none' : 'block';
+  if (on) {
+    toggleAiTag();
+    toggleAiEmbed();
+  }
+}
+
+// tagging 开关：仅控制 tagging 表单显隐（与嵌入相互独立，不再强制联动）
+function toggleAiTag() {
+  const on = aiChecked('s-ai-tag-enabled');
+  const body = document.getElementById('ai-tag-body');
+  if (body) body.style.display = on ? 'block' : 'none';
+}
+
+// 嵌入开关：独立控制嵌入表单显隐（总开关开启后即可自由开关）
+function toggleAiEmbed() {
+  const on = aiChecked('s-ai-embed-enabled');
+  const body = document.getElementById('ai-embed-body');
+  if (body) body.style.display = on ? 'block' : 'none';
+}
+
+// 收集 AI 配置（键名与 config.DEFAULTS 一致，走 save_settings 白名单写入）
+function collectAiSettings() {
+  return {
+    ai_enabled: aiChecked('s-ai-enabled'),
+    ai_tag_enabled: aiChecked('s-ai-tag-enabled'),
+    ai_tag_endpoint: aiVal('s-ai-tag-endpoint').trim(),
+    ai_tag_api_key: aiVal('s-ai-tag-key'),
+    ai_tag_model: aiVal('s-ai-tag-model').trim(),
+    ai_tag_style: aiVal('s-ai-tag-style') || 'general',
+    ai_tag_review_mode: aiChecked('s-ai-tag-review'),
+    ai_tag_batch_size: aiNum('s-ai-tag-batch', 4),
+    ai_tag_timeout: aiNum('s-ai-tag-timeout', 30),
+    ai_tag_max_edge: aiNum('s-ai-tag-max-edge', 1024),
+    ai_embed_enabled: aiChecked('s-ai-embed-enabled'),
+    ai_embed_endpoint: aiVal('s-ai-embed-endpoint').trim(),
+    ai_embed_api_key: aiVal('s-ai-embed-key'),
+    ai_embed_model: aiVal('s-ai-embed-model').trim(),
+    ai_embed_batch_size: aiNum('s-ai-embed-batch', 32),
+    ai_embed_top_k: aiNum('s-ai-embed-topk', 30),
+    ai_embed_min_score: aiFloat('s-ai-embed-minscore', 0.35),
+  };
+}
+
+// 回填 AI 配置（独立通道：get_settings 是白名单返回，不含 ai_* 键）
+async function loadAiSettings() {
+  const r = await api('ai_get_settings');
+  if (!r || !r.ok || !r.settings) return;
+  const s = r.settings;
+  const setV = (id, v) => {
+    const el = document.getElementById(id);
+    if (el) el.value = v;
+  };
+  const setC = (id, v) => {
+    const el = document.getElementById(id);
+    if (el) el.checked = v === true;
+  };
+  setC('s-ai-enabled', s.ai_enabled);
+  setC('s-ai-tag-enabled', s.ai_tag_enabled);
+  setV('s-ai-tag-endpoint', s.ai_tag_endpoint || '');
+  setV('s-ai-tag-key', s.ai_tag_api_key || '');
+  setV('s-ai-tag-model', s.ai_tag_model || '');
+  const st = document.getElementById('s-ai-tag-style');
+  if (st) st.value = s.ai_tag_style || 'general';
+  setC('s-ai-tag-review', s.ai_tag_review_mode !== false);
+  setV('s-ai-tag-batch', s.ai_tag_batch_size ?? 4);
+  setV('s-ai-tag-timeout', s.ai_tag_timeout ?? 30);
+  setV('s-ai-tag-max-edge', s.ai_tag_max_edge ?? 1024);
+  setC('s-ai-embed-enabled', s.ai_embed_enabled);
+  setV('s-ai-embed-endpoint', s.ai_embed_endpoint || '');
+  setV('s-ai-embed-key', s.ai_embed_api_key || '');
+  setV('s-ai-embed-model', s.ai_embed_model || '');
+  setV('s-ai-embed-batch', s.ai_embed_batch_size ?? 32);
+  setV('s-ai-embed-topk', s.ai_embed_top_k ?? 30);
+  setV('s-ai-embed-minscore', s.ai_embed_min_score ?? 0.35);
+  toggleAiEnabled();
+}
+
+// 进行中：中性灰（与 checkConnectivity 的中间态写法一致）
+function aiStatusPending(id, msg) {
+  const el = document.getElementById(id);
+  if (!el) return;
+  el.textContent = msg || '';
+  setStatusColor(el, '');
+  el.style.color = 'var(--muted)';
+}
+
+// 终态：成功走 status-ok、失败走 status-error（状态色 token 类，不写死颜色）
+function aiStatusEl(id, msg, isError) {
+  const el = document.getElementById(id);
+  if (!el) return;
+  el.textContent = msg || '';
+  if (!msg) {
+    setStatusColor(el, '');
+    return;
+  }
+  setStatusColor(el, isError ? 'error' : 'ok');
+}
+
+/* --- tagging --- */
+
+async function testAiTagConnection() {
+  aiStatusPending('ai-tag-status', '正在测试...');
+  const r = await api('ai_tag_test_connection');
+  if (r && r.ok) aiStatusEl('ai-tag-status', r.message || '连接成功', false);
+  else aiStatusEl('ai-tag-status', '失败：' + ((r && r.error) || '未知错误'), true);
+}
+
+async function startAiTag() {
+  const btn = document.getElementById('btn-ai-tag-start');
+  if (btn) btn.disabled = true;
+  const r = await api('ai_tag_start');
+  if (btn) btn.disabled = false;
+  if (!r || !r.ok) {
+    aiStatusEl('ai-tag-status', '启动失败：' + ((r && r.error) || '未知错误'), true);
+    return;
+  }
+  showAiTagProgress();
+}
+
+async function retryAiTagFailed() {
+  const r = await api('ai_tag_retry_failed');
+  if (!r || !r.ok) {
+    aiStatusEl('ai-tag-status', '重试失败：' + ((r && r.error) || '未知错误'), true);
+    return;
+  }
+  showAiTagProgress();
+}
+
+function showAiTagProgress() {
+  document.getElementById('ai-tag-progress-title').textContent = '正在 tagging...';
+  document.getElementById('ai-tag-progress-msg').textContent = '准备中';
+  document.getElementById('ai-tag-progress-bar').style.width = '0%';
+  document.getElementById('ai-tag-progress-pct').textContent = '0%';
+  document.getElementById('ai-tag-progress-count').textContent = '';
+  document.getElementById('ai-tag-progress-error').style.display = 'none';
+  const cb = document.getElementById('btn-ai-tag-progress-cancel');
+  if (cb) { cb.style.display = 'inline-block'; cb.disabled = false; }
+  rememberSettingsFocus();
+  document.getElementById('ai-tag-progress-overlay').style.display = 'flex';
+  if (aiTagPollTimer) clearInterval(aiTagPollTimer);
+  let nullCount = 0;
+  let pollInFlight = false;
+  const tick = async () => {
+    if (pollInFlight) return;
+    pollInFlight = true;
+    try {
+      const s = await api('ai_tag_get_progress');
+      if (!s) {
+        nullCount++;
+        if (nullCount > 20) {
+          if (aiTagPollTimer) { clearInterval(aiTagPollTimer); aiTagPollTimer = null; }
+          document.getElementById('ai-tag-progress-title').textContent = 'tagging 中断';
+          const err = document.getElementById('ai-tag-progress-error');
+          err.style.display = 'block';
+          err.textContent = '连接中断';
+          if (cb) { cb.style.display = 'none'; }
+          aiStatusEl('ai-tag-status', 'tagging 失败：连接中断', true);
+        }
+        return;
+      }
+      nullCount = 0;
+      document.getElementById('ai-tag-progress-bar').style.width = (s.progress || 0) + '%';
+      document.getElementById('ai-tag-progress-pct').textContent = (s.progress || 0) + '%';
+      document.getElementById('ai-tag-progress-msg').textContent = s.message || '';
+      document.getElementById('ai-tag-progress-count').textContent =
+        s.total > 0 ? ('已处理 ' + (s.done || 0) + ' / ' + s.total) : '';
+      if (!s.status || s.status === 'idle' || s.status === 'running') return;
+      if (aiTagPollTimer) { clearInterval(aiTagPollTimer); aiTagPollTimer = null; }
+      if (cb) cb.style.display = 'none';
+      if (s.status === 'done') {
+        document.getElementById('ai-tag-progress-title').textContent = 'tagging 完成';
+        let msg = '完成：已处理 ' + (s.done || 0) + ' 张';
+        if (s.suggested) msg += '，产出建议 ' + s.suggested + ' 条';
+        if (s.failed) msg += '，失败 ' + s.failed + ' 张';
+        aiStatusEl('ai-tag-status', msg, false);
+        loadAiStats();
+      } else if (s.status === 'cancelled') {
+        document.getElementById('ai-tag-progress-title').textContent = '已取消';
+        aiStatusEl('ai-tag-status', 'tagging 已取消', false);
+        loadAiStats();
+      } else {
+        document.getElementById('ai-tag-progress-title').textContent = 'tagging 失败';
+        const err = document.getElementById('ai-tag-progress-error');
+        err.style.display = 'block';
+        err.textContent = s.error || '未知错误';
+        aiStatusEl('ai-tag-status', 'tagging 失败：' + (s.error || '未知错误'), true);
+      }
+    } finally {
+      pollInFlight = false;
+    }
+  };
+  aiTagPollTimer = setInterval(tick, 300);
+  tick();
+}
+
+// 后台运行：只关层，保留轮询，终态仍会写回状态栏
+function hideAiTagProgress() {
+  document.getElementById('ai-tag-progress-overlay').style.display = 'none';
+  restoreSettingsFocus();
+}
+
+async function cancelAiTag() {
+  const btn = document.getElementById('btn-ai-tag-progress-cancel');
+  if (btn) btn.disabled = true;
+  document.getElementById('ai-tag-progress-title').textContent = '正在取消...';
+  try { await api('ai_tag_cancel'); } catch (_) {}
+}
+
+/* --- 嵌入 --- */
+
+async function testAiEmbedConnection() {
+  aiStatusPending('ai-embed-status', '正在测试...');
+  const r = await api('ai_embed_test_connection');
+  if (r && r.ok) aiStatusEl('ai-embed-status', r.message || '连接成功', false);
+  else aiStatusEl('ai-embed-status', '失败：' + ((r && r.error) || '未知错误'), true);
+}
+
+async function startAiEmbed() {
+  const btn = document.getElementById('btn-ai-embed-start');
+  if (btn) btn.disabled = true;
+  const r = await api('ai_embed_start');
+  if (btn) btn.disabled = false;
+  if (!r || !r.ok) {
+    aiStatusEl('ai-embed-status', '启动失败：' + ((r && r.error) || '未知错误'), true);
+    return;
+  }
+  showAiEmbedProgress();
+}
+
+// 重建 = 先清空旧向量再全量生成（后端 ai_embed_rebuild 只清不建，故需接一次 start）
+async function rebuildAiEmbed() {
+  const ok = await showConfirm(
+    '重建全部向量',
+    '将清空已生成的全部向量并重新生成。\n\n换嵌入模型后需要重建，否则新旧向量混用会导致检索结果异常。\n\n图片本身与标签不受影响。是否继续？'
+  );
+  if (!ok) return;
+  const r = await api('ai_embed_rebuild');
+  if (!r || !r.ok) {
+    aiStatusEl('ai-embed-status', '清空失败：' + ((r && r.error) || '未知错误'), true);
+    return;
+  }
+  aiStatusEl('ai-embed-status', '已清空 ' + (r.cleared || 0) + ' 条向量，正在重新生成...', false);
+  const r2 = await api('ai_embed_start');
+  if (!r2 || !r2.ok) {
+    aiStatusEl('ai-embed-status', '已清空 ' + (r.cleared || 0) + ' 条，但重新生成启动失败：' + ((r2 && r2.error) || '未知错误'), true);
+    loadAiStats();
+    return;
+  }
+  showAiEmbedProgress();
+}
+
+function showAiEmbedProgress() {
+  document.getElementById('ai-embed-progress-title').textContent = '正在生成向量...';
+  document.getElementById('ai-embed-progress-msg').textContent = '准备中';
+  document.getElementById('ai-embed-progress-bar').style.width = '0%';
+  document.getElementById('ai-embed-progress-pct').textContent = '0%';
+  document.getElementById('ai-embed-progress-count').textContent = '';
+  document.getElementById('ai-embed-progress-error').style.display = 'none';
+  const cb = document.getElementById('btn-ai-embed-progress-cancel');
+  if (cb) { cb.style.display = 'inline-block'; cb.disabled = false; }
+  rememberSettingsFocus();
+  document.getElementById('ai-embed-progress-overlay').style.display = 'flex';
+  if (aiEmbedPollTimer) clearInterval(aiEmbedPollTimer);
+  let nullCount = 0;
+  let pollInFlight = false;
+  const tick = async () => {
+    if (pollInFlight) return;
+    pollInFlight = true;
+    try {
+      const s = await api('ai_embed_get_progress');
+      if (!s) {
+        nullCount++;
+        if (nullCount > 20) {
+          if (aiEmbedPollTimer) { clearInterval(aiEmbedPollTimer); aiEmbedPollTimer = null; }
+          document.getElementById('ai-embed-progress-title').textContent = '生成中断';
+          const err = document.getElementById('ai-embed-progress-error');
+          err.style.display = 'block';
+          err.textContent = '连接中断';
+          if (cb) cb.style.display = 'none';
+          aiStatusEl('ai-embed-status', '生成失败：连接中断', true);
+        }
+        return;
+      }
+      nullCount = 0;
+      document.getElementById('ai-embed-progress-bar').style.width = (s.progress || 0) + '%';
+      document.getElementById('ai-embed-progress-pct').textContent = (s.progress || 0) + '%';
+      document.getElementById('ai-embed-progress-msg').textContent = s.message || '';
+      document.getElementById('ai-embed-progress-count').textContent =
+        s.total > 0 ? ('已处理 ' + (s.done || 0) + ' / ' + s.total) : '';
+      if (!s.status || s.status === 'idle' || s.status === 'running') return;
+      if (aiEmbedPollTimer) { clearInterval(aiEmbedPollTimer); aiEmbedPollTimer = null; }
+      if (cb) cb.style.display = 'none';
+      if (s.status === 'done') {
+        document.getElementById('ai-embed-progress-title').textContent = '生成完成';
+        let msg = '完成：新增向量 ' + (s.embedded || 0) + ' 条';
+        if (s.failed) msg += '，失败 ' + s.failed + ' 条';
+        aiStatusEl('ai-embed-status', msg, false);
+        loadAiStats();
+      } else if (s.status === 'cancelled') {
+        document.getElementById('ai-embed-progress-title').textContent = '已取消';
+        aiStatusEl('ai-embed-status', '向量生成已取消', false);
+        loadAiStats();
+      } else {
+        document.getElementById('ai-embed-progress-title').textContent = '生成失败';
+        const err = document.getElementById('ai-embed-progress-error');
+        err.style.display = 'block';
+        err.textContent = s.error || '未知错误';
+        aiStatusEl('ai-embed-status', '生成失败：' + (s.error || '未知错误'), true);
+      }
+    } finally {
+      pollInFlight = false;
+    }
+  };
+  aiEmbedPollTimer = setInterval(tick, 300);
+  tick();
+}
+
+function hideAiEmbedProgress() {
+  document.getElementById('ai-embed-progress-overlay').style.display = 'none';
+  restoreSettingsFocus();
+}
+
+async function cancelAiEmbed() {
+  const btn = document.getElementById('btn-ai-embed-progress-cancel');
+  if (btn) btn.disabled = true;
+  document.getElementById('ai-embed-progress-title').textContent = '正在取消...';
+  try { await api('ai_embed_cancel'); } catch (_) {}
+}
+
+/* --- 统计 --- */
+
+async function loadAiStats() {
+  const el = document.getElementById('ai-stats-body');
+  if (!el) return;
+  const r = await api('ai_get_stats');
+  if (!r || !r.ok || !r.stats) { el.textContent = '统计加载失败'; return; }
+  const s = r.stats;
+  // 各状态键是动态的：某状态 0 行时该键不存在，必须兜底
+  const rows = [
+    ['待 tagging', s.unprocessed ?? 0],
+    ['待审核', s.pending_review ?? 0],
+    ['已完成', s.done ?? 0],
+    ['进行中', s.running ?? 0],
+    ['失败', s.failed ?? 0],
+    ['已生成向量', s.embedded ?? 0],
+  ];
+  el.innerHTML = rows
+    .map(r2 => '<div><span style="color:var(--muted);display:inline-block;min-width:84px">' + esc(r2[0]) + '</span>' + esc(String(r2[1])) + '</div>')
+    .join('');
+}
+
+/* --- 审核弹窗 --- */
+
+async function openAiReviewDialog() {
+  const r = await api('ai_review_items');
+  if (!r || !r.ok) { showToast('读取建议失败'); return; }
+  aiReviewItems = r.items || [];
+  aiReviewIndex = 0;
+  rememberSettingsFocus();
+  document.getElementById('ai-review-overlay').style.display = 'flex';
+  aiReviewStatus('', false);
+  aiReviewRender();
+}
+
+function closeAiReviewDialog() {
+  document.getElementById('ai-review-overlay').style.display = 'none';
+  restoreSettingsFocus();
+  loadAiStats();
+}
+
+function aiReviewStatus(msg, isError) {
+  const el = document.getElementById('ai-review-status');
+  if (!el) return;
+  el.textContent = msg || '';
+  el.style.color = isError ? 'var(--danger)' : 'var(--muted)';
+}
+
+// 渲染当前建议；已有标签只读展示，不提供删除入口
+function aiReviewRender() {
+  const empty = document.getElementById('ai-review-empty');
+  const body = document.getElementById('ai-review-body');
+  const counter = document.getElementById('ai-review-counter');
+  const total = aiReviewItems.length;
+  if (!total) {
+    if (empty) empty.style.display = 'block';
+    if (body) body.style.display = 'none';
+    if (counter) counter.textContent = '';
+    return;
+  }
+  if (empty) empty.style.display = 'none';
+  if (body) body.style.display = 'block';
+  if (aiReviewIndex < 0) aiReviewIndex = 0;
+  if (aiReviewIndex >= total) aiReviewIndex = total - 1;
+  const it = aiReviewItems[aiReviewIndex];
+  if (counter) counter.textContent = (aiReviewIndex + 1) + ' / ' + total;
+
+  const img = document.getElementById('ai-review-img');
+  if (img) {
+    img.src = '/api/thumb/' + it.meme_id + '/' + encodeURIComponent(it.filename || '');
+    img.alt = it.name || '';
+  }
+  const fn = document.getElementById('ai-review-filename');
+  if (fn) fn.textContent = it.filename || '';
+  const setV = (id, v) => {
+    const el = document.getElementById(id);
+    if (el) el.value = v || '';
+  };
+  setV('ai-review-name', it.name);
+  setV('ai-review-desc', it.description);
+  setV('ai-review-vtext', it.visible_text);
+
+  // 建议标签：可编辑（复制一份，避免改动原对象）
+  aiReviewTags = (it.tags || []).slice();
+  aiReviewRenderTags();
+
+  // 已有标签：只读
+  const ex = document.getElementById('ai-review-existing');
+  if (ex) {
+    const list = it.existing_tags || [];
+    ex.innerHTML = list.length
+      ? list.map(t => '<span class="ai-chip">' + esc(t) + '</span>').join('')
+      : '<span class="ai-chip-empty">无</span>';
+  }
+
+  const em = document.getElementById('ai-review-emotions');
+  const emg = document.getElementById('ai-review-emotions-group');
+  if (em) {
+    const list = it.emotions || [];
+    em.innerHTML = list.length
+      ? list.map(t => '<span class="ai-chip">' + esc(t) + '</span>').join('')
+      : '<span class="ai-chip-empty">无</span>';
+    if (emg) emg.style.display = list.length ? 'block' : 'none';
+  }
+  const itn = document.getElementById('ai-review-intents');
+  const itg = document.getElementById('ai-review-intents-group');
+  if (itn) {
+    const list = it.intents || [];
+    itn.innerHTML = list.length
+      ? list.map(t => '<span class="ai-chip">' + esc(t) + '</span>').join('')
+      : '<span class="ai-chip-empty">无</span>';
+    if (itg) itg.style.display = list.length ? 'block' : 'none';
+  }
+
+  const dt = document.getElementById('ai-review-detail');
+  if (dt) {
+    const parts = [];
+    if (it.provider) parts.push('模型：' + it.provider);
+    if (it.created_at) parts.push('生成于 ' + it.created_at);
+    dt.textContent = parts.join('　');
+  }
+
+  // 首尾禁用翻页
+  const prev = document.getElementById('btn-ai-review-prev');
+  const next = document.getElementById('btn-ai-review-next');
+  if (prev) prev.disabled = aiReviewIndex <= 0;
+  if (next) next.disabled = aiReviewIndex >= total - 1;
+}
+
+function aiReviewRenderTags() {
+  const box = document.getElementById('ai-review-tags');
+  if (!box) return;
+  if (!aiReviewTags.length) {
+    box.innerHTML = '<span class="ai-chip-empty">暂无建议标签</span>';
+    return;
+  }
+  box.innerHTML = aiReviewTags
+    .map((t, i) => '<span class="ai-chip">' + esc(t) +
+      '<button class="ai-chip-remove" title="移除" onclick="aiReviewRemoveTag(' + i + ')">×</button></span>')
+    .join('');
+}
+
+function aiReviewAddTag() {
+  const input = document.getElementById('ai-review-tag-input');
+  if (!input) return;
+  const v = (input.value || '').trim();
+  if (!v) return;
+  if (aiReviewTags.indexOf(v) === -1) aiReviewTags.push(v);
+  input.value = '';
+  aiReviewRenderTags();
+}
+
+function aiReviewRemoveTag(i) {
+  if (i < 0 || i >= aiReviewTags.length) return;
+  aiReviewTags.splice(i, 1);
+  aiReviewRenderTags();
+}
+
+function aiReviewPrev() {
+  if (aiReviewIndex > 0) { aiReviewIndex--; aiReviewRender(); }
+}
+
+function aiReviewNext() {
+  if (aiReviewIndex < aiReviewItems.length - 1) { aiReviewIndex++; aiReviewRender(); }
+}
+
+// 跳过：不动数据，仅切到下一张
+function aiReviewSkip() {
+  if (aiReviewIndex < aiReviewItems.length - 1) aiReviewNext();
+  else aiReviewStatus('已是最后一张；关闭即可保留未处理的建议', false);
+}
+
+// 当前建议的应用载荷（payload 不能为 {}，否则后端判为「未找到建议」）
+function aiReviewCurrentPayload() {
+  const it = aiReviewItems[aiReviewIndex] || {};
+  return {
+    tags: aiReviewTags.slice(),
+    name: aiVal('ai-review-name'),
+    description: aiVal('ai-review-desc'),
+    visible_text: aiVal('ai-review-vtext'),
+    emotions: (it.emotions || []).slice(),
+    intents: (it.intents || []).slice(),
+  };
+}
+
+async function aiReviewApply() {
+  const it = aiReviewItems[aiReviewIndex];
+  if (!it) return;
+  const btn = document.getElementById('btn-ai-review-apply');
+  if (btn) btn.disabled = true;
+  const r = await api('ai_tag_apply', it.meme_id, aiReviewCurrentPayload());
+  if (btn) btn.disabled = false;
+  if (!r || !r.ok) {
+    aiReviewStatus('应用失败：' + ((r && r.error) || '未知错误'), true);
+    return;
+  }
+  aiReviewItems.splice(aiReviewIndex, 1);
+  if (aiReviewIndex >= aiReviewItems.length) aiReviewIndex = Math.max(0, aiReviewItems.length - 1);
+  aiReviewRender();
+  aiReviewStatus('已应用（标签为追加，原有标签保留）', false);
+}
+
+async function aiReviewApplyAll() {
+  const total = aiReviewItems.length;
+  if (!total) return;
+  const ok = await showConfirm(
+    '全部应用',
+    '将把库中全部待审核建议写入对应的表情标签库（不只当前列表这一条）。\n\nAI 标签只会追加，绝不会覆盖你已有的标签。\n\n是否继续？'
+  );
+  if (!ok) return;
+  const btn = document.getElementById('btn-ai-review-apply-all');
+  if (btn) btn.disabled = true;
+  const r = await api('ai_tag_apply_all');
+  if (btn) btn.disabled = false;
+  if (!r || !r.ok) {
+    aiReviewStatus('全部应用失败：' + ((r && r.error) || '未知错误'), true);
+    return;
+  }
+  const applied = r.applied || 0;
+  const failed = r.failed || 0;
+  aiReviewItems = [];
+  aiReviewIndex = 0;
+  aiReviewRender();
+  aiReviewStatus('已应用 ' + applied + ' 条' + (failed ? '，失败 ' + failed + ' 条' : ''), failed > 0);
+}
+
 /* 左栏分组导航：显示对应分组的 section，隐藏其余 */
 function switchSettingsGroup(group) {
   document.querySelectorAll('#settings-nav .nav-item').forEach(btn => {
@@ -2184,6 +2801,9 @@ function switchSettingsGroup(group) {
     sec.style.display = (sec.dataset.group === group) ? 'block' : 'none';
   });
   if (group === 'backup') loadBackupInfo();
+  // AI 分组内各 section 的显隐由总开关决定，故切换后需重算，
+  // 否则无条件 block 会让「总开关关闭即零入口」在设置页失效
+  if (group === 'ai') { toggleAiEnabled(); loadAiStats(); }
   const content = document.getElementById('settings-content');
   if (content) content.scrollTop = 0;
 }

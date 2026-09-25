@@ -12,6 +12,21 @@ export interface Meme {
   favorited?: boolean
   auto_play_gif?: boolean
   hover_to_play?: boolean
+  ai_status?: string | null
+}
+
+export interface AiSuggestion {
+  meme_id: number
+  filename: string
+  tags: string[]
+  name: string
+  description: string
+  visible_text: string
+  emotions: string[]
+  intents: string[]
+  provider: string
+  created_at: string
+  existing_tags: string[]
 }
 
 export interface Collection {

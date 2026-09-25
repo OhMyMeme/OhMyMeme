@@ -18,6 +18,7 @@
     <nav id="settings-nav">
       <button class="nav-item active" data-group="base" onclick="switchSettingsGroup('base')">基础设置</button>
       <button class="nav-item" data-group="import" onclick="switchSettingsGroup('import')">导入</button>
+      <button class="nav-item" data-group="ai" onclick="switchSettingsGroup('ai')">AI</button>
       <button class="nav-item" data-group="network" onclick="switchSettingsGroup('network')">联网</button>
       <button class="nav-item danger" data-group="danger" onclick="switchSettingsGroup('danger')">危险操作</button>
       <button class="nav-item" data-group="logs" onclick="switchSettingsGroup('logs')">日志</button>
@@ -161,6 +162,126 @@
         </span>
         <span class="import-name">微信</span>
       </button>
+    </div>
+
+    <div class="section" data-group="ai">
+      <div class="section-title">AI</div>
+      <p style="font-size:11.5px;color:var(--muted);margin-bottom:10px;line-height:1.6">用视觉大模型自动识别表情包内容并生成标签，可选生成向量用于语义检索。关闭总开关时不出现任何入口，也不发起任何网络请求。</p>
+      <label class="check-row" style="margin-bottom:12px">
+        <input id="s-ai-enabled" type="checkbox" onchange="toggleAiEnabled()">启用 AI
+      </label>
+      <div id="ai-disabled-hint" style="font-size:11.5px;color:var(--muted);line-height:1.6">开启后可在下方配置 tagging 与嵌入，并在主窗口右键表情使用。</div>
+    </div>
+
+    <div class="section" data-group="ai" id="ai-config-sections" style="display:none">
+      <div class="section-title">视觉 tagging</div>
+      <label class="check-row" style="margin-bottom:12px">
+        <input id="s-ai-tag-enabled" type="checkbox" onchange="toggleAiTag()">启用视觉 tagging
+      </label>
+
+      <div id="ai-tag-body" style="display:none">
+        <div class="form-group">
+          <label>接口地址（OpenAI 兼容）</label>
+          <input id="s-ai-tag-endpoint" placeholder="https://api.example.com/v1">
+        </div>
+        <div class="form-group">
+          <label>API Key</label>
+          <input id="s-ai-tag-key" type="password" placeholder="留空表示无需鉴权" autocomplete="off">
+        </div>
+        <div class="form-group">
+          <label>模型名</label>
+          <input id="s-ai-tag-model" placeholder="如 gpt-4o-mini、qwen-vl-plus">
+        </div>
+        <div class="select-row" style="margin-bottom:10px">
+          <span class="select-row-label">整理风格</span>
+          <select id="s-ai-tag-style">
+            <option value="general">通用</option>
+            <option value="anime">二次元</option>
+            <option value="work">职场</option>
+            <option value="gaming">游戏</option>
+          </select>
+        </div>
+        <p style="font-size:11.5px;color:var(--muted);margin-bottom:10px;line-height:1.6">整理风格影响提示词，决定 AI 产出标签的用词习惯。</p>
+        <label class="check-row">
+          <input id="s-ai-tag-review" type="checkbox">审核模式（AI 只出建议，确认后才写入）
+        </label>
+        <p style="font-size:11.5px;color:var(--muted);margin-top:4px;margin-bottom:10px;line-height:1.6">关闭审核模式时仍只追加标签，绝不覆盖你已有的标签。</p>
+        <div class="form-group">
+          <label>每批张数</label>
+          <input id="s-ai-tag-batch" placeholder="4">
+        </div>
+        <div class="form-group">
+          <label>超时（秒）</label>
+          <input id="s-ai-tag-timeout" placeholder="30">
+        </div>
+        <div class="form-group">
+          <label>送图最长边（像素）</label>
+          <input id="s-ai-tag-max-edge" placeholder="1024">
+        </div>
+
+        <div style="display:flex;gap:8px;margin-bottom:8px">
+          <button id="btn-ai-tag-test" class="btn btn-secondary btn-sm btn-flex" onclick="testAiTagConnection()">测试连接</button>
+          <button id="btn-ai-tag-start" class="btn btn-primary btn-sm btn-flex" onclick="startAiTag()">开始 tagging</button>
+        </div>
+        <div style="display:flex;gap:8px;margin-bottom:8px">
+          <button id="btn-ai-tag-retry" class="btn btn-secondary btn-sm btn-flex" onclick="retryAiTagFailed()">重试失败项</button>
+          <button id="btn-ai-tag-review-open" class="btn btn-secondary btn-sm btn-flex" onclick="openAiReviewDialog()">审核建议</button>
+        </div>
+        <div id="ai-tag-status" style="font-size:11.5px;color:var(--muted);margin-top:6px;line-height:1.6"></div>
+      </div>
+    </div>
+
+    <div class="section" data-group="ai" id="ai-embed-section" style="display:none">
+      <div class="section-title">语义检索（嵌入）</div>
+      <p style="font-size:11.5px;color:var(--muted);margin-bottom:10px;line-height:1.6">为表情生成向量，支持直接输入一句话按含义搜索（如「想怼人的表情」），不必精确匹配名称或标签。</p>
+      <label class="check-row">
+        <input id="s-ai-embed-enabled" type="checkbox" onchange="toggleAiEmbed()">启用语义检索
+      </label>
+      <p style="font-size:11.5px;color:var(--muted);margin-top:4px;margin-bottom:12px;line-height:1.6">推荐开启：AI tagging 产出的名称、描述与标签本身就是优质语义信号，开启后可整句搜索；需先生成向量，检索才生效。与视觉 tagging 相互独立，可只开其一。</p>
+
+      <div id="ai-embed-body" style="display:none">
+        <div class="form-group">
+          <label>接口地址（OpenAI 兼容）</label>
+          <input id="s-ai-embed-endpoint" placeholder="https://api.example.com/v1">
+        </div>
+        <div class="form-group">
+          <label>API Key</label>
+          <input id="s-ai-embed-key" type="password" placeholder="留空表示无需鉴权" autocomplete="off">
+        </div>
+        <div class="form-group">
+          <label>模型名</label>
+          <input id="s-ai-embed-model" placeholder="如 text-embedding-3-small">
+        </div>
+        <div class="form-group">
+          <label>每批条数</label>
+          <input id="s-ai-embed-batch" placeholder="32">
+        </div>
+        <div class="form-group">
+          <label>检索返回条数</label>
+          <input id="s-ai-embed-topk" placeholder="30">
+        </div>
+        <div class="form-group">
+          <label>最低相似度</label>
+          <input id="s-ai-embed-minscore" placeholder="0.35">
+        </div>
+
+        <div style="display:flex;gap:8px;margin-bottom:8px">
+          <button id="btn-ai-embed-test" class="btn btn-secondary btn-sm btn-flex" onclick="testAiEmbedConnection()">测试连接</button>
+          <button id="btn-ai-embed-start" class="btn btn-primary btn-sm btn-flex" onclick="startAiEmbed()">生成向量</button>
+        </div>
+        <div style="display:flex;gap:8px;margin-bottom:8px">
+          <button id="btn-ai-embed-rebuild" class="btn btn-secondary btn-sm btn-flex" onclick="rebuildAiEmbed()">重建全部向量</button>
+        </div>
+        <div id="ai-embed-status" style="font-size:11.5px;color:var(--muted);margin-top:6px;line-height:1.6"></div>
+      </div>
+    </div>
+
+    <div class="section" data-group="ai" id="ai-stats-section" style="display:none">
+      <div class="section-title">统计</div>
+      <div id="ai-stats-body" style="font-size:12px;color:var(--fg-secondary);line-height:1.9">加载中...</div>
+      <div style="display:flex;gap:8px;margin-top:10px">
+        <button class="btn btn-secondary btn-sm btn-flex" onclick="loadAiStats()">刷新统计</button>
+      </div>
     </div>
 
     <div class="section" data-group="network">
@@ -661,6 +782,109 @@
       <button id="btn-wechat-close" class="btn btn-secondary btn-sm" onclick="closeWechatOverlay()">取消导入</button>
       <div id="wechat-import-error" style="display:none;font-size:12px;color:var(--danger);margin-top:8px;word-break:break-all"></div>
     </div>
+  </div>
+</div>
+
+<div id="ai-tag-progress-overlay" style="display:none;position:fixed;inset:0;background:rgba(0,0,0,.6);align-items:center;justify-content:center;z-index:400;animation:fadeIn .15s">
+  <div role="dialog" aria-modal="true" aria-labelledby="ai-tag-progress-title" style="background:var(--surface);border-radius:var(--radius-lg);padding:24px 28px;width:440px;border:1px solid var(--border);box-shadow:var(--shadow-lg);text-align:center">
+    <div style="font-size:14px;font-weight:600;color:var(--fg);margin-bottom:4px" id="ai-tag-progress-title">正在 tagging...</div>
+    <div style="font-size:12px;color:var(--fg-secondary);margin-bottom:12px;word-break:break-all" id="ai-tag-progress-msg">准备中</div>
+    <div style="width:100%;height:8px;background:var(--bg);border-radius:4px;overflow:hidden;margin-bottom:6px">
+      <div id="ai-tag-progress-bar" style="width:0%;height:100%;background:var(--accent);border-radius:4px;transition:width .3s"></div>
+    </div>
+    <div style="font-size:11.5px;color:var(--muted);margin-bottom:16px">
+      <span id="ai-tag-progress-pct">0%</span>
+      <span id="ai-tag-progress-count" style="margin-left:12px"></span>
+    </div>
+    <button id="btn-ai-tag-progress-bg" class="btn btn-secondary btn-sm" onclick="hideAiTagProgress()">后台运行</button>
+    <button id="btn-ai-tag-progress-cancel" class="btn btn-ghost btn-sm" onclick="cancelAiTag()">取消</button>
+    <div id="ai-tag-progress-error" style="display:none;font-size:12px;color:var(--danger);margin-top:8px;word-break:break-all"></div>
+  </div>
+</div>
+
+<div id="ai-embed-progress-overlay" style="display:none;position:fixed;inset:0;background:rgba(0,0,0,.6);align-items:center;justify-content:center;z-index:400;animation:fadeIn .15s">
+  <div role="dialog" aria-modal="true" aria-labelledby="ai-embed-progress-title" style="background:var(--surface);border-radius:var(--radius-lg);padding:24px 28px;width:440px;border:1px solid var(--border);box-shadow:var(--shadow-lg);text-align:center">
+    <div style="font-size:14px;font-weight:600;color:var(--fg);margin-bottom:4px" id="ai-embed-progress-title">正在生成向量...</div>
+    <div style="font-size:12px;color:var(--fg-secondary);margin-bottom:12px;word-break:break-all" id="ai-embed-progress-msg">准备中</div>
+    <div style="width:100%;height:8px;background:var(--bg);border-radius:4px;overflow:hidden;margin-bottom:6px">
+      <div id="ai-embed-progress-bar" style="width:0%;height:100%;background:var(--accent);border-radius:4px;transition:width .3s"></div>
+    </div>
+    <div style="font-size:11.5px;color:var(--muted);margin-bottom:16px">
+      <span id="ai-embed-progress-pct">0%</span>
+      <span id="ai-embed-progress-count" style="margin-left:12px"></span>
+    </div>
+    <button id="btn-ai-embed-progress-bg" class="btn btn-secondary btn-sm" onclick="hideAiEmbedProgress()">后台运行</button>
+    <button id="btn-ai-embed-progress-cancel" class="btn btn-ghost btn-sm" onclick="cancelAiEmbed()">取消</button>
+    <div id="ai-embed-progress-error" style="display:none;font-size:12px;color:var(--danger);margin-top:8px;word-break:break-all"></div>
+  </div>
+</div>
+
+<div id="ai-review-overlay" style="display:none;position:fixed;inset:0;background:rgba(0,0,0,.6);align-items:center;justify-content:center;z-index:400;animation:fadeIn .15s">
+  <div role="dialog" aria-modal="true" aria-labelledby="ai-review-title" style="background:var(--surface);border-radius:var(--radius-lg);padding:20px 24px;width:680px;max-width:calc(100vw - 40px);border:1px solid var(--border);box-shadow:var(--shadow-lg)">
+    <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:12px">
+      <div id="ai-review-title" style="font-size:14px;font-weight:600;color:var(--fg)">审核 AI 建议</div>
+      <div id="ai-review-counter" style="font-size:11.5px;color:var(--muted)"></div>
+    </div>
+
+    <div id="ai-review-empty" style="display:none;text-align:center;padding:24px 0;font-size:12.5px;color:var(--muted)">没有待审核的建议</div>
+
+    <div id="ai-review-body" style="display:none">
+      <div style="display:flex;gap:16px">
+        <div style="width:200px;flex-shrink:0">
+          <div style="width:200px;height:200px;display:flex;align-items:center;justify-content:center;background:var(--bg);border:1px solid var(--border);border-radius:var(--radius);overflow:hidden">
+            <img id="ai-review-img" alt="" style="max-width:100%;max-height:100%;object-fit:contain">
+          </div>
+          <div id="ai-review-filename" style="font-size:11px;color:var(--muted);margin-top:6px;word-break:break-all;line-height:1.5"></div>
+        </div>
+
+        <div style="flex:1;min-width:0;max-height:340px;overflow-y:auto;scrollbar-width:thin">
+          <div class="form-group">
+            <label>建议名称</label>
+            <input id="ai-review-name" placeholder="（无）">
+          </div>
+          <div class="form-group">
+            <label>描述</label>
+            <input id="ai-review-desc" placeholder="（无）">
+          </div>
+          <div class="form-group">
+            <label>可见文字</label>
+            <input id="ai-review-vtext" placeholder="（无）">
+          </div>
+          <div class="form-group">
+            <label>建议标签</label>
+            <div id="ai-review-tags" class="ai-chip-box"></div>
+            <div style="display:flex;gap:6px;margin-top:6px">
+              <input id="ai-review-tag-input" placeholder="输入后回车添加" style="flex:1" onkeydown="if(event.key==='Enter'){event.preventDefault();aiReviewAddTag();}">
+              <button class="btn btn-secondary btn-sm" onclick="aiReviewAddTag()">添加</button>
+            </div>
+          </div>
+          <div class="form-group">
+            <label>已有标签（只读，不会被覆盖）</label>
+            <div id="ai-review-existing" class="ai-chip-box ai-chip-readonly"></div>
+          </div>
+          <div class="form-group" id="ai-review-emotions-group">
+            <label>情绪</label>
+            <div id="ai-review-emotions" class="ai-chip-box ai-chip-static"></div>
+          </div>
+          <div class="form-group" id="ai-review-intents-group">
+            <label>意图</label>
+            <div id="ai-review-intents" class="ai-chip-box ai-chip-static"></div>
+          </div>
+          <div id="ai-review-detail" style="font-size:11.5px;color:var(--muted);line-height:1.6"></div>
+        </div>
+      </div>
+    </div>
+
+    <div style="display:flex;align-items:center;gap:8px;margin-top:16px">
+      <button id="btn-ai-review-prev" class="btn btn-secondary btn-sm" onclick="aiReviewPrev()">上一张</button>
+      <button id="btn-ai-review-next" class="btn btn-secondary btn-sm" onclick="aiReviewNext()">下一张</button>
+      <button id="btn-ai-review-skip" class="btn btn-ghost btn-sm" onclick="aiReviewSkip()">跳过</button>
+      <span class="spacer" style="flex:1"></span>
+      <button id="btn-ai-review-apply" class="btn btn-primary btn-sm" onclick="aiReviewApply()">应用此条</button>
+      <button id="btn-ai-review-apply-all" class="btn btn-secondary btn-sm" onclick="aiReviewApplyAll()">全部应用</button>
+      <button class="btn btn-ghost btn-sm" onclick="closeAiReviewDialog()">关闭</button>
+    </div>
+    <div id="ai-review-status" style="font-size:11.5px;color:var(--muted);margin-top:8px;line-height:1.6"></div>
   </div>
 </div>
 

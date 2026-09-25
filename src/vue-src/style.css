@@ -625,6 +625,63 @@ body {
   color: #fff;
 }
 
+/* AI 角标：复用 .gif-badge 几何，错行排在右上，避开 top:6 的格式角标 */
+.gif-badge.ai-pending-badge {
+  top: 26px;
+  background: rgba(100, 116, 139, 0.75);
+  color: #fff;
+}
+
+.gif-badge.ai-review-badge {
+  top: 46px;
+  background: rgba(139, 92, 246, 0.9);
+  color: #fff;
+}
+
+/* AI 解读弹窗内容（复用 .gif-badge 之外的独立结构） */
+.ai-info-row {
+  display: flex;
+  gap: 10px;
+  font-size: 12.5px;
+  line-height: 1.7;
+  margin-bottom: 6px;
+}
+
+.ai-info-row .ai-info-label {
+  flex-shrink: 0;
+  width: 64px;
+  color: var(--muted);
+}
+
+.ai-info-row .ai-info-value {
+  flex: 1;
+  min-width: 0;
+  color: var(--fg-secondary);
+  word-break: break-word;
+}
+
+.ai-tag-list {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.ai-tag-chip {
+  display: inline-flex;
+  align-items: center;
+  padding: 2px 8px;
+  border-radius: 10px;
+  font-size: 11.5px;
+  line-height: 1.7;
+  background: var(--primary-light);
+  color: var(--primary-strong);
+}
+
+.ai-tag-chip.human {
+  background: var(--surface-2);
+  color: var(--fg-secondary);
+}
+
 .fav-btn {
   position: absolute;
   top: 6px;

@@ -16,7 +16,7 @@ const props = defineProps<{
 
 const emit = defineEmits<{
   action: [action: string, trigger: MenuTrigger]
-  'show-submenu': [items: MenuItem[], x: number, y: number]
+  'show-submenu': [action: string, x: number, y: number]
   'hide-submenu': []
   close: []
 }>()
@@ -56,14 +56,17 @@ watch(() => [props.submenuVisible, props.submenuItems, props.submenuX, props.sub
   }
 })
 
+// 展开子菜单的菜单项（可多个，各自在 App 侧按 action 分派内容）
+const SUBMENU_ACTIONS = ['add-to-subgroup']
+
 // 点击子菜单项切换展开/收起；子菜单位于该项右缘，避免锚在鼠标点漂移
 function onItemClick(e: MouseEvent, item: MenuItem) {
-  if (item.action === 'add-to-subgroup') {
+  if (SUBMENU_ACTIONS.includes(item.action)) {
     if (props.submenuVisible) {
       emit('hide-submenu')
     } else {
       const r = (e.currentTarget as HTMLElement).getBoundingClientRect()
-      emit('show-submenu', [], r.right + 4, r.top)
+      emit('show-submenu', item.action, r.right + 4, r.top)
     }
     return
   }
@@ -78,7 +81,7 @@ function onItemClick(e: MouseEvent, item: MenuItem) {
         v-for="item in items"
         :key="item.action"
         class="ctx-item"
-        :class="{ danger: item.danger, disabled: item.disabled, 'has-submenu': item.action === 'add-to-subgroup' }"
+        :class="{ danger: item.danger, disabled: item.disabled, 'has-submenu': SUBMENU_ACTIONS.includes(item.action) }"
         :disabled="item.disabled"
         @click.stop="onItemClick($event, item)"
       >

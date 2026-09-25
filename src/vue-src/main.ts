@@ -10,6 +10,7 @@ declare global {
     refreshMemes: () => void
     refreshTags: () => void
     refreshCollections: () => void
+    refreshAiBadges: () => Promise<void>
     showLanDeviceConfirm: (device: any) => void
   }
 }

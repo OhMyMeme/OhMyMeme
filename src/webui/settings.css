@@ -298,3 +298,35 @@ select:hover { border-color: var(--border-light); }
 }
 .import-ico svg { width: 18px; height: 18px; }
 .import-name { font-size: 13px; font-weight: 500; color: var(--fg); }
+
+/* AI 审核弹窗标签 chip */
+.ai-chip-box {
+  display: flex; flex-wrap: wrap; gap: 6px;
+  min-height: 28px; padding: 6px 8px;
+  border: 1px solid var(--border); border-radius: var(--radius-sm);
+  background: var(--card);
+}
+.ai-chip {
+  display: inline-flex; align-items: center; gap: 5px;
+  padding: 2px 8px; border-radius: 10px;
+  font-size: 11.5px; line-height: 1.7;
+  background: var(--accent-muted); color: var(--accent-hover);
+  border: 1px solid transparent;
+}
+/* 建议标签可删除 */
+.ai-chip-remove {
+  background: none; border: none; padding: 0; cursor: pointer;
+  color: var(--muted); font-size: 13px; line-height: 1;
+  font-family: inherit;
+}
+.ai-chip-remove:hover { color: var(--danger); }
+/* 已有标签：只读展示，无删除入口 */
+.ai-chip-readonly .ai-chip {
+  background: var(--surface-2); color: var(--fg-secondary);
+}
+/* 情绪/意图：静态展示 */
+.ai-chip-static .ai-chip {
+  background: transparent; color: var(--muted);
+  border-color: var(--border); border-radius: var(--radius-sm);
+}
+.ai-chip-empty { font-size: 11.5px; color: var(--muted); }

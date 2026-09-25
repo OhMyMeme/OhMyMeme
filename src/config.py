@@ -23,6 +23,9 @@ _SECRET_KEYS = {
     "ftp_password",
     "webdav_password",
     "lan_secret",
+    "ai_tag_api_key",
+    "ai_embed_api_key",
+    "ai_rerank_api_key",
 }
 
 # ~~~ 导入限制 ~~~（超过限制的图片拒绝入库）
@@ -129,6 +132,28 @@ class Config:
         "show_uncategorized": True,  # 显示「未分类」分组
         "record_recent_use": True,  # 复制时记录最近使用
         "show_startup_animation": True,  # 启动时播放启动动画（关闭时降级 300ms 延时）
+        # AI 智能（总开关默认关：不开启时不出现入口，也不发起任何网络请求）
+        "ai_enabled": False,
+        # 视觉打标
+        "ai_tag_enabled": False,
+        "ai_tag_endpoint": "",
+        "ai_tag_api_key": "",
+        "ai_tag_model": "",
+        "ai_tag_batch_size": 4,  # 每批送图的张数（每张为 2xN 宫格）
+        "ai_tag_timeout": 30,
+        "ai_tag_max_edge": 1024,  # 送模型前的最长边
+        "ai_tag_auto_on_import": False,
+        "ai_tag_write_to_tags": True,
+        "ai_tag_review_mode": True,  # 审核模式：AI 只出建议，用户确认后才写库
+        "ai_tag_style": "general",  # general/anime/work/gaming
+        # 嵌入（打标开启时由 set() 强制置 True）
+        "ai_embed_enabled": False,
+        "ai_embed_endpoint": "",
+        "ai_embed_api_key": "",
+        "ai_embed_model": "",
+        "ai_embed_batch_size": 32,
+        "ai_embed_top_k": 30,  # 检索返回条数上限（实际条数还受最低相似度约束）
+        "ai_embed_min_score": 0.35,  # 最低相似度阈值，低于此值视为不相关
     }
 
     def __init__(self, path: Path = None):
