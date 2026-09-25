@@ -308,6 +308,39 @@ def test_resize_avoid_webp_never_outputs_webp(tmp_path):
         assert max(im.size) == 200
 
 
+def test_resize_avoid_webp_jpg_cache_key_includes_quality(tmp_path, monkeypatch):
+    """JPG 质量参数必须进入缓存键，改质量后不得命中旧产物（避免静默stale）"""
+    import src.clipboard_util as cu
+
+    src = tmp_path / "big.jpg"
+    Image.new("RGB", (600, 400), (10, 20, 30)).save(src, format="JPEG")
+    first = cu._resize_static_to_webp(str(src), 200, avoid_webp=True)
+    assert first and "_q90_" in os.path.basename(first)
+
+    monkeypatch.setattr(cu, "_RESIZE_JPG_QUALITY", 60)
+    second = cu._resize_static_to_webp(str(src), 200, avoid_webp=True)
+    assert second != first
+    assert "_q60_" in os.path.basename(second)
+    assert os.path.isfile(first) and os.path.isfile(second)
+
+
+def test_resize_avoid_webp_png_cache_key_excludes_quality(tmp_path, monkeypatch):
+    """PNG 无质量参数，其缓存键不应随 JPG 质量变化"""
+    import src.clipboard_util as cu
+
+    src = tmp_path / "big.png"
+    img = Image.new("RGBA", (600, 400), (0, 0, 0, 0))
+    for x in range(100, 300):
+        for y in range(100, 200):
+            img.putpixel((x, y), (200, 30, 30, 255))
+    img.save(src, format="PNG")
+
+    first = cu._resize_static_to_webp(str(src), 200, avoid_webp=True)
+    monkeypatch.setattr(cu, "_RESIZE_JPG_QUALITY", 60)
+    second = cu._resize_static_to_webp(str(src), 200, avoid_webp=True)
+    assert first == second
+
+
 def test_resize_without_flag_still_outputs_webp(tmp_path):
     """开关关闭时缩放产物维持 WebP，行为与改动前一致"""
     opaque = tmp_path / "keep.jpg"

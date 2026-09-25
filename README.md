@@ -312,7 +312,7 @@ Windows 上 GIF 复制同时写入三个剪贴板格式：`CF_DIB`（首帧 BMP�
 设置页「复制处理」下拉（配置 `copy_resize_mode`：0不处理；1webp缩放，默认；2转gif；3转gif隐写原图）：复制超过 `copy_resize_max`（默认 200px）的静态图时按模式处理，动图（GIF/动画 WebP）不受影响。仅模式 1 缩放原图（转 WebP 缩放到限制内，QQ/微信原生支持 WebP）；模式 2/3 按原分辨率转 GIF（模式 3 额外隐写原图，失败时原样复制原图）。处理结果写入系统临时目录 `ohmm_resize_<md5>_<max>_q<质量>_v<版本>.webp` / `ohmm_gif_<md5>_v<版本>.gif` / `ohmm_stego_<md5>_v1.gif` 并保留（CF_HDROP 需在粘贴时仍可读取）；缓存键含编码参数与版本号，改编码逻辑后旧缓存自动失效，命中时校验文件完整性，同一表情重复复制直接复用。
 
 ### 复制时避免 WebP
-设置页「复制处理」区块内开关（配置 `copy_avoid_webp`，默认关闭）：微信等应用把复制的 WebP 当成文件而非图片，开启后复制路径上的产物一律不含 WebP —— 动图 WebP 转动画 GIF（保真帧延时、`disposal=2` 逐帧清空画布避免残影）、静态 WebP 转 JPG（带透明时合成白底）、非 WebP 的缩放产物输出 JPG（不透明）或 PNG（带透明），其中模式 1 开启时直接按目标格式编码，避免「先转 WebP 再转 JPG」的二次有损。库内文件、数据库、缩略图与同步均不受影响，仅在系统临时目录生成转换副本（`ohmm_webp_gif_<md5>_v<版本>.gif` / `ohmm_webp_jpg_<md5>_q<质量>_v<版本>.jpg` / `ohmm_resize_<md5>_<max>_v<版本>.jpg|.png`）；转换失败回退复制原图并记录日志。**仅作用于复制到剪贴板，拖拽出库仍是原文件。**
+设置页「复制处理」区块内开关（配置 `copy_avoid_webp`，默认关闭）：微信等应用把复制的 WebP 当成文件而非图片，开启后复制路径上的产物一律不含 WebP —— 动图 WebP 转动画 GIF（保真帧延时、`disposal=2` 逐帧清空画布避免残影）、静态 WebP 转 JPG（带透明时合成白底）、非 WebP 的缩放产物输出 JPG（不透明）或 PNG（带透明），其中模式 1 开启时直接按目标格式编码，避免「先转 WebP 再转 JPG」的二次有损。库内文件、数据库、缩略图与同步均不受影响，仅在系统临时目录生成转换副本（`ohmm_webp_gif_<md5>_<上限>_v<版本>.gif` / `ohmm_webp_jpg_<md5>_q<质量>_v<版本>.jpg` / `ohmm_resize_<md5>_<max>_q<质量>_v<版本>.jpg` / `ohmm_resize_<md5>_<max>_v<版本>.png`）；转换失败回退复制原图并记录日志。**仅作用于复制到剪贴板，拖拽出库仍是原文件。**
 
 ### 加密降级
 加密优先使用 `cryptography.fernet.Fernet`，不可用时降级为 `hashlib.pbkdf2_hmac` + XOR + base64。**不能移除 XOR 降级**，否则无 `cryptography` 时系统崩溃。

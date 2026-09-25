@@ -76,18 +76,6 @@ def _is_valid_image(path: str, fmt: str) -> bool:
         return False
 
 
-def _is_valid_webp(path: str) -> bool:
-    """校验 WebP 文件是否完整有效"""
-    try:
-        with PILImage.open(path) as im:
-            if im.format != "WEBP":
-                return False
-            im.verify()
-        return True
-    except Exception:
-        return False
-
-
 def _resize_static_to_webp(image_path: str, max_side: int, avoid_webp: bool = False):
     """超限的静态图重采样；避免 WebP 时输出 JPG/PNG，不适用或失败返回 None"""
     if not HAS_PIL:
@@ -103,12 +91,16 @@ def _resize_static_to_webp(image_path: str, max_side: int, avoid_webp: bool = Fa
         # 故意不删除：CF_HDROP 指向该路径，QQ 粘贴时才读文件；
         # 缓存键含编码参数与版本号（改编码逻辑自动失效），命中时校验完整性
         if avoid_webp:
-            # 带透明的图转 PNG 保留 alpha，其余转 JPG
+            # 带透明的图转 PNG（无质量参数）保留 alpha，其余转 JPG（质量入缓存键）
             fmt = "PNG" if _has_alpha(img) else "JPEG"
-            ext = ".png" if fmt == "PNG" else ".jpg"
+            if fmt == "PNG":
+                ext, qtag = ".png", ""
+            else:
+                ext, qtag = ".jpg", f"_q{_RESIZE_JPG_QUALITY}"
             tmp_path = os.path.join(
                 tempfile.gettempdir(),
-                f"ohmm_resize_{md5}_{max_side}_v{_AVOID_WEBP_CACHE_VERSION}{ext}",
+                f"ohmm_resize_{md5}_{max_side}{qtag}"
+                f"_v{_AVOID_WEBP_CACHE_VERSION}{ext}",
             )
         else:
             fmt = "WEBP"
