@@ -41,10 +41,10 @@ def _is_animated(path: str) -> bool:
 
 
 def _has_alpha(img) -> bool:
-    """判断图片是否带透明通道"""
-    if img.mode in ("RGBA", "LA"):
+    """判断图片是否带透明通道（含 info.transparency 元数据，如灰度 PNG 的 tRNS）"""
+    if img.mode in ("RGBA", "LA", "PA"):
         return True
-    return img.mode == "P" and "transparency" in img.info
+    return "transparency" in img.info
 
 
 def _file_md5(path: str) -> str:
@@ -247,22 +247,27 @@ def _animated_webp_to_gif(image_path: str, max_side: int = 0):
         if os.path.isfile(tmp_path) and _is_valid_gif(tmp_path):
             return tmp_path
         loop = img.info.get("loop")
+        # 目标尺寸在迭代前确定并即时缩放：避免同时持有全尺寸与缩放后两份帧
+        # （长动画全尺寸帧可达上百 MB）
+        target = None
+        if max_side and max(img.size) > max_side:
+            ratio = max_side / float(max(img.size))
+            target = (
+                max(1, int(img.width * ratio)),
+                max(1, int(img.height * ratio)),
+            )
         frames, durations = [], []
         for i in range(img.n_frames):
             img.seek(i)
             img.load()
-            frames.append(img.convert("RGBA"))
+            frame = img.convert("RGBA")
+            if target:
+                frame = frame.resize(target, PILImage.LANCZOS)
+            frames.append(frame)
             # 帧延时保真，仅设 20ms 下限（0 值会导致编码异常，过短播放器无法区分）
             durations.append(max(20, int(img.info.get("duration", 0) or 0)))
         if not frames:
             return None
-        if max_side and max(frames[0].size) > max_side:
-            ratio = max_side / float(max(frames[0].size))
-            size = (
-                max(1, int(frames[0].width * ratio)),
-                max(1, int(frames[0].height * ratio)),
-            )
-            frames = [f.resize(size, PILImage.LANCZOS) for f in frames]
         # disposal=2 逐帧清空画布，避免透明区域透出上一帧形成残影
         frames[0].save(
             tmp_path,

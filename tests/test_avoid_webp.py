@@ -341,6 +341,63 @@ def test_resize_avoid_webp_png_cache_key_excludes_quality(tmp_path, monkeypatch)
     assert first == second
 
 
+def test_has_alpha_detects_transparency_metadata(tmp_path):
+    """灰度 PNG 的 tRNS 透明度以 info.transparency 表达，必须识别为带 alpha
+
+    漏判会让 _flatten_to_rgb 走 convert("RGB")，把 tRNS 指定的透明像素当实色保留
+    """
+    from src.clipboard_util import _flatten_to_rgb, _has_alpha
+
+    gray = Image.new("L", (32, 32), 128)
+    gray.putpixel((0, 0), 255)
+    path = tmp_path / "gray_trns.png"
+    gray.save(path, transparency=255)
+    with Image.open(path) as im:
+        assert im.mode == "L", "fixture 前提：灰度图模式为 L"
+        assert "transparency" in im.info, "fixture 前提：tRNS 已写入"
+        assert _has_alpha(im) is True
+        # 透明像素必须被合成为白底，而非当实色保留
+        assert _flatten_to_rgb(im).getpixel((0, 0)) == (255, 255, 255)
+
+    rgba = Image.new("RGBA", (32, 32), (10, 20, 30, 255))
+    assert _has_alpha(rgba) is True
+    pal = Image.new("P", (32, 32), 0)
+    assert _has_alpha(pal) is False
+
+
+def test_animated_webp_to_gif_resize_matches_expected_dimensions(tmp_path):
+    """逐个即时缩放（迭代前定尺寸）与最终尺寸、比例一致，边界值正确"""
+    src = _animated_webp(str(tmp_path / "ratio.webp"), size=128, n=3)
+    out = _animated_webp_to_gif(src, max_side=64)
+    with Image.open(out) as im:
+        assert im.size == (64, 64)
+        assert im.n_frames == 3
+    # 非方形：保持宽高比并按最长边取上限（各帧需有差异，否则 WebP 编码器会压成单帧）
+    rect = tmp_path / "rect.webp"
+    frames = []
+    for i in range(3):
+        im = Image.new("RGBA", (200, 100), (0, 0, 0, 0))
+        for x in range(100):
+            for y in range(50):
+                im.putpixel((x, y), (20, 120, 220, 255))
+        im.putpixel((i, 60), (255, 0, 0, 255))
+        frames.append(im)
+    frames[0].save(
+        rect,
+        format="WEBP",
+        save_all=True,
+        append_images=frames[1:],
+        duration=[40] * 3,
+        loop=0,
+    )
+    with Image.open(rect) as chk:
+        assert chk.n_frames == 3, "fixture 前提：三帧须保持为动画"
+    out2 = _animated_webp_to_gif(str(rect), max_side=100)
+    with Image.open(out2) as im:
+        assert max(im.size) == 100
+        assert im.size == (100, 50)
+
+
 def test_resize_without_flag_still_outputs_webp(tmp_path):
     """开关关闭时缩放产物维持 WebP，行为与改动前一致"""
     opaque = tmp_path / "keep.jpg"
