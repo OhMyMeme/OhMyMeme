@@ -307,6 +307,8 @@ async function getSettings() {
   const st = document.getElementById('s-sync-type');
   if (ff) ff.checked = s.sync_auto_fetch_index === true;
   if (sa) sa.checked = s.sync_auto_sync === true;
+  const mit = document.getElementById('s-manifest-include-tags');
+  if (mit) mit.checked = s.manifest_include_tags !== false;
   if (st) { st.value = s.sync_type || ''; toggleSyncType(); }
   document.getElementById('s-ftp-host').value = s.ftp_host || '';
   document.getElementById('s-ftp-port').value = s.ftp_port || 21;
@@ -604,6 +606,7 @@ async function saveSettings() {
   const show_uncategorized = document.getElementById('s-show-uncategorized')?.checked !== false;
   const record_recent_use = document.getElementById('s-record-recent')?.checked !== false;
   const show_startup_animation = document.getElementById('s-show-startup-anim')?.checked !== false;
+  const manifest_include_tags = document.getElementById('s-manifest-include-tags')?.checked !== false;
   const sync = collectSyncSettings();
   if (!validateSync(sync)) return;
   const lan_port = parseInt(document.getElementById('s-lan-port')?.value) || 17852;
@@ -615,7 +618,7 @@ async function saveSettings() {
     copy_resize_mode: copy_mode,
     copy_avoid_webp,
     auto_start, silent_start, show_uncategorized, record_recent_use,
-    show_startup_animation,
+    show_startup_animation, manifest_include_tags,
     lan_port, lan_secret,
     ...sync
   });
@@ -671,6 +674,8 @@ async function resetSettings() {
     const st = document.getElementById('s-sync-type');
     if (ff) ff.checked = false;
     if (sa) sa.checked = false;
+    const mit2 = document.getElementById('s-manifest-include-tags');
+    if (mit2) mit2.checked = true;
     if (st) { st.value = ''; toggleSyncType(); }
     document.getElementById('s-ftp-host').value = '';
     document.getElementById('s-ftp-port').value = '21';
@@ -1897,6 +1902,21 @@ document.addEventListener('keydown', (e) => {
   }
   if (e.key === 'Enter' && e.ctrlKey) saveSettings();
 });
+
+/* About external links */
+const ABOUT_URLS = {
+  github: 'https://github.com/TNTXZ/OhMyMeme',
+  qq: 'https://qm.qq.com/cgi-bin/qm/qr?k=xbstRIkSObzF5ng71yBXEkKZ0v8--KVV&jump_from=webapi&authKey=BEnDuk2KNpPJC0SgkZwCLQHUsbIRyM1iCp8DuPK2hihtVBvLG32WqIYMZ2ej5Gu0'
+};
+function openAboutUrl(kind) {
+  const url = ABOUT_URLS[kind];
+  if (!url) return;
+  const r = api('open_url', url);
+  if (!r) { showToast('无法打开链接'); return; }
+  Promise.resolve(r).then((ok) => {
+    if (!ok) showToast('无法打开链接');
+  }).catch(() => showToast('无法打开链接'));
+}
 
 /* Update check */
 async function checkUpdate() {

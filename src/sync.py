@@ -1262,6 +1262,29 @@ def _apply_remote_order(remote_data: dict):
         db.reorder_memes(ordered_ids)
 
 
+def _apply_remote_tags(remote_data: dict):
+    """并集合并远端标签（只增不清；条目缺 tags 时回退顶层 tag_map，均缺失则跳过）"""
+    db = get_db()
+    tag_map = remote_data.get("tag_map")
+    for m in remote_data.get("memes", []):
+        if not isinstance(m, dict):
+            continue
+        fname = m.get("filename", "")
+        if not _safe_remote_fname(fname):
+            continue
+        tags = m.get("tags")
+        if not isinstance(tags, list) and isinstance(tag_map, dict):
+            tags = tag_map.get(fname)
+        if not isinstance(tags, list):
+            continue
+        names = [t for t in tags if isinstance(t, str) and t.strip()]
+        if not names:
+            continue
+        row = db.get_by_filename(fname)
+        if row:
+            db.add_tags_to_memes([row["id"]], names)
+
+
 def pull(remove_local: bool = None) -> dict:
     """远端 -> 本地：下载缺失/变更的表情包和清单（多线程）"""
     cfg = get_config()
@@ -1350,6 +1373,7 @@ def pull(remove_local: bool = None) -> dict:
 
         _apply_remote_collections(remote_data)
         _apply_remote_order(remote_data)
+        _apply_remote_tags(remote_data)
         build_manifest()
         if aggregated["errors"] > 0:
             _update_sync_state(failed_items=aggregated["failed"])

@@ -53,6 +53,8 @@ def build() -> List[Dict]:
     """从数据库重建完整索引并写入磁盘"""
     db = get_db()
     rows = db.search(keyword="", tags=None, limit=999999)
+    include_tags = bool(get_config().get("manifest_include_tags", True))
+    tags_map = db.get_tags_map() if include_tags else {}
 
     memes = []
     cache_dir = get_config().cache_dir
@@ -66,15 +68,16 @@ def build() -> List[Dict]:
                 mtime = str(int(fpath.stat().st_mtime))
             except Exception:
                 pass
-        memes.append(
-            {
-                "filename": fname,
-                "name": r.get("original_name", os.path.splitext(fname)[0]),
-                "sha256": r.get("file_hash", ""),
-                "file_size": r.get("file_size", 0),
-                "mtime": mtime,
-            }
-        )
+        entry = {
+            "filename": fname,
+            "name": r.get("original_name", os.path.splitext(fname)[0]),
+            "sha256": r.get("file_hash", ""),
+            "file_size": r.get("file_size", 0),
+            "mtime": mtime,
+        }
+        if include_tags:
+            entry["tags"] = tags_map.get(fname, [])
+        memes.append(entry)
 
     collections = _build_collection_tree(db)
 

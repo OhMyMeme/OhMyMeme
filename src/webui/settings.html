@@ -200,6 +200,9 @@
       <label class="check-row" style="margin-bottom:12px">
         <input id="s-sync-auto" type="checkbox">启动时自动同步
       </label>
+      <label class="check-row" style="margin-bottom:12px">
+        <input id="s-manifest-include-tags" type="checkbox">将标签写入同步清单（meme-index.json）
+      </label>
 
       <div class="form-group">
         <label>存储类型</label>
@@ -405,6 +408,10 @@
         <button class="btn btn-secondary btn-sm" id="btn-check-update" onclick="checkUpdate()">检查更新</button>
       </div>
       <div id="s-update-status" class="about-update-status"></div>
+      <div class="about-links">
+        <button class="btn btn-secondary btn-sm" onclick="openAboutUrl('github')">GitHub 项目地址</button>
+        <button class="btn btn-secondary btn-sm" onclick="openAboutUrl('qq')">加入 QQ 群</button>
+      </div>
       <div class="section-title">贡献者</div>
       <div class="about-contributors">
         <img id="contributors-img" src="/api/contributors" loading="lazy" alt="项目贡献者" onerror="document.getElementById('contributors-img').style.display='none';document.getElementById('contributors-fallback').style.display='block'">
@@ -634,6 +641,7 @@
   <div style="background:var(--surface);border-radius:var(--radius-lg);padding:24px 28px;width:440px;border:1px solid var(--border);box-shadow:var(--shadow-lg)">
     <div id="wechat-config" style="display:block">
       <div style="font-size:14px;font-weight:600;color:var(--fg);margin-bottom:4px">从微信导入</div>
+      <div style="font-size:11.5px;color:var(--danger);background:rgba(239,68,68,.08);border:1px solid rgba(239,68,68,.35);border-radius:6px;padding:7px 10px;margin-bottom:10px;line-height:1.6">警告：该功能可能不符合微信用户协议，请谨慎使用！</div>
       <div style="font-size:12px;color:var(--muted);margin-bottom:12px;line-height:1.6">从微信电脑版本地缓存提取收藏表情（需微信正在运行，仅 Windows 支持）。微信文件目录是存放所有账号数据的根目录（xwechat_files），其下以 wxid_ 开头或含表情库（emoticon.db）的文件夹为各账号目录</div>
       <div class="form-group">
         <label>微信文件目录（根目录）</label>

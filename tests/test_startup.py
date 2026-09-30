@@ -436,6 +436,73 @@ def test_webui_html_exists():
     assert "hotkey_show_at_mouse," in settings_js
 
 
+def test_manifest_include_tags_settings_contract():
+    """设置页「将标签写入同步清单」开关（HTML 复选框 + JS 读写 + 后端配置键）"""
+    from src.config import Config
+    from src.webui import HTML_DIR, SettingsApi
+
+    assert Config.DEFAULTS.get("manifest_include_tags") is True
+    settings_html = (HTML_DIR / "settings.html").read_text(encoding="utf-8")
+    assert 'id="s-manifest-include-tags"' in settings_html
+    settings_js = (HTML_DIR / "settings.js").read_text(encoding="utf-8")
+    assert "s.manifest_include_tags !== false" in settings_js
+    assert "manifest_include_tags," in settings_js
+    import inspect
+
+    src = inspect.getsource(SettingsApi.get_settings)
+    assert '"manifest_include_tags"' in src
+    reset_src = inspect.getsource(SettingsApi.reset_settings)
+    assert '"manifest_include_tags": True' in reset_src
+
+
+def test_about_links_static_contract():
+    """关于页 GitHub/QQ 群外链按钮（HTML 按钮 + JS URL 常量 + open_url 接口）"""
+    from src.webui import HTML_DIR
+
+    settings_html = (HTML_DIR / "settings.html").read_text(encoding="utf-8")
+    settings_js = (HTML_DIR / "settings.js").read_text(encoding="utf-8")
+    assert "openAboutUrl('github')" in settings_html
+    assert "openAboutUrl('qq')" in settings_html
+    assert "https://github.com/TNTXZ/OhMyMeme" in settings_js
+    assert "qm.qq.com/cgi-bin/qm/qr" in settings_js
+    assert "api('open_url'" in settings_js
+
+
+def test_open_url_rejects_non_http():
+    """open_url 仅允许 http(s)，file/javascript 等 scheme 一律拒绝"""
+    from src.webui import SettingsApi
+
+    assert SettingsApi.open_url(None, "file:///etc/passwd") is False
+    assert SettingsApi.open_url(None, "javascript:alert(1)") is False
+    assert SettingsApi.open_url(None, "") is False
+    assert SettingsApi.open_url(None, None) is False
+
+
+def test_open_url_dispatches_to_default_browser(monkeypatch):
+    """https 链接交给系统默认浏览器打开"""
+    import os
+
+    import src.webui as webui_module
+
+    calls = []
+    monkeypatch.setattr(webui_module.platform, "system", lambda: "Windows")
+    monkeypatch.setattr(os, "startfile", lambda u: calls.append(u), raising=False)
+    ok = webui_module.SettingsApi.open_url(None, "https://github.com/TNTXZ/OhMyMeme")
+    assert ok is True
+    assert calls == ["https://github.com/TNTXZ/OhMyMeme"]
+
+
+def test_wechat_dialog_user_agreement_warning():
+    """微信导入对话框须常驻用户协议警告（合规提示，防被删）"""
+    from src.webui import HTML_DIR
+
+    html = (HTML_DIR / "settings.html").read_text(encoding="utf-8")
+    seg = html.split('id="wechat-config"', 1)
+    assert len(seg) == 2
+    warn_seg = seg[1].split('id="wechat-progress"', 1)[0]
+    assert "该功能可能不符合微信用户协议，请谨慎使用！" in warn_seg
+
+
 def test_sorting_visual_feedback_static_contract():
     root = Path(__file__).resolve().parent.parent
     index_js = (root / "src" / "webui" / "index.js").read_text(encoding="utf-8")

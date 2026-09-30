@@ -157,6 +157,7 @@ tests/
 - 密钥字段 (ftp_password, s3_secret_key 等) 用 Fernet 加密存储
 - 全局单例: `get_config()`, `get_db()`
 - `hotkey_show_at_mouse` 默认 `false`，控制 Windows 上全局热键显示隐藏主面板时是否按鼠标位置放置
+- `manifest_include_tags` 默认 `true`，控制 `manifest.build()` 是否把标签写入 `meme-index.json` 每个条目的 `tags` 数组（关闭时条目不含 `tags` 键，本地标签不受影响）；设置页「云端同步」区块开关
 - `cache_dir`（表情包图片目录）可自定义：配置键 `cache_dir` 非空时 `Config.cache_dir` 返回该路径，否则默认 `data_dir/cache`；设置页「存储位置」通过 `SettingsApi.pick_storage_dir`/`apply_storage_dir` 切换，`apply_storage_dir` 可选把旧目录文件递归迁移（跳过 `thumbnails`）；**切换后旧文件不再可见**，故未迁移时必须确保文件已存在于新目录；`_storage_dir_validation` 拒绝相对/相同/上下级目录以及 `data_dir`/`thumbnail_dir` 及其上下级（受保护路径）；DB/缩略图/manifest 仍留在 `data_dir`，数据库只存文件名，文件在新目录时按 basename 自动解析；`reset_settings` 恢复默认时保留 `cache_dir`。迁移为**后台三阶段幂等**设计（避免跨盘长拷贝时进程被杀导致分裂状态）：①复制阶段源只读（`O_EXCL` 排他写入，dst 已存在且大小一致视为已复制跳过——幂等；失败/取消仅清理本次新副本，源完好无分裂，不回滚）；②写配置（唯一切换点，此后新目录已完整）；③删源（失败仅残留旧目录冗余，不阻断）。迁移开始写 `data_dir/storage_migration.json` 清单、完成后删除；`main.py` 启动时若检测到未完成清单则后台幂等续跑（强杀/断电后重启自愈）。取消由 move 回滚改为删新副本，消除回滚自身失败风险
 
 ### 同步
@@ -183,7 +184,7 @@ tests/
 - **仅检查稳定版**：`_parse_release` 跳过 prerelease 与含 `nightly` 的 tag（保证软件更新绝不指向非正式版）；`_parse_version` 跳过非数字段（如 `0.6.0-nightly`）
 - **非阻塞检查**：`check_latest_cached(force=False)` 是唯一入口——**`_ensure_check_started` 先查 `_check_running`（在跑则一律返回 `pending`，含 force 刷新未完成时，绝不命中旧 `_check_result`），再对非 force + 新鲜缓存（`_CHECK_TTL`=24h）直接返回**；无缓存/缓存过期/`force=True` 触发后台 daemon 线程跑 `check_latest()` 填 `_check_result`+`_check_result_at`（`_check_lock` 保护，幂等只启动一次），立即返回 `pending: true`（永不阻塞网络 3.8s~20s+）。**generation token**：`reset_check_cache()` 推进 `_check_generation`，后台 `_task` 完成时仅当代号匹配才写结果，防在途旧任务覆盖 reset 后新状态。`webui.py` 的 `JsApi.check_update`/`SettingsApi.check_update` 支持 `(debug, force)` 透传；前端 `App.vue` 的 `checkUpdateAndPrompt`（onMounted/24h 定时）首发 `force=true`、pending 时转 `checkUpdateResult` 非 force 轮询，`settings.js` 的 `checkUpdate` 首发 force、while 轮询暂取非 force——避免完成后再次 force 触发新检查造成永久 pending。**这解决了启动期间 `check_update` 同步阻塞曾导致的界面交互卡顿，及缓存不失效时 24h 定时器形同虚设的问题**
 - 镜像并发: `_urlopen_mirror` / `_urlretrieve_mirror` 用 `ThreadPoolExecutor` + `as_completed`
-- 镜像列表: `github.dpik.top` → `gh.dpik.top` → `gh-proxy.org` → 自建镜像（仅用于版本查询）→ 直连 GitHub
+- 镜像列表: `github.dpik.top` → `gh.dpik.top` → `gh-proxy.org` → 直连 GitHub（已移除 `proxy.starsfire.top`——该代理仅浏览器可访问，程序化请求 404）
 - 下载进度: `start_download()` → 后台线程 → JS 每 500ms 轮询 `get_download_progress()`
 - Linux 更新: `_pick_asset_url` 选取 `.AppImage` 资产；`run_installer` Linux 分支 chmod +x 后直接 `Popen`（AppImage 是 ELF 非 shell 脚本），无 `/dev/fuse` 时追加 `--appimage-extract-and-run` 回退（`_needs_appimage_fallback`）；下载默认文件名走 `_default_asset_name()`（Linux 为 `OhMyMeme-v{version}-x86_64.AppImage`）
 - macOS 更新: `_pick_asset_url` 按当前架构选取 `.dmg` 资产（arm64/x86_64）；`run_installer` 走 `_install_dmg_macos`（`hdiutil attach` → `ditto` 复制 `.app` 到 `/Applications` → 打开应用程序目录）；`_default_asset_name()` 为 `OhMyMeme-v{version}-{arch}.dmg`
@@ -194,7 +195,7 @@ tests/
 - **TCP 握手（明文帧）**: `[4B 长度][JSON]`；服务端发 `challenge{nonce}` → 客户端回 `proof{HMAC-SHA256(secret, nonce)}` → 验 `ok`/`no`（3 次错误断开）；无密钥时直接放行
 - **数据帧（加密）**: `[4B 长度][12B IV][AES-GCM 密文+16B tag]`；密钥由 PBKDF2(secret, 100000) 派生；JSON 载荷，命令由手机（客户端）发起
 - **设备确认（连接前置）**: 客户端握手后发 `device_info` 帧（`{name,model,os,ver}`，手机 Build.MODEL/MANUFACTURER/versionName）；桌面端 `_cmd_device_info` 弹窗展示设备信息，用户允许/拒绝后回 `{ok, approved, allow_secret_config}`；**未确认期间其他命令挂起**（`confirmed` Event，等待超时 60s 后拒），无确认回调（测试/无 UI）默认放行；`confirm_device()` 由 JS 回传批准结果（`pending_confirm` 记录 + `threading.Event`）；WebUI 主窗口 `showLanDeviceConfirm()` 弹窗 → `JsApi.lan_confirm_device` 回传
-- **命令**: `pull_manifest` / `push_manifest`（复用 sync 的 `_apply_remote_order`/`_apply_remote_collections`）/ `pull_file` / `push_file`（base64 传输）/ `get_config` / `send_config` / `device_info` / `ping`
+- **命令**: `pull_manifest` / `push_manifest`（复用 sync 的 `_apply_remote_order`/`_apply_remote_collections`/`_apply_remote_tags`）/ `pull_file` / `push_file`（base64 传输）/ `get_config` / `send_config` / `device_info` / `ping`
 - **配置同步（双向，电脑为权威源）**: `get_config` 由手机拉取、`send_config` 由手机推送；两端均剔除 `_SECRET_KEYS`（FTP/S3/R2/WebDAV 密码等）；设置页「允许密钥传输」开关（`lan_set_allow_secret_config`，仅内存生效）开启后配置同步才包含密钥字段，开启前弹窗警示「请勿在公共网络或不信任的网络进行此操作！」；`device_info` 确认响应携带 `allow_secret_config` bool，手机端据此动态显示密钥拉取/推送按钮
 - **文件安全（与手机端对称）**: `_safe_fname` 拒绝路径穿越/绝对路径；`push_file` 四重校验：文件名安全 → 字节 ≤`MAX_FILE_SIZE`（64MB）→ 可选 `sha256` 与本地计算一致 → `_import_bytes` 先解码校验宽高>0 合法才写盘；**不合法字节绝不落盘**（杜绝孤儿缓存文件）；合法图片按 SHA-256 去重后存 `cache_dir/{hash[:16]}{ext}` 并入库
 - **生命周期**: 设置页开关临时启动（重启默认关，不写入 config）；`lan_port`/`lan_secret` 持久化（`lan_secret` 加密存储）；`main.py` `shutdown()` 兜底 `lan.stop()`
@@ -209,7 +210,7 @@ tests/
 - **键盘无障碍（主窗口）**：全局 `:focus-visible` 焦点环（2px `var(--primary)`）；meme 卡/文件夹卡 `role="button" tabindex="0"` + Enter/Space 复制或打开分组，标签栏 span 同理（`aria-pressed`）；标题栏图标按钮全部带 `aria-label`；弹窗焦点管理：`utils/api.ts` 的 `rememberFocus()`/`restoreFocus()`/`trapTabFocus()`（模块级 `_focusTarget` 记录打开前焦点、关闭归还、Tab 在弹窗内循环），InputDialog/TagEditor 打开聚焦输入框、ConfirmDialog 默认聚焦「取消」（危险操作需显式点「确定」）、CollectionBuilder 聚焦 `#cb-name`；`#meme-grid.sort-enabled .meme-card:focus-visible` 为 2px 实线焦点环
 - **键盘无障碍（设置窗口）**：`settings.css` 全局 `:focus-visible` 焦点环（2px `var(--accent)`）；`.btn/.import-row/.nav-item/.title-btn:focus-visible` 用 box-shadow 双环、`.nav-item.danger:focus-visible` 红色环、`.check-row input[type="checkbox"]:focus-visible`；危险按钮统一 `.btn-danger-outline` 类（hover 变红 + 红色 focus 环，取代内联 `border-color:#ef4444`）；覆盖层焦点管理：`settings.js` 的 `rememberSettingsFocus()`/`restoreSettingsFocus()`/`trapSettingsFocus()`/`visibleSettingsOverlay()`（模块级 `_settingsFocusTarget` + `_SETTINGS_OVERLAY_IDS` 列表），各覆盖层（danger/sync 进度与完成/QQ/QQNT/TG/抖音/微信/上传确认/更新弹窗）打开时记住焦点、打开后聚焦首元素、关闭归还；全局 keydown 先对可见覆盖层做 Tab 循环陷阱，再按 Escape 依次关 danger→dy→tg→wechat→qq→qqnt→sync-progress→sync-done→关设置窗口；静态覆盖层 `role="dialog" aria-modal="true"`，`#toast` 加 `role="status" aria-live="polite"`（主窗口 `#toast` 同理）
 - **设置窗口 UX**：保存模型—表单控件改动经 `initDirtyTracking()` 置 `_settingsDirty`，`closeSettings()` 变 async，脏时弹「有未保存的更改」确认再关（取消/×/Esc 均触发）；`saveSettings`/`getSettings`/`resetSettings` 成功后清脏；真正立即生效的控件（LAN 开关、密钥传输、存储位置「应用更改」）带 `.immediate-hint`「立即生效」标注；状态色收敛为 token：`--success: #22c55e`/`--danger: #ef4444`，JS 用 `setStatusColor()` 切 `.status-ok/.status-error` 类（不再写死 `#4caf50/#f44336`），HTML/CSS 内联色改 `var(--danger)`；复制处理下拉用 `.select-row`（label span + select），不再包 `.check-row`
-- **关于页**：设置窗口左侧导航末项「关于」（`data-group="about"`）收纳从基础设置迁出的版本更新区块（`s-ver-current`/`btn-check-update`/`s-update-status`，逻辑不变）；页面含大号 OhMyMeme logo（`.about-logo`，span 用 `--accent`，复刻主窗口标题栏效果）、版本号+检查更新，及贡献者名单（`.about-contributors` 深色卡片）。贡献者头像不走外部直连：`/api/contributors` 路由（webui.py Bottle）用 urllib 抓取 `contributor.starsfire.top/TNTXZ/OhMyMeme` 的 SVG（该服务忽略 `?bg=` 参数且无 CORS 头，浏览器直接 fetch 会失败），用 `svg.replace` 剥离白色背景 `<rect>` 后以 `image/svg+xml` 返回，使圆形头像直接落在深色页面上；`onerror` 时隐藏图片并显示「贡献者名单加载失败」回退文案
+- **关于页**：设置窗口左侧导航末项「关于」（`data-group="about"`）收纳从基础设置迁出的版本更新区块（`s-ver-current`/`btn-check-update`/`s-update-status`，逻辑不变）；页面含大号 OhMyMeme logo（`.about-logo`，span 用 `--accent`，复刻主窗口标题栏效果）、版本号+检查更新，及贡献者名单（`.about-contributors` 深色卡片）。贡献者头像不走外部直连：`/api/contributors` 路由（webui.py Bottle）用 urllib 抓取 `contributor.starsfire.top/TNTXZ/OhMyMeme` 的 SVG（该服务忽略 `?bg=` 参数且无 CORS 头，浏览器直接 fetch 会失败），用 `svg.replace` 剥离白色背景 `<rect>` 后以 `image/svg+xml` 返回，使圆形头像直接落在深色页面上；`onerror` 时隐藏图片并显示「贡献者名单加载失败」回退文案。版本行下方含「GitHub 项目地址」「加入 QQ 群」外链按钮（`openAboutUrl` → `SettingsApi.open_url`，仅允许 http/https scheme，经 `os.startfile`/`open`/`xdg-open` 交系统默认浏览器打开，失败 toast 提示）
 - **对比度（H2）**：`--muted: #8a94a8`（在 bg/surface 上 ≥5:1）；实心主按钮/激活态文字/选中态 outline 用 `--primary-strong: #1d4ed8`（白色文字 6.7:1、`--primary-light` 背景文字 5.49:1）；`--primary #3b82f6` 仅用于 hover 高亮，不作小字/浅底文字色
 
 ### 环境检测
@@ -274,6 +275,7 @@ tests/
 - `_apply_remote_collections` 以**并集**方式合并远端分组，不清除本地已有成员
 - 远端 manifest 中的 `collections` 用文件名关联（非 ID），跨设备稳定
 - `_apply_remote_order` 按远端 manifest 的 `memes` 顺序重排本地 `sort_order`（`reorder_memes`），确保 pull 后本地显示顺序与云端一致，再次 push 不致覆盖云端排序
+- `_apply_remote_tags` 以**并集**合并远端标签（只增不清，复用 `add_tags_to_memes`）：读条目内 `tags` 数组，缺失时回退顶层 `tag_map`（旧版安卓清单），均缺失/空列表则跳过不动本地标签；`pull()` 与局域网 `_cmd_push_manifest` 均在 order/collections 之后调用
 
 ### 排序同步闭环
 - 排序相关的 `reorder_memes`/`reorder_collections`/`reorder_collection_members` 更新 DB 后即调 `build_manifest()`，本地 `meme-index.json` 保持最新
@@ -283,6 +285,7 @@ tests/
 ### Manifest
 - `build()` 递归遍历嵌套分组树，空分组自动 `delete_collection`
 - 远端 manifest 中的 `collections` 以嵌套格式存储（`name`/`filenames`/`children`），version 2 旧格式启动时自动转换
+- 每个 meme 条目含 `tags` 数组（无标签为 `[]`，批量取自 `MemeDB.get_tags_map()` 单查询），受配置 `manifest_include_tags`（默认开）控制，关闭时条目不含 `tags` 键；`JsApi.set_meme_tags`/`batch_add_tags` 变更后即时 `build_manifest()`
 
 ### 自定义排序
 - `memes.sort_order` 字段存储全局展示顺序；前端可拖拽排序仅在正 ID 分组/子分组内进行，成员顺序存 `meme_collections.sort_order`
@@ -405,7 +408,7 @@ tests/
 - **下载校验** (`_download_sticker`): urllib 下载 → 超限拒绝 → **明文优先**（`_detect_image_ext` 命中即原样返回）→ 非明文且带 `aes_key` 时才 AES-128-CBC 解密（IV=key）→ 再次魔数校验。**明文必须优先判定**：`cdn_url`（`/20401/`）恒定返回明文图片，旧实现先按 `aes_key` 存在且 `len(data) % 16 == 0` 无条件解密，会把明文解坏后判为非法而静默丢弃——实测全量 328 个里恰好丢 20 个（≈1/16，与概率吻合）；长度非 16 倍数者因跳过解密分支而侥幸成功，掩盖了该 bug。回归测试见 `tests/test_wechat_env.py` 的 `test_plaintext_16_multiple_survives_with_aes_key`（对旧逻辑必然失败）。**防 SSRF**：仅允许白名单 CDN 主机（`vweixinf.tc.qq.com`/`wxapp.tc.qq.com`），解析后拒绝回环/私网/链路本地地址，重定向逐目标复检
 - **完整性校验**: **仅发布态（`sys.frozen`）比对固定哈希**——源码运行用的是本地自编译产物，其哈希与随包固定值必然不同（MSVC 构建非确定性），且该哈希描述的是打包件而非工作副本，故开发态跳过比对（否则开发者自行编译后反而无法使用微信导入）；发布态哈希不匹配或未配置时**拒绝执行**（`ensure_wechat_keyfinder` 返回空串，前端报 `no_binary`）。哈希由构建期自动注入，无需手工 `certutil`（见上「SHA-256 构建期注入」）
 - **源码运行按需构建** (`_ensure_dev_helper`): 开发态缺 helper 时自动 `cmake` 构建一次并拷回源码目录（与 `main._ensure_vue_frontend` 同思路），保证新克隆仓库执行 `python -m src` 即可用微信导入；**pytest 下跳过**（沿用 `hotkey.py` 的 `PYTEST_CURRENT_TEST` 守卫），构建失败仅告警不阻断启动
-- **前端 UI**: 设置页「导入」分组下 `.import-row` 列表行（硬编码 SVG 图标 + 名称），点击微信行弹出对话框（目录选择 + 环境检测 + 多账号下拉 → 进度覆盖层）
+- **前端 UI**: 设置页「导入」分组下 `.import-row` 列表行（硬编码 SVG 图标 + 名称），点击微信行弹出对话框（目录选择 + 环境检测 + 多账号下拉 → 进度覆盖层）；对话框标题下常驻用户协议警告框（红字：「该功能可能不符合微信用户协议，请谨慎使用！」）
 
 ## 构建 & 测试
 ```bash

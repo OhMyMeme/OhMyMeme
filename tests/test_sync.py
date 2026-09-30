@@ -164,6 +164,8 @@ class _FakeDb:
             ]
         )
         self.order = []  # reorder_memes 记录的 id 顺序
+        self.tags_map = {}  # get_tags_map 返回值
+        self.tag_calls = []  # add_tags_to_memes 调用记录 (ids, tags)
 
     def search(self, keyword="", tags=None, limit=999999, collection_id=None):
         return list(self.rows)
@@ -176,6 +178,13 @@ class _FakeDb:
             if r["filename"] == filename:
                 return dict(r, id=i + 1)
         return None
+
+    def get_tags_map(self):
+        return dict(self.tags_map)
+
+    def add_tags_to_memes(self, meme_ids, tags):
+        self.tag_calls.append((list(meme_ids), list(tags)))
+        return len(meme_ids)
 
     def reorder_memes(self, meme_ids):
         id_to_name = {i + 1: r["filename"] for i, r in enumerate(self.rows)}
@@ -431,6 +440,43 @@ class TestSyncPush(unittest.TestCase):
         self.assertEqual(
             [m["filename"] for m in local["memes"]], ["b.png", "a.png", "c.png"]
         )
+
+    # ─── tags 写入 manifest ───
+
+    def test_build_manifest_includes_tags(self):
+        """manifest.build() 按 DB 标签写入条目内 tags（开关默认开）"""
+        self.fake_db.tags_map = {"test.png": ["cat", "dog"]}
+        sync.build_manifest()
+        local = json.loads((self.data_dir / INDEX_FILENAME).read_text(encoding="utf-8"))
+        self.assertEqual(local["memes"][0]["tags"], ["cat", "dog"])
+
+    def test_build_manifest_untagged_entry_has_empty_tags(self):
+        """无标签表情的条目 tags 为空数组（远端据此区分「无标签」与「未知」）"""
+        sync.build_manifest()
+        local = json.loads((self.data_dir / INDEX_FILENAME).read_text(encoding="utf-8"))
+        self.assertEqual(local["memes"][0]["tags"], [])
+
+    def test_build_manifest_omits_tags_when_disabled(self):
+        """manifest_include_tags=False 时条目不含 tags 键"""
+        self.cfg.set("manifest_include_tags", False)
+        self.fake_db.tags_map = {"test.png": ["cat"]}
+        sync.build_manifest()
+        local = json.loads((self.data_dir / INDEX_FILENAME).read_text(encoding="utf-8"))
+        self.assertNotIn("tags", local["memes"][0])
+
+    def test_pull_applies_remote_tags(self):
+        """pull 把远端条目内 tags 并集合并进本地（经 _apply_remote_tags）"""
+        e = _entry("test.png", "abc")
+        e["tags"] = ["remote"]
+        self.fake_backend.remote_memes = {"test.png": e}
+        sync.pull()
+        self.assertEqual(self.fake_db.tag_calls, [([1], ["remote"])])
+
+    def test_pull_skips_remote_tags_when_entry_has_none(self):
+        """远端条目无 tags 且无 tag_map 时不触碰本地标签"""
+        self.fake_backend.remote_memes = {"test.png": _entry("test.png", "abc")}
+        sync.pull()
+        self.assertEqual(self.fake_db.tag_calls, [])
 
     def test_push_uploads_manifest_in_local_sort_order(self):
         """push 上传的远端 manifest 顺序与本地清单顺序一致"""

@@ -392,6 +392,7 @@ class JsApi:
         """覆盖式设置某表情的标签"""
         try:
             self._db.set_meme_tags(meme_id, tags or [])
+            build_manifest()
             return True
         except Exception as e:
             logger.error(f"set_meme_tags error: {e}")
@@ -748,6 +749,7 @@ class JsApi:
         try:
             ids = list(dict.fromkeys(int(x) for x in (meme_ids or [])))
             count = self._db.add_tags_to_memes(ids, list(tags or []))
+            build_manifest()
             return {"ok": True, "count": count}
         except Exception:
             return {"ok": False}
@@ -1930,6 +1932,7 @@ class SettingsApi:
             "tg_tdata_path": d.get("tg_tdata_path", ""),
             "hover_to_play": d.get("hover_to_play", False),
             "copy_avoid_webp": d.get("copy_avoid_webp", False),
+            "manifest_include_tags": d.get("manifest_include_tags", True),
         }
 
     def _safe_refresh(self, js_function: str) -> dict:
@@ -2060,6 +2063,7 @@ class SettingsApi:
             "tg_tdata_path": self._cfg.get("tg_tdata_path", ""),
             "hover_to_play": self._cfg.get("hover_to_play", False),
             "copy_avoid_webp": self._cfg.get("copy_avoid_webp", False),
+            "manifest_include_tags": True,
         }
 
     def move_window(self, dx: int, dy: int):
@@ -2169,6 +2173,27 @@ class SettingsApi:
     def open_adb_help(self) -> bool:
         try:
             adb_util.open_adb_help()
+            return True
+        except Exception:
+            return False
+
+    def open_url(self, url: str) -> bool:
+        """用系统默认浏览器打开外链（关于页 GitHub/QQ 群），仅允许 http(s)"""
+        from urllib.parse import urlparse
+
+        if urlparse(url or "").scheme not in ("http", "https"):
+            return False
+        try:
+            if platform.system() == "Windows":
+                os.startfile(url)
+            elif platform.system() == "Darwin":
+                import subprocess
+
+                subprocess.Popen(["open", url])
+            else:
+                import subprocess
+
+                subprocess.Popen(["xdg-open", url])
             return True
         except Exception:
             return False
