@@ -127,14 +127,32 @@ def lan_env(tmp_path, monkeypatch):
 
     lan.stop()
     lan.set_allow_secret_config(False)
+    _reset_transfer_state()
     assert lan.start(TEST_PORT, "test-secret")
     yield cfg, db, tmp_path
 
     lan.stop()
     lan.set_confirm_callback(old_cb)
     lan.set_allow_secret_config(False)
+    _reset_transfer_state()
     config_module._config = old_cfg
     database._db = old_db
+
+
+def _reset_transfer_state():
+    """清空传输进度状态（隔离测试间污染）"""
+    with lan._transfer_lock:
+        lan._transfer_state.update(
+            active=False,
+            direction="",
+            current_file="",
+            files_done=0,
+            files_total=0,
+            bytes_done=0,
+            bytes_total=0,
+            start_time=0.0,
+            updated=0.0,
+        )
 
 
 # --- 测试 ---
@@ -693,3 +711,228 @@ def test_stop_status(lan_env):
     lan.stop()
     assert lan.get_status()["status"] == "stopped"
     lan.start(TEST_PORT, "test-secret")
+
+
+# --- 传输进度（transfer） ---
+
+
+def test_pull_file_updates_transfer_with_meta(lan_env):
+    """pull_file 携带手机 meta 时累计本端收发量并采用声明总量"""
+    cfg, db, tmp = lan_env
+    import base64
+
+    sock = _connect()
+    key = _handshake(sock, "test-secret")
+    png = _valid_png()
+    png_b64 = base64.b64encode(png).decode()
+    sha256 = hashlib.sha256(png).hexdigest()
+    _send_frame(
+        sock,
+        key,
+        {"cmd": "push_file", "filename": "a.png", "data": png_b64, "sha256": sha256},
+    )
+    pushed = _recv_frame(sock, key)
+    assert pushed["ok"] is True
+    _reset_transfer_state()
+
+    _send_frame(
+        sock,
+        key,
+        {
+            "cmd": "pull_file",
+            "filename": pushed["filename"],
+            "meta": {"files_total": 3, "bytes_total": 900},
+        },
+    )
+    resp = _recv_frame(sock, key)
+    assert resp["ok"] is True
+
+    st = lan.get_status()["transfer"]
+    assert st["active"] is True  # 1/3 未完成
+    assert st["direction"] == "send"
+    assert st["files_done"] == 1
+    assert st["files_total"] == 3
+    assert st["bytes_done"] == len(png)
+    assert st["bytes_total"] == 900
+    assert st["current_file"] == pushed["filename"]
+    assert st["start_time"] > 0
+    sock.close()
+
+
+def test_push_file_updates_transfer_receive(lan_env):
+    """push_file 计入电脑接收量"""
+    cfg, db, tmp = lan_env
+    import base64
+
+    sock = _connect()
+    key = _handshake(sock, "test-secret")
+    png = _valid_png()
+    _send_frame(
+        sock,
+        key,
+        {
+            "cmd": "push_file",
+            "filename": "b.png",
+            "data": base64.b64encode(png).decode(),
+            "sha256": hashlib.sha256(png).hexdigest(),
+            "meta": {"files_total": 2, "bytes_total": 500},
+        },
+    )
+    resp = _recv_frame(sock, key)
+    assert resp["ok"] is True
+
+    st = lan.get_status()["transfer"]
+    assert st["active"] is True
+    assert st["direction"] == "receive"
+    assert st["files_done"] == 1
+    assert st["files_total"] == 2
+    assert st["bytes_done"] == len(png)
+    sock.close()
+
+
+def test_transfer_completes_when_all_files_done(lan_env):
+    """files_done 达到 files_total 时快照立即标记传输结束"""
+    cfg, db, tmp = lan_env
+    import base64
+
+    sock = _connect()
+    key = _handshake(sock, "test-secret")
+    png = _valid_png()
+    _send_frame(
+        sock,
+        key,
+        {"cmd": "push_file", "filename": "c.png", "data": base64.b64encode(png).decode()},
+    )
+    pushed = _recv_frame(sock, key)
+    assert pushed["ok"] is True
+    _reset_transfer_state()
+
+    _send_frame(
+        sock,
+        key,
+        {
+            "cmd": "pull_file",
+            "filename": pushed["filename"],
+            "meta": {"files_total": 1, "bytes_total": 10},
+        },
+    )
+    _recv_frame(sock, key)
+    st = lan.get_status()["transfer"]
+    assert st["active"] is False
+    assert st["files_done"] == 1
+    assert st["files_total"] == 1
+    sock.close()
+
+
+def test_transfer_without_meta_degrades(lan_env):
+    """旧版手机不带 meta：总量为 0，仅累计文件数"""
+    cfg, db, tmp = lan_env
+    import base64
+
+    sock = _connect()
+    key = _handshake(sock, "test-secret")
+    png = _valid_png()
+    _send_frame(
+        sock,
+        key,
+        {"cmd": "push_file", "filename": "d.png", "data": base64.b64encode(png).decode()},
+    )
+    pushed = _recv_frame(sock, key)
+    assert pushed["ok"] is True
+    _reset_transfer_state()
+
+    _send_frame(sock, key, {"cmd": "pull_file", "filename": pushed["filename"]})
+    _recv_frame(sock, key)
+    st = lan.get_status()["transfer"]
+    assert st["active"] is True
+    assert st["files_total"] == 0
+    assert st["bytes_total"] == 0
+    assert st["files_done"] == 1
+    assert st["bytes_done"] == len(png)
+    sock.close()
+
+
+def test_config_commands_count_transfer(lan_env):
+    """get_config/send_config 计入传输进度"""
+    cfg, db, tmp = lan_env
+    sock = _connect()
+    key = _handshake(sock, "test-secret")
+
+    _send_frame(
+        sock,
+        key,
+        {"cmd": "get_config", "meta": {"files_total": 1, "bytes_total": 0}},
+    )
+    resp = _recv_frame(sock, key)
+    assert resp["ok"] is True
+    st = lan.get_status()["transfer"]
+    assert st["direction"] == "send"
+    assert st["files_done"] == 1
+    assert st["files_total"] == 1
+    assert st["active"] is False  # 1/1 完成
+
+    _send_frame(
+        sock,
+        key,
+        {
+            "cmd": "send_config",
+            "config": {"theme": "dark"},
+            "meta": {"files_total": 1, "bytes_total": 42},
+        },
+    )
+    resp = _recv_frame(sock, key)
+    assert resp["ok"] is True
+    st = lan.get_status()["transfer"]
+    assert st["direction"] == "receive"
+    assert st["files_done"] == 1
+    assert st["active"] is False
+    sock.close()
+
+
+def test_transfer_idle_timeout(lan_env):
+    """长时间无更新后快照标记非活动，下次操作重置计数"""
+    import time as time_mod
+
+    cfg, db, tmp = lan_env
+    with lan._transfer_lock:
+        lan._transfer_state["active"] = True
+        lan._transfer_state["files_done"] = 2
+        lan._transfer_state["bytes_done"] = 123
+        lan._transfer_state["updated"] = time_mod.time() - lan._TRANSFER_IDLE - 1
+    st = lan.get_status()["transfer"]
+    assert st["active"] is False
+
+    lan._transfer_update("send", "x.png", 10, None)
+    with lan._transfer_lock:
+        st = dict(lan._transfer_state)
+    assert st["files_done"] == 1  # 陈旧状态已重置
+    assert st["bytes_done"] == 10
+
+
+def test_get_status_exposes_pending_confirm(lan_env):
+    """确认等待期间 get_status 暴露设备信息，结束后清空"""
+    cfg, db, tmp = lan_env
+    seen = {}
+
+    def cb(device):
+        seen["status"] = lan.get_status()["pending_confirm"]
+        lan.confirm_device(True)
+
+    old = lan.set_confirm_callback(cb)
+    try:
+        assert lan.get_status()["pending_confirm"] is None
+        sock = _connect()
+        key = _handshake(sock, "test-secret")
+        _send_frame(
+            sock,
+            key,
+            {"cmd": "device_info", "name": "Pixel", "os": "Android 15"},
+        )
+        resp = _recv_frame(sock, key)
+        assert resp["approved"] is True
+        assert seen["status"]["name"] == "Pixel"
+        assert seen["status"]["os"] == "Android 15"
+        assert lan.get_status()["pending_confirm"] is None
+        sock.close()
+    finally:
+        lan.set_confirm_callback(old)

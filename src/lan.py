@@ -56,6 +56,65 @@ _lan_lock = threading.Lock()
 _server = None
 _confirm_cb = None  # 设备连接确认回调，由 WebUI 注入（阻塞等待用户决定）
 
+# 手机↔电脑传输进度（供设置页轮询，样式对齐云端 _sync_state）
+_transfer_lock = threading.Lock()
+_transfer_state = {
+    "active": False,
+    "direction": "",  # send | receive（电脑视角：发送到手机 / 接收手机数据）
+    "current_file": "",
+    "files_done": 0,
+    "files_total": 0,
+    "bytes_done": 0,
+    "bytes_total": 0,
+    "start_time": 0.0,
+    "updated": 0.0,
+}
+_TRANSFER_IDLE = 5  # 秒，超过无更新视为传输结束
+
+
+def _transfer_update(direction, current_file, nbytes, meta=None):
+    """记录一次文件/配置传输（done 为本端实际收发量，total 取手机 meta 声明值）"""
+    now = time.time()
+    with _transfer_lock:
+        st = _transfer_state
+        if (
+            not st["active"]
+            or now - st["updated"] > _TRANSFER_IDLE
+            or (st["files_total"] > 0 and st["files_done"] >= st["files_total"])
+        ):
+            st["active"] = True
+            st["direction"] = direction
+            st["files_done"] = 0
+            st["bytes_done"] = 0
+            st["files_total"] = 0
+            st["bytes_total"] = 0
+            st["start_time"] = now
+        st["direction"] = direction
+        st["current_file"] = current_file
+        st["files_done"] += 1
+        st["bytes_done"] += int(nbytes)
+        if isinstance(meta, dict):
+            ft = meta.get("files_total")
+            bt = meta.get("bytes_total")
+            if isinstance(ft, int) and ft >= 0:
+                st["files_total"] = ft
+            if isinstance(bt, int) and bt >= 0:
+                st["bytes_total"] = bt
+        st["updated"] = now
+
+
+def _transfer_snapshot():
+    """返回传输进度快照；空闲超时或全部完成时 active=False"""
+    now = time.time()
+    with _transfer_lock:
+        st = dict(_transfer_state)
+    if st["active"]:
+        if now - st["updated"] > _TRANSFER_IDLE:
+            st["active"] = False
+        elif st["files_total"] > 0 and st["files_done"] >= st["files_total"]:
+            st["active"] = False
+    return st
+
 
 class LanServer:
     """UDP 发现 + TCP 加密会话服务（单实例）"""
@@ -385,13 +444,13 @@ class LanServer:
         if cmd == "push_manifest":
             return self._cmd_push_manifest(msg.get("manifest"))
         if cmd == "pull_file":
-            return self._cmd_pull_file(msg.get("filename", ""))
+            return self._cmd_pull_file(msg)
         if cmd == "push_file":
             return self._cmd_push_file(msg)
         if cmd == "get_config":
-            return self._cmd_get_config()
+            return self._cmd_get_config(msg)
         if cmd == "send_config":
-            return self._cmd_send_config(msg.get("config"))
+            return self._cmd_send_config(msg)
         if cmd == "ping":
             return {"ok": True, "ver": __version__}
         return {"ok": False, "error": f"未知命令: {cmd}"}
@@ -423,7 +482,9 @@ class LanServer:
         build_manifest()
         return {"ok": True, "local_count": db.count()}
 
-    def _cmd_pull_file(self, filename: str) -> dict:
+    def _cmd_pull_file(self, msg: dict) -> dict:
+        filename = msg.get("filename", "")
+        meta = msg.get("meta")
         if not _safe_fname(filename):
             return {"ok": False, "error": "非法文件名"}
         path = _find_meme_file(filename)
@@ -433,11 +494,13 @@ class LanServer:
             data = Path(path).read_bytes()
         except OSError as e:
             return {"ok": False, "error": str(e)}
+        _transfer_update("send", filename, len(data), meta)
         data_b64 = base64.b64encode(data).decode()
         return {"ok": True, "filename": filename, "data": data_b64}
 
     def _cmd_push_file(self, msg: dict) -> dict:
         filename = msg.get("filename", "")
+        meta = msg.get("meta")
         if not _safe_fname(filename):
             return {"ok": False, "error": "非法文件名"}
         data_b64 = msg.get("data", "")
@@ -449,6 +512,7 @@ class LanServer:
             return {"ok": False, "error": "文件数据解码失败"}
         if len(data) > MAX_FILE_SIZE:
             return {"ok": False, "error": "文件超过大小限制"}
+        _transfer_update("receive", filename, len(data), meta)
         expected = msg.get("sha256")
         if expected and hmac.compare_digest(hashlib.sha256(data).hexdigest(), expected):
             pass  # sha256 校验通过
@@ -456,7 +520,7 @@ class LanServer:
             return {"ok": False, "error": "文件哈希不一致"}
         return _import_bytes(data, filename)
 
-    def _cmd_get_config(self) -> dict:
+    def _cmd_get_config(self, msg: dict) -> dict:
         # 配置拉取：allow_secret_config 关闭时剔除密钥字段
         cfg = get_config()
         d = cfg.to_dict()
@@ -465,10 +529,12 @@ class LanServer:
         if not allow_secret:
             for k in _SECRET_KEYS:
                 d.pop(k, None)
+        _transfer_update("send", "", 0, msg.get("meta"))
         return {"ok": True, "config": d}
 
-    def _cmd_send_config(self, config) -> dict:
+    def _cmd_send_config(self, msg: dict) -> dict:
         # 配置推送：allow_secret_config 关闭时忽略密钥字段
+        config = msg.get("config")
         if not isinstance(config, dict):
             return {"ok": False, "error": "配置格式错误"}
         cfg = get_config()
@@ -478,6 +544,7 @@ class LanServer:
             config = {k: v for k, v in config.items() if k not in _SECRET_KEYS}
         cfg.update_from_dict(config)
         cfg.save()
+        _transfer_update("receive", "", 0, msg.get("meta"))
         return {"ok": True}
 
     # --- 帧协议 ---
@@ -638,8 +705,9 @@ def stop():
 
 
 def get_status() -> dict:
-    """返回服务状态（设置页轮询）"""
+    """返回服务状态（设置页轮询），含传输进度与待确认设备"""
     with _lan_lock:
+        pending = _lan_state.get("pending_confirm")
         return {
             "status": _lan_state["status"],
             "port": _lan_state["port"],
@@ -647,6 +715,8 @@ def get_status() -> dict:
             "clients": list(_lan_state["clients"]),
             "last_error": _lan_state["last_error"],
             "allow_secret_config": bool(_lan_state["allow_secret_config"]),
+            "transfer": _transfer_snapshot(),
+            "pending_confirm": dict(pending["device"]) if pending else None,
         }
 
 

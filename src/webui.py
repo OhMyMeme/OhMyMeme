@@ -1881,6 +1881,12 @@ class SettingsApi:
             "allow_secret_config": lan.get_status()["allow_secret_config"],
         }
 
+    def lan_confirm_device(self, approved: bool) -> dict:
+        from . import lan
+
+        lan.confirm_device(bool(approved))
+        return {"ok": True}
+
     def get_settings(self) -> dict:
         d = self._cfg.to_dict()
         from .platform_util import is_auto_start_enabled
@@ -3295,23 +3301,26 @@ class WebUI:
         self._on_hotkey_change_cb = cb
 
     def _lan_confirm_cb(self, device: dict):
-        """LAN 设备连接确认：显示主窗口并弹窗展示设备信息，等待 JS 回传结果"""
+        """LAN 设备连接确认：转到设置窗口弹窗，等待 JS 回传结果"""
         import json
 
         from . import lan
 
-        if not self._window:
-            lan.confirm_device(False)
-            return
+        win = self._settings_window
+        if win is None:
+            if not self._create_settings_window():
+                lan.confirm_device(False)
+                return
+            win = self._settings_window
         try:
-            self.show()
-            js = "window.showLanDeviceConfirm(%s)" % json.dumps(
+            self.focus_settings_window()
+            js = "window.showLanDeviceConfirm && showLanDeviceConfirm(%s)" % json.dumps(
                 device, ensure_ascii=False
             )
-            self._window.evaluate_js(js)
+            win.evaluate_js(js)
         except Exception as e:
-            logger.warning(f"lan confirm dialog error: {e}")
-            lan.confirm_device(False)
+            # 推送失败不立即拒绝：get_status 轮询 pending_confirm 兜底展示
+            logger.warning(f"lan confirm dialog push error: {e}")
 
     # --- 窗口控制（从任何线程调用安全）---
 

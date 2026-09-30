@@ -66,7 +66,7 @@ function trapSettingsFocus(box, e) {
   }
 }
 // 找当前可见覆盖层（静态 HTML + 动态创建的 update/confirm 弹窗）
-const _SETTINGS_OVERLAY_IDS = ['danger-overlay','sync-progress-overlay','sync-done-overlay','storage-migrate-overlay','backup-progress-overlay','qq-import-overlay','qqnt-overlay','tg-import-overlay','dy-import-overlay','wechat-import-overlay','update-overlay'];
+const _SETTINGS_OVERLAY_IDS = ['lan-confirm-overlay','danger-overlay','sync-progress-overlay','lan-progress-overlay','sync-done-overlay','storage-migrate-overlay','backup-progress-overlay','qq-import-overlay','qqnt-overlay','tg-import-overlay','dy-import-overlay','wechat-import-overlay','update-overlay'];
 function visibleSettingsOverlay() {
   for (const id of _SETTINGS_OVERLAY_IDS) {
     const el = document.getElementById(id);
@@ -247,14 +247,18 @@ async function refreshLanStatus() {
     el.innerHTML = '● 已停止 <span style="opacity:.6">(端口 ' + (r ? r.port : 17852) + ')</span>';
     setStatusColor(el, '');
     el.style.color = 'var(--muted)';
-    if (lanPollTimer) { clearInterval(lanPollTimer); lanPollTimer = null; }
+    if (lanPollTimer) { clearTimeout(lanPollTimer); lanPollTimer = null; }
+    updateLanTransfer(null);
+    handleLanConfirm(null);
     return;
   }
   if (r.status === 'error') {
     el.innerHTML = '● 启动失败 <span class="status-error">' + esc(r.last_error || '') + '</span>';
     setStatusColor(el, '');
     el.style.color = 'var(--muted)';
-    if (lanPollTimer) { clearInterval(lanPollTimer); lanPollTimer = null; }
+    if (lanPollTimer) { clearTimeout(lanPollTimer); lanPollTimer = null; }
+    updateLanTransfer(null);
+    handleLanConfirm(null);
     return;
   }
   let html = '● 运行中 <span style="opacity:.6">(端口 ' + r.port + '，IP ' + esc(ip) + ')</span>';
@@ -263,14 +267,118 @@ async function refreshLanStatus() {
   }
   el.innerHTML = html;
   setStatusColor(el, 'ok');
-  if (lanPollTimer) { clearInterval(lanPollTimer); }
-  lanPollTimer = setInterval(async () => {
+  if (lanPollTimer) { clearTimeout(lanPollTimer); lanPollTimer = null; }
+  lanPollStatus = async () => {
+    lanPollTimer = null;
     const r2 = await api('lan_get_status');
-    if (!r2 || r2.status !== 'running') {
-      if (lanPollTimer) { clearInterval(lanPollTimer); lanPollTimer = null; }
-      refreshLanStatus();
+    if (!r2 || r2.status !== 'running') { refreshLanStatus(); return; }
+    handleLanConfirm(r2.pending_confirm);
+    const fast = updateLanTransfer(r2.transfer);
+    lanPollTimer = setTimeout(lanPollStatus, fast ? 300 : 5000);
+  };
+  lanPollTimer = setTimeout(lanPollStatus, 5000);
+}
+
+/* LAN 传输进度与设备确认（设置页，轮询 lan_get_status） */
+let lanPollStatus = null;
+let lanProgressShown = false;
+let lanProgressBg = false;
+let lanProgressActive = false;
+let lanConfirmShown = false;
+let lanConfirmAck = false;
+
+function hideLanProgress() {
+  lanProgressBg = true;
+  document.getElementById('lan-progress-overlay').style.display = 'none';
+  if (lanProgressShown) { lanProgressShown = false; restoreSettingsFocus(); }
+}
+
+function updateLanTransfer(t) {
+  const overlay = document.getElementById('lan-progress-overlay');
+  const active = !!(t && t.active);
+  if (!active) {
+    lanProgressActive = false;
+    lanProgressBg = false;
+    if (lanProgressShown) {
+      lanProgressShown = false;
+      overlay.style.display = 'none';
+      restoreSettingsFocus();
     }
-  }, 5000);
+    return false;
+  }
+  if (!lanProgressActive) {
+    lanProgressActive = true;
+    if (!lanProgressBg) {
+      rememberSettingsFocus();
+      overlay.style.display = 'flex';
+      lanProgressShown = true;
+    }
+  } else if (!lanProgressBg && !lanProgressShown) {
+    rememberSettingsFocus();
+    overlay.style.display = 'flex';
+    lanProgressShown = true;
+  }
+  document.getElementById('lan-progress-title').textContent = t.direction === 'receive' ? '接收手机数据' : '发送到手机';
+  document.getElementById('lan-progress-file').textContent = t.current_file || '';
+  const barWrap = document.getElementById('lan-progress-bar-wrap');
+  const pctEl = document.getElementById('lan-progress-pct');
+  if (t.bytes_total > 0) {
+    const pct = Math.min(Math.floor((t.bytes_done || 0) * 100 / t.bytes_total), 99);
+    barWrap.style.display = '';
+    document.getElementById('lan-progress-bar').style.width = pct + '%';
+    pctEl.textContent = pct + '%';
+  } else if (t.files_total > 0) {
+    const pct = Math.min(Math.floor((t.files_done || 0) * 100 / t.files_total), 99);
+    barWrap.style.display = '';
+    document.getElementById('lan-progress-bar').style.width = pct + '%';
+    pctEl.textContent = (t.files_done || 0) + '/' + t.files_total + ' 文件';
+  } else {
+    barWrap.style.display = 'none';
+    pctEl.textContent = '已传输 ' + (t.files_done || 0) + ' 文件';
+  }
+  const speedEl = document.getElementById('lan-progress-speed');
+  const elapsed = Date.now() / 1000 - (t.start_time || 0);
+  if (t.bytes_done > 0 && elapsed > 0.5) {
+    speedEl.textContent = formatSpeed(t.bytes_done / elapsed);
+  } else {
+    speedEl.textContent = '';
+  }
+  return true;
+}
+
+function showLanDeviceConfirm(d) {
+  if (!d) return;
+  lanConfirmAck = false;
+  lanConfirmShown = true;
+  document.getElementById('lan-confirm-name').textContent = d.name || '未知设备';
+  const parts = [d.model, d.os, d.ver].filter(x => x);
+  document.getElementById('lan-confirm-detail').textContent = parts.join(' · ');
+  rememberSettingsFocus();
+  document.getElementById('lan-confirm-overlay').style.display = 'flex';
+  document.getElementById('btn-lan-confirm-allow').focus();
+}
+window.showLanDeviceConfirm = showLanDeviceConfirm;
+
+function lanConfirm(approved) {
+  lanConfirmShown = false;
+  lanConfirmAck = true;
+  document.getElementById('lan-confirm-overlay').style.display = 'none';
+  restoreSettingsFocus();
+  const r = api('lan_confirm_device', approved);
+  if (r && typeof r.catch === 'function') r.catch(() => {});
+}
+
+function handleLanConfirm(pending) {
+  if (pending) {
+    if (!lanConfirmShown && !lanConfirmAck) showLanDeviceConfirm(pending);
+  } else {
+    if (lanConfirmShown) {
+      lanConfirmShown = false;
+      document.getElementById('lan-confirm-overlay').style.display = 'none';
+      restoreSettingsFocus();
+    }
+    lanConfirmAck = false;
+  }
 }
 
 /* Load settings */
@@ -1850,6 +1958,11 @@ document.addEventListener('keydown', (e) => {
       dangerCancel();
       return;
     }
+    const lanConfirmOverlay = document.getElementById('lan-confirm-overlay');
+    if (lanConfirmOverlay && lanConfirmOverlay.style.display === 'flex') {
+      lanConfirm(false);
+      return;
+    }
     const dyOverlay = document.getElementById('dy-import-overlay');
     if (dyOverlay && dyOverlay.style.display === 'flex') {
       closeDYOverlay();
@@ -1878,6 +1991,11 @@ document.addEventListener('keydown', (e) => {
     const syncOverlay = document.getElementById('sync-progress-overlay');
     if (syncOverlay && syncOverlay.style.display === 'flex') {
       hideSyncProgress();
+      return;
+    }
+    const lanProgressOverlay = document.getElementById('lan-progress-overlay');
+    if (lanProgressOverlay && lanProgressOverlay.style.display === 'flex') {
+      hideLanProgress();
       return;
     }
     const syncDoneOverlay = document.getElementById('sync-done-overlay');
