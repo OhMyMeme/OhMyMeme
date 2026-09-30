@@ -1,0 +1,44 @@
+name: FFmpeg Win64
+
+# 裁剪版 ffmpeg 交叉编译（TG 导入 webm->webp 用）：
+# 被 build.yml / nightly.yml 以 workflow_call 调用，也可手动 dispatch。
+# 产物 ffmpeg.exe 经 artifact 传给 Windows 打包 job（无运行时下载）。
+
+on:
+  workflow_call:
+    inputs:
+      ref:
+        description: "检出的 git ref（调用方传入，空则用当前 github.ref）"
+        type: string
+        required: false
+        default: ""
+  workflow_dispatch:
+
+jobs:
+  build-ffmpeg:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.ref || github.ref }}
+      - name: Cache ffmpeg output
+        id: cache
+        uses: actions/cache@v4
+        with:
+          path: build/ffmpeg-win64/out
+          key: ffmpeg-win64-${{ hashFiles('scripts/ffmpeg/build_win64.sh') }}
+      - name: Install cross toolchain
+        if: steps.cache.outputs.cache_hit != 'true'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            gcc-mingw-w64-x86-64 nasm pkg-config xz-utils
+      - name: Build trimmed ffmpeg
+        if: steps.cache.outputs.cache_hit != 'true'
+        run: bash scripts/ffmpeg/build_win64.sh
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ffmpeg-win64
+          path: build/ffmpeg-win64/out/ffmpeg.exe
+          if-no-files-found: error

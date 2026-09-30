@@ -108,12 +108,16 @@ def _connect(port=TEST_PORT):
 
 
 @pytest.fixture()
-def lan_env(tmp_path):
+def lan_env(tmp_path, monkeypatch):
     """隔离 config/db/cache 并启动 lan 服务"""
     cfg = Config(tmp_path / "config.json")
     cfg.set("cache_dir", str(tmp_path / "cache"))
     cfg.set("lan_port", TEST_PORT)
     db = MemeDB(tmp_path / "test.db")
+
+    # data_dir 是属性，每次读取都调用 _get_data_dir()；不 patch 会指向真实
+    # LOCALAPPDATA，manifest.build()（如 pull_manifest）会覆盖真实 meme-index.json
+    monkeypatch.setattr(config_module, "_get_data_dir", lambda: tmp_path / "data")
 
     old_cfg = config_module._config
     old_db = database._db

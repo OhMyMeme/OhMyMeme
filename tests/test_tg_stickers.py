@@ -194,5 +194,76 @@ class TestWorkerParallelState(unittest.TestCase):
         self.assertEqual(type(tg._TG_LOCK).__name__, "RLock")
 
 
+class TestFfmpegResolve(unittest.TestCase):
+    """内置 ffmpeg 解析优先级与转换命令"""
+
+    @staticmethod
+    def _frozen(base):
+        return (
+            mock.patch.object(sys, "frozen", True, create=True),
+            mock.patch.object(sys, "_MEIPASS", base, create=True),
+        )
+
+    def test_bundled_wins_over_path(self):
+        with tempfile.TemporaryDirectory() as td:
+            fdir = Path(td) / "tools" / "ffmpeg"
+            fdir.mkdir(parents=True)
+            exe = fdir / "ffmpeg.exe"
+            exe.write_bytes(b"MZ")
+            p1, p2 = self._frozen(td)
+            with p1, p2, mock.patch.object(tg, "_FFMPEG_PATH", None), mock.patch.object(
+                tg.shutil, "which"
+            ) as which:
+                self.assertEqual(tg._resolve_ffmpeg(), str(exe))
+                which.assert_not_called()
+
+    def test_falls_back_to_path_when_not_bundled(self):
+        with tempfile.TemporaryDirectory() as td:
+            p1, p2 = self._frozen(td)  # _MEIPASS 下无 tools/ffmpeg
+            with p1, p2, mock.patch.object(tg, "_FFMPEG_PATH", None), mock.patch.object(
+                tg.shutil, "which", return_value="/usr/bin/ffmpeg"
+            ):
+                self.assertEqual(tg._resolve_ffmpeg(), "/usr/bin/ffmpeg")
+
+    def test_none_when_absent(self):
+        with mock.patch.object(tg, "_FFMPEG_PATH", None), mock.patch.object(
+            tg.shutil, "which", return_value=None
+        ):
+            self.assertIsNone(tg._resolve_ffmpeg())
+            self.assertFalse(tg._check_ffmpeg())
+
+    def test_cache_hit_skips_lookup(self):
+        with mock.patch.object(
+            tg, "_FFMPEG_PATH", "C:/x/ffmpeg.exe"
+        ), mock.patch.object(tg.shutil, "which") as which:
+            self.assertEqual(tg._resolve_ffmpeg(), "C:/x/ffmpeg.exe")
+            which.assert_not_called()
+
+    def test_check_ffmpeg_true_when_resolvable(self):
+        with mock.patch.object(tg, "_FFMPEG_PATH", "C:/x/ffmpeg.exe"):
+            self.assertTrue(tg._check_ffmpeg())
+
+    def test_webm_cmd_shape(self):
+        cmd = tg._webm_cmd("FF", "in.webm", "out.webp")
+        self.assertEqual(cmd[0], "FF")
+        self.assertEqual(cmd[cmd.index("-i") + 1], "in.webm")
+        self.assertEqual(cmd[cmd.index("-c:v") + 1], "libvpx-vp9")
+        # 解码器必须在 -i 之前（原生 VP9 解码器丢 alpha，见 AGENTS.md）
+        self.assertLess(cmd.index("-c:v"), cmd.index("-i"))
+        self.assertEqual(cmd[-1], "out.webp")
+        self.assertIn("-an", cmd)
+        self.assertEqual(
+            cmd[cmd.index("-vf") + 1],
+            "scale=512:512:force_original_aspect_ratio=decrease",
+        )
+
+    @mock.patch("src.tg_stickers.subprocess.Popen")
+    def test_convert_uses_resolved_path(self, popen):
+        popen.return_value = DummyProc(ret=0)
+        with mock.patch.object(tg, "_FFMPEG_PATH", "/bundled/ffmpeg.exe"):
+            self.assertTrue(tg.convert_webm_to_webp("a.webm", "a.webp", timeout=5))
+        self.assertEqual(popen.call_args[0][0][0], "/bundled/ffmpeg.exe")
+
+
 if __name__ == "__main__":
     unittest.main()

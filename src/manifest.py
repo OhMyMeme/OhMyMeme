@@ -49,18 +49,6 @@ def _write(data: Dict) -> None:
         logger.warning(f"manifest write failed: {e}")
 
 
-def guide_ok() -> bool:
-    """设置向导是否已完成（清单中 guide == "ok"）"""
-    return load().get("guide") == "ok"
-
-
-def set_guide_ok():
-    """标记设置向导已完成（保留清单既有内容）"""
-    data = load()
-    data["guide"] = "ok"
-    _write(data)
-
-
 def build() -> List[Dict]:
     """从数据库重建完整索引并写入磁盘"""
     db = get_db()
@@ -91,10 +79,6 @@ def build() -> List[Dict]:
     collections = _build_collection_tree(db)
 
     data = {"version": 3, "memes": memes, "collections": collections}
-    # 保留向导完成标记：清单随导入/删除等操作频繁重建
-    guide = load().get("guide")
-    if guide:
-        data["guide"] = guide
     _write(data)
     logger.debug(
         f"manifest written: {len(memes)} memes, {len(collections)} collections"

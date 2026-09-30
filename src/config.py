@@ -58,6 +58,8 @@ class Config:
     DEFAULTS = {
         # 版本（用于数据迁移）
         "version": "",
+        # 向导
+        "guide": "",  # 设置向导完成标记（"ok"）
         # 全局设置
         "hotkey": "Ctrl+Alt+N",
         "hotkey_show_at_mouse": False,
@@ -184,8 +186,11 @@ class Config:
                 self.set(k, v)
 
     def reset(self):
-        """恢复出厂默认值"""
+        """恢复出厂默认值（保留向导完成标记）"""
+        guide = self._data.get("guide", "")
         self._data = dict(self.DEFAULTS)
+        if guide:
+            self._data["guide"] = guide
         self._dirty = True
 
     # --- 持久化 ---
@@ -286,3 +291,27 @@ def get_config() -> Config:
     if _config is None:
         _config = Config()
     return _config
+
+
+def guide_ok() -> bool:
+    """设置向导是否已完成（config.json 的 guide 标记）"""
+    cfg = get_config()
+    v = cfg.get("guide")
+    if v == "ok":
+        return True
+    # 旧版写在 meme-index.json 清单里：读到即迁移到配置文件
+    from .manifest import load as load_manifest
+
+    legacy = load_manifest().get("guide")
+    if legacy:
+        cfg.set("guide", legacy)
+        cfg.save()
+        v = legacy
+    return v == "ok"
+
+
+def set_guide_ok():
+    """标记设置向导已完成（写入 config.json）"""
+    cfg = get_config()
+    cfg.set("guide", "ok")
+    cfg.save()

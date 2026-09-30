@@ -29,6 +29,15 @@ SRC_DIR = PROJECT_ROOT / "src"
 BUILD_DIR = PROJECT_ROOT / "dist"
 APP_NAME = "OhMyMeme"
 
+# 裁剪版 ffmpeg（TG 导入 webm->webp 用，仅 Windows 打包内置）
+FFMPEG_DEST = (
+    "tools/ffmpeg"  # --add-binary 目标（相对 _internal/，运行时经 _MEIPASS 解析）
+)
+FFMPEG_CI_DIR = PROJECT_ROOT / "ffmpeg-win64"  # CI download-artifact 落点
+FFMPEG_LOCAL_OUT = (
+    PROJECT_ROOT / "build" / "ffmpeg-win64" / "out"
+)  # build_win64.sh 产物
+
 PYTHON = sys.executable
 IS_WINDOWS = platform.system() == "Windows"
 
@@ -39,22 +48,58 @@ _MSGS = {
         "en": "ERROR: PyInstaller not found, run: pip install pyinstaller",
     },
     "running": {"zh": "运行:", "en": "Running:"},
-    "build_failed": {"zh": "PyInstaller 打包失败 (code=%d)", "en": "PyInstaller build failed (code=%d)"},
+    "build_failed": {
+        "zh": "PyInstaller 打包失败 (code=%d)",
+        "en": "PyInstaller build failed (code=%d)",
+    },
     "build_done": {"zh": "打包完成:", "en": "Build done:"},
-    "vue_build_failed": {"zh": "Vue 前端构建失败，请检查 node/npm 环境", "en": "Vue frontend build failed, check node/npm environment"},
-    "skip_installer": {"zh": "跳过安装包制作（非 Windows 平台）", "en": "Skipping installer (non-Windows target)"},
-    "iscc_not_found": {"zh": "警告: 未找到 ISCC.exe（InnoSetup），跳过安装包制作", "en": "WARNING: ISCC.exe (InnoSetup) not found, skipping installer"},
-    "outdir_not_found": {"zh": "错误: 未找到输出目录:", "en": "ERROR: output directory not found:"},
-    "run_build_first": {"zh": "请先执行 PyInstaller 构建", "en": "Run PyInstaller build first"},
-    "iss_not_found": {"zh": "错误: InnoSetup 脚本不存在:", "en": "ERROR: InnoSetup script not found:"},
+    "vue_build_failed": {
+        "zh": "Vue 前端构建失败，请检查 node/npm 环境",
+        "en": "Vue frontend build failed, check node/npm environment",
+    },
+    "skip_installer": {
+        "zh": "跳过安装包制作（非 Windows 平台）",
+        "en": "Skipping installer (non-Windows target)",
+    },
+    "iscc_not_found": {
+        "zh": "警告: 未找到 ISCC.exe（InnoSetup），跳过安装包制作",
+        "en": "WARNING: ISCC.exe (InnoSetup) not found, skipping installer",
+    },
+    "outdir_not_found": {
+        "zh": "错误: 未找到输出目录:",
+        "en": "ERROR: output directory not found:",
+    },
+    "run_build_first": {
+        "zh": "请先执行 PyInstaller 构建",
+        "en": "Run PyInstaller build first",
+    },
+    "iss_not_found": {
+        "zh": "错误: InnoSetup 脚本不存在:",
+        "en": "ERROR: InnoSetup script not found:",
+    },
     "building_installer": {"zh": "制作安装包...", "en": "Building installer..."},
     "installer_done": {"zh": "安装包制作完成:", "en": "Installer created:"},
-    "installer_not_found": {"zh": "安装包制作完成，未找到预期文件:", "en": "Installer created but expected file not found:"},
-    "linux_sh_not_found": {"zh": "警告: 未找到 %s，跳过 Linux 打包", "en": "WARNING: %s not found, skipping Linux packaging"},
+    "installer_not_found": {
+        "zh": "安装包制作完成，未找到预期文件:",
+        "en": "Installer created but expected file not found:",
+    },
+    "linux_sh_not_found": {
+        "zh": "警告: 未找到 %s，跳过 Linux 打包",
+        "en": "WARNING: %s not found, skipping Linux packaging",
+    },
     "building_linux": {"zh": "制作 Linux 包...", "en": "Building Linux packages..."},
-    "linux_failed": {"zh": "Linux 打包失败 (code=%d)", "en": "Linux packaging failed (code=%d)"},
-    "building_macos": {"zh": "制作 macOS 包（.app/.dmg）...", "en": "Building macOS packages (.app/.dmg)..."},
-    "macos_failed": {"zh": "macOS 打包失败 (code=%d)", "en": "macOS packaging failed (code=%d)"},
+    "linux_failed": {
+        "zh": "Linux 打包失败 (code=%d)",
+        "en": "Linux packaging failed (code=%d)",
+    },
+    "building_macos": {
+        "zh": "制作 macOS 包（.app/.dmg）...",
+        "en": "Building macOS packages (.app/.dmg)...",
+    },
+    "macos_failed": {
+        "zh": "macOS 打包失败 (code=%d)",
+        "en": "macOS packaging failed (code=%d)",
+    },
     "installer_only_unsupported": {
         "zh": "错误: --installer-only 不支持当前目标 %s",
         "en": "ERROR: --installer-only not supported for target %s",
@@ -69,18 +114,21 @@ _MSGS = {
     },
     "keyfinder_required": {
         "zh": "错误: 构建 wechat_keyfinder 失败。helper 随包内置，缺失会导致微信导入不可用，"
-              "故中止打包。请安装 cmake + MSVC（VS BuildTools 即可）后重试；"
-              "仅本地开发可加 --allow-missing-keyfinder 跳过此检查。",
+        "故中止打包。请安装 cmake + MSVC（VS BuildTools 即可）后重试；"
+        "仅本地开发可加 --allow-missing-keyfinder 跳过此检查。",
         "en": "ERROR: building wechat_keyfinder failed. The helper ships inside the installer, "
-              "so packaging aborts to avoid producing a build without WeChat import support. "
-              "Install cmake + MSVC (VS BuildTools is enough) and retry; "
-              "local development only may pass --allow-missing-keyfinder to skip this check.",
+        "so packaging aborts to avoid producing a build without WeChat import support. "
+        "Install cmake + MSVC (VS BuildTools is enough) and retry; "
+        "local development only may pass --allow-missing-keyfinder to skip this check.",
     },
     "keyfinder_no_cmake": {
         "zh": "错误: 未找到 cmake，无法构建 wechat_keyfinder",
         "en": "ERROR: cmake not found, cannot build wechat_keyfinder",
     },
-    "keyfinder_building": {"zh": "编译 wechat_keyfinder...", "en": "Building wechat_keyfinder..."},
+    "keyfinder_building": {
+        "zh": "编译 wechat_keyfinder...",
+        "en": "Building wechat_keyfinder...",
+    },
     "keyfinder_build_failed": {
         "zh": "错误: wechat_keyfinder 编译失败",
         "en": "ERROR: wechat_keyfinder build failed",
@@ -116,7 +164,7 @@ _MSGS = {
     },
     "verify_no_version": {
         "zh": "错误: helper 缺失版本资源 CompanyName（当前: %s）——"
-              "无元数据会让产物退回被 Defender 误报的特征",
+        "无元数据会让产物退回被 Defender 误报的特征",
         "en": "ERROR: helper has no version resource CompanyName (got: %s) — "
         "missing metadata reintroduces the Defender false-positive signal",
     },
@@ -131,6 +179,69 @@ _MSGS = {
     "verify_failed": {
         "zh": "helper 校验未通过",
         "en": "helper verification failed",
+    },
+    "ffmpeg_bundled": {
+        "zh": "已定位 ffmpeg: %s（%d 字节）",
+        "en": "ffmpeg found: %s (%d bytes)",
+    },
+    "ffmpeg_not_found": {
+        "zh": "错误: 未找到裁剪版 ffmpeg。CI 由 ffmpeg-win64 job 提供"
+        "（artifact 下载到 ffmpeg-win64/），本地可运行 "
+        "bash scripts/ffmpeg/build_win64.sh 或设置 OHMYMEME_FFMPEG 指向 "
+        "ffmpeg.exe；仅本地开发可加 --allow-missing-ffmpeg 跳过"
+        "（运行时回退 PATH 中的系统 ffmpeg）",
+        "en": "ERROR: trimmed ffmpeg not found. On CI it comes from the "
+        "ffmpeg-win64 job (artifact downloaded to ffmpeg-win64/); locally "
+        "run bash scripts/ffmpeg/build_win64.sh or set OHMYMEME_FFMPEG to "
+        "an ffmpeg.exe. Local development may pass --allow-missing-ffmpeg "
+        "(runtime falls back to ffmpeg on PATH)",
+    },
+    "ffmpeg_missing_allow": {
+        "zh": "警告: 跳过内置 ffmpeg（--allow-missing-ffmpeg），"
+        "TG 导入将依赖 PATH 中的 ffmpeg",
+        "en": "WARNING: bundling ffmpeg skipped (--allow-missing-ffmpeg); "
+        "TG import will rely on ffmpeg from PATH",
+    },
+    "verify_ffmpeg_missing": {
+        "zh": "错误: 产物中未找到 ffmpeg.exe（TG 导入的 WebM 转换将不可用），已搜索 %s",
+        "en": "ERROR: ffmpeg.exe missing from build output (WebM conversion in TG "
+        "import would be unavailable); searched %s",
+    },
+    "verify_ffmpeg_found": {
+        "zh": "已找到 ffmpeg: %s（%d 字节）",
+        "en": "ffmpeg found: %s (%d bytes)",
+    },
+    "verify_ffmpeg_no_component": {
+        "zh": "错误: 内置 ffmpeg 缺少组件 %s（裁剪 configure 漏编）",
+        "en": "ERROR: bundled ffmpeg lacks component %s (trimmed configure missed it)",
+    },
+    "verify_ffmpeg_components_ok": {
+        "zh": "ffmpeg 组件齐全（libvpx-vp9 解码 / libwebp_anim 编码）",
+        "en": "ffmpeg components OK (libvpx-vp9 decoder / libwebp_anim encoder)",
+    },
+    "verify_ffmpeg_no_fixture": {
+        "zh": "错误: 缺少转换夹具 %s",
+        "en": "ERROR: conversion fixture missing: %s",
+    },
+    "verify_ffmpeg_convert_failed": {
+        "zh": "错误: ffmpeg 转换夹具失败（退出码 %s）",
+        "en": "ERROR: ffmpeg failed to convert the fixture (exit code %s)",
+    },
+    "verify_ffmpeg_bad_output": {
+        "zh": "错误: 转换输出不是有效 WebP（RIFF/WEBP 魔数不符）",
+        "en": "ERROR: conversion output is not valid WebP (RIFF/WEBP magic mismatch)",
+    },
+    "verify_ffmpeg_convert_ok": {
+        "zh": "ffmpeg 端到端转换通过（webm -> webp）",
+        "en": "ffmpeg end-to-end conversion passed (webm -> webp)",
+    },
+    "verify_ffmpeg_ok": {
+        "zh": "ffmpeg 校验通过",
+        "en": "ffmpeg verification passed",
+    },
+    "verify_ffmpeg_failed": {
+        "zh": "ffmpeg 校验未通过",
+        "en": "ffmpeg verification failed",
     },
 }
 
@@ -197,8 +308,16 @@ def build_keyfinder_helper(allow_missing=False):
     build_dir = PROJECT_ROOT / "build" / "wechat_keyfinder"
     print(L("keyfinder_building"))
     # 不指定 -G：由 cmake 选用本机最新 Visual Studio 生成器（CI/local 均可）
-    configure = ["cmake", "-S", str(src_dir), "-B", str(build_dir), "-A", "x64",
-                 "-DWKF_ENABLE_TEST_KEY=OFF"]
+    configure = [
+        "cmake",
+        "-S",
+        str(src_dir),
+        "-B",
+        str(build_dir),
+        "-A",
+        "x64",
+        "-DWKF_ENABLE_TEST_KEY=OFF",
+    ]
     result = subprocess.run(configure, cwd=str(PROJECT_ROOT))
     if result.returncode == 0:
         result = subprocess.run(
@@ -364,6 +483,140 @@ def verify_keyfinder_bundle():
     return not errors
 
 
+def ensure_ffmpeg(allow_missing=False):
+    """定位随包分发的裁剪版 ffmpeg（仅 Windows 打包）
+
+    顺序：OHMYMEME_FFMPEG（文件或含 ffmpeg.exe 的目录）→ 工作区 ffmpeg-win64/
+    （CI artifact）→ build/ffmpeg-win64/out/（本地跑 build_win64.sh）。
+    缺失时中止打包——与 wechat_keyfinder 同理，静默产出 WebM 转换不可用的
+    安装包比构建失败更糟；allow_missing 仅供本地开发放行。返回路径或 None。
+    """
+    if not IS_WINDOWS:
+        return None
+    cands = []
+    env = os.environ.get("OHMYMEME_FFMPEG", "")
+    if env:
+        p = Path(env)
+        if p.is_dir():
+            cands.append(p / "ffmpeg.exe")
+        cands.append(p)
+    cands.append(FFMPEG_CI_DIR / "ffmpeg.exe")
+    cands.append(FFMPEG_LOCAL_OUT / "ffmpeg.exe")
+    for p in cands:
+        if p.is_file():
+            if p.name != "ffmpeg.exe":
+                # --add-binary 保留源文件名，运行时/校验只认 ffmpeg.exe，先标准化
+                stage = PROJECT_ROOT / "build" / "ffmpeg-stage"
+                stage.mkdir(parents=True, exist_ok=True)
+                staged = stage / "ffmpeg.exe"
+                shutil.copy2(p, staged)
+                p = staged
+            print(L("ffmpeg_bundled", p, p.stat().st_size))
+            return p
+    if allow_missing:
+        print(L("ffmpeg_missing_allow"))
+        return None
+    print(L("ffmpeg_not_found"))
+    sys.exit(1)
+
+
+def _verify_ffmpeg_convert(exe, fixture):
+    """用产物 ffmpeg 实跑 TG 转换命令（与运行时共用 _webm_cmd），校验 WebP 魔数
+
+    configure 的组件名配错时组件列表检查可能漏判（enable 拼写错误不会报错），
+    端到端转换是硬验收。
+    """
+    added = str(PROJECT_ROOT) not in sys.path
+    if added:
+        sys.path.insert(0, str(PROJECT_ROOT))
+    try:
+        from src.tg_stickers import _webm_cmd
+    except Exception as e:
+        return [L("verify_run_error", e)]
+    finally:
+        if added:
+            try:
+                sys.path.remove(str(PROJECT_ROOT))
+            except ValueError:
+                pass
+    import tempfile
+
+    with tempfile.TemporaryDirectory() as td:
+        out = Path(td) / "out.webp"
+        cmd = _webm_cmd(str(exe), str(fixture), str(out))
+        try:
+            proc = subprocess.run(cmd, capture_output=True, timeout=60)
+        except subprocess.TimeoutExpired:
+            return [L("verify_run_error", "超时（60s）")]
+        except OSError as e:
+            return [L("verify_run_error", e)]
+        if proc.returncode != 0:
+            return [L("verify_ffmpeg_convert_failed", proc.returncode)]
+        if not out.is_file():
+            return [L("verify_ffmpeg_bad_output")]
+        magic = out.read_bytes()[:12]
+        if not (magic[:4] == b"RIFF" and magic[8:12] == b"WEBP"):
+            return [L("verify_ffmpeg_bad_output")]
+    print(L("verify_ffmpeg_convert_ok"))
+    return []
+
+
+def verify_ffmpeg_bundle():
+    """校验打包产物中的裁剪版 ffmpeg（build.yml / nightly.yml 共用）
+
+    三个检查：
+      1. 存在 —— ffmpeg.exe 是否随 --add-binary 进入产物
+      2. 可执行且组件齐全 —— `-decoders` 含 libvpx-vp9、`-encoders` 含
+         libwebp_anim（透明动画两要素，缺一 TG 转换即废）
+      3. 端到端 —— 对 tests/fixtures/tiny_vp9.webm 实跑转换命令并校验
+         RIFF/WEBP 魔数
+    按文件名在产物树内查找，不硬编码 _internal 布局（同 verify_keyfinder_bundle）。
+    """
+    root = BUILD_DIR / APP_NAME
+    if not root.is_dir():
+        print(L("verify_no_dist", root))
+        return False
+    matches = [p for p in root.rglob("ffmpeg.exe") if p.is_file()]
+    if not matches:
+        print(L("verify_ffmpeg_missing", root))
+        return False
+    exe = matches[0]
+    print(L("verify_ffmpeg_found", exe, exe.stat().st_size))
+
+    errors = []
+    try:
+        for flag, needle in (
+            ("-decoders", b"libvpx-vp9"),
+            ("-encoders", b"libwebp_anim"),
+        ):
+            proc = subprocess.run(
+                [str(exe), "-hide_banner", flag], capture_output=True, timeout=30
+            )
+            if proc.returncode != 0:
+                errors.append(L("verify_run_failed", proc.returncode))
+                break
+            if needle not in proc.stdout:
+                errors.append(L("verify_ffmpeg_no_component", needle.decode()))
+                break
+        else:
+            print(L("verify_ffmpeg_components_ok"))
+    except subprocess.TimeoutExpired:
+        errors.append(L("verify_run_error", "超时（30s）"))
+    except OSError as e:
+        errors.append(L("verify_run_error", e))
+
+    if not errors:
+        fixture = PROJECT_ROOT / "tests" / "fixtures" / "tiny_vp9.webm"
+        if not fixture.is_file():
+            errors.append(L("verify_ffmpeg_no_fixture", fixture))
+        else:
+            errors.extend(_verify_ffmpeg_convert(exe, fixture))
+
+    for e in errors:
+        print(e)
+    return not errors
+
+
 def find_iscc():
     paths = [
         os.environ.get("ISCC_DIR", ""),
@@ -426,7 +679,7 @@ def clean():
         spec_file.unlink()
 
 
-def build_pyinstaller(target=None):
+def build_pyinstaller(target=None, ffmpeg=None):
     check_pyinstaller()
     ensure_vue_frontend()
     clean()
@@ -435,17 +688,26 @@ def build_pyinstaller(target=None):
     sep = ";" if IS_WINDOWS else ":"
 
     cmd = [
-        PYTHON, "-m", "PyInstaller",
+        PYTHON,
+        "-m",
+        "PyInstaller",
         "--onedir",
-        "--name", APP_NAME,
-        "--distpath", str(BUILD_DIR),
-        "--specpath", str(PROJECT_ROOT / "build"),
+        "--name",
+        APP_NAME,
+        "--distpath",
+        str(BUILD_DIR),
+        "--specpath",
+        str(PROJECT_ROOT / "build"),
         "--noconfirm",
         "--clean",
-        "--add-data", str(SRC_DIR / "webui") + sep + "src/webui",
-        "--add-data", str(SRC_DIR / "resources") + sep + "src/resources",
-        "--add-data", str(SRC_DIR / "adb-help.txt") + sep + "src/adb-help.txt",
-        "--add-data", str(PROJECT_ROOT / "config" / "offsets.json") + sep + "config",
+        "--add-data",
+        str(SRC_DIR / "webui") + sep + "src/webui",
+        "--add-data",
+        str(SRC_DIR / "resources") + sep + "src/resources",
+        "--add-data",
+        str(SRC_DIR / "adb-help.txt") + sep + "src/adb-help.txt",
+        "--add-data",
+        str(PROJECT_ROOT / "config" / "offsets.json") + sep + "config",
     ]
     keyfinder = SRC_DIR / "wechat_keyfinder" / "wechat_keyfinder.exe"
     if IS_WINDOWS and target in (None, "Windows"):
@@ -456,16 +718,31 @@ def build_pyinstaller(target=None):
             ]
         else:
             print(L("keyfinder_missing", keyfinder))
+        if ffmpeg is not None:
+            cmd += ["--add-binary", str(ffmpeg) + sep + FFMPEG_DEST]
     cmd += [
-        "--hidden-import", "src.main",
+        "--hidden-import",
+        "src.main",
         str(PROJECT_ROOT / "scripts" / "launcher.py"),
     ]
 
     exclude = [
-        "numpy", "PyQt5", "PyQt5.QtCore", "PyQt5.QtGui",
-        "PyQt5.QtWidgets", "PyQt5.QtNetwork", "PyQt5.QtSvg",
-        "psutil", "setuptools", "pkg_resources", "pyreadline3",
-        "yaml", "tornado", "jaraco", "jaraco.text", "jaraco.functools",
+        "numpy",
+        "PyQt5",
+        "PyQt5.QtCore",
+        "PyQt5.QtGui",
+        "PyQt5.QtWidgets",
+        "PyQt5.QtNetwork",
+        "PyQt5.QtSvg",
+        "psutil",
+        "setuptools",
+        "pkg_resources",
+        "pyreadline3",
+        "yaml",
+        "tornado",
+        "jaraco",
+        "jaraco.text",
+        "jaraco.functools",
     ]
     for m in exclude:
         cmd += ["--exclude-module", m]
@@ -527,6 +804,7 @@ def _ensure_lang_file(iscc_exe):
     lang_dir.mkdir(parents=True, exist_ok=True)
     try:
         import urllib.request
+
         print("Downloading ChineseSimplified.isl...")
         urllib.request.urlretrieve(_LANG_URL, lang_file)
     except Exception as e:
@@ -578,8 +856,8 @@ def build_installer(version, target=None, filename_version=None):
         '#define SourceDir "%s"' % source_dir_abs,
     )
     iss_content = iss_content.replace(
-        'OutputDir=..\\..\\dist',
-        'OutputDir=%s' % str(BUILD_DIR.resolve()),
+        "OutputDir=..\\..\\dist",
+        "OutputDir=%s" % str(BUILD_DIR.resolve()),
     )
 
     iss_temp = BUILD_DIR / "ohmy meme.iss"
@@ -743,41 +1021,86 @@ def build_macos_packages(version, filename_version=None, arch=None):
 
 if __name__ == "__main__":
     import argparse
+
     parser = argparse.ArgumentParser(description="OhMyMeme build script (PyInstaller)")
-    parser.add_argument("--lang", choices=["zh", "en"], default=None,
-                        help="Output language (auto-detect: zh locally, en on GitHub Actions)")
+    parser.add_argument(
+        "--lang",
+        choices=["zh", "en"],
+        default=None,
+        help="Output language (auto-detect: zh locally, en on GitHub Actions)",
+    )
     parser.add_argument(
         "--version",
         default=None,
-        help="Override version string "
-        "(default: read from src/__init__.py)",
+        help="Override version string " "(default: read from src/__init__.py)",
     )
     parser.add_argument(
         "--nightly",
         action="store_true",
         help="Build a nightly (non-stable) release: version is 'nightly'",
     )
-    parser.add_argument("--installer-only", action="store_true",
-                        help="Only build installer (assumes PyInstaller already ran)")
-    parser.add_argument("--build-only", action="store_true",
-                        help="Only run PyInstaller, skip installer")
-    parser.add_argument("--allow-missing-keyfinder", action="store_true",
-                        help="Continue even if the wechat_keyfinder helper cannot be built "
-                             "(local development only; the packaged app loses WeChat import)")
-    parser.add_argument("--verify-helper", action="store_true",
-                        help="Verify the bundled wechat_keyfinder helper in dist/ "
-                             "(used by CI after packaging; exits non-zero on failure)")
-    parser.add_argument("--package", choices=["all", "appimage", "deb", "rpm"], default="all",
-                        help="Linux package type to build (default: all)")
-    parser.add_argument("--arch", choices=["arm64", "x86_64", "aarch64"], default=None,
-                        help="Architecture (macOS: arm64/x86_64, Linux: aarch64/x86_64, default: auto-detect)")
+    parser.add_argument(
+        "--installer-only",
+        action="store_true",
+        help="Only build installer (assumes PyInstaller already ran)",
+    )
+    parser.add_argument(
+        "--build-only", action="store_true", help="Only run PyInstaller, skip installer"
+    )
+    parser.add_argument(
+        "--allow-missing-keyfinder",
+        action="store_true",
+        help="Continue even if the wechat_keyfinder helper cannot be built "
+        "(local development only; the packaged app loses WeChat import)",
+    )
+    parser.add_argument(
+        "--verify-helper",
+        action="store_true",
+        help="Verify the bundled wechat_keyfinder helper in dist/ "
+        "(used by CI after packaging; exits non-zero on failure)",
+    )
+    parser.add_argument(
+        "--allow-missing-ffmpeg",
+        action="store_true",
+        help="Continue even if the trimmed ffmpeg cannot be located "
+        "(local development only; TG WebM conversion then falls "
+        "back to ffmpeg on PATH)",
+    )
+    parser.add_argument(
+        "--verify-ffmpeg",
+        action="store_true",
+        help="Verify the bundled ffmpeg in dist/ (component list + "
+        "end-to-end fixture conversion; used by CI; exits "
+        "non-zero on failure)",
+    )
+    parser.add_argument(
+        "--package",
+        choices=["all", "appimage", "deb", "rpm"],
+        default="all",
+        help="Linux package type to build (default: all)",
+    )
+    parser.add_argument(
+        "--arch",
+        choices=["arm64", "x86_64", "aarch64"],
+        default=None,
+        help="Architecture (macOS: arm64/x86_64, Linux: aarch64/x86_64, default: auto-detect)",
+    )
     target_group = parser.add_mutually_exclusive_group()
-    target_group.add_argument("--windows", action="store_true", dest="target_windows",
-                              help="Build for Windows")
-    target_group.add_argument("--linux", action="store_true", dest="target_linux",
-                              help="Build for Linux")
-    target_group.add_argument("--macos", action="store_true", dest="target_macos",
-                              help="Build for macOS (.app + .dmg)")
+    target_group.add_argument(
+        "--windows",
+        action="store_true",
+        dest="target_windows",
+        help="Build for Windows",
+    )
+    target_group.add_argument(
+        "--linux", action="store_true", dest="target_linux", help="Build for Linux"
+    )
+    target_group.add_argument(
+        "--macos",
+        action="store_true",
+        dest="target_macos",
+        help="Build for macOS (.app + .dmg)",
+    )
     parser.set_defaults(target_windows=False, target_linux=False, target_macos=False)
     args = parser.parse_args()
 
@@ -807,6 +1130,12 @@ if __name__ == "__main__":
         print(L("verify_ok") if ok else L("verify_failed"))
         sys.exit(0 if ok else 1)
 
+    # --- ffmpeg 校验模式（CI 打包后调用，同上无构建副作用）---
+    if args.verify_ffmpeg:
+        ok = verify_ffmpeg_bundle()
+        print(L("verify_ffmpeg_ok") if ok else L("verify_ffmpeg_failed"))
+        sys.exit(0 if ok else 1)
+
     # --- version override / nightly ---
     base_version = get_version()
     build_version = base_version
@@ -828,31 +1157,45 @@ if __name__ == "__main__":
     try:
         if args.installer_only:
             if target == "Windows":
-                build_installer(app_version, target=target, filename_version=build_version)
+                build_installer(
+                    app_version, target=target, filename_version=build_version
+                )
             elif target == "Linux":
-                build_linux_packages(build_version, args.package, pkg_version=app_version, arch=args.arch)
+                build_linux_packages(
+                    build_version, args.package, pkg_version=app_version, arch=args.arch
+                )
             elif target == "Darwin":
-                build_macos_packages(build_version, filename_version=build_version, arch=args.arch)
+                build_macos_packages(
+                    build_version, filename_version=build_version, arch=args.arch
+                )
             else:
                 print(L("installer_only_unsupported", target))
                 sys.exit(1)
         else:
-            # helper 随包分发：先在打包前编译，并按实际产物注入哈希（构建后还原）
+            # helper/ffmpeg 随包分发：先编译/定位，再打包（helper 按实际产物注入哈希）
+            ffmpeg = None
             if target == "Windows":
                 keyfinder = build_keyfinder_helper(
                     allow_missing=args.allow_missing_keyfinder
                 )
                 if keyfinder:
                     keyfinder_original = pin_keyfinder_hash(keyfinder)
-            version = build_pyinstaller(target=target)
+                ffmpeg = ensure_ffmpeg(allow_missing=args.allow_missing_ffmpeg)
+            version = build_pyinstaller(target=target, ffmpeg=ffmpeg)
             if args.build_only:
                 pass
             elif target == "Windows":
-                build_installer(app_version, target=target, filename_version=build_version)
+                build_installer(
+                    app_version, target=target, filename_version=build_version
+                )
             elif target == "Linux":
-                build_linux_packages(version, args.package, pkg_version=app_version, arch=args.arch)
+                build_linux_packages(
+                    version, args.package, pkg_version=app_version, arch=args.arch
+                )
             elif target == "Darwin":
-                build_macos_packages(version, filename_version=build_version, arch=args.arch)
+                build_macos_packages(
+                    version, filename_version=build_version, arch=args.arch
+                )
     finally:
         if keyfinder_original is not None:
             unpin_keyfinder_hash(keyfinder_original)

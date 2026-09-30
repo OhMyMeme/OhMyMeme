@@ -67,10 +67,15 @@ from .clipboard_util import (
     convert_image_mode_3,
     copy_image_to_clipboard,
 )
-from .config import _IMPORT_MAX_BYTES, _IMPORT_MAX_PX, get_config
+from .config import (
+    _IMPORT_MAX_BYTES,
+    _IMPORT_MAX_PX,
+    get_config,
+    guide_ok,
+    set_guide_ok,
+)
 from .database import get_db
 from .manifest import build as build_manifest
-from .manifest import guide_ok, set_guide_ok
 
 logger = logging.getLogger(__name__)
 
@@ -468,7 +473,7 @@ class JsApi:
         }
 
     def complete_guide(self) -> dict:
-        """设置向导完成：写入清单 guide=ok 标记"""
+        """设置向导完成：写入配置 guide=ok 标记"""
         set_guide_ok()
         return {"ok": True}
 
