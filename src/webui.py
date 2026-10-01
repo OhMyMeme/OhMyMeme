@@ -1939,6 +1939,7 @@ class SettingsApi:
             "hover_to_play": d.get("hover_to_play", False),
             "copy_avoid_webp": d.get("copy_avoid_webp", False),
             "manifest_include_tags": d.get("manifest_include_tags", True),
+            "manifest_include_favorites": d.get("manifest_include_favorites", True),
         }
 
     def _safe_refresh(self, js_function: str) -> dict:
@@ -2070,6 +2071,7 @@ class SettingsApi:
             "hover_to_play": self._cfg.get("hover_to_play", False),
             "copy_avoid_webp": self._cfg.get("copy_avoid_webp", False),
             "manifest_include_tags": True,
+            "manifest_include_favorites": True,
         }
 
     def move_window(self, dx: int, dy: int):

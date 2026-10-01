@@ -468,6 +468,7 @@ class LanServer:
             return {"ok": False, "error": "manifest 格式错误"}
         from .sync import (
             _apply_remote_collections,
+            _apply_remote_favorites,
             _apply_remote_order,
             _apply_remote_tags,
         )
@@ -477,6 +478,7 @@ class LanServer:
             _apply_remote_order(manifest)
             _apply_remote_collections(manifest)
             _apply_remote_tags(manifest)
+            _apply_remote_favorites(manifest)
         except Exception as e:
             logger.warning(f"push_manifest apply error: {e}")
         build_manifest()

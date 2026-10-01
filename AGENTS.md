@@ -158,6 +158,7 @@ tests/
 - 全局单例: `get_config()`, `get_db()`
 - `hotkey_show_at_mouse` 默认 `false`，控制 Windows 上全局热键显示隐藏主面板时是否按鼠标位置放置
 - `manifest_include_tags` 默认 `true`，控制 `manifest.build()` 是否把标签写入 `meme-index.json` 每个条目的 `tags` 数组（关闭时条目不含 `tags` 键，本地标签不受影响）；设置页「云端同步」区块开关
+- `manifest_include_favorites` 默认 `true`，控制 `manifest.build()` 是否把收藏文件名写入 `meme-index.json` 顶层 `favorite` 数组（关闭时整个 `favorite` 键不写入，本地收藏不受影响）；设置页「云端同步」区块开关
 - `cache_dir`（表情包图片目录）可自定义：配置键 `cache_dir` 非空时 `Config.cache_dir` 返回该路径，否则默认 `data_dir/cache`；设置页「存储位置」通过 `SettingsApi.pick_storage_dir`/`apply_storage_dir` 切换，`apply_storage_dir` 可选把旧目录文件递归迁移（跳过 `thumbnails`）；**切换后旧文件不再可见**，故未迁移时必须确保文件已存在于新目录；`_storage_dir_validation` 拒绝相对/相同/上下级目录以及 `data_dir`/`thumbnail_dir` 及其上下级（受保护路径）；DB/缩略图/manifest 仍留在 `data_dir`，数据库只存文件名，文件在新目录时按 basename 自动解析；`reset_settings` 恢复默认时保留 `cache_dir`。迁移为**后台三阶段幂等**设计（避免跨盘长拷贝时进程被杀导致分裂状态）：①复制阶段源只读（`O_EXCL` 排他写入，dst 已存在且大小一致视为已复制跳过——幂等；失败/取消仅清理本次新副本，源完好无分裂，不回滚）；②写配置（唯一切换点，此后新目录已完整）；③删源（失败仅残留旧目录冗余，不阻断）。迁移开始写 `data_dir/storage_migration.json` 清单、完成后删除；`main.py` 启动时若检测到未完成清单则后台幂等续跑（强杀/断电后重启自愈）。取消由 move 回滚改为删新副本，消除回滚自身失败风险
 
 ### 同步
@@ -277,6 +278,7 @@ tests/
 - 远端 manifest 中的 `collections` 用文件名关联（非 ID），跨设备稳定
 - `_apply_remote_order` 按远端 manifest 的 `memes` 顺序重排本地 `sort_order`（`reorder_memes`），确保 pull 后本地显示顺序与云端一致，再次 push 不致覆盖云端排序
 - `_apply_remote_tags` 以**并集**合并远端标签（只增不清，复用 `add_tags_to_memes`）：读条目内 `tags` 数组，缺失时回退顶层 `tag_map`（旧版安卓清单），均缺失/空列表则跳过不动本地标签；`pull()` 与局域网 `_cmd_push_manifest` 均在 order/collections 之后调用
+- `_apply_remote_favorites` 以**并集**合并远端收藏（只增不清，复用 `MemeDB.add_favorite` 幂等 `INSERT OR IGNORE`）：读顶层 `favorite` 文件名数组（键缺失/非 list 直接跳过），经 `_safe_remote_fname` 过滤后按 filename 关联本地表情；`pull()` 与局域网 `_cmd_push_manifest` 均在 tags 之后调用，不受 `manifest_include_favorites` 开关限制
 
 ### 排序同步闭环
 - 排序相关的 `reorder_memes`/`reorder_collections`/`reorder_collection_members` 更新 DB 后即调 `build_manifest()`，本地 `meme-index.json` 保持最新
@@ -287,6 +289,7 @@ tests/
 - `build()` 递归遍历嵌套分组树，空分组自动 `delete_collection`
 - 远端 manifest 中的 `collections` 以嵌套格式存储（`name`/`filenames`/`children`），version 2 旧格式启动时自动转换
 - 每个 meme 条目含 `tags` 数组（无标签为 `[]`，批量取自 `MemeDB.get_tags_map()` 单查询），受配置 `manifest_include_tags`（默认开）控制，关闭时条目不含 `tags` 键；`JsApi.set_meme_tags`/`batch_add_tags` 变更后即时 `build_manifest()`
+- 顶层 `favorite` 数组列出收藏表情的文件名（无收藏为 `[]`，取自 `MemeDB.search(favorite_only=True)`），受配置 `manifest_include_favorites`（默认开）控制，关闭时整个 `favorite` 键不写入；`load()` 空结构兜底含 `"favorite": []`
 
 ### 自定义排序
 - `memes.sort_order` 字段存储全局展示顺序；前端可拖拽排序仅在正 ID 分组/子分组内进行，成员顺序存 `meme_collections.sort_order`

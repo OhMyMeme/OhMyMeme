@@ -1285,6 +1285,20 @@ def _apply_remote_tags(remote_data: dict):
             db.add_tags_to_memes([row["id"]], names)
 
 
+def _apply_remote_favorites(remote_data: dict):
+    """并集合并远端收藏（只增不清，按 filename 关联）"""
+    db = get_db()
+    favs = remote_data.get("favorite")
+    if not isinstance(favs, list):
+        return
+    for fname in favs:
+        if not isinstance(fname, str) or not _safe_remote_fname(fname):
+            continue
+        row = db.get_by_filename(fname)
+        if row:
+            db.add_favorite(row["id"])
+
+
 def pull(remove_local: bool = None) -> dict:
     """远端 -> 本地：下载缺失/变更的表情包和清单（多线程）"""
     cfg = get_config()
@@ -1374,6 +1388,7 @@ def pull(remove_local: bool = None) -> dict:
         _apply_remote_collections(remote_data)
         _apply_remote_order(remote_data)
         _apply_remote_tags(remote_data)
+        _apply_remote_favorites(remote_data)
         build_manifest()
         if aggregated["errors"] > 0:
             _update_sync_state(failed_items=aggregated["failed"])

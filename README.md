@@ -319,10 +319,13 @@ Windows 上 GIF 复制同时写入三个剪贴板格式：`CF_DIB`（首帧 BMP�
 加密优先使用 `cryptography.fernet.Fernet`，不可用时降级为 `hashlib.pbkdf2_hmac` + XOR + base64。**不能移除 XOR 降级**，否则无 `cryptography` 时系统崩溃。
 
 ### Sync 集合合并
-`pull` 时远端分组以**并集**方式合并到本地已有分组（不清除本地成员）。远端 manifest 中的 `collections` 用文件名关联（非 ID），跨设备稳定。远端标签同样以**并集**合并到本地（条目内 `tags` 数组，兼容读取旧版顶层 `tag_map`；只增不清，某端删除标签不会同步到其他端）。
+`pull` 时远端分组以**并集**方式合并到本地已有分组（不清除本地成员）。远端 manifest 中的 `collections` 用文件名关联（非 ID），跨设备稳定。远端标签与收藏同样以**并集**合并到本地（标签为条目内 `tags` 数组，兼容读取旧版顶层 `tag_map`；收藏为顶层 `favorite` 文件名数组；均只增不清，某端删除标签/收藏不会同步到其他端）。
 
 ### 标签写入同步清单
 设置页「云端同步」区块开关（配置 `manifest_include_tags`，默认开）：开启时 `meme-index.json` 每个表情条目写入 `tags` 数组（无标签为 `[]`），随 push/局域网同步到其他设备；关闭时条目不含 `tags` 键（仅影响清单，本地标签不受影响）。标签编辑（单个/批量）后本地清单即时重建。
+
+### 收藏夹写入同步清单
+设置页「云端同步」区块开关（配置 `manifest_include_favorites`，默认开）：开启时 `meme-index.json` 顶层写入 `favorite` 文件名数组（无收藏为 `[]`），随 push/局域网同步到其他设备；关闭时整个 `favorite` 键不写入（仅影响清单，本地收藏不受影响）。接收侧合并不受该开关限制。
 
 ### Manifest 自动清理
 构建 `meme-index.json` 时，若某分组无成员则自动删除该分组并跳过写入，防止空分组累积到远端。

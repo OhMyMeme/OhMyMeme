@@ -417,6 +417,8 @@ async function getSettings() {
   if (sa) sa.checked = s.sync_auto_sync === true;
   const mit = document.getElementById('s-manifest-include-tags');
   if (mit) mit.checked = s.manifest_include_tags !== false;
+  const mif = document.getElementById('s-manifest-include-favorites');
+  if (mif) mif.checked = s.manifest_include_favorites !== false;
   if (st) { st.value = s.sync_type || ''; toggleSyncType(); }
   document.getElementById('s-ftp-host').value = s.ftp_host || '';
   document.getElementById('s-ftp-port').value = s.ftp_port || 21;
@@ -715,6 +717,7 @@ async function saveSettings() {
   const record_recent_use = document.getElementById('s-record-recent')?.checked !== false;
   const show_startup_animation = document.getElementById('s-show-startup-anim')?.checked !== false;
   const manifest_include_tags = document.getElementById('s-manifest-include-tags')?.checked !== false;
+  const manifest_include_favorites = document.getElementById('s-manifest-include-favorites')?.checked !== false;
   const sync = collectSyncSettings();
   if (!validateSync(sync)) return;
   const lan_port = parseInt(document.getElementById('s-lan-port')?.value) || 17852;
@@ -726,7 +729,7 @@ async function saveSettings() {
     copy_resize_mode: copy_mode,
     copy_avoid_webp,
     auto_start, silent_start, show_uncategorized, record_recent_use,
-    show_startup_animation, manifest_include_tags,
+    show_startup_animation, manifest_include_tags, manifest_include_favorites,
     lan_port, lan_secret,
     ...sync
   });
@@ -784,6 +787,8 @@ async function resetSettings() {
     if (sa) sa.checked = false;
     const mit2 = document.getElementById('s-manifest-include-tags');
     if (mit2) mit2.checked = true;
+    const mif2 = document.getElementById('s-manifest-include-favorites');
+    if (mif2) mif2.checked = true;
     if (st) { st.value = ''; toggleSyncType(); }
     document.getElementById('s-ftp-host').value = '';
     document.getElementById('s-ftp-port').value = '21';

@@ -4,6 +4,7 @@
 - **局域网传输进度浮层** — 手机与电脑互传表情包/配置时，设置页显示进度浮层（复刻云同步进度条样式：字节制百分比 + 实时速度、当前文件、「后台运行」按钮）；手机端在 `pull_file`/`push_file`/`get_config`/`send_config` 帧附带 `meta` 总量（`files_total`/`bytes_total`，纯增量协议，旧版手机/电脑自动忽略），电脑端累计本端实际收发量；无总量的旧手机降级显示「已传输 N 文件」，传输完成或空闲 5 秒自动隐藏，自适应轮询（传输中 300ms / 空闲 5s）
 - **局域网传输测试** — `tests/test_lan.py` 新增 7 例：pull/push meta 总量累计与方向、达量即标记完成、无 meta 降级、配置命令计数、空闲超时重置、`get_status` 暴露 `transfer`/`pending_confirm`
 - **标签写入同步清单** — `meme-index.json` 每个表情条目新增 `tags` 数组（无标签为 `[]`），设置页「云端同步」新增「将标签写入同步清单」开关（配置 `manifest_include_tags`，默认开）；`pull` 与局域网 `push_manifest` 按**并集**合并远端标签（只增不清，兼容读取旧版顶层 `tag_map`），标签编辑后本地清单即时重建；manifest `version` 保持 3（纯增字段，旧端读到未知键自动忽略）
+- **收藏夹写入同步清单** — `meme-index.json` 顶层新增 `favorite` 文件名数组（无收藏为 `[]`），设置页「云端同步」新增「将收藏夹写入同步清单」开关（配置 `manifest_include_favorites`，默认开）；`pull` 与局域网 `push_manifest` 按**并集**合并远端收藏（只增不清，按 filename 关联，经 `_safe_remote_fname` 过滤），该合并不受开关限制；manifest `version` 保持 3（纯增字段，旧端读到未知键自动忽略）
 - **关于页 GitHub / QQ 群入口** — 设置页「关于」新增「GitHub 项目地址」「加入 QQ 群」按钮，经后端 `SettingsApi.open_url`（仅允许 http/https）交系统默认浏览器打开
 - **Windows 安装包内置裁剪版 ffmpeg** — Telegram 导入的 WebM 转 WebP 不再要求用户自行安装 ffmpeg：CI 从源码交叉编译仅含 VP9 解码与 WebP 动画编码的静态单文件（20MB 体积预算，无运行时下载），运行时优先使用内置版、回退 PATH 中的系统 ffmpeg；Linux/macOS 仍使用系统 ffmpeg
 - **设置向导** — 首次启动（或旧版本升级后）弹出 7 步设置向导：全局快捷键、开机自启、动图自动播放、云端同步（可跳过）、导入表情（可跳过）；关闭（含 ESC/×/完成）即写入 `config.json` 的 `guide` 标记（本机配置，不进同步清单），下次启动不再提示；设置页「基础设置」新增「打开设置向导」按钮可随时重跑

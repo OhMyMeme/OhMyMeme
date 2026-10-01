@@ -455,6 +455,25 @@ def test_manifest_include_tags_settings_contract():
     assert '"manifest_include_tags": True' in reset_src
 
 
+def test_manifest_include_favorites_settings_contract():
+    """设置页「将收藏夹写入同步清单」开关（HTML 复选框 + JS 读写 + 后端配置键）"""
+    from src.config import Config
+    from src.webui import HTML_DIR, SettingsApi
+
+    assert Config.DEFAULTS.get("manifest_include_favorites") is True
+    settings_html = (HTML_DIR / "settings.html").read_text(encoding="utf-8")
+    assert 'id="s-manifest-include-favorites"' in settings_html
+    settings_js = (HTML_DIR / "settings.js").read_text(encoding="utf-8")
+    assert "s.manifest_include_favorites !== false" in settings_js
+    assert "manifest_include_favorites," in settings_js
+    import inspect
+
+    src = inspect.getsource(SettingsApi.get_settings)
+    assert '"manifest_include_favorites"' in src
+    reset_src = inspect.getsource(SettingsApi.reset_settings)
+    assert '"manifest_include_favorites": True' in reset_src
+
+
 def test_about_links_static_contract():
     """关于页 GitHub/QQ 群外链按钮（HTML 按钮 + JS URL 常量 + open_url 接口）"""
     from src.webui import HTML_DIR

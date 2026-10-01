@@ -528,6 +528,15 @@ class MemeDB:
             is not None
         )
 
+    def add_favorite(self, meme_id: int) -> None:
+        """幂等收藏（远端清单收藏并集合入用）"""
+        with self._lock:
+            conn = self._get_conn()
+            conn.execute(
+                "INSERT OR IGNORE INTO favorites (meme_id) VALUES (?)", (meme_id,)
+            )
+            conn.commit()
+
     # --- 收藏集 ---
 
     def create_collection(self, name: str, parent_id: int = None) -> int:

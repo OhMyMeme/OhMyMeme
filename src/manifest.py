@@ -81,10 +81,21 @@ def build() -> List[Dict]:
 
     collections = _build_collection_tree(db)
 
+    include_favorites = bool(get_config().get("manifest_include_favorites", True))
+    favorite = []
+    if include_favorites:
+        favorite = [
+            r["filename"]
+            for r in db.search(keyword="", favorite_only=True, limit=999999)
+        ]
+
     data = {"version": 3, "memes": memes, "collections": collections}
+    if include_favorites:
+        data["favorite"] = favorite
     _write(data)
     logger.debug(
-        f"manifest written: {len(memes)} memes, {len(collections)} collections"
+        f"manifest written: {len(memes)} memes, {len(collections)} collections, "
+        f"{len(favorite)} favorites"
     )
 
     return memes
@@ -94,7 +105,7 @@ def load() -> Dict:
     """加载索引文件，不存在时返回空结构"""
     path = _index_path()
     if not path.exists():
-        return {"version": 3, "memes": [], "collections": []}
+        return {"version": 3, "memes": [], "collections": [], "favorite": []}
     try:
         data = json.loads(path.read_text(encoding="utf-8"))
         if data.get("version", 2) < 3:
@@ -114,4 +125,4 @@ def load() -> Dict:
         return data
     except Exception as e:
         logger.warning(f"manifest load failed: {e}")
-        return {"version": 3, "memes": [], "collections": []}
+        return {"version": 3, "memes": [], "collections": [], "favorite": []}
