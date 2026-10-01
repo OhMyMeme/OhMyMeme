@@ -27,6 +27,13 @@ logger = logging.getLogger(__name__)
 # pywebview 6.x winforms._is_chromium 判定的最低 WebView2 版本回退值
 # （运行时优先从已安装 pywebview 源码解析该常量，随 pywebview 升级自动跟随）
 _MIN_WEBVIEW2_FALLBACK = "86.0.622.0"
+# 本项目实际所需最低 WebView2 版本：pywebview 6 在 CoreWebView2 初始化完成回调中
+# 无条件执行 settings.IsSwipeNavigationEnabled = False（ICoreWebView2Settings6，
+# SDK 1.0.992.28 引入），按 WebView2 forward-compat 规则（API 所在 SDK 的第三段
+# build 号 ≤ Runtime 的第三段 build 号）需 Runtime >= 94.0.992.x；更旧 Runtime 上
+# 该 setter 抛 NotImplementedException 中断初始化（白屏），故门槛取 94.0.992.0
+# 而非 pywebview _is_chromium 的 86.0.622.0 后端可用底线。
+_PROJECT_MIN_WEBVIEW2 = "94.0.992.0"
 # .NET Framework 4.6.2（pywebview winforms._is_chromium 同阈值）
 _MIN_DOTNET_RELEASE = 394802
 # EdgeUpdate 各渠道客户端 GUID（与 pywebview winforms._is_chromium 一致）
@@ -89,17 +96,20 @@ def parse_min_version(source_text: str):
 
 
 def min_webview2_version() -> str:
-    """项目 pywebview 支持的最低 WebView2 版本（读其源码，失败回退常量）"""
+    """本项目所需最低 WebView2 版本 = max(pywebview 源码阈值, 项目特性门槛)"""
+    found = _MIN_WEBVIEW2_FALLBACK
     try:
         import webview
 
         src = Path(webview.__file__).resolve().parent / "platforms" / "winforms.py"
-        found = parse_min_version(src.read_text(encoding="utf-8"))
-        if found:
-            return found
+        parsed = parse_min_version(src.read_text(encoding="utf-8"))
+        if parsed:
+            found = parsed
     except Exception as e:
         logger.debug("解析 pywebview 最低 WebView2 版本失败，使用回退值: %s", e)
-    return _MIN_WEBVIEW2_FALLBACK
+    if version_at_least(_PROJECT_MIN_WEBVIEW2, found):
+        return _PROJECT_MIN_WEBVIEW2
+    return found
 
 
 def _read_pv(guid: str) -> str:

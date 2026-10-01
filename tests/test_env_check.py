@@ -1,4 +1,5 @@
 import json
+import os
 import subprocess
 import sys
 
@@ -49,12 +50,20 @@ class TestParseMinVersion:
     def test_miss(self):
         assert parse_min_version("def foo(): pass") is None
 
-    def test_fallback_constant(self):
-        assert min_webview2_version() == env_check._MIN_WEBVIEW2_FALLBACK
+    def test_real_env_at_least_project_floor(self):
+        assert version_at_least(min_webview2_version(), env_check._PROJECT_MIN_WEBVIEW2)
 
-    def test_parse_failure_returns_fallback(self, monkeypatch):
+    def test_fallback_keeps_project_floor(self, monkeypatch):
         monkeypatch.setattr(env_check, "parse_min_version", lambda _src: None)
-        assert min_webview2_version() == env_check._MIN_WEBVIEW2_FALLBACK
+        assert min_webview2_version() == env_check._PROJECT_MIN_WEBVIEW2
+
+    def test_project_floor_applies_to_pywebview_threshold(self, monkeypatch):
+        monkeypatch.setattr(env_check, "parse_min_version", lambda _src: "86.0.622.0")
+        assert min_webview2_version() == env_check._PROJECT_MIN_WEBVIEW2
+
+    def test_follows_higher_pywebview_threshold(self, monkeypatch):
+        monkeypatch.setattr(env_check, "parse_min_version", lambda _src: "95.0.0.1")
+        assert min_webview2_version() == "95.0.0.1"
 
 
 class TestMarker:
@@ -93,7 +102,11 @@ class TestDetectChecksWindows:
         return stable
 
     def test_installed_ok(self, monkeypatch):
-        self._patch(monkeypatch, {"{F3017226-FE2A-4295-8BDF-00C3A9A7E4C5}": "120.0.2210.61"}, 533320)
+        self._patch(
+            monkeypatch,
+            {"{F3017226-FE2A-4295-8BDF-00C3A9A7E4C5}": "120.0.2210.61"},
+            533320,
+        )
         items = detect_checks(is_windows=True)
         assert len(items) == 3
         assert all(i["ok"] for i in items)
@@ -101,7 +114,11 @@ class TestDetectChecksWindows:
         assert "120.0.2210.61" in items[0]["detail"]
 
     def test_installed_too_old(self, monkeypatch):
-        self._patch(monkeypatch, {"{F3017226-FE2A-4295-8BDF-00C3A9A7E4C5}": "85.0.9999.99"}, 533320)
+        self._patch(
+            monkeypatch,
+            {"{F3017226-FE2A-4295-8BDF-00C3A9A7E4C5}": "85.0.9999.99"},
+            533320,
+        )
         items = detect_checks(is_windows=True)
         assert items[0]["ok"] is True
         assert items[1]["ok"] is False
@@ -115,7 +132,9 @@ class TestDetectChecksWindows:
         assert items[1]["ok"] is False
 
     def test_dotnet_missing(self, monkeypatch):
-        self._patch(monkeypatch, {"{F3017226-FE2A-4295-8BDF-00C3A9A7E4C5}": "120.0.0.0"}, 0)
+        self._patch(
+            monkeypatch, {"{F3017226-FE2A-4295-8BDF-00C3A9A7E4C5}": "120.0.0.0"}, 0
+        )
         items = detect_checks(is_windows=True)
         assert items[2]["ok"] is False
         assert "未检测到" in items[2]["detail"]
@@ -171,6 +190,10 @@ class TestShowBlocking:
         monkeypatch.delattr(sys, "frozen", raising=False)
         show_blocking()
         assert captured["cmd"][1:3] == ["-m", "src.env_check"]
-        if subprocess.CREATE_NO_WINDOW:
-            assert captured["kwargs"].get("creationflags") == subprocess.CREATE_NO_WINDOW
+        if os.name == "nt":
+            assert (
+                captured["kwargs"].get("creationflags") == subprocess.CREATE_NO_WINDOW
+            )
+        else:
+            assert "creationflags" not in captured["kwargs"]
         assert captured["kwargs"]["stdout"] == subprocess.DEVNULL
