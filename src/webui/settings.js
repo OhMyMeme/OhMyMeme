@@ -755,6 +755,21 @@ async function openSetupGuide() {
   }
 }
 
+// 打开环境检测窗口（独立子进程，非阻塞）
+async function openEnvCheck() {
+  try {
+    const ok = await api('open_env_check');
+    if (ok === true) {
+      showToast('已打开环境检测窗口');
+    } else {
+      showToast('打开环境检测失败');
+    }
+  } catch (e) {
+    console.error('openEnvCheck error', e);
+    showToast('打开环境检测失败');
+  }
+}
+
 async function resetSettings() {
   const s = await api('reset_settings');
   if (s) {

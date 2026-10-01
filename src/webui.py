@@ -1996,6 +1996,16 @@ class SettingsApi:
         _call(self._webui.show, "show")
         return ok
 
+    def open_env_check(self) -> bool:
+        """设置页入口：打开环境检测窗口（独立子进程，非阻塞）"""
+        try:
+            from .env_check import spawn_ui
+
+            return spawn_ui()
+        except Exception as e:
+            logger.warning("open_env_check failed: %s", e)
+            return False
+
     def save_settings(self, settings: dict):
         if isinstance(settings, dict):
             if "auto_start" in settings:
