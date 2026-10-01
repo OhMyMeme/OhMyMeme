@@ -79,6 +79,10 @@ function visibleSettingsOverlay() {
 
 /* Close settings window */
 let _settingsDirty = false;
+// 云端直接使用：记录已加载的存储类型，空→非空（首次配置云端）时询问是否开启
+let _lastSyncType = '';
+// 云端直接使用：记录已保存的开关值，本次保存刚开启时询问是否上传一次缩略图
+let _lastCloudDirect = false;
 function markSettingsDirty() { _settingsDirty = true; }
 
 // 收集表单输入，未保存的修改在关闭/按 Esc 时提示
@@ -419,7 +423,10 @@ async function getSettings() {
   if (mit) mit.checked = s.manifest_include_tags !== false;
   const mif = document.getElementById('s-manifest-include-favorites');
   if (mif) mif.checked = s.manifest_include_favorites !== false;
-  if (st) { st.value = s.sync_type || ''; toggleSyncType(); }
+  const cld = document.getElementById('s-cloud-direct');
+  if (cld) cld.checked = s.cloud_direct === true;
+  _lastCloudDirect = s.cloud_direct === true;
+  if (st) { st.value = s.sync_type || ''; toggleSyncType(); _lastSyncType = s.sync_type || ''; }
   document.getElementById('s-ftp-host').value = s.ftp_host || '';
   document.getElementById('s-ftp-port').value = s.ftp_port || 21;
   document.getElementById('s-ftp-user').value = s.ftp_user || '';
@@ -630,6 +637,21 @@ function toggleSyncType() {
   if (b) b.style.display = t ? 'block' : 'none';
 }
 
+// 云端直接使用：首次配置云端（存储类型空→非空）时询问是否顺带开启
+async function onSyncTypeChange() {
+  const t = document.getElementById('s-sync-type')?.value || '';
+  const wasEmpty = !_lastSyncType;
+  _lastSyncType = t;
+  if (!wasEmpty || !t) return;
+  const cd = document.getElementById('s-cloud-direct');
+  if (!cd || cd.checked) return;
+  const ok = await showConfirm('云端直接使用', '检测到刚配置云端同步。是否开启「云端直接使用」？开启后启动时会显示云端缺失的表情（带云角标），点击即可下载并自动复制使用。');
+  if (ok) {
+    cd.checked = true;
+    _settingsDirty = true;
+  }
+}
+
 function collectSyncSettings() {
   return {
     sync_auto_fetch_index: document.getElementById('s-sync-fetch')?.checked === true,
@@ -638,6 +660,7 @@ function collectSyncSettings() {
     sync_delete_remote: document.getElementById('s-delete-remote')?.checked === true,
     sync_remove_local: document.getElementById('s-remove-local')?.checked === true,
     sync_hide_upload_warning: document.getElementById('s-hide-upload-warn')?.checked === true,
+    cloud_direct: document.getElementById('s-cloud-direct')?.checked === true,
     ftp_host: document.getElementById('s-ftp-host')?.value || '',
     ftp_port: parseInt(document.getElementById('s-ftp-port')?.value) || 21,
     ftp_user: document.getElementById('s-ftp-user')?.value || '',
@@ -735,6 +758,16 @@ async function saveSettings() {
   });
   showToast('设置已保存');
   _settingsDirty = false;
+  // 云端直接使用刚开启：询问是否立即上传一次，把缩略图推上云端供缺失表情显示
+  const cloudNow = sync.cloud_direct === true;
+  if (cloudNow && !_lastCloudDirect && sync.sync_type) {
+    const up = await showConfirm(
+      '上传缩略图',
+      '云端直接使用需要云端存有缩略图才能正常显示缺失表情。是否立即上传一次（同步本地表情与缩略图）？'
+    );
+    if (up) await syncPush();
+  }
+  _lastCloudDirect = cloudNow;
 }
 
 // 打开设置向导：聚焦主窗口并显示向导覆盖层；成功后关闭设置窗口保证主窗口可见
@@ -804,7 +837,10 @@ async function resetSettings() {
     if (mit2) mit2.checked = true;
     const mif2 = document.getElementById('s-manifest-include-favorites');
     if (mif2) mif2.checked = true;
-    if (st) { st.value = ''; toggleSyncType(); }
+    const cld2 = document.getElementById('s-cloud-direct');
+    if (cld2) cld2.checked = false;
+    _lastCloudDirect = false;
+    if (st) { st.value = ''; toggleSyncType(); _lastSyncType = ''; }
     document.getElementById('s-ftp-host').value = '';
     document.getElementById('s-ftp-port').value = '21';
     document.getElementById('s-ftp-user').value = '';

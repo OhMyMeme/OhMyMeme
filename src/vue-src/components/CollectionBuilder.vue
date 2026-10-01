@@ -96,7 +96,7 @@ function onBoxKeydown(e: KeyboardEvent) {
               @keydown.enter.prevent="cb.toggleMeme(meme.id)"
               @keydown.space.prevent="cb.toggleMeme(meme.id)"
             >
-              <img :src="`/api/thumb/${meme.id}/${encodeURIComponent(meme.filename)}`" :alt="meme.name || meme.original_name || meme.filename" loading="lazy">
+              <img :src="`/api/thumb/${meme.file_hash}`" :alt="meme.name || meme.original_name || meme.filename" loading="lazy">
               <div v-if="cb.selectedIds.value.has(meme.id)" class="cb-check">✓</div>
             </div>
             <div v-if="cb.filteredMemes.value.length === 0" class="cb-empty">没有表情包</div>
@@ -117,7 +117,7 @@ function onBoxKeydown(e: KeyboardEvent) {
               @keydown.enter.prevent="cb.toggleMeme(meme.id)"
               @keydown.space.prevent="cb.toggleMeme(meme.id)"
             >
-              <img :src="`/api/thumb/${meme.id}/${encodeURIComponent(meme.filename)}`" :alt="meme.name || meme.original_name || meme.filename" loading="lazy">
+              <img :src="`/api/thumb/${meme.file_hash}`" :alt="meme.name || meme.original_name || meme.filename" loading="lazy">
               <div class="cb-check">✓</div>
             </div>
             <div v-if="cb.selectedIds.value.size === 0" class="cb-empty">点击左侧表情添加到分组</div>

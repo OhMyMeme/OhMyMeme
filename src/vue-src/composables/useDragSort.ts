@@ -157,7 +157,8 @@ export function useDragSort(
     if (!d.memeId) return
     const wasActive = d.active
     if (wasActive) {
-      const ids = getMemes().map(m => m.id)
+      // 云行无本地 id，不参与排序持久化（重搜后云端仍会附加在尾部）
+      const ids = getMemes().filter(m => !m.cloud).map(m => m.id)
       const ok = await persistFn(ids)
       if (!ok && onPersistFail) onPersistFail()
     }

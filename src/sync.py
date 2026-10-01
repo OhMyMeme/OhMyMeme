@@ -102,6 +102,8 @@ def get_sync_progress() -> dict:
 
 REMOTE_INDEX = INDEX_FILENAME
 REMOTE_MEME_DIR = "memes"
+REMOTE_THUMB_DIR = "thumbs"
+CLOUD_INDEX_FILENAME = "cloud-index.json"
 
 
 class SyncError(Exception):
@@ -755,6 +757,15 @@ def _safe_remote_fname(name: str) -> bool:
     )
 
 
+def _safe_sha(sha) -> bool:
+    """校验 64 位小写十六进制 sha256（用作云端缩略图文件名）"""
+    return (
+        isinstance(sha, str)
+        and len(sha) == 64
+        and all(c in "0123456789abcdef" for c in sha)
+    )
+
+
 def _fetch_remote_memes(bk, remote_root):
     """下载远端 manifest 并返回 {filename: entry} 字典（无 manifest 返回 {}）"""
     cfg = get_config()
@@ -1048,6 +1059,204 @@ def download_index() -> Optional[dict]:
             tmp.unlink()
 
 
+def download_single(remote_path: str, local_path: Path, bk=None) -> bool:
+    """下载单个远端文件到 local_path（先写 .part 再原子替换）。
+
+    远端不存在/下载失败返回 False；bk 传入时复用连接不关闭。
+    """
+    own = bk is None
+    if own:
+        bk = _get_backend()
+        bk.connect()
+    tmp = local_path.with_name(local_path.name + ".part")
+    try:
+        if not bk.file_exists(remote_path):
+            return False
+        local_path.parent.mkdir(parents=True, exist_ok=True)
+        if not bk.download_file(remote_path, tmp):
+            return False
+        os.replace(tmp, local_path)
+        return True
+    finally:
+        if own:
+            bk.close()
+        if tmp.exists():
+            try:
+                tmp.unlink()
+            except OSError:
+                pass
+
+
+def save_cloud_manifest(manifest) -> bool:
+    """云端清单本地缓存原子写入 data_dir/cloud-index.json"""
+    cfg = get_config()
+    try:
+        fd, tmp_name = tempfile.mkstemp(
+            prefix=".cloud-index-", suffix=".json", dir=str(cfg.data_dir)
+        )
+        os.close(fd)
+        tmp = Path(tmp_name)
+        tmp.write_text(json.dumps(manifest, ensure_ascii=False), encoding="utf-8")
+        os.replace(tmp, cfg.data_dir / CLOUD_INDEX_FILENAME)
+        return True
+    except Exception as e:
+        logger.warning("save_cloud_manifest failed: %s", e)
+        return False
+
+
+def load_cloud_manifest() -> Optional[dict]:
+    """读取云端清单本地缓存；缺失/损坏返回 None"""
+    cfg = get_config()
+    path = cfg.data_dir / CLOUD_INDEX_FILENAME
+    try:
+        if not path.exists():
+            return None
+        data = json.loads(path.read_text(encoding="utf-8"))
+        if isinstance(data, dict):
+            return data
+    except Exception as e:
+        logger.warning("load_cloud_manifest failed: %s", e)
+    return None
+
+
+def _cloud_collection_paths(node_list, prefix="") -> dict:
+    """嵌套分组树展开为 {filename: [组全路径]}（如 父/子），供云端条目分组过滤"""
+    mapping = {}
+    if not isinstance(node_list, list):
+        return mapping
+    for node in node_list:
+        if not isinstance(node, dict):
+            continue
+        name = str(node.get("name") or "")
+        path = f"{prefix}/{name}" if prefix else name
+        filenames = node.get("filenames") or []
+        if isinstance(filenames, list):
+            for fname in filenames:
+                if isinstance(fname, str):
+                    mapping.setdefault(fname, []).append(path)
+        child_map = _cloud_collection_paths(node.get("children") or [], path)
+        for fname, paths in child_map.items():
+            mapping.setdefault(fname, []).extend(paths)
+    return mapping
+
+
+def cloud_missing(manifest, local_filenames) -> list:
+    """云端清单 - 本地库 差集：返回可展示的缺失条目列表。
+
+    条目含 filename/name/sha256/tags/favorited/collections（组全路径列表）。
+    缺 sha256 或文件名不安全的条目跳过（计日志，旧清单自愈于新版 push）；
+    本地已存在的文件名不计入（属本地展示）。
+    """
+    if not isinstance(manifest, dict):
+        return []
+    entries = manifest.get("memes") or []
+    if not isinstance(entries, list):
+        return []
+    local_set = set(local_filenames)
+    cols_map = _cloud_collection_paths(manifest.get("collections") or [])
+    fav_raw = manifest.get("favorite")
+    favorites = set(fav_raw) if isinstance(fav_raw, list) else set()
+    out = []
+    skipped = 0
+    for entry in entries:
+        if not isinstance(entry, dict):
+            skipped += 1
+            continue
+        fname = entry.get("filename")
+        if not _safe_remote_fname(fname) or fname in local_set:
+            if isinstance(fname, str) and fname:
+                skipped += 1
+            continue
+        sha = entry.get("sha256")
+        if not _safe_sha(sha):
+            skipped += 1
+            continue
+        tags = entry.get("tags")
+        out.append(
+            {
+                "filename": fname,
+                "name": entry.get("name") or os.path.splitext(fname)[0],
+                "sha256": sha,
+                "tags": tags if isinstance(tags, list) else [],
+                "favorited": fname in favorites,
+                "collections": cols_map.get(fname, []),
+            }
+        )
+    if skipped:
+        logger.info("cloud_missing: skipped %d entries", skipped)
+    return out
+
+
+def prefetch_thumbs(missing, thumb_dir) -> int:
+    """预取云端缩略图到 thumbnails/{sha}.webp（单连接循环，逐条容错），返回已就绪数"""
+    if not missing:
+        return 0
+    cfg = get_config()
+    remote_root = _remote_root(cfg)
+    bk = None
+    ready = 0
+    try:
+        bk = _get_backend()
+        bk.connect()
+        remote_dir = remote_root.rstrip("/") + "/" + REMOTE_THUMB_DIR
+        for item in missing:
+            sha = item.get("sha256", "")
+            if not _safe_sha(sha):
+                continue
+            dest = thumb_dir / f"{sha}.webp"
+            if dest.exists():
+                ready += 1
+                continue
+            try:
+                if download_single(remote_dir + "/" + sha + ".webp", dest, bk=bk):
+                    ready += 1
+            except Exception as e:
+                logger.warning("prefetch thumb %s failed: %s", sha[:12], e)
+        return ready
+    finally:
+        if bk is not None:
+            bk.close()
+
+
+def _push_thumbs(bk, remote_root, thumb_dir) -> int:
+    """把本地缩略图差集上传到 {root}/thumbs；list 不可用时降级 file_exists 逐个判断。
+
+    单个失败仅告警不影响 push 结果。
+    """
+    if not thumb_dir.is_dir():
+        return 0
+    remote_dir = remote_root.rstrip("/") + "/" + REMOTE_THUMB_DIR
+    try:
+        bk.ensure_remote_dir(remote_dir)
+    except Exception as e:
+        logger.warning("ensure thumbs dir failed: %s", e)
+    try:
+        remote_names = set(bk.list_files(remote_dir))
+    except NotImplementedError:
+        remote_names = None
+    except Exception as e:
+        logger.warning("list thumbs failed: %s", e)
+        remote_names = None
+    uploaded = 0
+    for f in thumb_dir.iterdir():
+        if not f.is_file() or not _safe_sha(f.stem) or f.suffix != ".webp":
+            continue
+        remote_path = remote_dir + "/" + f.name
+        try:
+            if remote_names is not None:
+                if f.name in remote_names:
+                    continue
+            elif bk.file_exists(remote_path):
+                continue
+            if bk.upload_file(f, remote_path):
+                uploaded += 1
+            else:
+                logger.warning("push thumb failed: %s", f.name)
+        except Exception as e:
+            logger.warning("push thumb error %s: %s", f.name, e)
+    return uploaded
+
+
 def push(delete_remote: bool = None) -> dict:
     """本地 -> 远端：上传缺失/变更的表情包和清单（多线程）"""
     cfg = get_config()
@@ -1123,6 +1332,15 @@ def push(delete_remote: bool = None) -> dict:
             logger.warning("sync push aborted: %s", msg)
             raise SyncError(msg)
 
+        if cfg.get("cloud_direct", False):
+            # 云端直接使用：原图成功后差集上传缩略图（失败仅告警不影响 push）
+            try:
+                n = _push_thumbs(bk, remote_root, cfg.thumbnail_dir)
+                if n:
+                    logger.info("cloud_direct: uploaded %d thumbnails", n)
+            except Exception as e:
+                logger.warning("cloud_direct: push thumbs failed: %s", e)
+
         failed_files = list(aggregated["failed"])
         results = {
             "uploaded": aggregated["uploaded"],
@@ -1167,6 +1385,17 @@ def push(delete_remote: bool = None) -> dict:
                                     ),
                                 }
                             )
+        if delete_remote and deleted_fnames:
+            # 远端原图删除联动删缩略图（sha 命名，旧清单缺 sha 跳过）
+            thumb_remote_dir = remote_root.rstrip("/") + "/" + REMOTE_THUMB_DIR
+            for fname in deleted_fnames:
+                sha = (remote_memes.get(fname) or {}).get("sha256")
+                if not _safe_sha(sha):
+                    continue
+                try:
+                    bk.delete_file(thumb_remote_dir + "/" + sha + ".webp")
+                except Exception as e:
+                    logger.warning("delete remote thumb %s failed: %s", sha[:12], e)
         build_manifest()
         remote_manifest_path = remote_root.rstrip("/") + "/" + REMOTE_INDEX
         merged_file = None
@@ -1378,12 +1607,14 @@ def pull(remove_local: bool = None) -> dict:
                             results["removed_local"] += 1
                         except Exception:
                             pass
-                    thumb_path = thumb_dir / fname
-                    if thumb_path.exists():
-                        try:
-                            thumb_path.unlink()
-                        except Exception:
-                            pass
+                    fhash = row.get("file_hash", "") if row else ""
+                    if fhash:
+                        thumb_path = thumb_dir / f"{fhash}.webp"
+                        if thumb_path.exists():
+                            try:
+                                thumb_path.unlink()
+                            except Exception:
+                                pass
 
         _apply_remote_collections(remote_data)
         _apply_remote_order(remote_data)

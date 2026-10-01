@@ -5,6 +5,7 @@ import logging
 import math
 import os
 import platform
+import re
 import socket
 import tempfile
 import threading
@@ -185,6 +186,144 @@ def _safe_serve_filename(name: str) -> bool:
     )
 
 
+def _migrate_thumbnails(thumb_dir) -> int:
+    """升级迁移：清除旧命名缩略图（{id}_{size}.png 等），新命名按需懒重建，幂等"""
+    removed = 0
+    try:
+        if not thumb_dir.is_dir():
+            return 0
+        for f in thumb_dir.iterdir():
+            if f.is_file() and not re.fullmatch(r"[0-9a-f]{64}\.webp", f.name):
+                try:
+                    f.unlink()
+                    removed += 1
+                except OSError:
+                    pass
+    except OSError:
+        return removed
+    if removed:
+        logger.info(f"缩略图迁移: 清除旧命名文件 {removed} 个")
+    return removed
+
+
+# 云端直接使用：内存清单状态（刷新线程与查询线程共享；missing 按本地集合懒重算）
+_cloud_lock = threading.Lock()
+_cloud_state = {
+    "manifest": None,
+    "missing": [],
+    "local": frozenset(),
+    "loaded": False,
+    "refreshing": False,
+}
+_cloud_inflight = set()
+_cloud_inflight_lock = threading.Lock()
+
+
+def _cloud_ensure_loaded():
+    # 冷启动：先读 cloud-index.json 缓存出图，网络刷新由后台线程负责
+    with _cloud_lock:
+        if _cloud_state["loaded"]:
+            return
+    data = sync_module.load_cloud_manifest()
+    with _cloud_lock:
+        if not _cloud_state["loaded"]:
+            _cloud_state["manifest"] = data if isinstance(data, dict) else None
+            _cloud_state["loaded"] = True
+
+
+def _cloud_reset():
+    # 清空云态并删除本地清单缓存（开关切换/云后端变更时调用）
+    with _cloud_lock:
+        _cloud_state.update(
+            manifest=None,
+            missing=[],
+            local=frozenset(),
+            loaded=False,
+            refreshing=False,
+        )
+    try:
+        path = get_config().data_dir / sync_module.CLOUD_INDEX_FILENAME
+        if path.exists():
+            path.unlink()
+    except OSError:
+        pass
+
+
+def _cloud_view():
+    # 可见云条目：本地文件名集合变化时重算差集，否则复用缓存
+    with _cloud_lock:
+        manifest = _cloud_state["manifest"]
+        cached = _cloud_state["missing"]
+        cached_local = _cloud_state["local"]
+    if not manifest:
+        return []
+    local = frozenset(get_db().get_all_filenames())
+    if local == cached_local:
+        return cached
+    missing = sync_module.cloud_missing(manifest, local)
+    with _cloud_lock:
+        if _cloud_state["manifest"] is manifest:
+            _cloud_state["missing"] = missing
+            _cloud_state["local"] = local
+    return missing
+
+
+def _start_cloud_refresh(fetched=None) -> bool:
+    # 启动云端清单刷新线程（refreshing 中去重，未开云端直接返回）
+    if not get_config().get("cloud_direct", False):
+        return False
+    with _cloud_lock:
+        if _cloud_state["refreshing"]:
+            return False
+        _cloud_state["refreshing"] = True
+    threading.Thread(target=_cloud_refresh_worker, args=(fetched,), daemon=True).start()
+    return True
+
+
+def _cloud_refresh_worker(fetched=None):
+    # 后台拉云端清单 → 写缓存 → 差集 → 预取缩略图 → 通知前端
+    try:
+        data = fetched
+        if data is None:
+            data = sync_module.download_index()
+        if isinstance(data, dict):
+            sync_module.save_cloud_manifest(data)
+            local = frozenset(get_db().get_all_filenames())
+            missing = sync_module.cloud_missing(data, local)
+            with _cloud_lock:
+                _cloud_state.update(
+                    manifest=data,
+                    missing=missing,
+                    local=local,
+                    loaded=True,
+                )
+            cfg = get_config()
+            if cfg.get("cloud_direct", False):
+                try:
+                    ready = sync_module.prefetch_thumbs(missing, cfg.thumbnail_dir)
+                    logger.info(f"cloud prefetch: {ready}/{len(missing)}")
+                except Exception as e:
+                    logger.warning(f"cloud prefetch failed: {e}")
+            _notify_cloud_ready()
+        else:
+            # 拉取失败：保留既有缓存，下次启动或保存设置时重试
+            logger.info("cloud refresh: no manifest fetched")
+    except Exception as e:
+        logger.warning(f"cloud refresh failed: {e}")
+    finally:
+        with _cloud_lock:
+            _cloud_state["refreshing"] = False
+
+
+def _notify_cloud_ready():
+    # 通知主窗口云端数据就绪（前端刷新搜索/计数/分组/标签）
+    try:
+        if HAS_WEBVIEW and webview.windows:
+            webview.windows[0].evaluate_js("window.onCloudReady&&window.onCloudReady()")
+    except Exception:
+        pass
+
+
 def _host_allowed(host: str, port: int) -> bool:
     """仅接受本地回环 Host，阻断 DNS rebinding / 跨站直连"""
     host = (host or "").strip()
@@ -290,6 +429,82 @@ class JsApi:
         except Exception:
             return None
 
+    def _cloud_base(self) -> list:
+        """可见云条目（无关键字/标签过滤）；云端直接使用关闭时返回空"""
+        if not self._cfg.get("cloud_direct", False):
+            return []
+        _cloud_ensure_loaded()
+        return _cloud_view()
+
+    def _collection_path(self, collection_id, by_id=None) -> str:
+        """分组 id → 全路径名（顶级/子级），供云条目按分组过滤"""
+        if by_id is None:
+            by_id = {r[0]: r for r in self._db.get_collections()}
+        parts = []
+        cur = collection_id
+        seen = set()
+        while cur is not None and cur in by_id and cur not in seen:
+            seen.add(cur)
+            _, name, parent_id, _ = by_id[cur]
+            parts.append(str(name))
+            cur = parent_id
+        return "/".join(reversed(parts))
+
+    def _cloud_filtered(self, keyword, tags, collection_id) -> list:
+        """按关键字/标签/分组筛选云条目（最近使用 -3 不混云）"""
+        if collection_id == -3:
+            return []
+        items = self._cloud_base()
+        if not items:
+            return []
+        kw = (keyword or "").strip().lower()
+        tag_set = set(tags) if tags else None
+        path_prefix = None
+        if collection_id is not None and collection_id > 0:
+            path_prefix = self._collection_path(collection_id)
+            if not path_prefix:
+                return []
+        out = []
+        for it in items:
+            if collection_id == -2 and not it["favorited"]:
+                continue
+            if collection_id == -4 and it["collections"]:
+                continue
+            if tag_set and not tag_set.issubset(it["tags"]):
+                continue
+            if kw:
+                hay = (
+                    it["name"] + " " + it["filename"] + " " + " ".join(it["tags"])
+                ).lower()
+                if kw not in hay:
+                    continue
+            if path_prefix and not any(
+                cp == path_prefix or cp.startswith(path_prefix + "/")
+                for cp in it["collections"]
+            ):
+                continue
+            out.append(it)
+        return out
+
+    def _cloud_row(self, it) -> dict:
+        """云条目 → 前端行（无 id，cloud 标记，file_hash 为 sha256）"""
+        fname = it["filename"].lower()
+        return {
+            "filename": it["filename"],
+            "name": it["name"],
+            "file_hash": it["sha256"],
+            "from_stego": 0,
+            "width": 0,
+            "height": 0,
+            "mime_type": "",
+            "is_gif": fname.endswith(".gif"),
+            "is_animated": False,
+            "favorited": it["favorited"],
+            "auto_play_gif": self._cfg.get("auto_play_gif", True),
+            "hover_to_play": self._cfg.get("hover_to_play", False),
+            "cloud": True,
+        }
+
     def search_memes(
         self, keyword="", tags=None, collection_id=None, offset=0, limit=200
     ):
@@ -355,6 +570,20 @@ class JsApi:
                     "hover_to_play": hover_play,
                 }
             )
+        cloud = self._cloud_filtered(keyword, tags, collection_id)
+        if cloud:
+            # 本地在前原序，云条目接尾分页跨两段切片
+            local_total = self._db.count(
+                keyword=keyword,
+                tags=tags,
+                collection_id=cid,
+                favorite_only=fav_only,
+                uncategorized_only=uncategorized,
+            )
+            start = max(0, offset - local_total)
+            end = offset + limit - local_total
+            if end > 0:
+                result.extend(self._cloud_row(it) for it in cloud[start:end])
         return result
 
     def count_memes(self, keyword="", tags=None, collection_id=None) -> int:
@@ -369,16 +598,25 @@ class JsApi:
         cid = None if (fav_only or recent_only or uncategorized) else collection_id
         if cid is not None and cid > 0:
             cid = self._get_collection_ids_recursive(cid)
-        return self._db.count(
+        total = self._db.count(
             keyword=keyword,
             tags=tags,
             collection_id=cid,
             favorite_only=fav_only,
             uncategorized_only=uncategorized,
         )
+        return total + len(self._cloud_filtered(keyword, tags, collection_id))
 
     def get_tags(self) -> list:
-        return self._db.get_all_tags()
+        """标签列表（云端直接使用开启时并入云端独有标签）"""
+        local = self._db.get_all_tags()
+        if not self._cfg.get("cloud_direct", False):
+            return local
+        cloud = self._cloud_base()
+        extra = {t for it in cloud for t in it["tags"] if t}
+        if not extra:
+            return local
+        return sorted(set(local) | extra)
 
     def get_meme_tags(self, meme_id):
         """返回某表情的标签列表"""
@@ -400,73 +638,11 @@ class JsApi:
 
     def get_init_data(self) -> dict:
         """批返回初始化所需数据，减少 JS bridge 往返"""
-        q = ""
-        tags = None
-        collection_id = None
-        fav_only = False
-        rows = self._db.search(
-            keyword=q,
-            tags=tags,
-            collection_id=collection_id,
-            favorite_only=fav_only,
-            limit=MEME_PAGE,
-        )
-        favorited_ids = set()
-        try:
-            conn = self._db._get_conn()
-            fav_rows = conn.execute("SELECT meme_id FROM favorites").fetchall()
-            favorited_ids = {r[0] for r in fav_rows}
-        except Exception:
-            pass
-        auto_gif = self._cfg.get("auto_play_gif", True)
-        hover_play = self._cfg.get("hover_to_play", False)
-        memes = []
-        for r in rows:
-            fname = r["filename"].lower()
-            is_gif = r.get("mime_type", "").endswith("gif") or fname.endswith(".gif")
-            if is_gif:
-                is_animated = True
-            elif fname.endswith(".webp"):
-                path = self._find_meme_file(r["filename"])
-                is_animated = _is_animated(path) if path else False
-            else:
-                is_animated = False
-            oname = r.get("original_name", "")
-            if not oname:
-                oname = os.path.splitext(r["filename"])[0]
-            memes.append(
-                {
-                    "id": r["id"],
-                    "filename": r["filename"],
-                    "name": oname,
-                    "file_hash": r.get("file_hash", ""),
-                    "from_stego": r.get("from_stego", 0),
-                    "width": r.get("width", 0),
-                    "height": r.get("height", 0),
-                    "mime_type": r.get("mime_type", ""),
-                    "is_gif": is_gif,
-                    "is_animated": is_animated,
-                    "favorited": r["id"] in favorited_ids,
-                    "auto_play_gif": auto_gif,
-                    "hover_to_play": hover_play,
-                }
-            )
-        sys_cols = [
-            {"id": -2, "name": "收藏夹", "count": self._db.count(favorite_only=True)},
-            {"id": -3, "name": "最近使用", "count": len(self._db.get_recent(9999))},
-        ]
-        if self._cfg.get("show_uncategorized", True):
-            sys_cols.append(
-                {
-                    "id": -4,
-                    "name": "未分类",
-                    "count": self._db.count(uncategorized_only=True),
-                }
-            )
-        collections = sys_cols + self._build_collection_tree()
+        memes = self.search_memes("", None, None, 0, MEME_PAGE)
+        collections = self._sys_collections() + self._build_collection_tree()
         return {
             "memes": memes,
-            "tags": self._db.get_all_tags(),
+            "tags": self.get_tags(),
             "collections": collections,
             "show_startup_animation": self._cfg.get("show_startup_animation", True),
             "startup_bg_color": _STARTUP_BG_COLOR,
@@ -577,7 +753,15 @@ class JsApi:
             except Exception:
                 pass
         thumb_dir = self._cfg.thumbnail_dir
-        for f in thumb_dir.glob(f"{meme_id}_*.png"):
+        fhash = row.get("file_hash", "")
+        if fhash:
+            thumb = thumb_dir / f"{fhash}.webp"
+            if thumb.exists():
+                try:
+                    thumb.unlink()
+                except Exception:
+                    pass
+        for f in thumb_dir.glob(f"{meme_id}_*"):
             try:
                 f.unlink()
             except Exception:
@@ -613,30 +797,14 @@ class JsApi:
             ids.extend(self._get_collection_ids_recursive(child["id"]))
         return ids
 
-    # 构建嵌套分组树并统计各分组成员数
-    def _build_collection_tree(self, parent_id=None):
-        raw = self._db.get_collections()
-        result = []
-        for cid, name, pid, _ in raw:
-            if pid != parent_id:
-                continue
-            children = self._build_collection_tree(parent_id=cid)
-            all_ids = self._get_collection_ids_recursive(cid)
-            cnt = self._db.count(collection_id=all_ids)
-            item = {"id": cid, "name": name, "count": cnt}
-            if children:
-                item["children"] = children
-            result.append(item)
-        return result
-
-    def get_collections(self) -> list:
-        top = self._build_collection_tree()
-        recent = self._db.get_recent(9999)
+    # 虚拟分组（收藏/最近/未分类）计数，含云端贡献
+    def _sys_collections(self) -> list:
+        show_uncat = self._cfg.get("show_uncategorized", True)
         sys_cols = [
             {"id": -2, "name": "收藏夹", "count": self._db.count(favorite_only=True)},
-            {"id": -3, "name": "最近使用", "count": len(recent)},
+            {"id": -3, "name": "最近使用", "count": len(self._db.get_recent(9999))},
         ]
-        if self._cfg.get("show_uncategorized", True):
+        if show_uncat:
             sys_cols.append(
                 {
                     "id": -4,
@@ -644,7 +812,44 @@ class JsApi:
                     "count": self._db.count(uncategorized_only=True),
                 }
             )
-        return sys_cols + top
+        cloud = self._cloud_base()
+        if cloud:
+            sys_cols[0]["count"] += sum(1 for it in cloud if it["favorited"])
+            if show_uncat:
+                sys_cols[2]["count"] += sum(1 for it in cloud if not it["collections"])
+        return sys_cols
+
+    # 构建嵌套分组树并统计各分组成员数（cloud 由顶层传入避免逐节点重算）
+    def _build_collection_tree(self, parent_id=None, cloud=None):
+        raw = self._db.get_collections()
+        if cloud is None:
+            cloud = self._cloud_base()
+        by_id = {r[0]: r for r in raw} if cloud else None
+        result = []
+        for cid, name, pid, _ in raw:
+            if pid != parent_id:
+                continue
+            children = self._build_collection_tree(parent_id=cid, cloud=cloud)
+            all_ids = self._get_collection_ids_recursive(cid)
+            cnt = self._db.count(collection_id=all_ids)
+            if cloud:
+                path = self._collection_path(cid, by_id)
+                cnt += sum(
+                    1
+                    for it in cloud
+                    if any(
+                        cp == path or cp.startswith(path + "/")
+                        for cp in it["collections"]
+                    )
+                )
+            item = {"id": cid, "name": name, "count": cnt}
+            if children:
+                item["children"] = children
+            result.append(item)
+        return result
+
+    def get_collections(self) -> list:
+        return self._sys_collections() + self._build_collection_tree()
 
     def get_child_collections(self, parent_id: int) -> list:
         return self._db.get_child_collections(parent_id)
@@ -1036,6 +1241,7 @@ class JsApi:
 
     def sync_push(self) -> dict:
         try:
+            self._webui.ensure_local_thumbs()
             r = sync_module.push()
             r["ok"] = True
             return r
@@ -1064,12 +1270,16 @@ class JsApi:
         sync_type = self._cfg.get("sync_type", "")
         if not sync_type:
             return result
+        fetched = None
         try:
             if self._cfg.get("sync_auto_fetch_index", False):
                 from .sync import download_index
 
-                data = download_index()
-                result["fetched"] = data is not None
+                fetched = download_index()
+                result["fetched"] = fetched is not None
+            if self._cfg.get("cloud_direct", False):
+                # 云端直接使用：复用本次 fetch 结果（fetch 关闭则线程内自拉）
+                _start_cloud_refresh(fetched)
             if self._cfg.get("sync_auto_sync", False):
                 from .sync import pull
 
@@ -1078,6 +1288,128 @@ class JsApi:
         except Exception as e:
             result["error"] = str(e)
         return result
+
+    def cloud_download(self, filename: str) -> dict:
+        """下载云端缺失表情：校验→去重入库→自动复制；标签/分组/收藏异步后补"""
+        import hashlib
+
+        if not self._cfg.get("cloud_direct", False):
+            return {"ok": False, "status": "disabled"}
+        if not self._cfg.get("sync_type", ""):
+            return {"ok": False, "status": "no_sync"}
+        entry = next(
+            (it for it in self._cloud_base() if it["filename"] == filename), None
+        )
+        if entry is None:
+            return {"ok": False, "status": "not_found"}
+        with _cloud_inflight_lock:
+            if filename in _cloud_inflight:
+                return {"ok": False, "status": "busy"}
+            _cloud_inflight.add(filename)
+        cfg = self._cfg
+        sha = entry["sha256"]
+        ext = os.path.splitext(filename)[1].lower() or ".png"
+        tmp = None
+        try:
+            fd, tmp_name = tempfile.mkstemp(
+                prefix="cloud-", suffix=ext, dir=str(cfg.cache_dir)
+            )
+            os.close(fd)
+            tmp = Path(tmp_name)
+            remote_root = sync_module._remote_root(cfg).rstrip("/")
+            remote_path = f"{remote_root}/{sync_module.REMOTE_MEME_DIR}/{filename}"
+            if not sync_module.download_single(remote_path, tmp):
+                return {"ok": False, "status": "download_failed"}
+            h = hashlib.sha256()
+            with open(tmp, "rb") as f:
+                for chunk in iter(lambda: f.read(65536), b""):
+                    h.update(chunk)
+            if h.hexdigest() != sha:
+                return {"ok": False, "status": "sha_mismatch"}
+            fsize = tmp.stat().st_size
+            if fsize > _IMPORT_MAX_BYTES:
+                return {"ok": False, "status": "too_large"}
+            w = hgt = 0
+            if HAS_PIL:
+                try:
+                    with PILImage.open(tmp) as img:
+                        w, hgt = img.size
+                except Exception:
+                    return {"ok": False, "status": "invalid_image"}
+                if max(w, hgt) > _IMPORT_MAX_PX:
+                    return {"ok": False, "status": "too_large"}
+            src_phash = _perceptual_hash_path(tmp)
+            with _IMPORT_LOCK:
+                existing = self._db.get_by_hash(sha)
+                if existing:
+                    meme_id = existing["id"]
+                    try:
+                        tmp.unlink()
+                        tmp = None
+                    except OSError:
+                        pass
+                else:
+                    dst = cfg.cache_dir / filename
+                    os.replace(tmp, dst)
+                    tmp = None
+                    meme_id = self._db.add_meme(
+                        filename=filename,
+                        file_hash=sha,
+                        width=w,
+                        height=hgt,
+                        file_size=fsize,
+                        mime_type=f"image/{ext[1:]}",
+                        original_name=entry["name"],
+                        perceptual_hash=src_phash,
+                    )
+            with _cloud_lock:
+                _cloud_state["missing"] = [
+                    m for m in _cloud_state["missing"] if m["filename"] != filename
+                ]
+            threading.Thread(
+                target=self._cloud_backfill, args=(meme_id, entry), daemon=True
+            ).start()
+            copied = False
+            try:
+                copied = bool(self.copy_meme(meme_id).get("ok"))
+            except Exception as e:
+                logger.warning(f"cloud copy failed: {e}")
+            return {
+                "ok": True,
+                "status": "copied" if copied else "imported",
+                "id": meme_id,
+            }
+        finally:
+            if tmp is not None:
+                try:
+                    tmp.unlink()
+                except OSError:
+                    pass
+            with _cloud_inflight_lock:
+                _cloud_inflight.discard(filename)
+
+    def _cloud_backfill(self, meme_id, entry):
+        """异步补齐云端元数据：标签/分组/收藏 + 重建 manifest + 通知前端刷新"""
+        try:
+            tags = [t for t in entry.get("tags") or [] if t]
+            if tags:
+                self._db.add_tags_to_memes([meme_id], tags)
+            for path in entry.get("collections") or []:
+                cid = None
+                for seg in str(path).split("/"):
+                    if not seg:
+                        continue
+                    cid = self._db.create_collection(seg, parent_id=cid)
+                    if cid is None or cid < 0:
+                        break
+                if cid and cid > 0:
+                    self._db.add_to_collection(meme_id, cid)
+            if entry.get("favorited"):
+                self._db.add_favorite(meme_id)
+            build_manifest()
+            _notify_cloud_ready()
+        except Exception as e:
+            logger.warning(f"cloud backfill failed: {e}")
 
     def sync_test(self) -> str:
         try:
@@ -1262,8 +1594,20 @@ class JsApi:
                 from .platform_util import set_auto_start
 
                 set_auto_start(settings["auto_start"])
+            prev_cloud = bool(self._cfg.get("cloud_direct", False))
+            prev_sync_type = self._cfg.get("sync_type", "")
             self._cfg.update_from_dict(settings)
             self._cfg.save()
+            if "cloud_direct" in settings or "sync_type" in settings:
+                cloud = bool(self._cfg.get("cloud_direct", False))
+                sync_changed = (
+                    "sync_type" in settings
+                    and settings.get("sync_type", "") != prev_sync_type
+                )
+                if cloud != prev_cloud or sync_changed:
+                    _cloud_reset()
+                    if cloud:
+                        _start_cloud_refresh()
             if "hotkey" in settings:
                 self._webui._on_hotkey_change(settings["hotkey"])
 
@@ -1278,6 +1622,7 @@ class JsApi:
         from .platform_util import set_auto_start
 
         set_auto_start(False)
+        _cloud_reset()
         return {
             "hotkey": hotkey,
             "hotkey_show_at_mouse": self._cfg.get("hotkey_show_at_mouse", False),
@@ -1940,6 +2285,7 @@ class SettingsApi:
             "copy_avoid_webp": d.get("copy_avoid_webp", False),
             "manifest_include_tags": d.get("manifest_include_tags", True),
             "manifest_include_favorites": d.get("manifest_include_favorites", True),
+            "cloud_direct": d.get("cloud_direct", False),
         }
 
     def _safe_refresh(self, js_function: str) -> dict:
@@ -2012,8 +2358,21 @@ class SettingsApi:
                 from .platform_util import set_auto_start
 
                 set_auto_start(settings["auto_start"])
+            prev_cloud = bool(self._cfg.get("cloud_direct", False))
+            prev_sync_type = self._cfg.get("sync_type", "")
             self._cfg.update_from_dict(settings)
             self._cfg.save()
+            # 云端直接使用开关/云后端变更：重置云态与缓存，开启时立即重拉
+            if "cloud_direct" in settings or "sync_type" in settings:
+                cloud = bool(self._cfg.get("cloud_direct", False))
+                sync_changed = (
+                    "sync_type" in settings
+                    and settings.get("sync_type", "") != prev_sync_type
+                )
+                if cloud != prev_cloud or sync_changed:
+                    _cloud_reset()
+                    if cloud:
+                        _start_cloud_refresh()
             if "hotkey" in settings:
                 self._webui._on_hotkey_change(settings["hotkey"])
             try:
@@ -2033,6 +2392,7 @@ class SettingsApi:
         from .platform_util import set_auto_start
 
         set_auto_start(False)
+        _cloud_reset()
         try:
             if len(webview.windows) > 0:
                 webview.windows[0].evaluate_js("refreshMemes();")
@@ -2082,6 +2442,7 @@ class SettingsApi:
             "copy_avoid_webp": self._cfg.get("copy_avoid_webp", False),
             "manifest_include_tags": True,
             "manifest_include_favorites": True,
+            "cloud_direct": False,
         }
 
     def move_window(self, dx: int, dy: int):
@@ -2641,6 +3002,7 @@ class SettingsApi:
 
     def sync_push(self, delete_remote: bool = None) -> dict:
         try:
+            self._webui.ensure_local_thumbs()
             r = sync_module.push(delete_remote=delete_remote)
             r["ok"] = True
             return r
@@ -3208,6 +3570,7 @@ def _find_similar_candidates(img_path):
                     "id": row["id"],
                     "filename": fname,
                     "name": row.get("original_name") or fname,
+                    "file_hash": row.get("file_hash", ""),
                     "distance": dist,
                 }
             )
@@ -3527,9 +3890,10 @@ class WebUI:
 
     # --- 缩略图 ---
 
-    def _get_thumbnail_path(self, meme_id: int, filename: str, size: int = 150) -> str:
-        cache_dir = self._cfg.thumbnail_dir
-        thumb_path = cache_dir / f"{meme_id}_{size}.png"
+    def _get_thumbnail_path(
+        self, file_hash: str, filename: str, size: int = 150
+    ) -> str:
+        thumb_path = self._cfg.thumbnail_dir / f"{file_hash}.webp"
         if thumb_path.exists():
             return str(thumb_path)
         meme_path = self._find_meme_file(filename)
@@ -3538,11 +3902,18 @@ class WebUI:
         try:
             img = PILImage.open(meme_path)
             img.thumbnail((size, size), PILImage.LANCZOS)
+            has_alpha = img.mode in ("RGBA", "LA", "PA") or (
+                img.mode == "P" and "transparency" in img.info
+            )
+            if img.mode not in ("RGB", "RGBA"):
+                img = img.convert("RGBA" if has_alpha else "RGB")
             buf = io.BytesIO()
-            img.save(buf, "PNG")
-            cache_dir.mkdir(parents=True, exist_ok=True)
+            img.save(buf, "WEBP", quality=85)
+            self._cfg.thumbnail_dir.mkdir(parents=True, exist_ok=True)
             # 并发请求同一缩略图时避免交错写同一文件：先写临时文件再原子替换
-            fd, tmp_path = tempfile.mkstemp(dir=str(cache_dir), suffix=".tmp")
+            fd, tmp_path = tempfile.mkstemp(
+                dir=str(self._cfg.thumbnail_dir), suffix=".tmp"
+            )
             try:
                 with os.fdopen(fd, "wb") as f:
                     f.write(buf.getvalue())
@@ -3557,6 +3928,34 @@ class WebUI:
         except Exception as e:
             logger.warning(f"thumb error {filename}: {e}")
             return ""
+
+    def ensure_local_thumbs(self) -> int:
+        """云端直接使用：push 前按库行预生成缺失缩略图（cloud_direct 关时空操作）"""
+        if not self._cfg.get("cloud_direct", False):
+            return 0
+        db = get_db()
+        thumb_dir = self._cfg.thumbnail_dir
+        generated = 0
+        offset = 0
+        try:
+            while True:
+                rows = db.get_all(offset=offset, limit=500)
+                if not rows:
+                    break
+                for row in rows:
+                    fhash = row.get("file_hash", "")
+                    if not fhash or (thumb_dir / f"{fhash}.webp").exists():
+                        continue
+                    if self._get_thumbnail_path(fhash, row["filename"]):
+                        generated += 1
+                if len(rows) < 500:
+                    break
+                offset += len(rows)
+        except Exception as e:
+            logger.warning("ensure_local_thumbs failed: %s", e)
+        if generated:
+            logger.info("cloud_direct: pre-generated %d thumbnails", generated)
+        return generated
 
     def _find_meme_file(self, filename: str) -> str:
         if not _safe_serve_filename(filename):
@@ -3843,14 +4242,24 @@ class WebUI:
                                 return ""
             return _contributors_svg()
 
-        @app.route("/api/thumb/<meme_id>/<filename>")
-        def serve_thumb(meme_id, filename):
-            path = self._get_thumbnail_path(int(meme_id), filename)
+        @app.route("/api/thumb/<sha256>")
+        def serve_thumb(sha256):
+            if not re.fullmatch(r"[0-9a-f]{64}", sha256):
+                bottle.response.status = 404
+                return ""
+            path = ""
+            thumb_path = self._cfg.thumbnail_dir / f"{sha256}.webp"
+            if thumb_path.exists():
+                path = str(thumb_path)
+            else:
+                row = get_db().get_by_hash(sha256)
+                if row:
+                    path = self._get_thumbnail_path(sha256, row["filename"])
             if path:
                 return bottle.static_file(
                     os.path.basename(path),
                     root=os.path.dirname(path),
-                    mimetype="image/png",
+                    mimetype="image/webp",
                 )
             bottle.response.status = 404
             return ""
@@ -4029,6 +4438,8 @@ class WebUI:
         if not HAS_BOTTLE:
             logger.error("bottle not installed")
             return False
+
+        _migrate_thumbnails(self._cfg.thumbnail_dir)
 
         # 启动 Bottle 服务器
         self._bottle_thread = threading.Thread(target=self._setup_bottle, daemon=True)

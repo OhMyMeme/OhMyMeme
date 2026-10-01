@@ -446,6 +446,10 @@ class MemeDB:
             r[0] for r in conn.execute("SELECT name FROM tags ORDER BY name").fetchall()
         ]
 
+    def get_all_filenames(self) -> List[str]:
+        conn = self._get_conn()
+        return [r[0] for r in conn.execute("SELECT filename FROM memes").fetchall()]
+
     def get_tags_map(self) -> Dict[str, List[str]]:
         """按文件名批量取全部标签（manifest 构建用，单查询避免 N+1）"""
         conn = self._get_conn()

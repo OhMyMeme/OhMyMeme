@@ -666,6 +666,51 @@ body {
   color: #f43f5e;
 }
 
+/* ── 云端直接使用：云角标 / 下载遮罩 ── */
+.cloud-badge {
+  position: absolute;
+  left: 6px;
+  bottom: 6px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 18px;
+  height: 18px;
+  border-radius: 50%;
+  background: rgba(0, 0, 0, 0.55);
+  color: #fff;
+  pointer-events: none;
+  z-index: 2;
+}
+
+.cloud-badge svg {
+  width: 11px;
+  height: 11px;
+}
+
+/* 云角标与名称同行，名称左让位 */
+.meme-card.cloud-card .meme-name {
+  padding-left: 30px;
+}
+
+/* 下载中遮罩：拦截点击（busy 防连点的视觉反馈） */
+.meme-card.cloud-downloading::after {
+  content: '下载中...';
+  position: absolute;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: rgba(0, 0, 0, 0.55);
+  color: #fff;
+  font-size: 12px;
+  z-index: 4;
+}
+
+.meme-card img.img-error {
+  opacity: 0;
+}
+
 .meme-card img {
   width: 100%;
   aspect-ratio: 1;

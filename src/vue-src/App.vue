@@ -103,6 +103,8 @@ onMounted(() => {
   window.refreshCollections = refreshCollections
   // 设置页「设置向导」按钮入口（SettingsApi.open_guide 调用）
   window.showGuide = showSetupGuide
+  // 云端直接使用：后端预取缩略图/入库后通知，刷新网格+标签+分组
+  window.onCloudReady = () => { thumbRev.value++; search(); refreshTags(); refreshCollections() }
 })
 // 网格列数由 CSS repeat(auto-fill, minmax(112px, 1fr)) 随容器宽度自适应
 
@@ -175,13 +177,63 @@ function onFolderCardContext(e: MouseEvent, childId: number, childName: string) 
   ], { folderId: childId, folderName: childName, isFolder: true }, e.clientX, e.clientY)
 }
 
-async function handleCopy(meme: Meme) {
+async function handleCopy(meme: Meme, e?: Event) {
+  // 云卡点击不冒泡给 drag-select（防止多选模式把云行计入 selectedIds）
+  if (meme.cloud) e?.stopPropagation()
   if (ignoreClick) { ignoreClick = false; return }
   // 整理/多选模式：不复制（勾选由 drag-select 处理）
   if (sortEnabled.value || selectMode.value) return
+  if (meme.cloud) { await cloudDownload(meme); return }
   const ok = await copyMeme(meme.id)
   if (ok) showToast(`${meme.name} 已复制`)
   else showToast('复制失败')
+}
+
+// 云端直接使用：下载中防连点（按文件名）
+const cloudBusy = ref<Record<string, boolean>>({})
+// 云端缩略图预取完成后递增，触发云端行 img 重载（补回 404 失败的图片）
+const thumbRev = ref(0)
+
+const CLOUD_ERR_TEXT: Record<string, string> = {
+  busy: '正在下载中',
+  not_found: '云端条目不存在',
+  download_failed: '下载失败',
+  sha_mismatch: '文件校验失败',
+  too_large: '文件超出限制',
+  invalid_image: '无效图片',
+  disabled: '云端直接使用未开启',
+  no_sync: '未配置云端同步',
+}
+
+// 云端直接使用：点击云卡 → 下载校验入库 → 自动复制 → 刷新三件套
+async function cloudDownload(meme: Meme) {
+  const fname = meme.filename
+  if (cloudBusy.value[fname]) return
+  cloudBusy.value[fname] = true
+  try {
+    const r = await window.pywebview?.api?.cloud_download(fname)
+    if (r && r.ok) {
+      showToast(r.status === 'copied' ? `${meme.name} 已复制` : `${meme.name} 已下载`)
+      await refreshTags()
+      await refreshCollections()
+      search()
+    } else {
+      showToast(CLOUD_ERR_TEXT[r?.status] || '下载失败')
+    }
+  } catch (_) {
+    showToast('下载失败')
+  } finally {
+    delete cloudBusy.value[fname]
+  }
+}
+
+// 缩略图加载失败（预取未完成等）：隐藏破图标，onCloudReady 后会带版本号重载
+function onImgError(e: Event) {
+  (e.target as HTMLImageElement).classList.add('img-error')
+}
+
+function onImgLoad(e: Event) {
+  (e.target as HTMLImageElement).classList.remove('img-error')
 }
 
 function showToast(msg: string) {
@@ -194,6 +246,7 @@ function showToast(msg: string) {
 
 // 卡片悬停快速收藏（右键菜单外的一键入口）
 async function quickFavorite(meme: Meme) {
+  if (meme.cloud) return
   if (sortEnabled.value || selectMode.value) return
   const ok = await window.pywebview?.api?.toggle_favorite(meme.id)
   if (ok === null || ok === undefined) return
@@ -341,6 +394,8 @@ function onWindowMouseUp() {
 function onMemeRightClick(e: MouseEvent, meme: Meme) {
   e.preventDefault()
   e.stopPropagation()
+  // 云行无本地 id：不弹操作菜单
+  if (meme.cloud) return
   const items: MenuItem[] = [
     { action: 'rename', label: '重命名' },
     { action: 'favorite', label: meme.favorited ? '取消收藏' : '收藏' },
@@ -689,7 +744,8 @@ function memeSrc(meme: Meme): string {
   if (meme.is_animated && meme.auto_play_gif && !meme.hover_to_play) {
     return `/api/original/${meme.id}/${encodeURIComponent(meme.filename)}`
   }
-  return `/api/thumb/${meme.id}/${encodeURIComponent(meme.filename)}`
+  if (meme.cloud) return `/api/thumb/${meme.file_hash}?v=${thumbRev.value}`
+  return `/api/thumb/${meme.file_hash}`
 }
 
 function onCardMouseEnter(meme: Meme) {
@@ -714,6 +770,8 @@ let ignoreClick = false
 
 function onCardPointerDown(e: PointerEvent, meme: Meme, card: HTMLElement) {
   ignoreClick = false
+  // 云行无 id：不参与排序拖拽/原生拖出
+  if (meme.cloud) return
   if (sortEnabled.value && canReorder() && !selectMode.value) {
     drag.onPointerDown(e, meme.id, card)
     return
@@ -1123,17 +1181,18 @@ onUnmounted(() => {
             >
               <drag-select-option
                 v-for="meme in state.memes"
-                :key="meme.id"
-                :value="meme.id"
+                :key="meme.cloud ? meme.filename : meme.id"
+                :value="meme.cloud ? meme.filename : meme.id"
+                :disabled="!!meme.cloud"
               >
                 <div
                   class="meme-card"
-                  :class="{ 'dragging': drag.dragState.active && drag.dragState.memeId === meme.id, selected: state.selectedIds.has(meme.id) }"
+                  :class="{ 'dragging': drag.dragState.active && drag.dragState.memeId === meme.id, selected: state.selectedIds.has(meme.id), 'cloud-card': !!meme.cloud, 'cloud-downloading': !!cloudBusy[meme.filename] }"
                   :data-meme-id="meme.id"
                   role="button"
                   tabindex="0"
                   :aria-label="meme.name"
-                  @click="handleCopy(meme)"
+                  @click="handleCopy(meme, $event)"
                   @contextmenu="onMemeRightClick($event, meme)"
                   @pointerdown="onCardPointerDown($event, meme, $event.currentTarget as HTMLElement)"
                   @mouseenter="onCardMouseEnter(meme)"
@@ -1141,10 +1200,10 @@ onUnmounted(() => {
                   @keydown.enter.prevent="handleCopy(meme)"
                   @keydown.space.prevent="handleCopy(meme)"
                 >
-                  <img :src="memeSrc(meme)" :alt="meme.name" loading="lazy">
+                  <img :src="memeSrc(meme)" :alt="meme.name" loading="lazy" @error="onImgError" @load="onImgLoad">
                   <span v-if="state.selectedIds.has(meme.id)" class="select-badge">✓</span>
                   <button
-                    v-if="!selectMode && !sortEnabled"
+                    v-if="!selectMode && !sortEnabled && !meme.cloud"
                     class="fav-btn"
                     :class="{ active: meme.favorited }"
                     :aria-label="meme.favorited ? '取消收藏' : '收藏'"
@@ -1156,6 +1215,9 @@ onUnmounted(() => {
                   </button>
                   <span v-if="meme.from_stego" class="gif-badge stego-badge">隐写导入</span>
                   <span v-else-if="meme.is_animated" class="gif-badge">{{ meme.is_gif ? 'GIF' : 'WebP' }}</span>
+                  <span v-if="meme.cloud" class="cloud-badge" aria-label="云端">
+                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M17.5 19H9a7 7 0 1 1 6.71-9h1.79a4.5 4.5 0 1 1 0 9Z"/></svg>
+                  </span>
                   <span class="meme-name">{{ meme.name }}</span>
                 </div>
               </drag-select-option>

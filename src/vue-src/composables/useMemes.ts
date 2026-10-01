@@ -136,7 +136,7 @@ export function useMemes() {
   }
   function setMemes(newMemes: Meme[]) { state.memes = newMemes }
 
-  function selectAllVisible() { state.selectedIds = new Set(state.memes.map(m => m.id)) }
+  function selectAllVisible() { state.selectedIds = new Set(state.memes.filter(m => !m.cloud).map(m => m.id)) }
 
   function _collectionExists(items: any[], id: number): boolean {
     for (const c of items) {

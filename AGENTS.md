@@ -104,6 +104,7 @@ tests/
   test_phash.py   # pytest 风格: 感知哈希(pHash)算法单元测试 (需 PIL)
   test_import_concurrency.py # pytest 风格: _do_import 并发去重 (同图1条/异图都可导)
   test_avoid_webp.py # pytest 风格: 复制时避免 WebP (WebP->GIF/JPG 转换/帧延时/残影/回退)
+  test_cloud_direct.py # pytest 风格: 云端直接使用 (manifest diff/云过滤/分页合并/cloud_download/缩略图统一)
   fixtures/grid_slot_probe.cjs # Node 网格拖拽槽位回归探针
   fixtures/tiny_vp9.webm   # TG 转换端到端夹具（VP9+alpha，build.py --verify-ffmpeg 用）
 ```
@@ -180,6 +181,15 @@ tests/
 - **孤儿清理互斥与进度**: `cleanup_remote_orphans(delete=True)` 删除前非阻塞获取 `_sync_run_lock`（被 push/pull 占用时返回「同步正在进行中」，绝不并发删除）；删除循环复用 `_sync_state`（`direction="delete"`，更新 current_file/files_done/files_total/progress，状态 deleting→done），前端复用 `#sync-progress-overlay` 轮询展示；扫描（delete=False）不互斥
 - **远端文件名校验**: `_safe_remote_fname()` 拒绝路径穿越/绝对路径/隐藏名；`_fetch_remote_memes` 解析远端 manifest 时过滤不安全文件名（含非 dict 条目），`_pull_worker` 下载前二次校验
 - **S3 后端 OSS 兼容**: boto3 客户端固定 `signature_version='s3'`（V2 签名，boto3 的 V4 与 chunked encoding 强耦合，OSS 不支持）；寻址方式由 `s3_addressing_style` 配置控制（默认 `"virtual"`，可选 `"path"`），映射到 `BotoConfig(s3={"addressing_style": ...})`；阿里云 OSS 仅支持 virtual-hosted style（bucket 作子域名），path-style 请求被拒绝；设置页 S3 表单「寻址方式」下拉框切换
+
+### 云端直接使用
+- 配置 `cloud_direct`（默认关），设置页「云端同步」区块开关；`sync_type` 空→非空（首次配置云端）时 `showConfirm` 询问，确定则勾选开关（随保存生效）；开启期间 push 上传缩略图（`_push_thumbs`，gate 该开关），远端删除联动删缩略图不 gate
+- **缩略图统一**: 本地 `thumbnails/{sha256}.webp`（150px WebP q85，mkstemp+os.replace 原子写）== 远端 `{root}/thumbs/{sha256}.webp`，单一路由 `/api/thumb/<sha256>`（`re.fullmatch` 校验）；`_migrate_thumbnails`（start 时）按 `file_hash` 迁移旧 `{id}.png` 并删除；`_delete_meme_files`/同步 pull 删除按 `file_hash` 清理
+- **云态（webui.py 模块级）**: `_cloud_state`（manifest/missing/local/loaded/refreshing）由 `_cloud_lock` 保护，`_cloud_inflight`+锁做下载防重入；`_cloud_ensure_loaded` 冷启动读 `cloud-index.json` 缓存，`_cloud_view` 本地文件名 frozenset 变化才重算 `sync.cloud_missing`（否则复用）；`_start_cloud_refresh(fetched)` 门控开关+refreshing 去重起 daemon（`run_auto_sync` 内复用 fetch 结果，fetch 关则线程内 `download_index()`，失败保留旧缓存），完成后 `save_cloud_manifest` → `prefetch_thumbs` → `_notify_cloud_ready()`（`evaluate_js("window.onCloudReady&&window.onCloudReady()")`）
+- **展示**: `_cloud_filtered`（tags 全含 issubset、keyword 小写子串匹配 name+filename+tags、-2 收藏、-4 无分组、分组按全路径前缀、-3 最近使用不含）→ `search_memes` 尾部切片（本地在前原序、云在后，offset/limit 跨两段）、`count_memes` 合计、`get_tags` 并入云端独有标签、`_sys_collections` 把云收藏/云无分组计入 -2/-4、`_build_collection_tree` 按全路径计云成员（cloud 沿递归传递防重算）；**云行顺序严格 = manifest memes 顺序**（`cloud_missing` 单循环按 `manifest["memes"]` 迭代、全链路无重排，即远端 sort_order，测试 `test_cloud_order_follows_manifest` 锁定）；云行 `cloud:true`+`file_hash`（sha256）且**无 id**——前端收藏/右键/排序拖拽/原生拖出/hover 全守卫，drag-select option `:disabled` 排除框选、卡片点击 stopPropagation 防入 selectedIds，全选与排序持久化过滤云行；卡片左下角 `.cloud-badge`，`window.onCloudReady` 刷新网格+标签+分组
+- **`JsApi.cloud_download(filename)`**: 开关/同步配置 gate → 清单条目查找 → inflight(busy) → `download_single` → 流式 sha256 比对 → 字节/像素导入限制 + PIL 头校验 → `_IMPORT_LOCK` 内哈希去重或落盘 `add_meme` → 显式移除 missing 条目（本地集合未变不触发重算）→ `_cloud_backfill` daemon（标签/逐段分组链/收藏/`build_manifest`/`_notify_cloud_ready`）→ `copy_meme` 自动复制；status: disabled/no_sync/not_found/busy/download_failed/sha_mismatch/too_large/invalid_image，成功 `{"ok": true, "status": "copied"|"imported", "id": ...}`
+- **开关/云后端变更**: `SettingsApi/JsApi.save_settings` 检测 `cloud_direct` 或 `sync_type` 变更 → `_cloud_reset()`（清态+删缓存文件），开启时 `_start_cloud_refresh()` 立即重拉；`reset_settings` 同样 `_cloud_reset()`；设置页 `saveSettings` 用 `_lastCloudDirect` 检测本次保存刚开启且 `sync_type` 非空 → `showConfirm` 询问是否立即 `syncPush()`（`doSyncWithProgress` 内部会重存一次设置与常规上传按钮等效），把缩略图推上云端供缺失表情显示
+- 远端旧 manifest 缺 sha256 的条目跳过不显示（`cloud_missing` 计日志）；测试 `tests/test_cloud_direct.py`
 
 ### 更新
 - GitHub API 查询: `/releases/latest` → `/releases?per_page=5` 回退

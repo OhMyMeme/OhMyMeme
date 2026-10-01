@@ -4,6 +4,7 @@ import os
 import re
 import subprocess
 import sys
+import tempfile
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
@@ -21,6 +22,7 @@ class _FakeConfig:
     def __init__(self, hotkey_show_at_mouse):
         self.hotkey_show_at_mouse = hotkey_show_at_mouse
         self.saved = {}
+        self.thumbnail_dir = Path(tempfile.mkdtemp(prefix="ohmm_fake_thumbs_"))
 
     def get(self, key, default=None):
         if key == "hotkey_show_at_mouse":

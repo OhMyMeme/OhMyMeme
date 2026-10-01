@@ -11,6 +11,7 @@ declare global {
     refreshTags: () => void
     refreshCollections: () => void
     showGuide: () => void
+    onCloudReady: () => void
   }
 }
 

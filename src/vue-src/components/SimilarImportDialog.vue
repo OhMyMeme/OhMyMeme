@@ -6,6 +6,7 @@ interface Candidate {
   id: number
   filename: string
   name: string
+  file_hash: string
   distance: number
 }
 
@@ -39,7 +40,7 @@ function onKeydown(e: KeyboardEvent) {
 }
 
 function thumbUrl(c: Candidate) {
-  return `/api/thumb/${c.id}/${encodeURIComponent(c.filename)}`
+  return `/api/thumb/${c.file_hash}`
 }
 
 defineExpose({ open })

@@ -83,6 +83,7 @@ class Config:
         "sync_threads": 3,  # 同步并发线程数（1-8）
         "manifest_include_tags": True,  # 将标签写入 meme-index.json 清单
         "manifest_include_favorites": True,  # 将收藏夹写入 meme-index.json 清单
+        "cloud_direct": False,  # 云端直接使用（缺失表情缩略图混入主界面，点击下载）
         "show_upload_progress": True,  # 上传时显示进度条
         "show_upload_done": True,  # 上传完毕显示提示
         "show_download_progress": True,  # 下载时显示进度条
