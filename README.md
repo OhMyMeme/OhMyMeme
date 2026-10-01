@@ -349,6 +349,16 @@ Windows 上 GIF 复制同时写入三个剪贴板格式：`CF_DIB`（首帧 BMP�
 | 加密 | cryptography (Fernet) | 轻量对称加密 |
 | 窗口 | frameless + JS 拖拽 | 自定义无边框体验 |
 
+## Star History
+
+<a href="https://www.star-history.com/?repos=ohmymeme%2Fohmymeme&type=date&legend=top-left">
+ <picture>
+   <source media="(prefers-color-scheme: dark)" srcset="https://api.star-history.com/chart?repos=ohmymeme/ohmymeme&type=date&theme=dark&legend=top-left" />
+   <source media="(prefers-color-scheme: light)" srcset="https://api.star-history.com/chart?repos=ohmymeme/ohmymeme&type=date&legend=top-left" />
+   <img alt="Star History Chart" src="https://api.star-history.com/chart?repos=ohmymeme/ohmymeme&type=date&legend=top-left" />
+ </picture>
+</a>
+
 ## 许可证
 
 GPL-3.0
