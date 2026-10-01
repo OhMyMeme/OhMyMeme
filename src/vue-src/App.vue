@@ -882,6 +882,39 @@ function onDocKeydown(e: KeyboardEvent) {
   hideWindow()
 }
 
+// 侧栏滑动手势：折叠态在侧栏条上右滑展开，展开态在侧栏内左滑折叠（对齐安卓端边缘滑动）
+let swipeStart: { x: number; y: number; collapsed: boolean } | null = null
+let swipeClickGuard = false
+
+function onSidebarSwipeDown(e: PointerEvent) {
+  swipeClickGuard = false
+  swipeStart = null
+  if (e.button !== 0) return
+  if (!(e.target as HTMLElement).closest?.('#sidebar')) return
+  swipeStart = { x: e.clientX, y: e.clientY, collapsed: sidebarCollapsed.value }
+}
+
+function onSidebarSwipeMove(e: PointerEvent) {
+  if (!swipeStart) return
+  const dx = e.clientX - swipeStart.x
+  const dy = e.clientY - swipeStart.y
+  if (Math.abs(dx) < 40 || Math.abs(dx) <= Math.abs(dy)) return
+  if (swipeStart.collapsed && dx > 0 && sidebarCollapsed.value) sidebarCollapsed.value = false
+  else if (!swipeStart.collapsed && dx < 0 && !sidebarCollapsed.value) sidebarCollapsed.value = true
+  else return
+  swipeClickGuard = true
+  swipeStart = null
+}
+
+function onSidebarSwipeEnd() { swipeStart = null }
+
+function onSwipeClickCapture(e: MouseEvent) {
+  if (!swipeClickGuard || e.detail === 0) return
+  swipeClickGuard = false
+  e.stopPropagation()
+  e.preventDefault()
+}
+
 onMounted(() => {
   document.addEventListener('dragenter', onDragEnter)
   document.addEventListener('dragover', onDragOver)
@@ -893,6 +926,11 @@ onMounted(() => {
   document.addEventListener('pointerup', onDocPointerUp)
   document.addEventListener('pointercancel', onDocPointerCancel)
   document.addEventListener('keydown', onDocKeydown)
+  document.addEventListener('pointerdown', onSidebarSwipeDown)
+  document.addEventListener('pointermove', onSidebarSwipeMove)
+  document.addEventListener('pointerup', onSidebarSwipeEnd)
+  document.addEventListener('pointercancel', onSidebarSwipeEnd)
+  document.addEventListener('click', onSwipeClickCapture, true)
   window.addEventListener('blur', onDocPointerCancel)
 })
 
@@ -907,6 +945,11 @@ onUnmounted(() => {
   document.removeEventListener('pointerup', onDocPointerUp)
   document.removeEventListener('pointercancel', onDocPointerCancel)
   document.removeEventListener('keydown', onDocKeydown)
+  document.removeEventListener('pointerdown', onSidebarSwipeDown)
+  document.removeEventListener('pointermove', onSidebarSwipeMove)
+  document.removeEventListener('pointerup', onSidebarSwipeEnd)
+  document.removeEventListener('pointercancel', onSidebarSwipeEnd)
+  document.removeEventListener('click', onSwipeClickCapture, true)
   window.removeEventListener('blur', onDocPointerCancel)
   if (updateInterval) { clearInterval(updateInterval); updateInterval = null }
   hoverTimers.forEach(t => clearTimeout(t))

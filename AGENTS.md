@@ -138,7 +138,7 @@ tests/
 - 增量回退（Windows/macOS）用 `screenX/screenY`（**勿改 `clientX/clientY`** — clientX 是相对窗口坐标，窗口自身滞后位移会被下一次 mousemove 当作反向增量回传，形成反馈振荡导致高频抖动）；Linux 走合成器原生拖动不经过此路径
 - **Linux 拖拽必须走合成器**：`w.move()` 在 Wayland 下无效（合成器不允许客户端自定位），mousedown 时 JS 调 `start_window_drag()` → 后端 `GLib.idle_add(native.begin_move_drag, ...)` 交给合成器交互式拖动；时间戳用 `Gdk.CURRENT_TIME`（GDK 文档允许未知时间时用它，X11 回填最近输入事件时间、Wayland 不参与）
 - `#titlebar` 上可拖拽 (排除 `.title-btn` 按钮区域)
-- 侧边栏折叠按钮 `.sidebar-toggle` 位于搜索框左侧（`#search-wrap` 内），点击折叠/展开 `#sidebar`；搜索框 `flex:1` 随侧边栏 180px↔48px 动态伸缩
+- 侧边栏折叠按钮 `.sidebar-toggle` 位于搜索框左侧（`#search-wrap` 内），点击折叠/展开 `#sidebar`；搜索框 `flex:1` 随侧边栏 180px↔48px 动态伸缩；**滑动手势**：折叠态在侧栏条（48px）内按住右滑（水平位移 ≥40px 且水平主导）展开，展开态在侧栏内左滑折叠（`onSidebarSwipeDown/Move/End` 观察 pointer 事件，触发后的误触 click 由 `onSwipeClickCapture` 在 document 捕获阶段一次性吞掉，下次 pointerdown 复位），`#sidebar` 带 `touch-action: pan-y` 支持触摸
 
 ### 数据库
 - 7 表: `memes`, `tags`, `meme_tags`, `collections`, `meme_collections`, `favorites`, `recent_uses`
