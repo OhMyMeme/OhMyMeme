@@ -123,6 +123,51 @@ def test_tray_icon():
     assert len(buf.getvalue()) > 0
 
 
+def _tray_menu_texts(icon):
+    return [i.text for i in icon.menu]
+
+
+def test_tray_menu_labels_zh():
+    from src.tray import TrayManager
+
+    tm = TrayManager(on_show=lambda: None, on_quit=lambda: None)
+    assert tm._build_icon(_create_default_icon(), "zh")
+    texts = _tray_menu_texts(tm._icon)
+    assert "显示/隐藏" in texts
+    assert "退出" in texts
+
+
+def test_tray_menu_labels_en():
+    from src.tray import TrayManager
+
+    tm = TrayManager(on_show=lambda: None, on_quit=lambda: None)
+    assert tm._build_icon(_create_default_icon(), "en")
+    texts = _tray_menu_texts(tm._icon)
+    assert "Show/Hide" in texts
+    assert "Quit" in texts
+
+
+def test_tray_menu_fallback_to_en(monkeypatch):
+    from src import tray as tray_mod
+
+    calls = []
+
+    def fake_build(self, image, lang):
+        calls.append(lang)
+        if lang == "zh":
+            return False
+        self._icon = None
+        self._lang = lang
+        return True
+
+    monkeypatch.setattr(tray_mod.TrayManager, "_build_icon", fake_build)
+    tm = tray_mod.TrayManager()
+    assert tm.start() is True
+    tm.stop()
+    assert calls == ["zh", "en"]
+    assert tm._lang == "en"
+
+
 def test_crypto():
     secrets = ["my_secret_key", "AKID1234567890", "s3cr3t!@#$%"]
     for s in secrets:

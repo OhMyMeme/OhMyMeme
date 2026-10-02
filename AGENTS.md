@@ -120,6 +120,7 @@ tests/
 
 ### 系统托盘
 - `TrayManager` 在 daemon 线程运行
+- **菜单中文化**：右键菜单默认中文（`_MENU_TEXT` 的「显示/隐藏」「退出」）；`_build_icon` 初始化构建失败或 `_run_icon` 运行中 `icon.run` 抛错（如部分 Linux 托盘后端对中文不兼容）时回退英文重建，仅回退一次，循环用 `_running` 守卫 stop 竞态（`tests/test_startup.py` 托盘 3 例）
 - 惰性导入: `_pystray_ok()` 避免 headless CI (X11 `DisplayNameError`)
 - WSL 自动跳过托盘
 - macOS 跳过托盘：pystray 在 macOS 需在主线程抢占 NSApplication runloop，与 pywebview 主循环冲突（会导致窗口无法启动或段错误），与 Linux GTK 冲突同理

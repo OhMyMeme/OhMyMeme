@@ -21,6 +21,7 @@
 - **动图转 GIF 保真帧延时并消除残影** — 帧延时按源文件写回（仅设 20ms 下限），不再沿用已撤下旧实现的「<50ms 统一改 100ms」钳制（实测库内动图延时中位数 42ms，旧钳制会使动画慢 2 倍多）；逐帧处置设为清空画布，避免透明区域透出上一帧形成残影
 - **Linux 剪贴板 MIME 按扩展名标注** — 原先静态非 WebP 图片一律标记为 `image/png`，改为按扩展名映射（jpg/jpeg→`image/jpeg`、bmp→`image/bmp`）
 - **缩略图统一为内容哈希命名** — 缩略图由 `{id}.png` 改为 `{sha256}.webp`（150px WebP q85，原子写入），路由改为 `/api/thumb/<sha256>`，本地与云端共用同一文件（云端直接使用的显示基础）；启动时按 `file_hash` 自动迁移旧缩略图并删除旧 png，删除表情/同步删除时按哈希清理
+- **托盘右键菜单中文化** — 菜单由英文改为中文（「显示/隐藏」「退出」）；托盘初始化或运行在当前后端不兼容（如部分 Linux 环境）抛错时自动回退英文重建一次，dev 模式标题行不变
 
 ## 修复
 - **内置 ffmpeg CI 构建失败** — ffmpeg-win64 交叉编译因 runner 缺 `x86_64-w64-mingw32-pkg-config`（由 mingw-w64-tools 提供，未安装）被 ffmpeg configure 静默禁用 pkg-config 库检测（warn 只写 config.log 不上屏），libwebp 检查精确报 "not found" 中止构建；`build_win64.sh` 改用原生 `--pkg-config=pkg-config`（尊重脚本导出的 PKG_CONFIG_PATH）+ configure 前预检 `libwebp.pc`，失败时输出 `ffbuild/config.log` 尾部兜底诊断；组件存在性执行检查（`-decoders/-encoders`）改为仅在能运行 PE 的环境执行（Linux runner 上交叉产物直接执行报 `Exec format error`），CI 侧由打包 windows job 的 `--verify-ffmpeg` 对产物端到端转换兜底
