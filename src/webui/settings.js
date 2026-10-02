@@ -400,6 +400,8 @@ async function getSettings() {
   if (gif) gif.checked = s.auto_play_gif !== false;
   const hp = document.getElementById('s-hover-play');
   if (hp) hp.checked = s.hover_to_play === true;
+  const hz = document.getElementById('s-hover-zoom');
+  if (hz) hz.checked = s.hover_zoom !== false;
   const to = document.getElementById('s-try-original');
   if (to) to.checked = s.try_original_image === true;  // DeepSeek V4 Flash
   const cm = document.getElementById('s-copy-mode');
@@ -757,8 +759,10 @@ async function saveSettings() {
   const lan_port = parseInt(document.getElementById('s-lan-port')?.value) || 17852;
   const lan_secret = document.getElementById('s-lan-secret')?.value || '';
   const hover_play = document.getElementById('s-hover-play')?.checked === true;
+  const hover_zoom = document.getElementById('s-hover-zoom')?.checked !== false;
   await api('save_settings', {
     hotkey, hotkey_show_at_mouse, auto_play_gif: gif, hover_to_play: hover_play,
+    hover_zoom,
     try_original_image: try_original,  // DeepSeek V4 Flash
     copy_resize_mode: copy_mode,
     copy_avoid_webp,
@@ -827,6 +831,8 @@ async function resetSettings() {
     if (gif) gif.checked = s.auto_play_gif !== false;
     const hp = document.getElementById('s-hover-play');
     if (hp) hp.checked = s.hover_to_play === true;
+    const hz = document.getElementById('s-hover-zoom');
+    if (hz) hz.checked = true;
     const tgtd = document.getElementById('s-tg-tdata');
     if (tgtd) tgtd.value = s.tg_tdata_path || '';
     const to = document.getElementById('s-try-original');  // DeepSeek V4 Flash

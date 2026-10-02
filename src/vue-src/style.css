@@ -707,6 +707,26 @@ body {
   z-index: 4;
 }
 
+/* 下载完成：遮罩自上而下退场（顶部先消失，整片向下收去后再刷新列表） */
+.meme-card.cloud-wiping::after {
+  content: '下载中...';
+  position: absolute;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: rgba(0, 0, 0, 0.55);
+  color: #fff;
+  font-size: 12px;
+  z-index: 4;
+  animation: cloud-mask-wipe-down 0.45s ease forwards;
+}
+
+@keyframes cloud-mask-wipe-down {
+  from { clip-path: inset(0 0 0 0); }
+  to { clip-path: inset(100% 0 0 0); }
+}
+
 .meme-card img.img-error {
   opacity: 0;
 }
@@ -717,6 +737,32 @@ body {
   object-fit: cover;
   display: block;
 }
+
+/* 悬停 0.5s 放大预览：浮出完整原图（尺寸上限与 App.vue scheduleHoverPreview 的夹紧计算一致） */
+.hover-preview {
+  position: fixed;
+  z-index: 440;
+  pointer-events: none;
+  transform: translate(-50%, -50%);
+}
+
+.hover-preview img {
+  display: block;
+  max-width: min(72vw, 900px);
+  max-height: 72vh;
+  width: auto;
+  height: auto;
+  object-fit: contain;
+  background: var(--surface);
+  border: 1px solid var(--border-light);
+  border-radius: 10px;
+  box-shadow: 0 10px 38px rgba(0, 0, 0, 0.45);
+}
+
+.hover-preview-fade-enter-active { transition: opacity 0.12s ease; }
+.hover-preview-fade-leave-active { transition: opacity 0.08s ease; }
+.hover-preview-fade-enter-from,
+.hover-preview-fade-leave-to { opacity: 0; }
 
 .meme-name {
   display: block;
