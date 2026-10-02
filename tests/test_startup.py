@@ -21,12 +21,15 @@ from src.tray import _create_default_icon
 class _FakeConfig:
     def __init__(self, hotkey_show_at_mouse):
         self.hotkey_show_at_mouse = hotkey_show_at_mouse
+        self.disable_auto_hide = False
         self.saved = {}
         self.thumbnail_dir = Path(tempfile.mkdtemp(prefix="ohmm_fake_thumbs_"))
 
     def get(self, key, default=None):
         if key == "hotkey_show_at_mouse":
             return self.hotkey_show_at_mouse
+        if key == "disable_auto_hide":
+            return self.disable_auto_hide
         return default
 
     def set(self, key, value):
@@ -336,6 +339,15 @@ def test_schedule_hide_only_hides_hotkey_session():
     assert ui._visible is False
 
 
+def test_schedule_hide_respects_disable_auto_hide():
+    ui = _fake_webui(True)
+    ui._cfg.disable_auto_hide = True
+    ui.toggle_hotkey_safe()
+    assert ui.schedule_hide() is False
+    ui._process_pending_hide()
+    assert ui._visible is True
+
+
 def test_toggle_hotkey_safe_hides_visible_window_without_placement(monkeypatch):
     ui = _fake_webui(True, visible=True)
 
@@ -593,6 +605,25 @@ def test_cloud_thumb_auto_push_settings_contract():
     reset_src = inspect.getsource(SettingsApi.reset_settings)
     assert '"cloud_thumb_auto_push": True' in reset_src
     assert '"cloud_direct": True' in reset_src
+
+
+def test_disable_auto_hide_settings_contract():
+    """设置页「关闭自动隐藏」开关（HTML 复选框 + JS 读写 + 后端配置键）"""
+    import inspect
+
+    from src.config import Config
+    from src.webui import HTML_DIR, SettingsApi
+
+    assert Config.DEFAULTS.get("disable_auto_hide") is False
+    settings_html = (HTML_DIR / "settings.html").read_text(encoding="utf-8")
+    assert 'id="s-disable-auto-hide"' in settings_html
+    settings_js = (HTML_DIR / "settings.js").read_text(encoding="utf-8")
+    assert settings_js.count("s.disable_auto_hide === true") == 2
+    assert "disable_auto_hide," in settings_js
+    src = inspect.getsource(SettingsApi.get_settings)
+    assert '"disable_auto_hide"' in src
+    reset_src = inspect.getsource(SettingsApi.reset_settings)
+    assert '"disable_auto_hide": False' in reset_src
 
 
 def test_cloud_direct_confirm_buttons_contract():

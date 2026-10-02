@@ -1783,6 +1783,7 @@ class JsApi:
             "show_startup_animation": d.get("show_startup_animation", True),
             "hover_zoom": d.get("hover_zoom", True),
             "copy_avoid_webp": d.get("copy_avoid_webp", False),
+            "disable_auto_hide": d.get("disable_auto_hide", False),
         }
 
     def save_settings(self, settings: dict):
@@ -2482,6 +2483,7 @@ class SettingsApi:
             "hover_to_play": d.get("hover_to_play", False),
             "hover_zoom": d.get("hover_zoom", True),
             "copy_avoid_webp": d.get("copy_avoid_webp", False),
+            "disable_auto_hide": d.get("disable_auto_hide", False),
             "manifest_include_tags": d.get("manifest_include_tags", True),
             "manifest_include_favorites": d.get("manifest_include_favorites", True),
             "cloud_direct": d.get("cloud_direct", True),
@@ -2641,6 +2643,7 @@ class SettingsApi:
             "hover_to_play": self._cfg.get("hover_to_play", False),
             "hover_zoom": True,
             "copy_avoid_webp": self._cfg.get("copy_avoid_webp", False),
+            "disable_auto_hide": False,
             "manifest_include_tags": True,
             "manifest_include_favorites": True,
             "cloud_direct": True,
@@ -4044,6 +4047,8 @@ class WebUI:
             self._hotkey_session = True
 
     def schedule_hide(self):
+        if self._cfg.get("disable_auto_hide", False):
+            return False
         with self._window_state_lock:
             if not self._hotkey_session:
                 return False

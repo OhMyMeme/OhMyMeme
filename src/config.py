@@ -63,6 +63,7 @@ class Config:
         # 全局设置
         "hotkey": "Ctrl+Alt+N",
         "hotkey_show_at_mouse": False,
+        "disable_auto_hide": False,  # 关闭自动隐藏（复制/拖拽成功后保持窗口可见）
         "auto_start": False,
         "silent_start": False,
         "language": "zh-CN",

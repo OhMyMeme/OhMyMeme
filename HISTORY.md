@@ -1,6 +1,7 @@
 # v0.6.5
 
 ## 新增功能
+- **关闭自动隐藏开关** — 设置页「基础设置 → 全局快捷键」新增「关闭自动隐藏」（配置 `disable_auto_hide`，默认关）：开启后热键会话内复制或拖拽成功不再自动隐藏主窗口（`schedule_hide()` 入口门控），普通/托盘显示、手动隐藏等其余行为不变
 - **悬停放大预览开关** — 设置页「基础设置」新增「悬停预览」区块（配置 `hover_zoom`，默认开）：关闭后鼠标悬停卡片不再浮出整图预览；`get_init_data` 下发首屏状态，设置保存经 `refreshMemes` 同步到主窗口
 - **悬停放大预览** — 主界面表情悬停 0.5 秒自动浮出完整原图（长图/宽图在格内被 `object-fit:cover` 裁切，悬停突出显示全图），按卡片位置居中并夹紧在视口内（预览盒上限 `min(72vw,900)×72vh`），云卡片同样适用；排序/多选模式不触发，移动鼠标、网格滚动、右键、指针按下、Esc、翻页刷新自动收起，GIF 悬停播放（150ms 换原图）不受影响
 - **首次运行环境检测** — Windows 首次启动弹出原生检测窗口（tkinter，不经网页控件），检测 WebView2 Runtime 安装与版本（门槛 ≥ 94.0.992.0：pywebview 6 初始化无条件设置的 `IsSwipeNavigationEnabled` 自 SDK 1.0.992.28 起要求该版本，取其与 pywebview 源码解析阈值 86.0.622.0 的较大者；更旧版本会白屏）及 .NET Framework ≥ 4.6.2；检测 UI 为独立子进程（`--env-check-ui` 内部旗标在单实例检查前运行），「确定」写 `env_check.json` 标记后不再自动显示（×/ESC 不写，下次再提示），设置页「关于 → 打开环境检测」可随时重开（非阻塞），`--debug-env` 强制打开并输出检测详情；检测失败仅提示后续支持 winget 自动安装/升级（当前仅检测）
@@ -29,6 +30,7 @@
 - **云端直接使用默认开启** — 默认由关改为开（从未显式关闭过的配置自动启用，老用户无需手动寻找开关）；首次配置云端存储类型时的确认弹窗按钮由「确定/取消」改为**「开启/关闭」**二选一（默认已勾选时仍询问一次，Esc/点遮罩不改动），「关闭」即取消勾选
 
 ## 修复
+- **热键 F15 探针泄漏到前台窗口（issue #95）** — 每 30s 的钩子心跳探针此前作为真实按键到达前台应用（gvim/SSH 终端等响应该键）；改为 `SendInput` 注入带 `OHMM` `dwExtraInfo` 标记（回退 `keybd_event` 同样带标记）+ `keyboard.hook(suppress=True)` 阻塞钩子在探针确认窗口（pending，≤15s）内把探针吞掉——吞掉时在钩子内直接刷新心跳时间戳完成确认，钩子已死场景仍按原逻辑超时自愈；窗口外的真实 F15 按键与其余按键一律放行，阻塞钩子异常时回退放行
 - **内置 ffmpeg CI 构建失败** — ffmpeg-win64 交叉编译因 runner 缺 `x86_64-w64-mingw32-pkg-config`（由 mingw-w64-tools 提供，未安装）被 ffmpeg configure 静默禁用 pkg-config 库检测（warn 只写 config.log 不上屏），libwebp 检查精确报 "not found" 中止构建；`build_win64.sh` 改用原生 `--pkg-config=pkg-config`（尊重脚本导出的 PKG_CONFIG_PATH）+ configure 前预检 `libwebp.pc`，失败时输出 `ffbuild/config.log` 尾部兜底诊断；组件存在性执行检查（`-decoders/-encoders`）改为仅在能运行 PE 的环境执行（Linux runner 上交叉产物直接执行报 `Exec format error`），CI 侧由打包 windows job 的 `--verify-ffmpeg` 对产物端到端转换兜底
 - **内置 ffmpeg 裁掉 libvpx-vp9 解码器** — 根因：libvpx configure 未传交叉工具链——其 `setup_gnu_toolchain` 取 `${CROSS}gcc/ar/strip` 而源码从不设置 `CROSS`，只给 `--target=x86_64-win64-gcc` 会退化为宿主 gcc/ar，C/C++ 对象编成 ELF（仅 nasm 成员是 win64 COFF），mingw ld 按索引打开成员时格式不符被**静默跳过**，ffmpeg configure 的两条 libvpx 检查（pkg 与 check_lib）均报 undefined reference（`vpx_codec_vp9_dx`、`vpx_codec_control_`——后者是 vp8dx.h 展开的 ~20 个 static 包装函数各调一次），解码器被静默裁掉（configure 仅 warn 不上屏），导致 `--verify-ffmpeg` 失败、TG WebM 转 WebP 缺 VP9 解码（nm 能列出符号、绕过 strip/ranlib 各轮均无法修复——成员本身是 ELF，早先「strip 破坏索引」的初判为误判，cp/ranlib 保留作防线）；修复：configure 传 `CROSS=x86_64-w64-mingw32-`（CC/CXX/AR/LD/STRIP/NM 全交叉，CI 随之补装 `g++-mingw-w64-x86-64`——`[CXX] ratectrl_rtc.cc` 必需）+ `make HAVE_GNU_STRIP=no` 走 cp 分支保留未 strip 归档 + 安装后 `x86_64-w64-mingw32-ranlib` 重建归档索引 + 复刻 check_lib 的**链接自检**（失败输出链接错误、config.mk 工具行、objdump -f 成员格式统计、nm -s 索引与 ld -t trace 诊断后中止），另保留 `--disable-multithread`（使 check_lib 兜底 `-lvpx -lm` 不依赖 -lpthread）与三道防线：configure 后硬断言 `config_components.h` 含 `CONFIG_LIBVPX_VP9_DECODER 1`（失败输出 config.log 的 vpx 线索）、configure 前预检 `vpx.pc`、产物二进制组件字符串检查（任何平台 `grep`，Linux CI 也能拦截被裁组件）
 

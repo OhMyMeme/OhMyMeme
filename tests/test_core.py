@@ -583,6 +583,58 @@ class TestHotkeyWatchdog(unittest.TestCase):
         self.assertTrue(hk._hook_health_check(now=130.0 + KEYBOARD_PROBE_TIMEOUT))
         self.assertIsNone(hk._probe_pending_at)
 
+    def test_probe_blocker_swallows_pending_probe_and_refreshes(self):
+        """pending 窗口内的 F15 探针被阻塞钩子吞掉并刷新心跳，防止泄漏到前台（issue #95）。"""
+        import types
+
+        hk = self._fresh_hotkey()
+        blocker = hk._make_probe_blocker()
+
+        # 无 pending：F15（真实宏键盘按键）正常放行
+        hk._probe_pending_at = None
+        self.assertTrue(blocker(types.SimpleNamespace(name="f15", scan_code=-126)))
+
+        # pending 窗口内：注入探针（scan_code=-126）被吞并刷新 _hook_last_seen 完成确认
+        hk._probe_pending_at = 100.0
+        hk._hook_last_seen = 0.0
+        self.assertFalse(blocker(types.SimpleNamespace(name="f15", scan_code=-126)))
+        self.assertGreaterEqual(hk._hook_last_seen, 100.0)
+
+        # pending 窗口内：真实按键事件放行
+        self.assertTrue(blocker(types.SimpleNamespace(name="a", scan_code=30)))
+        self.assertTrue(blocker(types.SimpleNamespace(name="ctrl", scan_code=29)))
+
+    def test_probe_blocker_passes_on_malformed_event(self):
+        """事件属性访问异常时阻塞钩子回退放行，绝不拦截正常按键。"""
+        hk = self._fresh_hotkey()
+        blocker = hk._make_probe_blocker()
+        hk._probe_pending_at = 100.0
+
+        class BrokenEvent(object):
+            def __getattr__(self, name):
+                raise RuntimeError("boom")
+
+        self.assertTrue(blocker(BrokenEvent()))
+
+    @mock.patch.dict("sys.modules", {"keyboard": None}, clear=False)
+    @mock.patch("sys.platform", "win32")
+    def test_try_keyboard_registers_and_unregisters_probe_blocker(self):
+        """_try_keyboard 注册探针阻塞钩子，unregister 时移除。"""
+        from src.hotkey import GlobalHotkey
+
+        fake_mod = self._fake_keyboard_module()
+        hk = GlobalHotkey()
+        try:
+            with mock.patch.dict("sys.modules", {"keyboard": fake_mod}):
+                ok = hk._try_keyboard("Ctrl+Alt+N", lambda: None)
+                self.assertTrue(ok)
+                self.assertIsNotNone(hk._probe_blocker)
+
+                hk.unregister()
+                self.assertIsNone(hk._probe_blocker)
+        finally:
+            hk.unregister()
+
     def test_restart_keyboard_listener_reinstalls_hook(self):
         """钩子失效重启：结束旧线程→重装钩子→重挂热键；成功后清 pending。"""
         fake_mod = self._fake_keyboard_module()

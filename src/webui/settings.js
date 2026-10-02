@@ -408,6 +408,8 @@ async function getSettings() {
   if (cm) cm.value = String(s.copy_resize_mode ?? 1);
   const caw = document.getElementById('s-copy-avoid-webp');
   if (caw) caw.checked = s.copy_avoid_webp === true;
+  const dah = document.getElementById('s-disable-auto-hide');
+  if (dah) dah.checked = s.disable_auto_hide === true;
   if (as) as.checked = s.auto_start === true;
   if (ss) ss.checked = s.silent_start === true;
   const unc = document.getElementById('s-show-uncategorized');
@@ -747,6 +749,7 @@ async function saveSettings() {
   const copy_mode = parseInt(document.getElementById('s-copy-mode')?.value || '1', 10);
   const copy_avoid_webp = document.getElementById('s-copy-avoid-webp')?.checked === true;
   const hotkey_show_at_mouse = document.getElementById('s-hotkey-show-at-mouse')?.checked === true;
+  const disable_auto_hide = document.getElementById('s-disable-auto-hide')?.checked === true;
   const auto_start = document.getElementById('s-auto-start')?.checked === true;
   const silent_start = document.getElementById('s-silent-start')?.checked === true;
   const show_uncategorized = document.getElementById('s-show-uncategorized')?.checked !== false;
@@ -763,6 +766,7 @@ async function saveSettings() {
   await api('save_settings', {
     hotkey, hotkey_show_at_mouse, auto_play_gif: gif, hover_to_play: hover_play,
     hover_zoom,
+    disable_auto_hide,
     try_original_image: try_original,  // DeepSeek V4 Flash
     copy_resize_mode: copy_mode,
     copy_avoid_webp,
@@ -841,6 +845,8 @@ async function resetSettings() {
     if (cm) cm.value = String(s.copy_resize_mode ?? 1);
     const caw2 = document.getElementById('s-copy-avoid-webp');
     if (caw2) caw2.checked = s.copy_avoid_webp === true;
+    const dah2 = document.getElementById('s-disable-auto-hide');
+    if (dah2) dah2.checked = s.disable_auto_hide === true;
     if (as) as.checked = s.auto_start === true;
     if (ss) ss.checked = s.silent_start === true;
     toggleSilentStart();
