@@ -44,11 +44,58 @@ build_libvpx() {
     echo "== libvpx ${LIBVPX_VERSION} =="
     tar -xzf "$DL/libvpx.tar.gz" -C "$SRC"
     cd "$SRC/libvpx-${LIBVPX_VERSION}"
-    ./configure --target=x86_64-win64-gcc --prefix="$PREFIX" \
+    # CROSS 必须显式传入：libvpx 的 setup_gnu_toolchain 取 ${CROSS}gcc/ar/strip/nm，
+    # 而其源码从不设置 CROSS —— 只给 --target 会退化为宿主 gcc/ar，C 对象编成 ELF
+    # （仅 nasm 成员是 win64 COFF），mingw ld 按索引打开成员时格式不符被静默跳过，
+    # 只报 undefined reference（vpx_codec_control_/vpx_codec_vp9_dx）并裁掉解码器
+    # --disable-multithread: vpx.a 无 pthread_* 引用，使 ffmpeg configure 的 libvpx
+    # 检查兜底 check_lib（只链 "-lvpx -lm"，mingw 下 pthreads_extralibs 恒为空）也可通过
+    CROSS=x86_64-w64-mingw32- ./configure --target=x86_64-win64-gcc --prefix="$PREFIX" \
         --disable-examples --disable-tools --disable-unit-tests --disable-docs \
-        --disable-vp8 --enable-static --disable-shared --enable-small
-    make -j"$JOBS"
+        --disable-vp8 --enable-static --disable-shared --enable-small \
+        --disable-multithread
+    grep -E '^(CC|CXX|AR|STRIP)=' config.mk || true
+    # HAVE_GNU_STRIP=no: 走 Makefile 的 cp 分支保留未 strip 归档，规避 strip 改写
+    # 归档索引的已知损坏类问题（grpc#6136），与 CROSS 互为双保险
+    make HAVE_GNU_STRIP=no -j"$JOBS"
     make install
+    # 重建归档索引，随后复刻 ffmpeg check_lib 做链接自检
+    x86_64-w64-mingw32-ranlib "$PREFIX/lib/libvpx.a" || die "libvpx.a ranlib failed"
+    cat > "$WORK/vpx_check.c" <<'EOF'
+#include <vpx/vpx_decoder.h>
+#include <vpx/vp8dx.h>
+#include <stdint.h>
+long check_vpx_codec_vp9_dx(void) { return (long) vpx_codec_vp9_dx; }
+int main(void) { int ret = 0;
+ ret |= ((intptr_t)check_vpx_codec_vp9_dx) & 0xFFFF;
+return ret; }
+EOF
+    x86_64-w64-mingw32-gcc -static -I"$PREFIX/include" -L"$PREFIX/lib" \
+        -o "$WORK/vpx_check.exe" "$WORK/vpx_check.c" -lvpx -lm \
+        2>"$WORK/vpx_check.log" ||
+    {
+        cat "$WORK/vpx_check.log" >&2
+        {
+            echo "--- libvpx diagnostics ---"
+            grep -E '^(CC|CXX|AR|LD|STRIP|NM)=|^ARFLAGS ?=' \
+                "$SRC/libvpx-${LIBVPX_VERSION}/config.mk" || true
+            head -c 8 "$PREFIX/lib/libvpx.a" | od -An -c || true
+            x86_64-w64-mingw32-objdump -f "$PREFIX/lib/libvpx.a" 2>/dev/null |
+                grep -oE 'file format [a-z0-9-]+' | sort | uniq -c || true
+            x86_64-w64-mingw32-nm -s "$PREFIX/lib/libvpx.a" 2>/dev/null |
+                grep -E 'vpx_codec_vp9_dx|vpx_codec_control_' ||
+                echo "nm -s: symbols NOT in archive index"
+            x86_64-w64-mingw32-gcc -static -I"$PREFIX/include" -L"$PREFIX/lib" \
+                -o "$WORK/vpx_check.exe" "$WORK/vpx_check.c" -lvpx -lm -Wl,-t \
+                2>&1 | grep -F libvpx || true
+            x86_64-w64-mingw32-gcc -static -I"$PREFIX/include" \
+                -o "$WORK/vpx_check2.exe" "$WORK/vpx_check.c" \
+                "$PREFIX/lib/libvpx.a" -lm 2>&1 | head -20 || true
+            x86_64-w64-mingw32-ld --version 2>&1 | head -1 || true
+        } >&2
+        die "libvpx.a link self-check failed (ffmpeg would trim libvpx_vp9_decoder)"
+    }
+    rm -f "$WORK/vpx_check.c" "$WORK/vpx_check.exe" "$WORK/vpx_check.log"
 }
 
 build_libwebp() {
@@ -77,6 +124,8 @@ build_ffmpeg() {
     # 使 libwebp 的 require_pkg_config 精确报 "not found" —— 先用原生 pkg-config 预检
     pkg-config --exists --print-errors "libwebp >= 0.2.0" ||
         die "libwebp.pc not found (PKG_CONFIG_PATH=$PKG_CONFIG_PATH)"
+    pkg-config --exists --print-errors "vpx >= 1.4.0" ||
+        die "vpx.pc not found (PKG_CONFIG_PATH=$PKG_CONFIG_PATH)"
     # 只开 TG 转换所需组件（matroska 解封装 / libvpx-vp9 解码 / webp 动画编码 /
     # scale 滤镜 / file 协议），其余全部 --disable-everything
     ./configure \
@@ -106,6 +155,14 @@ build_ffmpeg() {
         tail -n 80 ffbuild/config.log >&2 || true
         die "ffmpeg configure failed"
     }
+    # configure 成功不等于启用：libvpx 检查失败只 warn+disable（reason 空上屏），
+    # 静默产出无解码器的 ffmpeg —— 这里硬断言，失败输出 config.log 的 vpx 线索
+    grep -q "^#define CONFIG_LIBVPX_VP9_DECODER 1" config_components.h ||
+    {
+        grep -A 4 -B 2 -i 'vpx' ffbuild/config.log >&2 || true
+        tail -n 60 ffbuild/config.log >&2 || true
+        die "ffmpeg configure did not enable libvpx_vp9_decoder"
+    }
     make -j"$JOBS"
     mkdir -p "$OUT"
     cp ffmpeg.exe "$OUT/ffmpeg.exe"
@@ -127,6 +184,13 @@ verify_exe() {
     if [ "$size" -gt "$SIZE_LIMIT" ]; then
         die "ffmpeg.exe exceeds ${SIZE_LIMIT} bytes budget (got $size)"
     fi
+    # 组件字符串存在性检查（任何平台）：解码器/编码器被 configure 裁掉时其名字
+    # 不会编进二进制，Linux CI 也能拦截，不用等 windows 侧 --verify-ffmpeg
+    local comp
+    for comp in libvpx-vp9 libwebp_anim matroska; do
+        grep -aq "$comp" "$exe" ||
+            die "ffmpeg.exe missing component string: $comp (configure trimmed it)"
+    done
     # 组件存在性执行检查仅在能运行 PE 的环境（MSYS2/Cygwin/Windows）；
     # Linux/WSL 交叉产物无法直接执行（Exec format error），CI 组件校验由
     # 打包侧 windows job 的 build.py --verify-ffmpeg 对产物端到端转换兜底
