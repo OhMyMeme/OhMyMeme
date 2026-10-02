@@ -44,16 +44,40 @@ build_libvpx() {
     echo "== libvpx ${LIBVPX_VERSION} =="
     tar -xzf "$DL/libvpx.tar.gz" -C "$SRC"
     cd "$SRC/libvpx-${LIBVPX_VERSION}"
-    # --disable-multithread: 关掉 pthread 探测使 vpx.a 无 pthread_* 引用且 vpx.pc
-    # 不带 -lpthread —— ffmpeg configure 的 libvpx 检查兜底 check_lib 只链 "-lvpx -lm"
-    # （mingw 下 pthreads_extralibs 被 w32threads 门控恒为空），vpx 带 pthread 引用
-    # 会导致两条检查都失败并被裁掉 libvpx_vp9_decoder
+    # --disable-multithread: vpx.a 无 pthread_* 引用，使 ffmpeg configure 的 libvpx
+    # 检查兜底 check_lib（只链 "-lvpx -lm"，mingw 下 pthreads_extralibs 恒为空）也可通过
     ./configure --target=x86_64-win64-gcc --prefix="$PREFIX" \
         --disable-examples --disable-tools --disable-unit-tests --disable-docs \
         --disable-vp8 --enable-static --disable-shared --enable-small \
         --disable-multithread
-    make -j"$JOBS"
+    # HAVE_GNU_STRIP=no: strip --strip-debug 处理 mingw COFF 归档会破坏成员符号表
+    # （全局函数符号随 debug 信息一并丢掉），ffmpeg 链接 -lvpx 报 undefined reference
+    # （vpx_codec_vp9_dx / vpx_codec_control_）并静默裁掉 libvpx_vp9_decoder —— 走
+    # Makefile 的 cp 分支保留未 strip 的归档
+    make HAVE_GNU_STRIP=no -j"$JOBS"
     make install
+    # 重建归档索引（防 strip 类损坏的另一形态），随后复刻 ffmpeg check_lib 做链接自检
+    x86_64-w64-mingw32-ranlib "$PREFIX/lib/libvpx.a"
+    cat > "$WORK/vpx_check.c" <<'EOF'
+#include <vpx/vpx_decoder.h>
+#include <vpx/vp8dx.h>
+#include <stdint.h>
+long check_vpx_codec_vp9_dx(void) { return (long) vpx_codec_vp9_dx; }
+int main(void) { int ret = 0;
+ ret |= ((intptr_t)check_vpx_codec_vp9_dx) & 0xFFFF;
+return ret; }
+EOF
+    x86_64-w64-mingw32-gcc -static -I"$PREFIX/include" -L"$PREFIX/lib" \
+        -o "$WORK/vpx_check.exe" "$WORK/vpx_check.c" -lvpx -lm \
+        2>"$WORK/vpx_check.log" ||
+    {
+        cat "$WORK/vpx_check.log" >&2
+        x86_64-w64-mingw32-nm "$PREFIX/lib/libvpx.a" 2>/dev/null |
+            grep -E 'vpx_codec_vp9_dx|vpx_codec_control_' >&2 ||
+            echo "nm: symbols not found inside libvpx.a members" >&2
+        die "libvpx.a link self-check failed (ffmpeg would trim libvpx_vp9_decoder)"
+    }
+    rm -f "$WORK/vpx_check.c" "$WORK/vpx_check.exe" "$WORK/vpx_check.log"
 }
 
 build_libwebp() {
