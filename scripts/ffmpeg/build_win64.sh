@@ -72,11 +72,17 @@ build_ffmpeg() {
     tar -xJf "$DL/ffmpeg.tar.xz" -C "$SRC"
     cd "$SRC/ffmpeg-${FFMPEG_VERSION}"
     export PKG_CONFIG_PATH="$PREFIX/lib/pkgconfig${PKG_CONFIG_PATH:+:$PKG_CONFIG_PATH}"
+    # 交叉前缀默认找 x86_64-w64-mingw32-pkg-config（mingw-w64-tools 提供，runner 未装），
+    # configure 检测失败仅 warn 进 config.log 不上屏并置 pkg_config=false，
+    # 使 libwebp 的 require_pkg_config 精确报 "not found" —— 先用原生 pkg-config 预检
+    pkg-config --exists --print-errors "libwebp >= 0.2.0" ||
+        die "libwebp.pc not found (PKG_CONFIG_PATH=$PKG_CONFIG_PATH)"
     # 只开 TG 转换所需组件（matroska 解封装 / libvpx-vp9 解码 / webp 动画编码 /
     # scale 滤镜 / file 协议），其余全部 --disable-everything
     ./configure \
         --prefix="$PREFIX" \
         --target-os=win64 --arch=x86_64 --cross-prefix=x86_64-w64-mingw32- \
+        --pkg-config=pkg-config \
         --pkg-config-flags=--static \
         --extra-cflags="-I$PREFIX/include" \
         --extra-ldflags="-static -L$PREFIX/lib" \
@@ -94,7 +100,12 @@ build_ffmpeg() {
         --enable-muxer=webp \
         --enable-filter=scale \
         --enable-protocol=file \
-        --enable-bsf=vp9_superframe
+        --enable-bsf=vp9_superframe ||
+    {
+        # diagnose: warn()/test 失败只写 config.log 不上屏，失败时兜底输出尾部
+        tail -n 80 ffbuild/config.log >&2 || true
+        die "ffmpeg configure failed"
+    }
     make -j"$JOBS"
     mkdir -p "$OUT"
     cp ffmpeg.exe "$OUT/ffmpeg.exe"

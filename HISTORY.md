@@ -22,6 +22,9 @@
 - **Linux 剪贴板 MIME 按扩展名标注** — 原先静态非 WebP 图片一律标记为 `image/png`，改为按扩展名映射（jpg/jpeg→`image/jpeg`、bmp→`image/bmp`）
 - **缩略图统一为内容哈希命名** — 缩略图由 `{id}.png` 改为 `{sha256}.webp`（150px WebP q85，原子写入），路由改为 `/api/thumb/<sha256>`，本地与云端共用同一文件（云端直接使用的显示基础）；启动时按 `file_hash` 自动迁移旧缩略图并删除旧 png，删除表情/同步删除时按哈希清理
 
+## 修复
+- **内置 ffmpeg CI 构建失败** — ffmpeg-win64 交叉编译因 runner 缺 `x86_64-w64-mingw32-pkg-config`（由 mingw-w64-tools 提供，未安装）被 ffmpeg configure 静默禁用 pkg-config 库检测（warn 只写 config.log 不上屏），libwebp 检查精确报 "not found" 中止构建；`build_win64.sh` 改用原生 `--pkg-config=pkg-config`（尊重脚本导出的 PKG_CONFIG_PATH）+ configure 前预检 `libwebp.pc`，失败时输出 `ffbuild/config.log` 尾部兜底诊断
+
 # v0.6.4
 
 ## 新增功能
