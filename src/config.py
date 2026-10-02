@@ -131,6 +131,7 @@ class Config:
         "window_y": -1,
         "auto_play_gif": True,
         "hover_to_play": False,
+        "hover_zoom": True,  # 悬停卡片放大预览整图
         "try_original_image": False,
         "show_uncategorized": True,  # 显示「未分类」分组
         "record_recent_use": True,  # 复制时记录最近使用

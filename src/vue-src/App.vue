@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { ref, onMounted, onUnmounted, computed } from 'vue'
+import { ref, onMounted, onUnmounted, computed, watch } from 'vue'
 import { useMemes } from './composables/useMemes'
 import { useDragSort } from './composables/useDragSort'
 import { useContextMenu, type MenuItem } from './composables/useContextMenu'
@@ -98,7 +98,12 @@ onMounted(() => {
   // 兜底：视频加载失败或未触发 ended 时最多 6s 后移除遮罩，避免卡死界面
   startupAnimTimer = setTimeout(dismissStartupAnim, 6000)
   // 后端 evaluate_js 刷新入口（设置保存/同步后由 webui.py 调用）
-  window.refreshMemes = () => { search() }
+  window.refreshMemes = () => {
+    window.pywebview?.api?.get_settings?.().then((s: any) => {
+      if (s) state.hoverZoom = s.hover_zoom !== false
+    })
+    search()
+  }
   window.refreshTags = refreshTags
   window.refreshCollections = refreshCollections
   // 设置页「设置向导」按钮入口（SettingsApi.open_guide 调用）
@@ -191,6 +196,8 @@ async function handleCopy(meme: Meme, e?: Event) {
 
 // 云端直接使用：下载中防连点（按文件名）
 const cloudBusy = ref<Record<string, boolean>>({})
+// 下载成功后的遮罩自上而下退场动画（动画结束才刷新列表）
+const cloudWipe = ref<Record<string, boolean>>({})
 // 云端缩略图预取完成后递增，触发云端行 img 重载（补回 404 失败的图片）
 const thumbRev = ref(0)
 
@@ -205,7 +212,7 @@ const CLOUD_ERR_TEXT: Record<string, string> = {
   no_sync: '未配置云端同步',
 }
 
-// 云端直接使用：点击云卡 → 下载校验入库 → 自动复制 → 刷新三件套
+// 云端直接使用：点击云卡 → 下载校验入库 → 遮罩退场动画 → 自动复制 → 刷新三件套
 async function cloudDownload(meme: Meme) {
   const fname = meme.filename
   if (cloudBusy.value[fname]) return
@@ -216,6 +223,9 @@ async function cloudDownload(meme: Meme) {
       showToast(r.status === 'copied' ? `${meme.name} 已复制` : `${meme.name} 已下载`)
       await refreshTags()
       await refreshCollections()
+      cloudWipe.value[fname] = true
+      await new Promise(res => setTimeout(res, 480))
+      delete cloudWipe.value[fname]
       search()
     } else {
       showToast(CLOUD_ERR_TEXT[r?.status] || '下载失败')
@@ -407,6 +417,7 @@ function onWindowMouseUp() {
 function onMemeRightClick(e: MouseEvent, meme: Meme) {
   e.preventDefault()
   e.stopPropagation()
+  clearHoverPreview()
   // 云行无本地 id：不弹操作菜单
   if (meme.cloud) return
   const items: MenuItem[] = [
@@ -761,7 +772,8 @@ function memeSrc(meme: Meme): string {
   return `/api/thumb/${meme.file_hash}`
 }
 
-function onCardMouseEnter(meme: Meme) {
+function onCardMouseEnter(meme: Meme, e?: Event) {
+  scheduleHoverPreview(meme, (e?.currentTarget as HTMLElement) || null)
   if (!meme.is_animated || !meme.hover_to_play) return
   const timer = setTimeout(() => {
     const img = document.querySelector(`.meme-card[data-meme-id="${meme.id}"] img`) as HTMLImageElement
@@ -771,6 +783,7 @@ function onCardMouseEnter(meme: Meme) {
 }
 
 function onCardMouseLeave(meme: Meme) {
+  clearHoverPreview()
   const timer = hoverTimers.get(meme.id)
   if (timer) { clearTimeout(timer); hoverTimers.delete(meme.id) }
   if (!meme.is_animated || !meme.hover_to_play) return
@@ -778,10 +791,47 @@ function onCardMouseLeave(meme: Meme) {
   if (img && img.dataset.thumb) img.src = img.dataset.thumb
 }
 
+// 悬停 0.5s 放大预览：格子内 object-fit:cover 裁切，横向长图需浮出完整构图
+const hoverPreview = ref<Meme | null>(null)
+const hoverPreviewPos = ref({ x: 0, y: 0 })
+let hoverPreviewTimer: ReturnType<typeof setTimeout> | null = null
+
+function clearHoverPreview() {
+  if (hoverPreviewTimer) { clearTimeout(hoverPreviewTimer); hoverPreviewTimer = null }
+  hoverPreview.value = null
+}
+
+function previewSrc(meme: Meme): string {
+  if (meme.cloud) return memeSrc(meme)
+  return `/api/original/${meme.id}/${encodeURIComponent(meme.filename)}`
+}
+
+function scheduleHoverPreview(meme: Meme, card: HTMLElement | null) {
+  clearHoverPreview()
+  if (!state.hoverZoom || sortEnabled.value || selectMode.value || !card) return
+  hoverPreviewTimer = setTimeout(() => {
+    hoverPreviewTimer = null
+    if (!card.isConnected) return
+    const r = card.getBoundingClientRect()
+    // 按预览盒上限 min(72vw,900)×72vh（与 style.css .hover-preview img 一致）夹紧中心，保证整盒可见
+    const halfW = Math.min(window.innerWidth * 0.72, 900) / 2
+    const halfH = (window.innerHeight * 0.72) / 2
+    const clamp = (v: number, min: number, max: number) => Math.min(Math.max(v, min), Math.max(min, max))
+    hoverPreviewPos.value = {
+      x: clamp(r.left + r.width / 2, halfW + 8, window.innerWidth - halfW - 8),
+      y: clamp(r.top + r.height / 2, halfH + 8, window.innerHeight - halfH - 8),
+    }
+    hoverPreview.value = meme
+  }, 500)
+}
+
+watch(() => state.memes, clearHoverPreview)
+
 let nativeDragStart: { x: number; y: number; memeId: number } | null = null
 let ignoreClick = false
 
 function onCardPointerDown(e: PointerEvent, meme: Meme, card: HTMLElement) {
+  clearHoverPreview()
   ignoreClick = false
   // 云行无 id：不参与排序拖拽/原生拖出
   if (meme.cloud) return
@@ -948,6 +998,7 @@ async function onDrop(e: DragEvent) {
 function onDocKeydown(e: KeyboardEvent) {
   if (e.key !== 'Escape') return
   if (ctx.visible.value) { ctx.hide(); return }
+  if (hoverPreview.value) { clearHoverPreview(); return }
   if (selectMode.value) { toggleSelect(); return }
   if (sortEnabled.value) { toggleSort(); return }
   hideWindow()
@@ -1025,6 +1076,7 @@ onUnmounted(() => {
   if (updateInterval) { clearInterval(updateInterval); updateInterval = null }
   hoverTimers.forEach(t => clearTimeout(t))
   hoverTimers.clear()
+  if (hoverPreviewTimer) { clearTimeout(hoverPreviewTimer); hoverPreviewTimer = null }
 })
 
 ;(async () => {
@@ -1155,7 +1207,7 @@ onUnmounted(() => {
           <button class="btn btn-sm btn-danger" :disabled="state.selectedIds.size === 0" @click="batchDelete">批量删除</button>
         </div>
 
-        <div id="grid-wrap">
+        <div id="grid-wrap" @scroll.passive="clearHoverPreview">
           <div v-if="folderCards.length" class="meme-grid folder-grid">
             <div
               v-for="child in folderCards"
@@ -1200,7 +1252,7 @@ onUnmounted(() => {
               >
                 <div
                   class="meme-card"
-                  :class="{ 'dragging': drag.dragState.active && drag.dragState.memeId === meme.id, selected: state.selectedIds.has(meme.id), 'cloud-card': !!meme.cloud, 'cloud-downloading': !!cloudBusy[meme.filename] }"
+                  :class="{ 'dragging': drag.dragState.active && drag.dragState.memeId === meme.id, selected: state.selectedIds.has(meme.id), 'cloud-card': !!meme.cloud, 'cloud-downloading': !!cloudBusy[meme.filename], 'cloud-wiping': !!cloudWipe[meme.filename] }"
                   :data-meme-id="meme.id"
                   role="button"
                   tabindex="0"
@@ -1208,7 +1260,7 @@ onUnmounted(() => {
                   @click="handleCopy(meme, $event)"
                   @contextmenu="onMemeRightClick($event, meme)"
                   @pointerdown="onCardPointerDown($event, meme, $event.currentTarget as HTMLElement)"
-                  @mouseenter="onCardMouseEnter(meme)"
+                  @mouseenter="onCardMouseEnter(meme, $event)"
                   @mouseleave="onCardMouseLeave(meme)"
                   @keydown.enter.prevent="handleCopy(meme)"
                   @keydown.space.prevent="handleCopy(meme)"
@@ -1280,6 +1332,12 @@ onUnmounted(() => {
 
   <div id="toast" role="status" aria-live="polite"></div>
   <div id="loading" :class="{ show: state.loading }"><div class="spinner"></div></div>
+
+  <Transition name="hover-preview-fade">
+    <div v-if="hoverPreview" class="hover-preview" :style="{ left: hoverPreviewPos.x + 'px', top: hoverPreviewPos.y + 'px' }">
+      <img :src="previewSrc(hoverPreview)" :alt="hoverPreview.name">
+    </div>
+  </Transition>
 
   <Transition name="startup-fade">
     <div v-if="startupAnim" id="startup-anim" :style="{ background: state.startupBgColor }" @click="dismissStartupAnim">

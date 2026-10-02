@@ -824,6 +824,7 @@ class JsApi:
             "tags": self.get_tags(),
             "collections": collections,
             "show_startup_animation": self._cfg.get("show_startup_animation", True),
+            "hover_zoom": self._cfg.get("hover_zoom", True),
             "startup_bg_color": _STARTUP_BG_COLOR,
             "guide_ok": guide_ok(),
         }
@@ -1780,6 +1781,7 @@ class JsApi:
             "show_uncategorized": d.get("show_uncategorized", True),
             "record_recent_use": d.get("record_recent_use", True),
             "show_startup_animation": d.get("show_startup_animation", True),
+            "hover_zoom": d.get("hover_zoom", True),
             "copy_avoid_webp": d.get("copy_avoid_webp", False),
         }
 
@@ -1856,6 +1858,7 @@ class JsApi:
             "show_download_progress": True,
             "show_download_done": True,
             "show_startup_animation": True,
+            "hover_zoom": True,
         }
 
     def move_window(self, dx: int, dy: int):
@@ -2477,6 +2480,7 @@ class SettingsApi:
             "show_startup_animation": d.get("show_startup_animation", True),
             "tg_tdata_path": d.get("tg_tdata_path", ""),
             "hover_to_play": d.get("hover_to_play", False),
+            "hover_zoom": d.get("hover_zoom", True),
             "copy_avoid_webp": d.get("copy_avoid_webp", False),
             "manifest_include_tags": d.get("manifest_include_tags", True),
             "manifest_include_favorites": d.get("manifest_include_favorites", True),
@@ -2635,6 +2639,7 @@ class SettingsApi:
             "show_startup_animation": True,
             "tg_tdata_path": self._cfg.get("tg_tdata_path", ""),
             "hover_to_play": self._cfg.get("hover_to_play", False),
+            "hover_zoom": True,
             "copy_avoid_webp": self._cfg.get("copy_avoid_webp", False),
             "manifest_include_tags": True,
             "manifest_include_favorites": True,
