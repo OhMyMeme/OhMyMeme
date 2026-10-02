@@ -104,7 +104,7 @@ onMounted(() => {
   // 设置页「设置向导」按钮入口（SettingsApi.open_guide 调用）
   window.showGuide = showSetupGuide
   // 云端直接使用：后端预取缩略图/入库后通知，刷新网格+标签+分组
-  window.onCloudReady = () => { thumbRev.value++; search(); refreshTags(); refreshCollections() }
+  window.onCloudReady = () => { imgRetries.clear(); thumbRev.value++; search(); refreshTags(); refreshCollections() }
 })
 // 网格列数由 CSS repeat(auto-fill, minmax(112px, 1fr)) 随容器宽度自适应
 
@@ -227,13 +227,24 @@ async function cloudDownload(meme: Meme) {
   }
 }
 
-// 缩略图加载失败（预取未完成等）：隐藏破图标，onCloudReady 后会带版本号重载
+// 缩略图加载失败重试计数（按基础 URL，成功/onCloudReady 后清零）
+const imgRetries = new Map<string, number>()
+
+// 缩略图加载失败（预取未完成/突发连接被拒等）：隐藏破图标并带 cache-buster 有界重试
 function onImgError(e: Event) {
-  (e.target as HTMLImageElement).classList.add('img-error')
+  const img = e.target as HTMLImageElement
+  const base = img.src.replace(/([?&])r=\d+/, '')
+  img.classList.add('img-error')
+  const n = (imgRetries.get(base) || 0) + 1
+  if (n > 2) return
+  imgRetries.set(base, n)
+  setTimeout(() => { img.src = `${base}${base.includes('?') ? '&' : '?'}r=${Date.now()}` }, 300 * n)
 }
 
 function onImgLoad(e: Event) {
-  (e.target as HTMLImageElement).classList.remove('img-error')
+  const img = e.target as HTMLImageElement
+  img.classList.remove('img-error')
+  imgRetries.delete(img.src.replace(/([?&])r=\d+/, ''))
 }
 
 function showToast(msg: string) {
@@ -342,10 +353,12 @@ function onSyncDone() {
   refreshCollections()
 }
 
-function rescanCache() {
+async function rescanCache() {
   showToast('缓存刷新中...')
   search()
   refreshCollections()
+  // 同步触发云端清单刷新与缩略图预取（开关关闭/刷新中由后端去重）
+  try { await window.pywebview?.api?.cloud_refresh() } catch (_) {}
 }
 
 function hideWindow() {

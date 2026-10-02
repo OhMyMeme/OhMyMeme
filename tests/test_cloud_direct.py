@@ -231,6 +231,27 @@ def test_prefetch_empty_missing_no_connect(sync_env):
     assert prefetch_thumbs([], sync_env.data_dir / "thumbnails") == 0
 
 
+def test_prefetch_retries_failed_once(sync_env, monkeypatch):
+    """首遍下载失败的缩略图在第二遍重试成功"""
+    thumb_dir = sync_env.data_dir / "thumbnails"
+    sync_env.bk.remote_files.add(SHA_B + ".webp")
+    orig = sync_env.bk.file_exists
+    calls = {"n": 0}
+
+    def flaky(path):
+        if str(path).endswith(SHA_B + ".webp"):
+            calls["n"] += 1
+            if calls["n"] == 1:
+                return False
+        return orig(path)
+
+    monkeypatch.setattr(sync_env.bk, "file_exists", flaky)
+    ready = prefetch_thumbs([{"sha256": SHA_B}], thumb_dir)
+    assert ready == 1
+    assert (thumb_dir / f"{SHA_B}.webp").exists()
+    assert calls["n"] >= 2
+
+
 # ─── push 缩略图差集上传与删除联动 ───
 
 
@@ -244,9 +265,9 @@ def test_push_thumbs_diff_upload(sync_env):
 
     sync.push()
 
-    thumb_uploads = [p for p in sync_env.bk.upload_paths if "/thumbs/" in p]
+    thumb_uploads = [p for p in sync_env.bk.upload_paths if "/thumbnails/" in p]
     root = sync._remote_root(sync_env.cfg).rstrip("/")
-    assert thumb_uploads == [root + "/thumbs/" + SHA_A + ".webp"]
+    assert thumb_uploads == [root + "/thumbnails/" + SHA_A + ".webp"]
 
 
 def test_push_thumbs_off_when_cloud_direct_disabled(sync_env):
@@ -255,7 +276,7 @@ def test_push_thumbs_off_when_cloud_direct_disabled(sync_env):
 
     sync.push()
 
-    assert not any("/thumbs/" in p for p in sync_env.bk.upload_paths)
+    assert not any("/thumbnails/" in p for p in sync_env.bk.upload_paths)
 
 
 def test_push_thumbs_upload_failure_does_not_fail_push(sync_env):
@@ -278,7 +299,7 @@ def test_push_deletes_remote_thumb_on_delete_remote(sync_env):
 
     assert result["deleted"] == 1
     assert any(
-        p.endswith("/thumbs/" + SHA_A + ".webp")
+        p.endswith("/thumbnails/" + SHA_A + ".webp")
         for p in sync_env.bk.delete_calls
     )
 
@@ -300,7 +321,7 @@ def test_push_thumbs_list_fallback_uses_file_exists(sync_env, monkeypatch):
     uploaded = _push_thumbs(bk, "/root", thumb_dir)
 
     assert uploaded == 1
-    assert bk.upload_paths == ["/root/thumbs/" + SHA_B + ".webp"]
+    assert bk.upload_paths == ["/root/thumbnails/" + SHA_B + ".webp"]
 
 
 # ─── webui 侧：混入主网格 / 过滤 / 计数 ───
@@ -407,8 +428,8 @@ def test_search_memes_cloud_tail_paging(js):
 
 
 def test_cloud_order_follows_manifest(js):
-    """云行顺序严格按云端 manifest memes 顺序（远端排序），不做文件名重排；
-    本地已有文件的云条目剔除，本地在前原序、云接尾且分页切片保持该顺序"""
+    """本地与云行统一按云端 manifest memes 序穿插（远端排序），不做文件名重排；
+    不在清单的本地行置顶，分页切片对合并结果生效"""
     js.db.add_meme(filename="a.png", file_hash=SHA_A)
     _set_cloud(
         js,
@@ -423,13 +444,52 @@ def test_cloud_order_follows_manifest(js):
     )
     api = js.api
     assert _names(api.search_memes("", None, None, 0, 10)) == [
-        "a.png",
         "z.png",
         "m.png",
+        "a.png",
         "c.png",
     ]
-    assert _names(api.search_memes("", None, None, 1, 2)) == ["z.png", "m.png"]
+    assert _names(api.search_memes("", None, None, 1, 2)) == ["m.png", "a.png"]
     assert _names(api.search_memes("", None, None, 3, 10)) == ["c.png"]
+    assert api.count_memes() == 4
+
+
+def test_cloud_merge_extras_first_and_collection_order(js):
+    """不在清单的本地行排最前；分组视图按清单该分组子树 filenames 序穿插"""
+    js.db.add_meme(filename="new.png", file_hash=SHA_A)  # 未入清单 → 置顶
+    js.db.add_meme(filename="b.png", file_hash=SHA_B)
+    js.db.add_meme(filename="a.png", file_hash=SHA_C)
+    top = js.db.create_collection("动物")
+    js.db.add_memes_to_collection(
+        [r["id"] for r in js.db.search(keyword="b.png")], top
+    )
+    js.db.add_memes_to_collection(
+        [r["id"] for r in js.db.search(keyword="a.png")], top
+    )
+    _set_cloud(
+        js,
+        {
+            "memes": [
+                {"filename": "x.png", "name": "x", "sha256": SHA_D},
+                {"filename": "b.png", "name": "b", "sha256": SHA_B},
+                {"filename": "a.png", "name": "a", "sha256": SHA_C},
+            ],
+            "collections": [
+                {"name": "动物", "filenames": ["b.png", "a.png"], "children": []}
+            ],
+        },
+    )
+    api = js.api
+    # 全局视图：清单序 x,b,a；new.png 不在清单置顶
+    assert _names(api.search_memes("", None, None, 0, 10)) == [
+        "new.png",
+        "x.png",
+        "b.png",
+        "a.png",
+    ]
+    # 分组视图：按清单分组子树 filenames 序（b,a），new.png 不在分组不出现
+    assert _names(api.search_memes("", None, top, 0, 10)) == ["b.png", "a.png"]
+    assert api.count_memes(collection_id=top) == 2
     assert api.count_memes() == 4
 
 
@@ -632,6 +692,44 @@ def test_run_auto_sync_cloud_hook(js, monkeypatch):
 
     assert result["fetched"] is True
     assert calls == [None, manifest]  # fetch 结果复用
+
+
+def test_cloud_refresh_api_calls_start(js, monkeypatch):
+    from src import webui as webui_module
+
+    calls = []
+    monkeypatch.setattr(
+        webui_module,
+        "_start_cloud_refresh",
+        lambda fetched=None: calls.append(1) or True,
+    )
+    assert js.api.cloud_refresh() is True
+    assert calls == [1]
+
+
+def test_serve_thumb_404_enqueues_cloud_fetch(js, monkeypatch):
+    """云缺失行缩略图 404 → 入队后台补拉；未知 sha 不入队"""
+    from test_thumbnails import _build_app, _request
+
+    from src import webui as webui_module
+
+    ui = webui_module.WebUI.__new__(webui_module.WebUI)
+    ui._cfg = js.cfg
+    ui._port = 17997
+    enqueued = []
+    monkeypatch.setattr(
+        webui_module, "_enqueue_thumb_fetch", lambda sha: enqueued.append(sha)
+    )
+    _set_cloud(js, {"memes": [{"filename": "c.png", "name": "c", "sha256": SHA_C}]})
+    app = _build_app(monkeypatch, ui)
+
+    status, _ = _request(app, f"/api/thumb/{SHA_C}", port=17997)
+    assert status.startswith("404")
+    assert enqueued == [SHA_C]
+
+    status, _ = _request(app, f"/api/thumb/{'9' * 64}", port=17997)
+    assert status.startswith("404")
+    assert enqueued == [SHA_C]  # 不在云端缺失集 → 不入队
 
 
 # ─── webui 侧：cloud_download ───

@@ -186,6 +186,37 @@ def _safe_serve_filename(name: str) -> bool:
     )
 
 
+# 动图缩略图帧数上限：超限抽帧并按步长放大帧延时，控制动画 WebP 体积
+_THUMB_MAX_FRAMES = 100
+
+
+def _animated_thumb_frames(img, size):
+    """动图逐帧缩放到 size 内，抽帧限幅后返回 (frames, durations) 供动画 WebP 编码"""
+    n = img.n_frames
+    step = max(1, math.ceil(n / _THUMB_MAX_FRAMES))
+    frames, durations = [], []
+    has_alpha = False
+    i = 0
+    while i < n:
+        img.seek(i)
+        frame = img.copy()
+        frame.thumbnail((size, size), PILImage.LANCZOS)
+        alpha = frame.mode in ("RGBA", "LA", "PA") or (
+            frame.mode == "P" and "transparency" in frame.info
+        )
+        if frame.mode not in ("RGB", "RGBA"):
+            frame = frame.convert("RGBA" if alpha else "RGB")
+        has_alpha = has_alpha or alpha or "A" in frame.getbands()
+        durations.append(max(20, int(img.info.get("duration") or 100)) * step)
+        frames.append(frame)
+        i += step
+    if has_alpha:
+        frames = [f if f.mode == "RGBA" else f.convert("RGBA") for f in frames]
+    else:
+        frames = [f if f.mode == "RGB" else f.convert("RGB") for f in frames]
+    return frames, durations
+
+
 def _migrate_thumbnails(thumb_dir) -> int:
     """升级迁移：清除旧命名缩略图（{id}_{size}.png 等），新命名按需懒重建，幂等"""
     removed = 0
@@ -322,6 +353,87 @@ def _notify_cloud_ready():
             webview.windows[0].evaluate_js("window.onCloudReady&&window.onCloudReady()")
     except Exception:
         pass
+
+
+def _flatten_manifest_collection(node) -> list:
+    # 清单分组节点子树展平：本组 filenames 在前，递归子组接后
+    out = []
+    for fname in node.get("filenames") or []:
+        if isinstance(fname, str):
+            out.append(fname)
+    for child in node.get("children") or []:
+        if isinstance(child, dict):
+            out.extend(_flatten_manifest_collection(child))
+    return out
+
+
+def _find_manifest_collection(node_list, target, prefix=""):
+    # 按全路径（父/子）在清单分组树中定位节点
+    if not isinstance(node_list, list):
+        return None
+    for node in node_list:
+        if not isinstance(node, dict):
+            continue
+        name = str(node.get("name") or "")
+        path = f"{prefix}/{name}" if prefix else name
+        if path == target:
+            return node
+        found = _find_manifest_collection(node.get("children") or [], target, path)
+        if found is not None:
+            return found
+    return None
+
+
+_THUMB_FETCH_LOCK = threading.Lock()
+_THUMB_FETCH_QUEUE = []
+_THUMB_FETCH_QUEUED = set()
+_THUMB_FETCH_WAKE = threading.Event()
+_THUMB_FETCH_RUNNING = [False]
+
+
+def _enqueue_thumb_fetch(sha):
+    # 云缩略图缺失时按需入队后台补拉（下载期间单飞防重，整批完成通知前端重载）
+    with _THUMB_FETCH_LOCK:
+        if sha in _THUMB_FETCH_QUEUED:
+            return
+        _THUMB_FETCH_QUEUED.add(sha)
+        _THUMB_FETCH_QUEUE.append(sha)
+        if not _THUMB_FETCH_RUNNING[0]:
+            _THUMB_FETCH_RUNNING[0] = True
+            threading.Thread(target=_thumb_fetch_worker, daemon=True).start()
+    _THUMB_FETCH_WAKE.set()
+
+
+def _thumb_fetch_worker():
+    # 后台逐个预取队列中的云缩略图；整批完成后通知前端（滚动到缺图处即自愈，无需重启）
+    fetched = False
+    try:
+        while True:
+            _THUMB_FETCH_WAKE.wait()
+            while True:
+                with _THUMB_FETCH_LOCK:
+                    if not _THUMB_FETCH_QUEUE:
+                        _THUMB_FETCH_WAKE.clear()
+                        break
+                    sha = _THUMB_FETCH_QUEUE.pop(0)
+                try:
+                    n = sync_module.prefetch_thumbs(
+                        [{"sha256": sha}], get_config().thumbnail_dir
+                    )
+                    if n:
+                        fetched = True
+                except Exception as e:
+                    logger.warning(f"on-demand thumb {sha[:12]} failed: {e}")
+                with _THUMB_FETCH_LOCK:
+                    _THUMB_FETCH_QUEUED.discard(sha)
+            if fetched:
+                fetched = False
+                _notify_cloud_ready()
+    except Exception as e:
+        logger.warning(f"thumb fetch worker failed: {e}")
+    finally:
+        with _THUMB_FETCH_LOCK:
+            _THUMB_FETCH_RUNNING[0] = False
 
 
 def _host_allowed(host: str, port: int) -> bool:
@@ -486,6 +598,41 @@ class JsApi:
             out.append(it)
         return out
 
+    def _cloud_order(self, collection_id):
+        """当前云清单的展示顺序（文件名列表）；分组取子树序，其余取全局 memes 序"""
+        with _cloud_lock:
+            manifest = _cloud_state["manifest"]
+        if not isinstance(manifest, dict):
+            return None
+        if collection_id is not None and collection_id > 0:
+            path = self._collection_path(collection_id)
+            node = (
+                _find_manifest_collection(manifest.get("collections") or [], path)
+                if path
+                else None
+            )
+            if node is None:
+                return []
+            return _flatten_manifest_collection(node)
+        order = []
+        for m in manifest.get("memes") or []:
+            if isinstance(m, dict) and isinstance(m.get("filename"), str):
+                order.append(m["filename"])
+        return order
+
+    def _merge_manifest_order(self, local_rows, cloud_rows, order) -> list:
+        """本地与云行按清单序穿插；不在清单的本地行保持原查询序排最前"""
+        pos = {fname: i for i, fname in enumerate(order)}
+        extras = [r for r in local_rows if r["filename"] not in pos]
+        paired = [(pos[r["filename"]], r) for r in local_rows if r["filename"] in pos]
+        cloud_out = [self._cloud_row(it) for it in cloud_rows]
+        paired.extend(
+            (pos[c["filename"]], c) for c in cloud_out if c["filename"] in pos
+        )
+        paired.sort(key=lambda t: t[0])
+        rest = [c for c in cloud_out if c["filename"] not in pos]
+        return extras + [r for _, r in paired] + rest
+
     def _cloud_row(self, it) -> dict:
         """云条目 → 前端行（无 id，cloud 标记，file_hash 为 sha256）"""
         fname = it["filename"].lower()
@@ -508,13 +655,16 @@ class JsApi:
     def search_memes(
         self, keyword="", tags=None, collection_id=None, offset=0, limit=200
     ):
-        """搜索表情，支持 offset/limit 分页"""
+        """搜索表情，支持 offset/limit 分页；有云行时按清单序与本地穿插后切片"""
         if tags is not None and len(tags) == 0:
             tags = None
         fav_only = collection_id == -2
         recent_only = collection_id == -3
         uncategorized = collection_id == -4
         cid = None if (fav_only or recent_only or uncategorized) else collection_id
+        cloud = self._cloud_filtered(keyword, tags, collection_id)
+        order = self._cloud_order(collection_id) if cloud else None
+        merging = bool(cloud) and order is not None
         if recent_only:
             rows = self._db.get_recent(limit, offset)
         else:
@@ -526,8 +676,8 @@ class JsApi:
                 collection_id=cid,
                 favorite_only=fav_only,
                 uncategorized_only=uncategorized,
-                offset=offset,
-                limit=limit,
+                offset=0 if merging else offset,
+                limit=-1 if merging else limit,
             )
         favorited_ids = set()
         try:
@@ -570,9 +720,12 @@ class JsApi:
                     "hover_to_play": hover_play,
                 }
             )
-        cloud = self._cloud_filtered(keyword, tags, collection_id)
+        if merging:
+            # 清单序穿插合并后统一切片（本地全量已取回）
+            merged = self._merge_manifest_order(result, cloud, order)
+            return merged[offset : offset + limit]
         if cloud:
-            # 本地在前原序，云条目接尾分页跨两段切片
+            # 清单不可用回退：本地在前原序，云条目接尾分页跨两段切片
             local_total = self._db.count(
                 keyword=keyword,
                 tags=tags,
@@ -1288,6 +1441,10 @@ class JsApi:
         except Exception as e:
             result["error"] = str(e)
         return result
+
+    def cloud_refresh(self) -> bool:
+        """手动触发云端清单刷新与缩略图预取（刷新按钮；开关/refreshing 中去重）"""
+        return _start_cloud_refresh()
 
     def cloud_download(self, filename: str) -> dict:
         """下载云端缺失表情：校验→去重入库→自动复制；标签/分组/收藏异步后补"""
@@ -3901,14 +4058,37 @@ class WebUI:
             return ""
         try:
             img = PILImage.open(meme_path)
-            img.thumbnail((size, size), PILImage.LANCZOS)
-            has_alpha = img.mode in ("RGBA", "LA", "PA") or (
-                img.mode == "P" and "transparency" in img.info
+            animated = (
+                bool(getattr(img, "is_animated", False))
+                and int(getattr(img, "n_frames", 1)) > 1
             )
-            if img.mode not in ("RGB", "RGBA"):
-                img = img.convert("RGBA" if has_alpha else "RGB")
             buf = io.BytesIO()
-            img.save(buf, "WEBP", quality=85)
+            if animated:
+                # 动图逐帧生成动画 WebP；失败回退静态首帧，不留空
+                try:
+                    frames, durations = _animated_thumb_frames(img, size)
+                    frames[0].save(
+                        buf,
+                        "WEBP",
+                        save_all=True,
+                        append_images=frames[1:],
+                        duration=durations,
+                        loop=img.info.get("loop", 0) or 0,
+                        quality=85,
+                    )
+                except Exception as e:
+                    logger.warning(f"animated thumb fallback {filename}: {e}")
+                    buf = io.BytesIO()
+                    animated = False
+            if not animated:
+                img.seek(0)
+                img.thumbnail((size, size), PILImage.LANCZOS)
+                has_alpha = img.mode in ("RGBA", "LA", "PA") or (
+                    img.mode == "P" and "transparency" in img.info
+                )
+                if img.mode not in ("RGB", "RGBA"):
+                    img = img.convert("RGBA" if has_alpha else "RGB")
+                img.save(buf, "WEBP", quality=85)
             self._cfg.thumbnail_dir.mkdir(parents=True, exist_ok=True)
             # 并发请求同一缩略图时避免交错写同一文件：先写临时文件再原子替换
             fd, tmp_path = tempfile.mkstemp(
@@ -3929,8 +4109,30 @@ class WebUI:
             logger.warning(f"thumb error {filename}: {e}")
             return ""
 
+    def _thumb_is_stale(self, thumb_path, filename: str) -> bool:
+        """源为动图但缩略图是静态单帧（动画版上线前的旧产物）→ 过期需重建"""
+        if not HAS_PIL:
+            return False
+        ext = os.path.splitext(filename)[1].lower()
+        if ext not in (".gif", ".webp"):
+            return False
+        try:
+            with PILImage.open(thumb_path) as t:
+                if int(getattr(t, "n_frames", 1)) > 1:
+                    return False
+            src = self._find_meme_file(filename)
+            if not src:
+                return False
+            with PILImage.open(src) as s:
+                return (
+                    bool(getattr(s, "is_animated", False))
+                    and int(getattr(s, "n_frames", 1)) > 1
+                )
+        except Exception:
+            return False
+
     def ensure_local_thumbs(self) -> int:
-        """云端直接使用：push 前按库行预生成缺失缩略图（cloud_direct 关时空操作）"""
+        """云端直接使用：push/启动前预生成缺失与过期缩略图（cloud_direct 关时空操作）"""
         if not self._cfg.get("cloud_direct", False):
             return 0
         db = get_db()
@@ -3944,7 +4146,18 @@ class WebUI:
                     break
                 for row in rows:
                     fhash = row.get("file_hash", "")
-                    if not fhash or (thumb_dir / f"{fhash}.webp").exists():
+                    if not fhash:
+                        continue
+                    thumb = thumb_dir / f"{fhash}.webp"
+                    stale = thumb.exists() and self._thumb_is_stale(
+                        thumb, row["filename"]
+                    )
+                    if stale:
+                        try:
+                            thumb.unlink()
+                        except OSError:
+                            pass
+                    if thumb.exists():
                         continue
                     if self._get_thumbnail_path(fhash, row["filename"]):
                         generated += 1
@@ -4261,6 +4474,14 @@ class WebUI:
                     root=os.path.dirname(path),
                     mimetype="image/webp",
                 )
+            # 云缺失行缩略图：后台补拉（完成经 onCloudReady 重载），本请求先404
+            try:
+                if self._cfg.get("cloud_direct", False):
+                    _cloud_ensure_loaded()
+                    if any(it.get("sha256") == sha256 for it in _cloud_view()):
+                        _enqueue_thumb_fetch(sha256)
+            except Exception:
+                pass
             bottle.response.status = 404
             return ""
 
@@ -4355,6 +4576,8 @@ class WebUI:
 
         class _ThreadedWSGIServer(ThreadingMixIn, WSGIServer):
             daemon_threads = True
+            # wsgiref 默认 backlog=5：懒加载缩略图突发连接易被丢弃导致整行图片加载失败
+            request_queue_size = 128
 
         bottle.run(
             app,
@@ -4440,6 +4663,7 @@ class WebUI:
             return False
 
         _migrate_thumbnails(self._cfg.thumbnail_dir)
+        threading.Thread(target=self.ensure_local_thumbs, daemon=True).start()
 
         # 启动 Bottle 服务器
         self._bottle_thread = threading.Thread(target=self._setup_bottle, daemon=True)

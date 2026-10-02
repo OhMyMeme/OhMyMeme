@@ -102,7 +102,7 @@ def get_sync_progress() -> dict:
 
 REMOTE_INDEX = INDEX_FILENAME
 REMOTE_MEME_DIR = "memes"
-REMOTE_THUMB_DIR = "thumbs"
+REMOTE_THUMB_DIR = "thumbnails"
 CLOUD_INDEX_FILENAME = "cloud-index.json"
 
 
@@ -1188,7 +1188,7 @@ def cloud_missing(manifest, local_filenames) -> list:
 
 
 def prefetch_thumbs(missing, thumb_dir) -> int:
-    """预取云端缩略图到 thumbnails/{sha}.webp（单连接循环，逐条容错），返回已就绪数"""
+    """预取云端缩略图到 thumbnails/{sha}.webp（失败项重试一遍），返回就绪数"""
     if not missing:
         return 0
     cfg = get_config()
@@ -1199,19 +1199,32 @@ def prefetch_thumbs(missing, thumb_dir) -> int:
         bk = _get_backend()
         bk.connect()
         remote_dir = remote_root.rstrip("/") + "/" + REMOTE_THUMB_DIR
+        pending = []
         for item in missing:
             sha = item.get("sha256", "")
             if not _safe_sha(sha):
                 continue
-            dest = thumb_dir / f"{sha}.webp"
-            if dest.exists():
+            if (thumb_dir / f"{sha}.webp").exists():
                 ready += 1
-                continue
-            try:
-                if download_single(remote_dir + "/" + sha + ".webp", dest, bk=bk):
-                    ready += 1
-            except Exception as e:
-                logger.warning("prefetch thumb %s failed: %s", sha[:12], e)
+            else:
+                pending.append(sha)
+        for attempt in range(2):
+            retry = []
+            for sha in pending:
+                try:
+                    remote = remote_dir + "/" + sha + ".webp"
+                    if download_single(remote, thumb_dir / f"{sha}.webp", bk=bk):
+                        ready += 1
+                    else:
+                        retry.append(sha)
+                except Exception as e:
+                    logger.warning("prefetch thumb %s failed: %s", sha[:12], e)
+                    retry.append(sha)
+            pending = retry
+            if not pending:
+                break
+        if pending:
+            logger.info("prefetch thumbs: %d still missing after retry", len(pending))
         return ready
     finally:
         if bk is not None:
@@ -1219,7 +1232,7 @@ def prefetch_thumbs(missing, thumb_dir) -> int:
 
 
 def _push_thumbs(bk, remote_root, thumb_dir) -> int:
-    """把本地缩略图差集上传到 {root}/thumbs；list 不可用时降级 file_exists 逐个判断。
+    """把本地缩略图差集上传到 {root}/thumbnails；list 不可用降级 file_exists 判断。
 
     单个失败仅告警不影响 push 结果。
     """

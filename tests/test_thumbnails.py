@@ -209,3 +209,79 @@ def test_thumb_route_404_when_unknown(monkeypatch, env):
     status, _ = _request(app, f"/api/thumb/{'1' * 64}")
 
     assert status.startswith("404")
+
+
+def _make_gif(path, frames=4, size=(80, 60), duration=40):
+    imgs = [Image.new("RGB", size, (i * 40 % 255, 10, 10)) for i in range(frames)]
+    imgs[0].save(
+        path, save_all=True, append_images=imgs[1:], duration=duration, loop=0
+    )
+
+
+def _webp_frame_durations(path):
+    """解析 WebP 容器 ANMF 块的逐帧延时（Pillow 读回不暴露 webp duration）"""
+    data = open(path, "rb").read()
+    durs = []
+    i = 12  # RIFF(4)+size(4)+WEBP(4)
+    while i + 8 <= len(data):
+        fourcc = data[i : i + 4]
+        size = int.from_bytes(data[i + 4 : i + 8], "little")
+        payload = i + 8
+        if fourcc == b"ANMF":
+            durs.append(int.from_bytes(data[payload + 12 : payload + 15], "little"))
+        i = payload + size + (size & 1)
+    return durs
+
+
+def test_animated_gif_thumb_is_animated_webp(env):
+    ui, cfg = env
+    _make_gif(cfg.cache_dir / "anim.gif", frames=4, duration=40)
+    sha = "a1" * 32
+
+    path = ui._get_thumbnail_path(sha, "anim.gif")
+
+    assert path == str(cfg.thumbnail_dir / f"{sha}.webp")
+    img = Image.open(path)
+    assert img.format == "WEBP"
+    assert img.n_frames == 4
+    assert max(img.size) <= 150
+    assert img.info.get("loop") == 0
+    assert _webp_frame_durations(path) == [40, 40, 40, 40]
+
+
+def test_animated_webp_thumb_is_animated(env):
+    ui, cfg = env
+    src = cfg.cache_dir / "anim.webp"
+    imgs = [Image.new("RGB", (60, 60), (i * 30 % 255, 5, 5)) for i in range(3)]
+    imgs[0].save(src, save_all=True, append_images=imgs[1:], duration=30, loop=0)
+    sha = "a2" * 32
+
+    img = Image.open(ui._get_thumbnail_path(sha, "anim.webp"))
+    assert img.n_frames == 3
+
+
+def test_single_frame_gif_thumb_stays_static(env):
+    ui, cfg = env
+    _make_gif(cfg.cache_dir / "one.gif", frames=1)
+    sha = "a3" * 32
+
+    img = Image.open(ui._get_thumbnail_path(sha, "one.gif"))
+    assert img.n_frames == 1
+
+
+def test_ensure_local_thumbs_rebuilds_stale_static(env, monkeypatch):
+    """源为动图但缩略图是静态旧产物 → ensure 重建为动画 WebP，幂等"""
+    ui, cfg = env
+    cfg.values["cloud_direct"] = True
+    _make_gif(cfg.cache_dir / "g.gif", frames=3, duration=50)
+    sha = "b1" * 32
+    Image.new("RGB", (64, 64), (1, 2, 3)).save(
+        cfg.thumbnail_dir / f"{sha}.webp", "WEBP"
+    )
+    rows = [{"filename": "g.gif", "file_hash": sha}]
+    monkeypatch.setattr(webui, "get_db", lambda: _FakePagedDb(rows))
+
+    assert ui.ensure_local_thumbs() == 1
+    img = Image.open(cfg.thumbnail_dir / f"{sha}.webp")
+    assert img.n_frames == 3
+    assert ui.ensure_local_thumbs() == 0
