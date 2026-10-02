@@ -24,3 +24,18 @@ jobs:
           black --check src/
       - name: Test
         run: python -m pytest tests/ -v
+
+  # C++ helper 的密码学原语与密钥提取路径测试。单独 job 且仅 Windows：
+  # wechat_keyfinder 是 Windows-only（CMakeLists 对非 WIN32 直接 FATAL_ERROR），
+  # 放进上面的 ubuntu job 会必然失败。放在 check.yml 而非 build.yml 是为了让
+  # PR 阶段就能拿到反馈（build.yml 由 check 通过后的 workflow_run 触发）。
+  keyfinder-tests:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Configure
+        run: cmake -S src/wechat_keyfinder -B build/keyfinder-tests -A x64 -DWKF_BUILD_TESTS=ON
+      - name: Build
+        run: cmake --build build/keyfinder-tests --config Release
+      - name: Run tests
+        run: ctest --test-dir build/keyfinder-tests -C Release --output-on-failure

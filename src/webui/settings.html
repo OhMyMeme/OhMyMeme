@@ -36,6 +36,11 @@
     </div>
 
     <div class="section" data-group="base">
+      <div class="section-title">设置向导</div>
+      <button class="btn btn-secondary btn-sm btn-flex" onclick="openSetupGuide()">打开设置向导</button>
+    </div>
+
+    <div class="section" data-group="base">
       <div class="section-title">启动与开机自启</div>
       <label class="check-row">
         <input id="s-auto-start" type="checkbox" onchange="toggleSilentStart()">开机自启
@@ -90,6 +95,10 @@
         </select>
       </div>
       <p style="font-size:11.5px;color:var(--muted);margin-top:4px;line-height:1.6">复制超过尺寸上限的静态图时按此处模式处理；动图不受影响。隐写模式会把原图信息随 GIF 隐藏，接收方可运行解码工具还原，但会显著增大文件体积。</p>
+      <label class="check-row" style="margin-top:10px">
+        <input id="s-copy-avoid-webp" type="checkbox">复制时避免 WebP（动图转 GIF，静态转 JPG）
+      </label>
+      <p style="font-size:11.5px;color:var(--muted);margin-top:4px;line-height:1.6">库内文件不变，仅在复制时生成转换副本，用于兼容微信等把 WebP 当文件的应用。动图转 GIF 时按尺寸上限等比缩小（GIF 无帧间压缩，长动图体积可远超原图），静态转 JPG 保持原分辨率；转换失败会记录日志并回退复制原图。</p>
     </div>
 
     <div class="section" data-group="base">
@@ -191,10 +200,25 @@
       <label class="check-row" style="margin-bottom:12px">
         <input id="s-sync-auto" type="checkbox">启动时自动同步
       </label>
+      <label class="check-row" style="margin-bottom:12px">
+        <input id="s-manifest-include-tags" type="checkbox">将标签写入同步清单（meme-index.json）
+      </label>
+      <label class="check-row" style="margin-bottom:12px">
+        <input id="s-manifest-include-favorites" type="checkbox">将收藏夹写入同步清单（meme-index.json）
+      </label>
+      <label class="check-row" style="margin-bottom:4px">
+        <input id="s-cloud-direct" type="checkbox">云端直接使用
+      </label>
+      <p style="font-size:11.5px;color:var(--muted);margin-top:0;margin-bottom:12px;line-height:1.6">开启后，启动时从云端获取本地缺失表情的缩略图并显示在界面中（带云角标），点击即可下载并自动复制使用；开启期间每次同步会把本地缩略图一并上传到云端。</p>
+
+      <label class="check-row" style="margin-bottom:4px">
+        <input id="s-cloud-thumb-push" type="checkbox">启动时自动补传缺失的云端缩略图
+      </label>
+      <p style="font-size:11.5px;color:var(--muted);margin-top:0;margin-bottom:12px;line-height:1.6">「云端直接使用」开启时，启动后静默检测云端缩略图是否缺失并自动后台上传（不弹进度、不打扰使用）。</p>
 
       <div class="form-group">
         <label>存储类型</label>
-        <select id="s-sync-type" onchange="toggleSyncType()">
+        <select id="s-sync-type" onchange="toggleSyncType(); onSyncTypeChange()">
           <option value="">无</option>
           <option value="ftp">FTP</option>
           <option value="s3">S3 兼容存储</option>
@@ -396,6 +420,11 @@
         <button class="btn btn-secondary btn-sm" id="btn-check-update" onclick="checkUpdate()">检查更新</button>
       </div>
       <div id="s-update-status" class="about-update-status"></div>
+      <div class="about-links">
+        <button class="btn btn-secondary btn-sm" onclick="openAboutUrl('github')">GitHub 项目地址</button>
+        <button class="btn btn-secondary btn-sm" onclick="openAboutUrl('qq')">加入 QQ 群</button>
+        <button class="btn btn-secondary btn-sm" onclick="openEnvCheck()">打开环境检测</button>
+      </div>
       <div class="section-title">贡献者</div>
       <div class="about-contributors">
         <img id="contributors-img" src="/api/contributors" loading="lazy" alt="项目贡献者" onerror="document.getElementById('contributors-img').style.display='none';document.getElementById('contributors-fallback').style.display='block'">
@@ -428,6 +457,31 @@
       <span id="sync-progress-speed" style="margin-left:12px">0 KB/s</span>
     </div>
     <button id="sync-progress-bg-btn" class="btn btn-secondary btn-sm" onclick="hideSyncProgress()">后台运行</button>
+  </div>
+</div>
+
+<div id="lan-progress-overlay" style="display:none;position:fixed;inset:0;background:rgba(0,0,0,.6);align-items:center;justify-content:center;z-index:400;animation:fadeIn .15s">
+  <div style="background:var(--surface);border-radius:var(--radius-lg);padding:24px 28px;width:420px;border:1px solid var(--border);box-shadow:var(--shadow-lg);text-align:center">
+    <div style="font-size:14px;font-weight:600;color:var(--fg);margin-bottom:4px" id="lan-progress-title">传输中...</div>
+    <div style="font-size:12px;color:var(--fg-secondary);margin-bottom:12px;word-break:break-all" id="lan-progress-file">准备中</div>
+    <div id="lan-progress-bar-wrap" style="width:100%;height:8px;background:var(--bg);border-radius:4px;overflow:hidden;margin-bottom:6px">
+      <div id="lan-progress-bar" style="width:0%;height:100%;background:var(--accent);border-radius:4px;transition:width .3s"></div>
+    </div>
+    <div style="font-size:11.5px;color:var(--muted);margin-bottom:16px">
+      <span id="lan-progress-pct">0%</span>
+      <span id="lan-progress-speed" style="margin-left:12px"></span>
+    </div>
+    <button id="lan-progress-bg-btn" class="btn btn-secondary btn-sm" onclick="hideLanProgress()">后台运行</button>
+  </div>
+</div>
+
+<div id="lan-confirm-overlay" style="display:none;position:fixed;inset:0;background:rgba(0,0,0,.6);align-items:center;justify-content:center;z-index:400;animation:fadeIn .15s">
+  <div style="background:var(--surface);border-radius:var(--radius-lg);padding:24px 28px;width:400px;border:1px solid var(--border);box-shadow:var(--shadow-lg);text-align:center">
+    <div style="font-size:14px;font-weight:600;color:var(--fg);margin-bottom:12px">设备连接确认</div>
+    <div style="font-size:13px;color:var(--fg);margin-bottom:4px;word-break:break-all" id="lan-confirm-name"></div>
+    <div style="font-size:12px;color:var(--fg-secondary);margin-bottom:18px;word-break:break-all" id="lan-confirm-detail"></div>
+    <button id="btn-lan-confirm-deny" class="btn btn-secondary" onclick="lanConfirm(false)">拒绝</button>
+    <button id="btn-lan-confirm-allow" class="btn btn-primary" style="margin-left:8px" onclick="lanConfirm(true)">允许</button>
   </div>
 </div>
 
@@ -625,6 +679,7 @@
   <div style="background:var(--surface);border-radius:var(--radius-lg);padding:24px 28px;width:440px;border:1px solid var(--border);box-shadow:var(--shadow-lg)">
     <div id="wechat-config" style="display:block">
       <div style="font-size:14px;font-weight:600;color:var(--fg);margin-bottom:4px">从微信导入</div>
+      <div style="font-size:11.5px;color:var(--danger);background:rgba(239,68,68,.08);border:1px solid rgba(239,68,68,.35);border-radius:6px;padding:7px 10px;margin-bottom:10px;line-height:1.6">警告：该功能可能不符合微信用户协议，请谨慎使用！</div>
       <div style="font-size:12px;color:var(--muted);margin-bottom:12px;line-height:1.6">从微信电脑版本地缓存提取收藏表情（需微信正在运行，仅 Windows 支持）。微信文件目录是存放所有账号数据的根目录（xwechat_files），其下以 wxid_ 开头或含表情库（emoticon.db）的文件夹为各账号目录</div>
       <div class="form-group">
         <label>微信文件目录（根目录）</label>

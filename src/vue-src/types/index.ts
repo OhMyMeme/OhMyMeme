@@ -3,6 +3,7 @@ export interface Meme {
   filename: string
   name: string
   file_hash: string
+  cloud?: boolean
   from_stego?: number
   width: number
   height: number

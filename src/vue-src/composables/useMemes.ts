@@ -18,6 +18,7 @@ const state = reactive({
   loading: false,
   showStartupAnimation: true,
   startupBgColor: '#000000',
+  guideOk: true,
 })
 
 let searchGen = 0
@@ -41,6 +42,7 @@ export function useMemes() {
       state.pageCount = Math.max(1, Math.ceil(state.total / MEME_PAGE))
       state.showStartupAnimation = data.show_startup_animation !== false
       state.startupBgColor = data.startup_bg_color || '#000000'
+      state.guideOk = data.guide_ok !== false
     }
   }
 
@@ -134,7 +136,7 @@ export function useMemes() {
   }
   function setMemes(newMemes: Meme[]) { state.memes = newMemes }
 
-  function selectAllVisible() { state.selectedIds = new Set(state.memes.map(m => m.id)) }
+  function selectAllVisible() { state.selectedIds = new Set(state.memes.filter(m => !m.cloud).map(m => m.id)) }
 
   function _collectionExists(items: any[], id: number): boolean {
     for (const c of items) {

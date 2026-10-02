@@ -66,7 +66,7 @@ function trapSettingsFocus(box, e) {
   }
 }
 // 找当前可见覆盖层（静态 HTML + 动态创建的 update/confirm 弹窗）
-const _SETTINGS_OVERLAY_IDS = ['danger-overlay','sync-progress-overlay','sync-done-overlay','storage-migrate-overlay','backup-progress-overlay','qq-import-overlay','qqnt-overlay','tg-import-overlay','dy-import-overlay','wechat-import-overlay','update-overlay'];
+const _SETTINGS_OVERLAY_IDS = ['lan-confirm-overlay','danger-overlay','sync-progress-overlay','lan-progress-overlay','sync-done-overlay','storage-migrate-overlay','backup-progress-overlay','qq-import-overlay','qqnt-overlay','tg-import-overlay','dy-import-overlay','wechat-import-overlay','update-overlay'];
 function visibleSettingsOverlay() {
   for (const id of _SETTINGS_OVERLAY_IDS) {
     const el = document.getElementById(id);
@@ -79,6 +79,10 @@ function visibleSettingsOverlay() {
 
 /* Close settings window */
 let _settingsDirty = false;
+// 云端直接使用：记录已加载的存储类型，空→非空（首次配置云端）时询问是否开启
+let _lastSyncType = '';
+// 云端直接使用：记录已保存的开关值，本次保存刚开启时询问是否上传一次缩略图（默认开启）
+let _lastCloudDirect = true;
 function markSettingsDirty() { _settingsDirty = true; }
 
 // 收集表单输入，未保存的修改在关闭/按 Esc 时提示
@@ -182,19 +186,20 @@ async function checkConnectivity() {
 /* 局域网互联 */
 let lanPollTimer = null;
 
-function showConfirm(title, message) {
+// 确认弹窗：确定/取消文案可定制（如「开启/关闭」）；Esc/点遮罩关闭返回 null（与点取消的 false 区分）
+function showConfirm(title, message, okText = '确定', cancelText = '取消') {
   return new Promise(resolve => {
     const overlay = document.createElement('div');
     overlay.style.cssText = 'position:fixed;inset:0;background:rgba(0,0,0,.55);display:flex;align-items:center;justify-content:center;z-index:200;animation:fadeIn .15s';
-    overlay.onclick = (e) => { if (e.target === overlay) { overlay.remove(); resolve(false); } };
+    overlay.onclick = (e) => { if (e.target === overlay) { overlay.remove(); resolve(null); } };
     const box = document.createElement('div');
     box.setAttribute('role', 'dialog');
     box.setAttribute('aria-modal', 'true');
     box.style.cssText = 'background:var(--surface);border-radius:var(--radius-lg);padding:24px 28px;width:400px;border:1px solid var(--border);box-shadow:var(--shadow-lg)';
     box.innerHTML = '<div style="margin-bottom:16px"><h2 style="font-size:15px;font-weight:600;color:var(--fg);margin-bottom:8px">' + esc(title) + '</h2><p style="font-size:13px;color:var(--fg-secondary);line-height:1.7;white-space:pre-line">' + esc(message) + '</p></div>'
       + '<div style="display:flex;gap:8px;justify-content:flex-end">'
-      + '<button id="sconfirm-cancel" class="btn btn-secondary">取消</button>'
-      + '<button id="sconfirm-ok" class="btn btn-primary">确定</button></div>';
+      + '<button id="sconfirm-cancel" class="btn btn-secondary">' + esc(cancelText) + '</button>'
+      + '<button id="sconfirm-ok" class="btn btn-primary">' + esc(okText) + '</button></div>';
     overlay.appendChild(box);
     rememberSettingsFocus();
     document.body.appendChild(overlay);
@@ -202,7 +207,7 @@ function showConfirm(title, message) {
     const cleanup = () => { overlay.remove(); restoreSettingsFocus(); };
     document.getElementById('sconfirm-ok').onclick = () => { cleanup(); resolve(true); };
     document.getElementById('sconfirm-cancel').onclick = () => { cleanup(); resolve(false); };
-    overlay.onkeydown = (e) => { if (e.key === 'Escape') { e.stopPropagation(); cleanup(); resolve(false); } else trapSettingsFocus(box, e); };
+    overlay.onkeydown = (e) => { if (e.key === 'Escape') { e.stopPropagation(); cleanup(); resolve(null); } else trapSettingsFocus(box, e); };
   });
 }
 
@@ -247,14 +252,18 @@ async function refreshLanStatus() {
     el.innerHTML = '● 已停止 <span style="opacity:.6">(端口 ' + (r ? r.port : 17852) + ')</span>';
     setStatusColor(el, '');
     el.style.color = 'var(--muted)';
-    if (lanPollTimer) { clearInterval(lanPollTimer); lanPollTimer = null; }
+    if (lanPollTimer) { clearTimeout(lanPollTimer); lanPollTimer = null; }
+    updateLanTransfer(null);
+    handleLanConfirm(null);
     return;
   }
   if (r.status === 'error') {
     el.innerHTML = '● 启动失败 <span class="status-error">' + esc(r.last_error || '') + '</span>';
     setStatusColor(el, '');
     el.style.color = 'var(--muted)';
-    if (lanPollTimer) { clearInterval(lanPollTimer); lanPollTimer = null; }
+    if (lanPollTimer) { clearTimeout(lanPollTimer); lanPollTimer = null; }
+    updateLanTransfer(null);
+    handleLanConfirm(null);
     return;
   }
   let html = '● 运行中 <span style="opacity:.6">(端口 ' + r.port + '，IP ' + esc(ip) + ')</span>';
@@ -263,14 +272,118 @@ async function refreshLanStatus() {
   }
   el.innerHTML = html;
   setStatusColor(el, 'ok');
-  if (lanPollTimer) { clearInterval(lanPollTimer); }
-  lanPollTimer = setInterval(async () => {
+  if (lanPollTimer) { clearTimeout(lanPollTimer); lanPollTimer = null; }
+  lanPollStatus = async () => {
+    lanPollTimer = null;
     const r2 = await api('lan_get_status');
-    if (!r2 || r2.status !== 'running') {
-      if (lanPollTimer) { clearInterval(lanPollTimer); lanPollTimer = null; }
-      refreshLanStatus();
+    if (!r2 || r2.status !== 'running') { refreshLanStatus(); return; }
+    handleLanConfirm(r2.pending_confirm);
+    const fast = updateLanTransfer(r2.transfer);
+    lanPollTimer = setTimeout(lanPollStatus, fast ? 300 : 5000);
+  };
+  lanPollTimer = setTimeout(lanPollStatus, 5000);
+}
+
+/* LAN 传输进度与设备确认（设置页，轮询 lan_get_status） */
+let lanPollStatus = null;
+let lanProgressShown = false;
+let lanProgressBg = false;
+let lanProgressActive = false;
+let lanConfirmShown = false;
+let lanConfirmAck = false;
+
+function hideLanProgress() {
+  lanProgressBg = true;
+  document.getElementById('lan-progress-overlay').style.display = 'none';
+  if (lanProgressShown) { lanProgressShown = false; restoreSettingsFocus(); }
+}
+
+function updateLanTransfer(t) {
+  const overlay = document.getElementById('lan-progress-overlay');
+  const active = !!(t && t.active);
+  if (!active) {
+    lanProgressActive = false;
+    lanProgressBg = false;
+    if (lanProgressShown) {
+      lanProgressShown = false;
+      overlay.style.display = 'none';
+      restoreSettingsFocus();
     }
-  }, 5000);
+    return false;
+  }
+  if (!lanProgressActive) {
+    lanProgressActive = true;
+    if (!lanProgressBg) {
+      rememberSettingsFocus();
+      overlay.style.display = 'flex';
+      lanProgressShown = true;
+    }
+  } else if (!lanProgressBg && !lanProgressShown) {
+    rememberSettingsFocus();
+    overlay.style.display = 'flex';
+    lanProgressShown = true;
+  }
+  document.getElementById('lan-progress-title').textContent = t.direction === 'receive' ? '接收手机数据' : '发送到手机';
+  document.getElementById('lan-progress-file').textContent = t.current_file || '';
+  const barWrap = document.getElementById('lan-progress-bar-wrap');
+  const pctEl = document.getElementById('lan-progress-pct');
+  if (t.bytes_total > 0) {
+    const pct = Math.min(Math.floor((t.bytes_done || 0) * 100 / t.bytes_total), 99);
+    barWrap.style.display = '';
+    document.getElementById('lan-progress-bar').style.width = pct + '%';
+    pctEl.textContent = pct + '%';
+  } else if (t.files_total > 0) {
+    const pct = Math.min(Math.floor((t.files_done || 0) * 100 / t.files_total), 99);
+    barWrap.style.display = '';
+    document.getElementById('lan-progress-bar').style.width = pct + '%';
+    pctEl.textContent = (t.files_done || 0) + '/' + t.files_total + ' 文件';
+  } else {
+    barWrap.style.display = 'none';
+    pctEl.textContent = '已传输 ' + (t.files_done || 0) + ' 文件';
+  }
+  const speedEl = document.getElementById('lan-progress-speed');
+  const elapsed = Date.now() / 1000 - (t.start_time || 0);
+  if (t.bytes_done > 0 && elapsed > 0.5) {
+    speedEl.textContent = formatSpeed(t.bytes_done / elapsed);
+  } else {
+    speedEl.textContent = '';
+  }
+  return true;
+}
+
+function showLanDeviceConfirm(d) {
+  if (!d) return;
+  lanConfirmAck = false;
+  lanConfirmShown = true;
+  document.getElementById('lan-confirm-name').textContent = d.name || '未知设备';
+  const parts = [d.model, d.os, d.ver].filter(x => x);
+  document.getElementById('lan-confirm-detail').textContent = parts.join(' · ');
+  rememberSettingsFocus();
+  document.getElementById('lan-confirm-overlay').style.display = 'flex';
+  document.getElementById('btn-lan-confirm-allow').focus();
+}
+window.showLanDeviceConfirm = showLanDeviceConfirm;
+
+function lanConfirm(approved) {
+  lanConfirmShown = false;
+  lanConfirmAck = true;
+  document.getElementById('lan-confirm-overlay').style.display = 'none';
+  restoreSettingsFocus();
+  const r = api('lan_confirm_device', approved);
+  if (r && typeof r.catch === 'function') r.catch(() => {});
+}
+
+function handleLanConfirm(pending) {
+  if (pending) {
+    if (!lanConfirmShown && !lanConfirmAck) showLanDeviceConfirm(pending);
+  } else {
+    if (lanConfirmShown) {
+      lanConfirmShown = false;
+      document.getElementById('lan-confirm-overlay').style.display = 'none';
+      restoreSettingsFocus();
+    }
+    lanConfirmAck = false;
+  }
 }
 
 /* Load settings */
@@ -291,6 +404,8 @@ async function getSettings() {
   if (to) to.checked = s.try_original_image === true;  // DeepSeek V4 Flash
   const cm = document.getElementById('s-copy-mode');
   if (cm) cm.value = String(s.copy_resize_mode ?? 1);
+  const caw = document.getElementById('s-copy-avoid-webp');
+  if (caw) caw.checked = s.copy_avoid_webp === true;
   if (as) as.checked = s.auto_start === true;
   if (ss) ss.checked = s.silent_start === true;
   const unc = document.getElementById('s-show-uncategorized');
@@ -305,7 +420,16 @@ async function getSettings() {
   const st = document.getElementById('s-sync-type');
   if (ff) ff.checked = s.sync_auto_fetch_index === true;
   if (sa) sa.checked = s.sync_auto_sync === true;
-  if (st) { st.value = s.sync_type || ''; toggleSyncType(); }
+  const mit = document.getElementById('s-manifest-include-tags');
+  if (mit) mit.checked = s.manifest_include_tags !== false;
+  const mif = document.getElementById('s-manifest-include-favorites');
+  if (mif) mif.checked = s.manifest_include_favorites !== false;
+  const cld = document.getElementById('s-cloud-direct');
+  if (cld) cld.checked = s.cloud_direct === true;
+  _lastCloudDirect = s.cloud_direct === true;
+  const ctp = document.getElementById('s-cloud-thumb-push');
+  if (ctp) ctp.checked = s.cloud_thumb_auto_push !== false;
+  if (st) { st.value = s.sync_type || ''; toggleSyncType(); _lastSyncType = s.sync_type || ''; }
   document.getElementById('s-ftp-host').value = s.ftp_host || '';
   document.getElementById('s-ftp-port').value = s.ftp_port || 21;
   document.getElementById('s-ftp-user').value = s.ftp_user || '';
@@ -516,6 +640,28 @@ function toggleSyncType() {
   if (b) b.style.display = t ? 'block' : 'none';
 }
 
+// 云端直接使用：首次配置云端（存储类型空→非空）时用「开启/关闭」二选一确认（Esc/遮罩=不改动）
+async function onSyncTypeChange() {
+  const t = document.getElementById('s-sync-type')?.value || '';
+  const wasEmpty = !_lastSyncType;
+  _lastSyncType = t;
+  if (!wasEmpty || !t) return;
+  const cd = document.getElementById('s-cloud-direct');
+  if (!cd) return;
+  const on = await showConfirm(
+    '云端直接使用',
+    '检测到刚配置云端同步。是否开启「云端直接使用」？开启后启动时会显示云端缺失的表情（带云角标），点击即可下载并自动复制使用。',
+    '开启',
+    '关闭'
+  );
+  if (on === null) return;
+  const want = on === true;
+  if (cd.checked !== want) {
+    cd.checked = want;
+    _settingsDirty = true;
+  }
+}
+
 function collectSyncSettings() {
   return {
     sync_auto_fetch_index: document.getElementById('s-sync-fetch')?.checked === true,
@@ -524,6 +670,8 @@ function collectSyncSettings() {
     sync_delete_remote: document.getElementById('s-delete-remote')?.checked === true,
     sync_remove_local: document.getElementById('s-remove-local')?.checked === true,
     sync_hide_upload_warning: document.getElementById('s-hide-upload-warn')?.checked === true,
+    cloud_direct: document.getElementById('s-cloud-direct')?.checked === true,
+    cloud_thumb_auto_push: document.getElementById('s-cloud-thumb-push')?.checked === true,
     ftp_host: document.getElementById('s-ftp-host')?.value || '',
     ftp_port: parseInt(document.getElementById('s-ftp-port')?.value) || 21,
     ftp_user: document.getElementById('s-ftp-user')?.value || '',
@@ -595,12 +743,15 @@ async function saveSettings() {
   const gif = document.getElementById('s-gif')?.checked !== false;
   const try_original = document.getElementById('s-try-original')?.checked === true;  // DeepSeek V4 Flash
   const copy_mode = parseInt(document.getElementById('s-copy-mode')?.value || '1', 10);
+  const copy_avoid_webp = document.getElementById('s-copy-avoid-webp')?.checked === true;
   const hotkey_show_at_mouse = document.getElementById('s-hotkey-show-at-mouse')?.checked === true;
   const auto_start = document.getElementById('s-auto-start')?.checked === true;
   const silent_start = document.getElementById('s-silent-start')?.checked === true;
   const show_uncategorized = document.getElementById('s-show-uncategorized')?.checked !== false;
   const record_recent_use = document.getElementById('s-record-recent')?.checked !== false;
   const show_startup_animation = document.getElementById('s-show-startup-anim')?.checked !== false;
+  const manifest_include_tags = document.getElementById('s-manifest-include-tags')?.checked !== false;
+  const manifest_include_favorites = document.getElementById('s-manifest-include-favorites')?.checked !== false;
   const sync = collectSyncSettings();
   if (!validateSync(sync)) return;
   const lan_port = parseInt(document.getElementById('s-lan-port')?.value) || 17852;
@@ -610,13 +761,57 @@ async function saveSettings() {
     hotkey, hotkey_show_at_mouse, auto_play_gif: gif, hover_to_play: hover_play,
     try_original_image: try_original,  // DeepSeek V4 Flash
     copy_resize_mode: copy_mode,
+    copy_avoid_webp,
     auto_start, silent_start, show_uncategorized, record_recent_use,
-    show_startup_animation,
+    show_startup_animation, manifest_include_tags, manifest_include_favorites,
     lan_port, lan_secret,
     ...sync
   });
   showToast('设置已保存');
   _settingsDirty = false;
+  // 云端直接使用刚开启：询问是否立即上传一次，把缩略图推上云端供缺失表情显示
+  const cloudNow = sync.cloud_direct === true;
+  if (cloudNow && !_lastCloudDirect && sync.sync_type) {
+    const up = await showConfirm(
+      '上传缩略图',
+      '云端直接使用需要云端存有缩略图才能正常显示缺失表情。是否立即上传一次（同步本地表情与缩略图）？'
+    );
+    if (up) await syncPush();
+  }
+  _lastCloudDirect = cloudNow;
+}
+
+// 打开设置向导：聚焦主窗口并显示向导覆盖层；成功后关闭设置窗口保证主窗口可见
+async function openSetupGuide() {
+  try {
+    const ok = await api('open_guide');
+    if (ok === true) {
+      showToast('已在主窗口打开设置向导');
+      closeSettings();
+    } else if (ok === false) {
+      showToast('打开向导失败');
+    } else {
+      showToast('打开向导失败：接口未就绪，请重启软件');
+    }
+  } catch (e) {
+    console.error('openSetupGuide error', e);
+    showToast('打开向导失败');
+  }
+}
+
+// 打开环境检测窗口（独立子进程，非阻塞）
+async function openEnvCheck() {
+  try {
+    const ok = await api('open_env_check');
+    if (ok === true) {
+      showToast('已打开环境检测窗口');
+    } else {
+      showToast('打开环境检测失败');
+    }
+  } catch (e) {
+    console.error('openEnvCheck error', e);
+    showToast('打开环境检测失败');
+  }
 }
 
 async function resetSettings() {
@@ -638,6 +833,8 @@ async function resetSettings() {
     if (to) to.checked = false;
     const cm = document.getElementById('s-copy-mode');
     if (cm) cm.value = String(s.copy_resize_mode ?? 1);
+    const caw2 = document.getElementById('s-copy-avoid-webp');
+    if (caw2) caw2.checked = s.copy_avoid_webp === true;
     if (as) as.checked = s.auto_start === true;
     if (ss) ss.checked = s.silent_start === true;
     toggleSilentStart();
@@ -647,7 +844,16 @@ async function resetSettings() {
     const st = document.getElementById('s-sync-type');
     if (ff) ff.checked = false;
     if (sa) sa.checked = false;
-    if (st) { st.value = ''; toggleSyncType(); }
+    const mit2 = document.getElementById('s-manifest-include-tags');
+    if (mit2) mit2.checked = true;
+    const mif2 = document.getElementById('s-manifest-include-favorites');
+    if (mif2) mif2.checked = true;
+    const cld2 = document.getElementById('s-cloud-direct');
+    if (cld2) cld2.checked = true;
+    _lastCloudDirect = true;
+    const ctp2 = document.getElementById('s-cloud-thumb-push');
+    if (ctp2) ctp2.checked = true;
+    if (st) { st.value = ''; toggleSyncType(); _lastSyncType = ''; }
     document.getElementById('s-ftp-host').value = '';
     document.getElementById('s-ftp-port').value = '21';
     document.getElementById('s-ftp-user').value = '';
@@ -1821,6 +2027,11 @@ document.addEventListener('keydown', (e) => {
       dangerCancel();
       return;
     }
+    const lanConfirmOverlay = document.getElementById('lan-confirm-overlay');
+    if (lanConfirmOverlay && lanConfirmOverlay.style.display === 'flex') {
+      lanConfirm(false);
+      return;
+    }
     const dyOverlay = document.getElementById('dy-import-overlay');
     if (dyOverlay && dyOverlay.style.display === 'flex') {
       closeDYOverlay();
@@ -1851,6 +2062,11 @@ document.addEventListener('keydown', (e) => {
       hideSyncProgress();
       return;
     }
+    const lanProgressOverlay = document.getElementById('lan-progress-overlay');
+    if (lanProgressOverlay && lanProgressOverlay.style.display === 'flex') {
+      hideLanProgress();
+      return;
+    }
     const syncDoneOverlay = document.getElementById('sync-done-overlay');
     if (syncDoneOverlay && syncDoneOverlay.style.display === 'flex') {
       syncDoneOverlay.style.display = 'none';
@@ -1873,6 +2089,21 @@ document.addEventListener('keydown', (e) => {
   }
   if (e.key === 'Enter' && e.ctrlKey) saveSettings();
 });
+
+/* About external links */
+const ABOUT_URLS = {
+  github: 'https://github.com/TNTXZ/OhMyMeme',
+  qq: 'https://qm.qq.com/cgi-bin/qm/qr?k=xbstRIkSObzF5ng71yBXEkKZ0v8--KVV&jump_from=webapi&authKey=BEnDuk2KNpPJC0SgkZwCLQHUsbIRyM1iCp8DuPK2hihtVBvLG32WqIYMZ2ej5Gu0'
+};
+function openAboutUrl(kind) {
+  const url = ABOUT_URLS[kind];
+  if (!url) return;
+  const r = api('open_url', url);
+  if (!r) { showToast('无法打开链接'); return; }
+  Promise.resolve(r).then((ok) => {
+    if (!ok) showToast('无法打开链接');
+  }).catch(() => showToast('无法打开链接'));
+}
 
 /* Update check */
 async function checkUpdate() {

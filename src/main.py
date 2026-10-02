@@ -241,6 +241,18 @@ def main():
         dest="debug",
         help="Print all debug logs",
     )
+    parser.add_argument(
+        "--debug-env",
+        action="store_true",
+        dest="env_debug",
+        help="Print environment check details and force show env check UI",
+    )
+    parser.add_argument(
+        "--env-check-ui",
+        action="store_true",
+        dest="env_check_ui",
+        help=argparse.SUPPRESS,
+    )
     args, _ = parser.parse_known_args()
 
     # 根 logger 固定 DEBUG（内存缓冲始终收集）；控制台级别按 --debug 调整
@@ -250,6 +262,12 @@ def main():
     console.setLevel(logging.DEBUG if args.debug else logging.INFO)
     console.setFormatter(logging.Formatter("[%(levelname)s] %(name)s: %(message)s"))
     root.addHandler(console)
+
+    if args.env_check_ui:
+        from .env_check import run_ui
+
+        run_ui()
+        return
 
     if not acquire_single_instance():
         logger.warning("检测到 OhMyMeme 已在运行，退出当前实例")
@@ -328,6 +346,26 @@ def main():
                 pass
         logger.info("================")
 
+    if args.env_debug:
+        from .env_check import detect_checks
+
+        logger.info("=== debug-env ===")
+        for item in detect_checks():
+            logger.info(
+                "  %s: %s -> %s",
+                item.get("name", ""),
+                "ok" if item.get("ok") else "fail",
+                item.get("detail", ""),
+            )
+        logger.info("================")
+
+    from .env_check import is_done, show_blocking
+
+    if args.env_debug or (os.name == "nt" and not is_done()):
+        try:
+            show_blocking()
+        except Exception as e:
+            logger.warning("环境检测窗口启动失败: %s", e)
     if os.name != "nt":
         signal.signal(signal.SIGTERM, lambda *a: sys.exit(0))
 

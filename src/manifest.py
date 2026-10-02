@@ -37,10 +37,24 @@ def _build_collection_tree(db, parent_id=None) -> list:
     return items
 
 
+def _write(data: Dict) -> None:
+    """原子写入清单（先写临时文件再替换）"""
+    path = _index_path()
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        tmp = path.with_name(path.name + ".tmp")
+        tmp.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
+        os.replace(tmp, path)  # 原子替换，避免中断留下半写清单
+    except Exception as e:
+        logger.warning(f"manifest write failed: {e}")
+
+
 def build() -> List[Dict]:
     """从数据库重建完整索引并写入磁盘"""
     db = get_db()
     rows = db.search(keyword="", tags=None, limit=999999)
+    include_tags = bool(get_config().get("manifest_include_tags", True))
+    tags_map = db.get_tags_map() if include_tags else {}
 
     memes = []
     cache_dir = get_config().cache_dir
@@ -54,30 +68,35 @@ def build() -> List[Dict]:
                 mtime = str(int(fpath.stat().st_mtime))
             except Exception:
                 pass
-        memes.append(
-            {
-                "filename": fname,
-                "name": r.get("original_name", os.path.splitext(fname)[0]),
-                "sha256": r.get("file_hash", ""),
-                "file_size": r.get("file_size", 0),
-                "mtime": mtime,
-            }
-        )
+        entry = {
+            "filename": fname,
+            "name": r.get("original_name", os.path.splitext(fname)[0]),
+            "sha256": r.get("file_hash", ""),
+            "file_size": r.get("file_size", 0),
+            "mtime": mtime,
+        }
+        if include_tags:
+            entry["tags"] = tags_map.get(fname, [])
+        memes.append(entry)
 
     collections = _build_collection_tree(db)
 
+    include_favorites = bool(get_config().get("manifest_include_favorites", True))
+    favorite = []
+    if include_favorites:
+        favorite = [
+            r["filename"]
+            for r in db.search(keyword="", favorite_only=True, limit=999999)
+        ]
+
     data = {"version": 3, "memes": memes, "collections": collections}
-    path = _index_path()
-    try:
-        path.parent.mkdir(parents=True, exist_ok=True)
-        tmp = path.with_name(path.name + ".tmp")
-        tmp.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
-        os.replace(tmp, path)  # 原子替换，避免中断留下半写清单
-        logger.debug(
-            f"manifest written: {len(memes)} memes, {len(collections)} collections"
-        )
-    except Exception as e:
-        logger.warning(f"manifest write failed: {e}")
+    if include_favorites:
+        data["favorite"] = favorite
+    _write(data)
+    logger.debug(
+        f"manifest written: {len(memes)} memes, {len(collections)} collections, "
+        f"{len(favorite)} favorites"
+    )
 
     return memes
 
@@ -86,7 +105,7 @@ def load() -> Dict:
     """加载索引文件，不存在时返回空结构"""
     path = _index_path()
     if not path.exists():
-        return {"version": 3, "memes": [], "collections": []}
+        return {"version": 3, "memes": [], "collections": [], "favorite": []}
     try:
         data = json.loads(path.read_text(encoding="utf-8"))
         if data.get("version", 2) < 3:
@@ -106,4 +125,4 @@ def load() -> Dict:
         return data
     except Exception as e:
         logger.warning(f"manifest load failed: {e}")
-        return {"version": 3, "memes": [], "collections": []}
+        return {"version": 3, "memes": [], "collections": [], "favorite": []}

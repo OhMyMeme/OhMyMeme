@@ -6,8 +6,15 @@ on:
   workflow_dispatch:
 
 jobs:
+  ffmpeg-win64:
+    if: ${{ github.repository == 'OhMyMeme/OhMyMeme' }}
+    uses: ./.github/workflows/ffmpeg-win64.yml
+    with:
+      ref: dev
+
   nightly-windows:
     if: ${{ github.repository == 'OhMyMeme/OhMyMeme' }}
+    needs: ffmpeg-win64
     runs-on: windows-latest
     steps:
       - uses: actions/checkout@v4
@@ -21,8 +28,16 @@ jobs:
         run: |
           pip install -r requirements.txt
           pip install pyinstaller
+      - uses: actions/download-artifact@v4
+        with:
+          name: ffmpeg-win64
+          path: ffmpeg-win64
       - name: Build with PyInstaller
         run: python scripts/build.py --build-only --nightly
+      - name: Verify bundled wechat_keyfinder helper
+        run: python scripts/build.py --verify-helper
+      - name: Verify bundled ffmpeg
+        run: python scripts/build.py --verify-ffmpeg
       - name: Install InnoSetup
         run: |
           choco install innosetup --no-progress

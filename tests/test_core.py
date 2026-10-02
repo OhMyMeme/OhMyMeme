@@ -115,6 +115,26 @@ class TestConfig(unittest.TestCase):
         reset = Config(self.config_path)
         self.assertIs(reset.get("hotkey_show_at_mouse"), False)
 
+    def test_manifest_include_tags_default_on(self):
+        cfg = Config(self.config_path)
+        self.assertIs(cfg.get("manifest_include_tags"), True)
+        self.assertIs(Config.DEFAULTS.get("manifest_include_tags"), True)
+
+        cfg.set("manifest_include_tags", False)
+        cfg.save()
+        self.assertIs(Config(self.config_path).get("manifest_include_tags"), False)
+
+    def test_manifest_include_favorites_default_on(self):
+        cfg = Config(self.config_path)
+        self.assertIs(cfg.get("manifest_include_favorites"), True)
+        self.assertIs(Config.DEFAULTS.get("manifest_include_favorites"), True)
+
+        cfg.set("manifest_include_favorites", False)
+        cfg.save()
+        self.assertIs(
+            Config(self.config_path).get("manifest_include_favorites"), False
+        )
+
     def test_removed_auto_paste_setting_is_not_retained(self):
         self.config_path.write_text('{"auto_paste_meme": true}', encoding="utf-8")
 
@@ -340,6 +360,83 @@ class TestDatabase(unittest.TestCase):
         # 删除 mid2：shared 成为孤儿被清理
         self.db.delete_meme(mid2)
         self.assertEqual(self.db.get_all_tags(), ["other"])
+
+    def test_get_tags_map(self):
+        self.db.add_meme("a.png", tags=["y", "x"])
+        self.db.add_meme("b.png")
+        m = self.db.get_tags_map()
+        self.assertEqual(m, {"a.png": ["x", "y"]})
+
+    def test_apply_remote_tags_union(self):
+        from src.sync import _apply_remote_tags
+
+        mid = self.db.add_meme("a.png", tags=["local"])
+        self.db.add_meme("b.png")
+        remote = {
+            "memes": [
+                {"filename": "a.png", "tags": ["remote"]},
+                {"filename": "b.png", "tags": ["btag"]},
+                {"filename": "missing.png", "tags": ["ghost"]},
+                {"filename": "../evil.png", "tags": ["evil"]},
+            ]
+        }
+        with mock.patch("src.sync.get_db", return_value=self.db):
+            _apply_remote_tags(remote)
+        # 并集：本地标签保留、远端标签并入
+        self.assertEqual(set(self.db.get_meme_tags(mid)), {"local", "remote"})
+        self.assertEqual(set(self.db.get_meme_tags(2)), {"btag"})
+        self.assertEqual(self.db.get_all_tags(), ["btag", "local", "remote"])
+
+    def test_apply_remote_tags_falls_back_to_tag_map(self):
+        from src.sync import _apply_remote_tags
+
+        mid = self.db.add_meme("a.png")
+        remote = {
+            "memes": [{"filename": "a.png"}],
+            "tag_map": {"a.png": ["oldstyle"]},
+        }
+        with mock.patch("src.sync.get_db", return_value=self.db):
+            _apply_remote_tags(remote)
+        self.assertEqual(self.db.get_meme_tags(mid), ["oldstyle"])
+
+    def test_apply_remote_tags_missing_keys_skips(self):
+        from src.sync import _apply_remote_tags
+
+        mid = self.db.add_meme("a.png", tags=["local"])
+        with mock.patch("src.sync.get_db", return_value=self.db):
+            _apply_remote_tags({"memes": [{"filename": "a.png"}]})
+            _apply_remote_tags({"memes": [{"filename": "a.png", "tags": []}]})
+            _apply_remote_tags({"memes": [{"filename": "a.png", "tags": ["", 42]}]})
+        # 条目无 tags 且无 tag_map、空列表、非字符串项均不改动本地标签
+        self.assertEqual(self.db.get_meme_tags(mid), ["local"])
+        self.assertEqual(self.db.get_all_tags(), ["local"])
+
+    def test_apply_remote_favorites_union(self):
+        from src.sync import _apply_remote_favorites
+
+        mid_a = self.db.add_meme("a.png")
+        mid_c = self.db.add_meme("c.png")
+        self.db.toggle_favorite(mid_c)  # 本地已收藏、远端列表没有 → 保留
+        remote = {"favorite": ["a.png", "missing.png", "../evil.png"]}
+        with mock.patch("src.sync.get_db", return_value=self.db):
+            _apply_remote_favorites(remote)
+            _apply_remote_favorites(remote)  # 幂等：重复合并不产生副作用
+        self.assertTrue(self.db.is_favorite(mid_a))
+        self.assertTrue(self.db.is_favorite(mid_c))
+
+    def test_apply_remote_favorites_missing_key_noop(self):
+        from src.sync import _apply_remote_favorites
+
+        mid = self.db.add_meme("a.png")
+        mid_b = self.db.add_meme("b.png")
+        self.db.toggle_favorite(mid)
+        with mock.patch("src.sync.get_db", return_value=self.db):
+            _apply_remote_favorites({})
+            _apply_remote_favorites({"favorite": "a.png"})
+            _apply_remote_favorites({"favorite": [42]})
+        # 键缺失/非 list/仅非法项均不改动本地收藏
+        self.assertTrue(self.db.is_favorite(mid))
+        self.assertFalse(self.db.is_favorite(mid_b))
 
     def test_favorites(self):
         mid = self.db.add_meme("test.png")

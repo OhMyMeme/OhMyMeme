@@ -9,8 +9,15 @@ on:
   workflow_dispatch:
 
 jobs:
+  ffmpeg-win64:
+    if: ${{ github.event_name == 'workflow_dispatch' || github.event.workflow_run.conclusion == 'success' }}
+    uses: ./.github/workflows/ffmpeg-win64.yml
+    with:
+      ref: ${{ github.event.workflow_run.head_sha || github.ref }}
+
   build-windows:
     if: ${{ github.event_name == 'workflow_dispatch' || github.event.workflow_run.conclusion == 'success' }}
+    needs: ffmpeg-win64
     runs-on: windows-latest
     steps:
       - uses: actions/checkout@v4
@@ -23,8 +30,16 @@ jobs:
         run: |
           pip install -r requirements.txt
           pip install pyinstaller
+      - uses: actions/download-artifact@v4
+        with:
+          name: ffmpeg-win64
+          path: ffmpeg-win64
       - name: Build with PyInstaller
         run: python scripts/build.py --build-only
+      - name: Verify bundled wechat_keyfinder helper
+        run: python scripts/build.py --verify-helper
+      - name: Verify bundled ffmpeg
+        run: python scripts/build.py --verify-ffmpeg
       - name: Install InnoSetup
         run: |
           choco install innosetup --no-progress
@@ -69,7 +84,7 @@ jobs:
           name: OhMyMeme-Linux-${{ matrix.arch }}
           path: |
             dist/OhMyMeme-v*-${{ matrix.arch }}.AppImage
-            dist/OhMyMeme-v*-${{ matrix.arch }}.deb
+            dist/OhMyMeme-v*-${{ matrix.arch == 'x86_64' && 'amd64' || 'arm64' }}.deb
             dist/OhMyMeme-v*-${{ matrix.arch }}.rpm
 
   build-macos:

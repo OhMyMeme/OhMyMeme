@@ -4,7 +4,7 @@ import re
 import sqlite3
 import threading
 from pathlib import Path
-from typing import List, Optional, Tuple
+from typing import Dict, List, Optional, Tuple
 
 from .config import get_config
 
@@ -446,6 +446,22 @@ class MemeDB:
             r[0] for r in conn.execute("SELECT name FROM tags ORDER BY name").fetchall()
         ]
 
+    def get_all_filenames(self) -> List[str]:
+        conn = self._get_conn()
+        return [r[0] for r in conn.execute("SELECT filename FROM memes").fetchall()]
+
+    def get_tags_map(self) -> Dict[str, List[str]]:
+        """按文件名批量取全部标签（manifest 构建用，单查询避免 N+1）"""
+        conn = self._get_conn()
+        rows = conn.execute("""SELECT m.filename, t.name FROM memes m
+               JOIN meme_tags mt ON mt.meme_id = m.id
+               JOIN tags t ON t.id = mt.tag_id
+               ORDER BY m.filename, t.name""").fetchall()
+        out: Dict[str, List[str]] = {}
+        for fname, name in rows:
+            out.setdefault(fname, []).append(name)
+        return out
+
     def _existing_meme_ids(self, conn, ids: List[int]) -> List[int]:
         """过滤出实际存在的表情 id（外键开启时对缺失 id 写子表会整批失败）"""
         placeholders = ",".join("?" for _ in ids)
@@ -515,6 +531,15 @@ class MemeDB:
             ).fetchone()
             is not None
         )
+
+    def add_favorite(self, meme_id: int) -> None:
+        """幂等收藏（远端清单收藏并集合入用）"""
+        with self._lock:
+            conn = self._get_conn()
+            conn.execute(
+                "INSERT OR IGNORE INTO favorites (meme_id) VALUES (?)", (meme_id,)
+            )
+            conn.commit()
 
     # --- 收藏集 ---
 

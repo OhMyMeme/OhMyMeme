@@ -4,6 +4,7 @@ import os
 import re
 import subprocess
 import sys
+import tempfile
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
@@ -21,6 +22,7 @@ class _FakeConfig:
     def __init__(self, hotkey_show_at_mouse):
         self.hotkey_show_at_mouse = hotkey_show_at_mouse
         self.saved = {}
+        self.thumbnail_dir = Path(tempfile.mkdtemp(prefix="ohmm_fake_thumbs_"))
 
     def get(self, key, default=None):
         if key == "hotkey_show_at_mouse":
@@ -119,6 +121,51 @@ def test_tray_icon():
     buf = io.BytesIO()
     img.save(buf, format="PNG")
     assert len(buf.getvalue()) > 0
+
+
+def _tray_menu_texts(icon):
+    return [i.text for i in icon.menu]
+
+
+def test_tray_menu_labels_zh():
+    from src.tray import TrayManager
+
+    tm = TrayManager(on_show=lambda: None, on_quit=lambda: None)
+    assert tm._build_icon(_create_default_icon(), "zh")
+    texts = _tray_menu_texts(tm._icon)
+    assert "显示/隐藏" in texts
+    assert "退出" in texts
+
+
+def test_tray_menu_labels_en():
+    from src.tray import TrayManager
+
+    tm = TrayManager(on_show=lambda: None, on_quit=lambda: None)
+    assert tm._build_icon(_create_default_icon(), "en")
+    texts = _tray_menu_texts(tm._icon)
+    assert "Show/Hide" in texts
+    assert "Quit" in texts
+
+
+def test_tray_menu_fallback_to_en(monkeypatch):
+    from src import tray as tray_mod
+
+    calls = []
+
+    def fake_build(self, image, lang):
+        calls.append(lang)
+        if lang == "zh":
+            return False
+        self._icon = None
+        self._lang = lang
+        return True
+
+    monkeypatch.setattr(tray_mod.TrayManager, "_build_icon", fake_build)
+    tm = tray_mod.TrayManager()
+    assert tm.start() is True
+    tm.stop()
+    assert calls == ["zh", "en"]
+    assert tm._lang == "en"
 
 
 def test_crypto():
@@ -434,6 +481,129 @@ def test_webui_html_exists():
     settings_js = (HTML_DIR / "settings.js").read_text(encoding="utf-8")
     assert settings_js.count("s.hotkey_show_at_mouse === true") == 2
     assert "hotkey_show_at_mouse," in settings_js
+
+
+def test_manifest_include_tags_settings_contract():
+    """设置页「将标签写入同步清单」开关（HTML 复选框 + JS 读写 + 后端配置键）"""
+    from src.config import Config
+    from src.webui import HTML_DIR, SettingsApi
+
+    assert Config.DEFAULTS.get("manifest_include_tags") is True
+    settings_html = (HTML_DIR / "settings.html").read_text(encoding="utf-8")
+    assert 'id="s-manifest-include-tags"' in settings_html
+    settings_js = (HTML_DIR / "settings.js").read_text(encoding="utf-8")
+    assert "s.manifest_include_tags !== false" in settings_js
+    assert "manifest_include_tags," in settings_js
+    import inspect
+
+    src = inspect.getsource(SettingsApi.get_settings)
+    assert '"manifest_include_tags"' in src
+    reset_src = inspect.getsource(SettingsApi.reset_settings)
+    assert '"manifest_include_tags": True' in reset_src
+
+
+def test_manifest_include_favorites_settings_contract():
+    """设置页「将收藏夹写入同步清单」开关（HTML 复选框 + JS 读写 + 后端配置键）"""
+    from src.config import Config
+    from src.webui import HTML_DIR, SettingsApi
+
+    assert Config.DEFAULTS.get("manifest_include_favorites") is True
+    settings_html = (HTML_DIR / "settings.html").read_text(encoding="utf-8")
+    assert 'id="s-manifest-include-favorites"' in settings_html
+    settings_js = (HTML_DIR / "settings.js").read_text(encoding="utf-8")
+    assert "s.manifest_include_favorites !== false" in settings_js
+    assert "manifest_include_favorites," in settings_js
+    import inspect
+
+    src = inspect.getsource(SettingsApi.get_settings)
+    assert '"manifest_include_favorites"' in src
+    reset_src = inspect.getsource(SettingsApi.reset_settings)
+    assert '"manifest_include_favorites": True' in reset_src
+
+
+def test_cloud_thumb_auto_push_settings_contract():
+    """设置页「启动时自动补传缺失的云端缩略图」开关（HTML 复选框 + JS 读写 + 后端配置键）"""
+    import inspect
+
+    from src.config import Config
+    from src.webui import HTML_DIR, SettingsApi
+
+    assert Config.DEFAULTS.get("cloud_direct") is True
+    assert Config.DEFAULTS.get("cloud_thumb_auto_push") is True
+    settings_html = (HTML_DIR / "settings.html").read_text(encoding="utf-8")
+    assert 'id="s-cloud-thumb-push"' in settings_html
+    settings_js = (HTML_DIR / "settings.js").read_text(encoding="utf-8")
+    assert "s.cloud_thumb_auto_push !== false" in settings_js
+    assert "cloud_thumb_auto_push:" in settings_js
+    src = inspect.getsource(SettingsApi.get_settings)
+    assert '"cloud_thumb_auto_push"' in src
+    reset_src = inspect.getsource(SettingsApi.reset_settings)
+    assert '"cloud_thumb_auto_push": True' in reset_src
+    assert '"cloud_direct": True' in reset_src
+
+
+def test_cloud_direct_confirm_buttons_contract():
+    """首次配置云端的弹窗按钮为「开启/关闭」（showConfirm 第 3/4 参），Esc/遮罩返回 null 不改动"""
+    from src.webui import HTML_DIR
+
+    settings_js = (HTML_DIR / "settings.js").read_text(encoding="utf-8")
+    assert re.search(
+        r"'云端直接使用'[\s\S]{0,400}?'开启'\s*,\s*'关闭'", settings_js
+    ), "云端直接使用确认弹窗必须用「开启/关闭」按钮"
+    show_confirm = re.search(
+        r"function showConfirm\([\s\S]*?\n}", settings_js
+    ).group(0)
+    assert "okText = '确定'" in show_confirm
+    assert "cancelText = '取消'" in show_confirm
+    assert "resolve(null)" in show_confirm  # Esc/遮罩 = 不改动
+
+
+def test_about_links_static_contract():
+    """关于页 GitHub/QQ 群外链按钮（HTML 按钮 + JS URL 常量 + open_url 接口）"""
+    from src.webui import HTML_DIR
+
+    settings_html = (HTML_DIR / "settings.html").read_text(encoding="utf-8")
+    settings_js = (HTML_DIR / "settings.js").read_text(encoding="utf-8")
+    assert "openAboutUrl('github')" in settings_html
+    assert "openAboutUrl('qq')" in settings_html
+    assert "https://github.com/TNTXZ/OhMyMeme" in settings_js
+    assert "qm.qq.com/cgi-bin/qm/qr" in settings_js
+    assert "api('open_url'" in settings_js
+
+
+def test_open_url_rejects_non_http():
+    """open_url 仅允许 http(s)，file/javascript 等 scheme 一律拒绝"""
+    from src.webui import SettingsApi
+
+    assert SettingsApi.open_url(None, "file:///etc/passwd") is False
+    assert SettingsApi.open_url(None, "javascript:alert(1)") is False
+    assert SettingsApi.open_url(None, "") is False
+    assert SettingsApi.open_url(None, None) is False
+
+
+def test_open_url_dispatches_to_default_browser(monkeypatch):
+    """https 链接交给系统默认浏览器打开"""
+    import os
+
+    import src.webui as webui_module
+
+    calls = []
+    monkeypatch.setattr(webui_module.platform, "system", lambda: "Windows")
+    monkeypatch.setattr(os, "startfile", lambda u: calls.append(u), raising=False)
+    ok = webui_module.SettingsApi.open_url(None, "https://github.com/TNTXZ/OhMyMeme")
+    assert ok is True
+    assert calls == ["https://github.com/TNTXZ/OhMyMeme"]
+
+
+def test_wechat_dialog_user_agreement_warning():
+    """微信导入对话框须常驻用户协议警告（合规提示，防被删）"""
+    from src.webui import HTML_DIR
+
+    html = (HTML_DIR / "settings.html").read_text(encoding="utf-8")
+    seg = html.split('id="wechat-config"', 1)
+    assert len(seg) == 2
+    warn_seg = seg[1].split('id="wechat-progress"', 1)[0]
+    assert "该功能可能不符合微信用户协议，请谨慎使用！" in warn_seg
 
 
 def test_sorting_visual_feedback_static_contract():

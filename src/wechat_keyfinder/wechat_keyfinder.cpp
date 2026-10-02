@@ -1,10 +1,9 @@
 /**
  * wechat_keyfinder - WeChat encryption key extraction helper
  *
- * Reads WeChat process memory to extract the database encryption key
- * and in-memory sticker URL snapshots.
+ * Reads WeChat process memory to extract the database encryption key.
  *
- * Usage: wechat_keyfinder --config offsets.json [--pid <pid>]
+ * Usage: wechat_keyfinder --config offsets.json [--db-path <path>] [--pid <pid>]
  * Output: JSON to stdout
  *
  * Security: This binary performs READ-ONLY access to WeChat process memory.
@@ -33,9 +32,6 @@
 #ifdef _WIN32
 #include <windows.h>
 #include <tlhelp32.h>
-#include <openssl/evp.h>
-#include <openssl/hmac.h>
-#include <openssl/sha.h>
 #endif
 
 // --- Minimal JSON builder (no external dependency) ---
@@ -211,6 +207,204 @@ Value parse(const std::string& s) { return Parser(s.c_str()).parse(); }
 
 }  // namespace json
 
+// --- Minimal SHA-512 / HMAC-SHA512 / PBKDF2-HMAC-SHA512 ---
+// 自包含实现，替代 OpenSSL：仅需 SHA-512 系原语（PBKDF2-HMAC-SHA512 与 HMAC-SHA512），
+// 引入整个静态 libcrypto 会显著增大二进制并扩大静态特征面。
+
+namespace sha512 {
+
+constexpr std::size_t kBlockSize = 128;
+constexpr std::size_t kDigestSize = 64;
+
+inline std::uint64_t rotr(std::uint64_t x, int n) {
+  return (x >> n) | (x << (64 - n));
+}
+
+const std::uint64_t kK[80] = {
+    0x428a2f98d728ae22ULL, 0x7137449123ef65cdULL, 0xb5c0fbcfec4d3b2fULL,
+    0xe9b5dba58189dbbcULL, 0x3956c25bf348b538ULL, 0x59f111f1b605d019ULL,
+    0x923f82a4af194f9bULL, 0xab1c5ed5da6d8118ULL, 0xd807aa98a3030242ULL,
+    0x12835b0145706fbeULL, 0x243185be4ee4b28cULL, 0x550c7dc3d5ffb4e2ULL,
+    0x72be5d74f27b896fULL, 0x80deb1fe3b1696b1ULL, 0x9bdc06a725c71235ULL,
+    0xc19bf174cf692694ULL, 0xe49b69c19ef14ad2ULL, 0xefbe4786384f25e3ULL,
+    0x0fc19dc68b8cd5b5ULL, 0x240ca1cc77ac9c65ULL, 0x2de92c6f592b0275ULL,
+    0x4a7484aa6ea6e483ULL, 0x5cb0a9dcbd41fbd4ULL, 0x76f988da831153b5ULL,
+    0x983e5152ee66dfabULL, 0xa831c66d2db43210ULL, 0xb00327c898fb213fULL,
+    0xbf597fc7beef0ee4ULL, 0xc6e00bf33da88fc2ULL, 0xd5a79147930aa725ULL,
+    0x06ca6351e003826fULL, 0x142929670a0e6e70ULL, 0x27b70a8546d22ffcULL,
+    0x2e1b21385c26c926ULL, 0x4d2c6dfc5ac42aedULL, 0x53380d139d95b3dfULL,
+    0x650a73548baf63deULL, 0x766a0abb3c77b2a8ULL, 0x81c2c92e47edaee6ULL,
+    0x92722c851482353bULL, 0xa2bfe8a14cf10364ULL, 0xa81a664bbc423001ULL,
+    0xc24b8b70d0f89791ULL, 0xc76c51a30654be30ULL, 0xd192e819d6ef5218ULL,
+    0xd69906245565a910ULL, 0xf40e35855771202aULL, 0x106aa07032bbd1b8ULL,
+    0x19a4c116b8d2d0c8ULL, 0x1e376c085141ab53ULL, 0x2748774cdf8eeb99ULL,
+    0x34b0bcb5e19b48a8ULL, 0x391c0cb3c5c95a63ULL, 0x4ed8aa4ae3418acbULL,
+    0x5b9cca4f7763e373ULL, 0x682e6ff3d6b2b8a3ULL, 0x748f82ee5defb2fcULL,
+    0x78a5636f43172f60ULL, 0x84c87814a1f0ab72ULL, 0x8cc702081a6439ecULL,
+    0x90befffa23631e28ULL, 0xa4506cebde82bde9ULL, 0xbef9a3f7b2c67915ULL,
+    0xc67178f2e372532bULL, 0xca273eceea26619cULL, 0xd186b8c721c0c207ULL,
+    0xeada7dd6cde0eb1eULL, 0xf57d4f7fee6ed178ULL, 0x06f067aa72176fbaULL,
+    0x0a637dc5a2c898a6ULL, 0x113f9804bef90daeULL, 0x1b710b35131c471bULL,
+    0x28db77f523047d84ULL, 0x32caab7b40c72493ULL, 0x3c9ebe0a15c9bebcULL,
+    0x431d67c49c100d4cULL, 0x4cc5d4becb3e42b6ULL, 0x597f299cfc657e2aULL,
+    0x5fcb6fab3ad6faecULL, 0x6c44198c4a475817ULL};
+
+class Sha512 {
+ public:
+  Sha512() { reset(); }
+
+  void reset() {
+    h_[0] = 0x6a09e667f3bcc908ULL;
+    h_[1] = 0xbb67ae8584caa73bULL;
+    h_[2] = 0x3c6ef372fe94f82bULL;
+    h_[3] = 0xa54ff53a5f1d36f1ULL;
+    h_[4] = 0x510e527fade682d1ULL;
+    h_[5] = 0x9b05688c2b3e6c1fULL;
+    h_[6] = 0x1f83d9abfb41bd6bULL;
+    h_[7] = 0x5be0cd19137e2179ULL;
+    total_ = 0;
+    buf_len_ = 0;
+  }
+
+  void update(const void* data, std::size_t len) {
+    const unsigned char* p = static_cast<const unsigned char*>(data);
+    total_ += static_cast<std::uint64_t>(len);
+    if (buf_len_ > 0) {
+      std::size_t take = (std::min)(kBlockSize - buf_len_, len);
+      ::memcpy(buf_ + buf_len_, p, take);
+      buf_len_ += take;
+      p += take;
+      len -= take;
+      if (buf_len_ == kBlockSize) {
+        compress(buf_);
+        buf_len_ = 0;
+      }
+    }
+    while (len >= kBlockSize) {
+      compress(p);
+      p += kBlockSize;
+      len -= kBlockSize;
+    }
+    if (len > 0) {
+      ::memcpy(buf_, p, len);
+      buf_len_ = len;
+    }
+  }
+
+  void final(unsigned char out[kDigestSize]) {
+    const std::uint64_t bit_len = total_ * 8;
+    unsigned char pad = 0x80;
+    update(&pad, 1);
+    const unsigned char zero = 0x00;
+    while (buf_len_ != kBlockSize - 16) update(&zero, 1);
+    unsigned char len_be[16];
+    for (int i = 0; i < 8; ++i) len_be[i] = 0;
+    for (int i = 7; i >= 0; --i) {
+      len_be[8 + i] = static_cast<unsigned char>(bit_len >> ((7 - i) * 8));
+    }
+    ::memcpy(buf_ + buf_len_, len_be, 16);
+    compress(buf_);
+    for (int i = 0; i < 8; ++i) {
+      for (int j = 0; j < 8; ++j) {
+        out[i * 8 + j] = static_cast<unsigned char>(h_[i] >> ((7 - j) * 8));
+      }
+    }
+  }
+
+ private:
+  void compress(const unsigned char* block) {
+    std::uint64_t w[80];
+    for (int i = 0; i < 16; ++i) {
+      std::uint64_t v = 0;
+      for (int j = 0; j < 8; ++j) v = (v << 8) | block[i * 8 + j];
+      w[i] = v;
+    }
+    for (int i = 16; i < 80; ++i) {
+      const std::uint64_t s0 = rotr(w[i - 15], 1) ^ rotr(w[i - 15], 8) ^ (w[i - 15] >> 7);
+      const std::uint64_t s1 = rotr(w[i - 2], 19) ^ rotr(w[i - 2], 61) ^ (w[i - 2] >> 6);
+      w[i] = w[i - 16] + s0 + w[i - 7] + s1;
+    }
+    std::uint64_t a = h_[0], b = h_[1], c = h_[2], d = h_[3];
+    std::uint64_t e = h_[4], f = h_[5], g = h_[6], hh = h_[7];
+    for (int i = 0; i < 80; ++i) {
+      const std::uint64_t s1 = rotr(e, 14) ^ rotr(e, 18) ^ rotr(e, 41);
+      const std::uint64_t ch = (e & f) ^ ((~e) & g);
+      const std::uint64_t t1 = hh + s1 + ch + kK[i] + w[i];
+      const std::uint64_t s0 = rotr(a, 28) ^ rotr(a, 34) ^ rotr(a, 39);
+      const std::uint64_t maj = (a & b) ^ (a & c) ^ (b & c);
+      const std::uint64_t t2 = s0 + maj;
+      hh = g; g = f; f = e; e = d + t1;
+      d = c; c = b; b = a; a = t1 + t2;
+    }
+    h_[0] += a; h_[1] += b; h_[2] += c; h_[3] += d;
+    h_[4] += e; h_[5] += f; h_[6] += g; h_[7] += hh;
+  }
+
+  std::uint64_t h_[8];
+  std::uint64_t total_;
+  unsigned char buf_[kBlockSize];
+  std::size_t buf_len_;
+};
+
+void hmac(const unsigned char* key, std::size_t key_len,
+          const unsigned char* msg, std::size_t msg_len,
+          unsigned char out[kDigestSize]) {
+  unsigned char k[kBlockSize];
+  ::memset(k, 0, sizeof(k));
+  if (key_len > kBlockSize) {
+    Sha512 tmp;
+    tmp.update(key, key_len);
+    tmp.final(k);
+  } else {
+    ::memcpy(k, key, key_len);
+  }
+  unsigned char ipad[kBlockSize];
+  unsigned char opad[kBlockSize];
+  for (std::size_t i = 0; i < kBlockSize; ++i) {
+    ipad[i] = static_cast<unsigned char>(k[i] ^ 0x36);
+    opad[i] = static_cast<unsigned char>(k[i] ^ 0x5c);
+  }
+  unsigned char inner[kDigestSize];
+  Sha512 s1;
+  s1.update(ipad, sizeof(ipad));
+  s1.update(msg, msg_len);
+  s1.final(inner);
+  Sha512 s2;
+  s2.update(opad, sizeof(opad));
+  s2.update(inner, sizeof(inner));
+  s2.final(out);
+}
+
+void pbkdf2_hmac(const unsigned char* password, std::size_t password_len,
+                 const unsigned char* salt, std::size_t salt_len,
+                 int iterations, unsigned char* out, std::size_t out_len) {
+  const std::size_t blocks = (out_len + kDigestSize - 1) / kDigestSize;
+  std::vector<unsigned char> msg(salt_len + 4);
+  if (salt_len > 0) ::memcpy(msg.data(), salt, salt_len);
+  for (std::size_t block = 1; block <= blocks; ++block) {
+    const std::uint32_t idx = static_cast<std::uint32_t>(block);
+    msg[salt_len] = static_cast<unsigned char>((idx >> 24) & 0xff);
+    msg[salt_len + 1] = static_cast<unsigned char>((idx >> 16) & 0xff);
+    msg[salt_len + 2] = static_cast<unsigned char>((idx >> 8) & 0xff);
+    msg[salt_len + 3] = static_cast<unsigned char>(idx & 0xff);
+    unsigned char u[kDigestSize];
+    unsigned char acc[kDigestSize];
+    hmac(password, password_len, msg.data(), msg.size(), u);
+    ::memcpy(acc, u, sizeof(acc));
+    for (int iter = 1; iter < iterations; ++iter) {
+      unsigned char next[kDigestSize];
+      hmac(password, password_len, u, sizeof(u), next);
+      ::memcpy(u, next, sizeof(u));
+      for (std::size_t i = 0; i < kDigestSize; ++i) acc[i] ^= u[i];
+    }
+    const std::size_t offset = (block - 1) * kDigestSize;
+    const std::size_t take = (std::min)(kDigestSize, out_len - offset);
+    ::memcpy(out + offset, acc, take);
+  }
+}
+
+}  // namespace sha512
+
 // --- Config structure ---
 
 struct Config {
@@ -225,7 +419,6 @@ struct Config {
   std::size_t max_cipher_scan_bytes = 536870912ULL;  // 512 MiB
   std::size_t max_scan_region = 536870912ULL;
   std::size_t scan_chunk_size = 4194304ULL;
-  std::size_t scan_overlap = 2048;
   unsigned char mac_salt_xor_byte = 0x3a;
   int pbkdf2_iterations = 2;
   int mac_input_length = 4016;
@@ -298,7 +491,6 @@ bool load_config(const std::string& path, Config& cfg) {
     }
     else if (k == "max_scan_region") cfg.max_scan_region = (std::size_t)json_as_int(v, (std::int64_t)cfg.max_scan_region);
     else if (k == "scan_chunk_size") cfg.scan_chunk_size = (std::size_t)json_as_int(v, (std::int64_t)cfg.scan_chunk_size);
-    else if (k == "scan_overlap") cfg.scan_overlap = (std::size_t)json_as_int(v, (std::int64_t)cfg.scan_overlap);
     else if (k == "mac_salt_xor_byte") {
       if (v.type == json::Value::String) { auto h = parse_hex(v.s_val); if (h) cfg.mac_salt_xor_byte = (unsigned char)*h; }
       else if (v.type == json::Value::Number) cfg.mac_salt_xor_byte = (unsigned char)json_as_int(v, 0x3a);
@@ -316,7 +508,7 @@ bool load_config(const std::string& path, Config& cfg) {
       (cfg.key_xor_mask_length & (cfg.key_xor_mask_length - 1)) != 0) {
     return false;
   }
-  if (cfg.scan_chunk_size < 1024 || cfg.scan_overlap < 128) {
+  if (cfg.scan_chunk_size < 1024) {
     return false;
   }
   if (cfg.key_length < 99 || cfg.salt_length <= 0 || cfg.salt_length > 16) {
@@ -477,17 +669,14 @@ std::optional<WechatRawKey> find_wechat_key(HANDLE process, std::uintptr_t modul
           std::array<unsigned char, 16> mac_salt{};
           for (size_t i = 0; i < mac_salt.size(); ++i) mac_salt[i] = first_page[i] ^ cfg.mac_salt_xor_byte;
           std::array<unsigned char, 32> mac_key{};
-          if (PKCS5_PBKDF2_HMAC(reinterpret_cast<const char*>(key->data()), (int)key->size(),
-              mac_salt.data(), (int)mac_salt.size(), cfg.pbkdf2_iterations, EVP_sha512(),
-              (int)mac_key.size(), mac_key.data()) != 1) continue;
+          sha512::pbkdf2_hmac(key->data(), key->size(), mac_salt.data(), mac_salt.size(),
+                              cfg.pbkdf2_iterations, mac_key.data(), mac_key.size());
           std::array<unsigned char, 4020> input{};
           ::memcpy(input.data(), first_page.data() + 16, 4016);
           input[4016] = 1;
-          std::array<unsigned char, EVP_MAX_MD_SIZE> digest{};
-          unsigned int digest_length = 0;
-          if (HMAC(EVP_sha512(), mac_key.data(), (int)mac_key.size(),
-                   input.data(), (int)input.size(), digest.data(), &digest_length) != nullptr &&
-              digest_length == (unsigned int)cfg.mac_digest_length &&
+          std::array<unsigned char, sha512::kDigestSize> digest{};
+          sha512::hmac(mac_key.data(), mac_key.size(), input.data(), input.size(), digest.data());
+          if (cfg.mac_digest_length == (int)sha512::kDigestSize &&
               std::equal(digest.begin(), digest.begin() + cfg.mac_digest_length, first_page.end() - cfg.mac_digest_length, first_page.end())) {
             return WechatRawKey{*key, *salt};
           }
@@ -587,75 +776,6 @@ std::optional<WechatRawKey> find_wechat_key_masked(HANDLE process,
   return std::nullopt;
 }
 
-// --- Memory snapshot for URL extraction ---
-
-namespace {
-constexpr std::size_t kMaxSnapshotBytes = 8U * 1024U * 1024U;  // 内存快照上限 8 MiB
-}
-
-std::string scan_memory_for_urls(HANDLE process, std::size_t& regions, std::size_t& reads,
-                                  const Config& cfg) {
-  std::string aggregate;
-  // 快照输出上限固定为 8 MiB，与密钥扫描的 max_cipher_scan_bytes 无关
-  const std::size_t max_snapshot_bytes = kMaxSnapshotBytes;
-  SYSTEM_INFO si{};
-  GetNativeSystemInfo(&si);
-  auto address = reinterpret_cast<std::uintptr_t>(si.lpMinimumApplicationAddress);
-  auto maximum = reinterpret_cast<std::uintptr_t>(si.lpMaximumApplicationAddress);
-  std::vector<unsigned char> tail;
-  auto started = std::chrono::steady_clock::now();
-
-  while (address < maximum) {
-    if (aggregate.size() >= max_snapshot_bytes) {
-      break;
-    }
-    if (std::chrono::duration_cast<std::chrono::seconds>(
-            std::chrono::steady_clock::now() - started).count() >= 10) {
-      break;
-    }
-    MEMORY_BASIC_INFORMATION mem{};
-    if (VirtualQueryEx(process, reinterpret_cast<void*>(address), &mem, sizeof(mem)) != sizeof(mem)) break;
-    auto next = reinterpret_cast<std::uintptr_t>(mem.BaseAddress) + mem.RegionSize;
-    if (next <= address) break;
-    if (mem.State == MEM_COMMIT && mem.RegionSize <= cfg.max_scan_region &&
-        readable_protection(mem.Protect) && !(mem.Protect & PAGE_GUARD)) {
-      ++regions;
-      for (std::size_t offset = 0; offset < mem.RegionSize; offset += cfg.scan_chunk_size) {
-        if (aggregate.size() >= max_snapshot_bytes) {
-          break;
-        }
-        auto count = (std::min)(cfg.scan_chunk_size, mem.RegionSize - offset);
-        std::vector<unsigned char> buffer(count);
-        SIZE_T read = 0;
-        if (!ReadProcessMemory(process, reinterpret_cast<const void*>(
-            reinterpret_cast<std::uintptr_t>(mem.BaseAddress) + offset), buffer.data(), count, &read) || read == 0)
-          continue;
-        ++reads;
-        buffer.resize(read);
-        std::vector<unsigned char> searchable;
-        searchable.reserve(tail.size() + buffer.size());
-        searchable.insert(searchable.end(), tail.begin(), tail.end());
-        searchable.insert(searchable.end(), buffer.begin(), buffer.end());
-        std::string chunk(searchable.begin(), searchable.end());
-        if (chunk.find("kNonStoreEmoticonTable") != std::string::npos ||
-            chunk.find("md5 IN(") != std::string::npos ||
-            chunk.find("vweixinf.tc.qq.com") != std::string::npos) {
-          const auto remaining = max_snapshot_bytes - aggregate.size();
-          aggregate.append(chunk.substr(0, remaining));
-          aggregate.push_back('\n');
-        }
-        if (searchable.size() > cfg.scan_overlap) {
-          tail.assign(searchable.end() - cfg.scan_overlap, searchable.end());
-        } else {
-          tail = searchable;
-        }
-      }
-    }
-    address = next;
-  }
-  return aggregate;
-}
-
 #endif  // _WIN32 platform-specific implementation
 
 // --- Error reporting ---
@@ -711,9 +831,10 @@ std::vector<DWORD> find_wechat_pids(const std::string& process_name) {
 int main(int argc, char** argv) {
   std::string config_path;
   std::string db_path;
+#ifdef WKF_ENABLE_TEST_KEY
   std::string override_key;
+#endif
   std::optional<unsigned long> explicit_pid;
-  bool no_snapshot = false;
 
   for (int i = 1; i < argc; ++i) {
     std::string arg = argv[i];
@@ -721,18 +842,18 @@ int main(int argc, char** argv) {
       config_path = argv[++i];
     } else if (arg == "--db-path" && i + 1 < argc) {
       db_path = argv[++i];
+#ifdef WKF_ENABLE_TEST_KEY
     } else if (arg == "--key" && i + 1 < argc) {
       override_key = argv[++i];
+#endif
     } else if (arg == "--pid" && i + 1 < argc) {
       try {
         explicit_pid = std::stoul(argv[++i]);
       } catch (...) {
         emit_error("invalid_pid", "PID must be a number: " + std::string(argv[i]));
       }
-    } else if (arg == "--no-snapshot") {
-      no_snapshot = true;
     } else if (arg == "--help" || arg == "-h") {
-      std::cerr << "Usage: wechat_keyfinder --config offsets.json [--db-path <path>] [--pid <pid>] [--no-snapshot] [--key <hex64>]" << std::endl;
+      std::cerr << "Usage: wechat_keyfinder --config offsets.json [--db-path <path>] [--pid <pid>]" << std::endl;
       return 0;
     }
   }
@@ -740,6 +861,7 @@ int main(int argc, char** argv) {
   if (config_path.empty()) {
     emit_error("missing_config", "--config is required");
   }
+#ifdef WKF_ENABLE_TEST_KEY
   if (!override_key.empty()) {
     if (override_key.size() != 64) {
       emit_error("invalid_key", "--key must be 64 hex chars (32 bytes)");
@@ -754,6 +876,7 @@ int main(int argc, char** argv) {
       c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
     }
   }
+#endif
 
   Config cfg;
   if (!load_config(config_path, cfg)) {
@@ -771,7 +894,7 @@ int main(int argc, char** argv) {
     }
   }
 
-  // Extract encryption key: --key 覆盖 > 掩码恢复 > 旧 RVA 模式
+  // Extract encryption key: (test-only --key 覆盖) > 掩码恢复 > 旧 RVA 模式
   // 多实例时逐个进程尝试掩码恢复，只有运行该账号的进程内存里才有对应密钥缓冲
   std::string key_hex;
   std::string salt_hex;
@@ -779,6 +902,7 @@ int main(int argc, char** argv) {
   std::uintptr_t module_base = 0;
   DWORD pid = pids.front();
   bool opened_any = false;
+#ifdef WKF_ENABLE_TEST_KEY
   if (!override_key.empty()) {
     key_hex = override_key;
     std::ifstream db(db_path, std::ios::binary);
@@ -788,6 +912,9 @@ int main(int argc, char** argv) {
       salt_hex = to_hex(std::vector<unsigned char>(db_salt.begin(), db_salt.end()));
     }
   } else if (!db_path.empty()) {
+#else
+  if (!db_path.empty()) {
+#endif
     for (DWORD candidate : pids) {
       HANDLE process = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION | PROCESS_VM_READ, FALSE, candidate);
       if (!process) continue;
@@ -821,17 +948,6 @@ int main(int argc, char** argv) {
     if (mb) module_base = *mb;
   }
 
-  std::size_t regions = 0;
-  std::size_t reads = 0;
-  std::string snapshot;
-  if (!no_snapshot) {
-    HANDLE snap_process = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION | PROCESS_VM_READ, FALSE, pid);
-    if (snap_process) {
-      snapshot = scan_memory_for_urls(snap_process, regions, reads, cfg);
-      CloseHandle(snap_process);
-    }
-  }
-
   std::ostringstream base_hex;
   base_hex << "0x" << std::hex << module_base;
 
@@ -848,8 +964,6 @@ int main(int argc, char** argv) {
   result.add("module_base", json::Value::string(base_hex.str()));
   if (!key_hex.empty()) result.add("key", json::Value::string(key_hex));
   if (!salt_hex.empty()) result.add("salt", json::Value::string(salt_hex));
-  if (!snapshot.empty()) result.add("memory_snapshot", json::Value::string(snapshot));
-  result.add("regions_scanned", json::Value::number((std::int64_t)regions));
   result.add("bytes_scanned", json::Value::number((std::int64_t)scanned));
   std::cout << result.dump() << std::endl;
 

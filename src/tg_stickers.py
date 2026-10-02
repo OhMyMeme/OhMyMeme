@@ -325,9 +325,49 @@ def detect_extension(data):
     return ""
 
 
+_FFMPEG_PATH = None  # 解析缓存（仅缓存命中；None = 尚未解析）
+
+
+def _resolve_ffmpeg():
+    """定位 ffmpeg: 打包内置（_MEIPASS/tools/ffmpeg/ffmpeg.exe）→ PATH → None"""
+    global _FFMPEG_PATH
+    if _FFMPEG_PATH:
+        return _FFMPEG_PATH
+    if getattr(sys, "frozen", False):
+        base = getattr(sys, "_MEIPASS", None)
+        if base:
+            bundled = os.path.join(base, "tools", "ffmpeg", "ffmpeg.exe")
+            if os.path.isfile(bundled):
+                _FFMPEG_PATH = bundled
+                return bundled
+    return shutil.which("ffmpeg")
+
+
 def _check_ffmpeg():
-    """检查系统是否存在 ffmpeg"""
-    return shutil.which("ffmpeg") is not None
+    """检查 ffmpeg 是否可用（打包内置或系统安装）"""
+    return _resolve_ffmpeg() is not None
+
+
+def _webm_cmd(ffmpeg, webm_path, out_path):
+    """webm -> animated webp 完整命令（TG 转换与打包 verify 共用）"""
+    return [
+        ffmpeg,
+        "-y",
+        "-c:v",
+        "libvpx-vp9",
+        "-i",
+        webm_path,
+        "-loop",
+        "1",
+        "-lossless",
+        "0",
+        "-quality",
+        "80",
+        "-vf",
+        "scale=512:512:force_original_aspect_ratio=decrease",
+        "-an",
+        out_path,
+    ]
 
 
 def _reap_proc(proc, timeout=5):
@@ -361,24 +401,7 @@ def convert_webm_to_webp(webm_path, out_path, timeout=120):
     """webm 转 animated webp: 有损(q80), 保持宽高比, 最长边 512"""
     proc = None
     try:
-        cmd = [
-            "ffmpeg",
-            "-y",
-            "-c:v",
-            "libvpx-vp9",
-            "-i",
-            webm_path,
-            "-loop",
-            "1",
-            "-lossless",
-            "0",
-            "-quality",
-            "80",
-            "-vf",
-            "scale=512:512:force_original_aspect_ratio=decrease",
-            "-an",
-            out_path,
-        ]
+        cmd = _webm_cmd(_resolve_ffmpeg() or "ffmpeg", webm_path, out_path)
         kw = {"stdout": subprocess.PIPE, "stderr": subprocess.PIPE}
         if os.name == "nt" and getattr(sys, "frozen", False):
             kw["creationflags"] = subprocess.CREATE_NO_WINDOW
