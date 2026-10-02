@@ -127,9 +127,15 @@ verify_exe() {
     if [ "$size" -gt "$SIZE_LIMIT" ]; then
         die "ffmpeg.exe exceeds ${SIZE_LIMIT} bytes budget (got $size)"
     fi
-    # 组件存在性（与 build.py verify_ffmpeg_bundle 同口径）
-    "$exe" -hide_banner -decoders | grep -q 'libvpx-vp9' || die "missing decoder libvpx-vp9"
-    "$exe" -hide_banner -encoders | grep -q 'libwebp_anim' || die "missing encoder libwebp_anim"
+    # 组件存在性执行检查仅在能运行 PE 的环境（MSYS2/Cygwin/Windows）；
+    # Linux/WSL 交叉产物无法直接执行（Exec format error），CI 组件校验由
+    # 打包侧 windows job 的 build.py --verify-ffmpeg 对产物端到端转换兜底
+    case "$(uname -s)" in
+        MINGW* | MSYS* | CYGWIN*)
+            "$exe" -hide_banner -decoders | grep -q 'libvpx-vp9' || die "missing decoder libvpx-vp9"
+            "$exe" -hide_banner -encoders | grep -q 'libwebp_anim' || die "missing encoder libwebp_anim"
+            ;;
+    esac
     echo "OK: $exe"
 }
 
