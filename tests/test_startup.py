@@ -127,7 +127,58 @@ def _tray_menu_texts(icon):
     return [i.text for i in icon.menu]
 
 
-def test_tray_menu_labels_zh():
+def _stub_pystray_if_headless(monkeypatch):
+    """headless CI（无 DISPLAY）导入 pystray 在模块初始化即连 X 失败，注入最小 stub；
+    本机（Windows/macOS/有显示的 Linux）直接用真实 pystray"""
+    try:
+        import pystray  # noqa: F401
+
+        return
+    except Exception:
+        pass
+    import types
+
+    from src import tray as tray_mod
+
+    class FakeMenuItem:
+        def __init__(self, text, action, default=False, enabled=True):
+            self.text = text
+            self.action = action
+            self.default = default
+            self.enabled = enabled
+
+    class FakeMenu:
+        def __init__(self, *items):
+            self._items = items
+
+        def __iter__(self):
+            return iter(self._items)
+
+    FakeMenu.SEPARATOR = FakeMenuItem(None, None)
+
+    class FakeIcon:
+        def __init__(self, name, icon=None, title=None, menu=None):
+            self.name = name
+            self.icon = icon
+            self.title = title
+            self.menu = menu
+
+        def run(self):
+            pass
+
+        def stop(self):
+            pass
+
+    stub = types.ModuleType("pystray")
+    stub.MenuItem = FakeMenuItem
+    stub.Menu = FakeMenu
+    stub.Icon = FakeIcon
+    monkeypatch.setitem(sys.modules, "pystray", stub)
+    monkeypatch.setattr(tray_mod, "_pystray_available", None)
+
+
+def test_tray_menu_labels_zh(monkeypatch):
+    _stub_pystray_if_headless(monkeypatch)
     from src.tray import TrayManager
 
     tm = TrayManager(on_show=lambda: None, on_quit=lambda: None)
@@ -137,7 +188,8 @@ def test_tray_menu_labels_zh():
     assert "退出" in texts
 
 
-def test_tray_menu_labels_en():
+def test_tray_menu_labels_en(monkeypatch):
+    _stub_pystray_if_headless(monkeypatch)
     from src.tray import TrayManager
 
     tm = TrayManager(on_show=lambda: None, on_quit=lambda: None)
@@ -148,6 +200,7 @@ def test_tray_menu_labels_en():
 
 
 def test_tray_menu_fallback_to_en(monkeypatch):
+    _stub_pystray_if_headless(monkeypatch)
     from src import tray as tray_mod
 
     calls = []
