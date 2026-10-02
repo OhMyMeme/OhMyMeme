@@ -311,6 +311,32 @@ def _start_cloud_refresh(fetched=None) -> bool:
     return True
 
 
+_thumb_autopush_lock = threading.Lock()
+_thumb_autopush_running = False
+
+
+def _start_thumb_autopush(worker) -> bool:
+    # 启动缩略图静默补传线程（单飞去重，异常仅告警不外抛）
+    global _thumb_autopush_running
+    with _thumb_autopush_lock:
+        if _thumb_autopush_running:
+            return False
+        _thumb_autopush_running = True
+
+    def _run():
+        global _thumb_autopush_running
+        try:
+            worker()
+        except Exception as e:
+            logger.warning("cloud thumb autopush failed: %s", e)
+        finally:
+            with _thumb_autopush_lock:
+                _thumb_autopush_running = False
+
+    threading.Thread(target=_run, daemon=True).start()
+    return True
+
+
 def _cloud_refresh_worker(fetched=None):
     # 后台拉云端清单 → 写缓存 → 差集 → 预取缩略图 → 通知前端
     try:
@@ -1433,6 +1459,9 @@ class JsApi:
             if self._cfg.get("cloud_direct", False):
                 # 云端直接使用：复用本次 fetch 结果（fetch 关闭则线程内自拉）
                 _start_cloud_refresh(fetched)
+                if self._cfg.get("cloud_thumb_auto_push", True):
+                    # 启动静默补传：生成本地缺失缩略图并差集上传云端
+                    _start_thumb_autopush(self._auto_push_thumbs)
             if self._cfg.get("sync_auto_sync", False):
                 from .sync import pull
 
@@ -1441,6 +1470,15 @@ class JsApi:
         except Exception as e:
             result["error"] = str(e)
         return result
+
+    def _auto_push_thumbs(self):
+        """启动静默补传：本地缺失缩略图先补齐，再差集上传云端"""
+        if not self._cfg.get("cloud_thumb_auto_push", True):
+            return
+        self._webui.ensure_local_thumbs()
+        n = sync_module.auto_push_thumbs()
+        if n:
+            logger.info("cloud thumb auto-push: uploaded %d", n)
 
     def cloud_refresh(self) -> bool:
         """手动触发云端清单刷新与缩略图预取（刷新按钮；开关/refreshing 中去重）"""
@@ -2442,7 +2480,8 @@ class SettingsApi:
             "copy_avoid_webp": d.get("copy_avoid_webp", False),
             "manifest_include_tags": d.get("manifest_include_tags", True),
             "manifest_include_favorites": d.get("manifest_include_favorites", True),
-            "cloud_direct": d.get("cloud_direct", False),
+            "cloud_direct": d.get("cloud_direct", True),
+            "cloud_thumb_auto_push": d.get("cloud_thumb_auto_push", True),
         }
 
     def _safe_refresh(self, js_function: str) -> dict:
@@ -2599,7 +2638,8 @@ class SettingsApi:
             "copy_avoid_webp": self._cfg.get("copy_avoid_webp", False),
             "manifest_include_tags": True,
             "manifest_include_favorites": True,
-            "cloud_direct": False,
+            "cloud_direct": True,
+            "cloud_thumb_auto_push": True,
         }
 
     def move_window(self, dx: int, dy: int):

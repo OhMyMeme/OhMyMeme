@@ -9,6 +9,7 @@
 - **收藏夹写入同步清单** — `meme-index.json` 顶层新增 `favorite` 文件名数组（无收藏为 `[]`），设置页「云端同步」新增「将收藏夹写入同步清单」开关（配置 `manifest_include_favorites`，默认开）；`pull` 与局域网 `push_manifest` 按**并集**合并远端收藏（只增不清，按 filename 关联，经 `_safe_remote_fname` 过滤），该合并不受开关限制；manifest `version` 保持 3（纯增字段，旧端读到未知键自动忽略）
 - **关于页 GitHub / QQ 群入口** — 设置页「关于」新增「GitHub 项目地址」「加入 QQ 群」按钮，经后端 `SettingsApi.open_url`（仅允许 http/https）交系统默认浏览器打开
 - **Windows 安装包内置裁剪版 ffmpeg** — Telegram 导入的 WebM 转 WebP 不再要求用户自行安装 ffmpeg：CI 从源码交叉编译仅含 VP9 解码与 WebP 动画编码的静态单文件（20MB 体积预算，无运行时下载），运行时优先使用内置版、回退 PATH 中的系统 ffmpeg；Linux/macOS 仍使用系统 ffmpeg
+- **启动时自动补传云端缩略图** — 设置页「云端同步」新增开关（配置 `cloud_thumb_auto_push`，默认开）：「云端直接使用」开启时，启动后静默检测云端 `thumbnails/` 缺失项，先补齐本地缺失/过期缩略图再差集后台上传（不弹进度、不打扰使用），失败仅记录日志；关闭后仅在手动同步时随 push 上传
 - **设置向导** — 首次启动（或旧版本升级后）弹出 7 步设置向导：全局快捷键、开机自启、动图自动播放、云端同步（可跳过）、导入表情（可跳过）；关闭（含 ESC/×/完成）即写入 `config.json` 的 `guide` 标记（本机配置，不进同步清单），下次启动不再提示；设置页「基础设置」新增「打开设置向导」按钮可随时重跑
 - **点击 logo 返回主页** — 点击主窗口标题栏「OhMyMeme」logo 清空搜索/标签/分组筛选回到全部视图，不打断拖拽移动窗口
 - **复制时避免 WebP** — 设置页「复制处理」开关（默认关闭）：微信等应用会把复制的 WebP 当成文件，开启后复制路径上的产物一律不含 WebP —— 动图 WebP 转动画 GIF、静态 WebP 转 JPG（带透明合成白底）、非 WebP 的缩放产物输出 JPG/PNG，其中「WebP 缩放」模式直接按目标格式编码避免二次有损；动图转 GIF 按尺寸上限等比缩小以控制体积（GIF 无帧间压缩，长动图可远超原图，实测全库 56 个动图由 84MB 降至 22MB、最大单个由 6.4MB 降至 1.6MB），静态转 JPG 保持原分辨率；库内文件/数据库/缩略图/同步均不变，仅生成临时转换副本，转换失败回退原图并记录日志
@@ -22,6 +23,7 @@
 - **Linux 剪贴板 MIME 按扩展名标注** — 原先静态非 WebP 图片一律标记为 `image/png`，改为按扩展名映射（jpg/jpeg→`image/jpeg`、bmp→`image/bmp`）
 - **缩略图统一为内容哈希命名** — 缩略图由 `{id}.png` 改为 `{sha256}.webp`（150px WebP q85，原子写入），路由改为 `/api/thumb/<sha256>`，本地与云端共用同一文件（云端直接使用的显示基础）；启动时按 `file_hash` 自动迁移旧缩略图并删除旧 png，删除表情/同步删除时按哈希清理
 - **托盘右键菜单中文化** — 菜单由英文改为中文（「显示/隐藏」「退出」）；托盘初始化或运行在当前后端不兼容（如部分 Linux 环境）抛错时自动回退英文重建一次，dev 模式标题行不变
+- **云端直接使用默认开启** — 默认由关改为开（从未显式关闭过的配置自动启用，老用户无需手动寻找开关）；首次配置云端存储类型时的确认弹窗按钮由「确定/取消」改为**「开启/关闭」**二选一（默认已勾选时仍询问一次，Esc/点遮罩不改动），「关闭」即取消勾选
 
 ## 修复
 - **内置 ffmpeg CI 构建失败** — ffmpeg-win64 交叉编译因 runner 缺 `x86_64-w64-mingw32-pkg-config`（由 mingw-w64-tools 提供，未安装）被 ffmpeg configure 静默禁用 pkg-config 库检测（warn 只写 config.log 不上屏），libwebp 检查精确报 "not found" 中止构建；`build_win64.sh` 改用原生 `--pkg-config=pkg-config`（尊重脚本导出的 PKG_CONFIG_PATH）+ configure 前预检 `libwebp.pc`，失败时输出 `ffbuild/config.log` 尾部兜底诊断；组件存在性执行检查（`-decoders/-encoders`）改为仅在能运行 PE 的环境执行（Linux runner 上交叉产物直接执行报 `Exec format error`），CI 侧由打包 windows job 的 `--verify-ffmpeg` 对产物端到端转换兜底

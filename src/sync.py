@@ -1270,6 +1270,37 @@ def _push_thumbs(bk, remote_root, thumb_dir) -> int:
     return uploaded
 
 
+def auto_push_thumbs() -> int:
+    """启动静默补传：list 远端 thumbnails 差集上传本地缺失项（失败仅告警返回 0）。
+
+    门控：cloud_direct 开 + cloud_thumb_auto_push 开 + sync_type 已配置。
+    """
+    cfg = get_config()
+    if not cfg.get("cloud_direct", False):
+        return 0
+    if not cfg.get("cloud_thumb_auto_push", True):
+        return 0
+    if not cfg.get("sync_type", ""):
+        return 0
+    thumb_dir = cfg.thumbnail_dir
+    if not thumb_dir.is_dir():
+        return 0
+    bk = None
+    try:
+        bk = _get_backend()
+        bk.connect()
+        n = _push_thumbs(bk, _remote_root(cfg), thumb_dir)
+        if n:
+            logger.info("cloud thumb auto-push: uploaded %d", n)
+        return n
+    except Exception as e:
+        logger.warning("auto push thumbs failed: %s", e)
+        return 0
+    finally:
+        if bk is not None:
+            bk.close()
+
+
 def push(delete_remote: bool = None) -> dict:
     """本地 -> 远端：上传缺失/变更的表情包和清单（多线程）"""
     cfg = get_config()

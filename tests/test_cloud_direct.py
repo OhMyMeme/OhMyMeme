@@ -40,11 +40,14 @@ SHA_D = "dd" * 32
 # ─── config 默认值 ───
 
 
-def test_cloud_direct_default_false(tmp_path):
+def test_cloud_direct_default_true(tmp_path):
     cfg = Config(tmp_path / "config.json")
-    assert cfg.get("cloud_direct") is False
-    cfg.update_from_dict({"cloud_direct": True})
     assert cfg.get("cloud_direct") is True
+    assert cfg.get("cloud_thumb_auto_push") is True
+    cfg.update_from_dict({"cloud_direct": False})
+    assert cfg.get("cloud_direct") is False
+    cfg.update_from_dict({"cloud_thumb_auto_push": False})
+    assert cfg.get("cloud_thumb_auto_push") is False
 
 
 # ─── cloud_missing 差集 ───
@@ -271,6 +274,7 @@ def test_push_thumbs_diff_upload(sync_env):
 
 
 def test_push_thumbs_off_when_cloud_direct_disabled(sync_env):
+    sync_env.cfg.set("cloud_direct", False)
     thumb_dir = sync_env.data_dir / "thumbnails"
     (thumb_dir / f"{SHA_A}.webp").write_bytes(b"RIFF0000WEBPnew")
 
@@ -302,6 +306,54 @@ def test_push_deletes_remote_thumb_on_delete_remote(sync_env):
         p.endswith("/thumbnails/" + SHA_A + ".webp")
         for p in sync_env.bk.delete_calls
     )
+
+
+# ─── 启动静默补传（cloud_thumb_auto_push） ───
+
+
+def test_auto_push_thumbs_diff_upload(sync_env):
+    sync_env.cfg.set("cloud_direct", True)
+    thumb_dir = sync_env.data_dir / "thumbnails"
+    (thumb_dir / f"{SHA_A}.webp").write_bytes(b"RIFF0000WEBPnew")
+    (thumb_dir / f"{SHA_B}.webp").write_bytes(b"RIFF0000WEBPexist")
+    (thumb_dir / "legacy_150.png").write_bytes(b"x")  # 旧命名跳过
+    sync_env.bk.remote_files.add(SHA_B + ".webp")  # 远端已有 B
+
+    n = sync.auto_push_thumbs()
+
+    assert n == 1
+    root = sync._remote_root(sync_env.cfg).rstrip("/")
+    assert sync_env.bk.upload_paths == [root + "/thumbnails/" + SHA_A + ".webp"]
+
+
+def test_auto_push_thumbs_gates(sync_env):
+    sync_env.cfg.set("cloud_direct", False)
+    assert sync.auto_push_thumbs() == 0
+    sync_env.cfg.set("cloud_direct", True)
+    sync_env.cfg.set("cloud_thumb_auto_push", False)
+    assert sync.auto_push_thumbs() == 0
+    sync_env.cfg.set("cloud_thumb_auto_push", True)
+    sync_env.cfg.set("sync_type", "")
+    assert sync.auto_push_thumbs() == 0
+    assert sync_env.bk.upload_paths == []  # 门控在建连之前，未发生任何上传
+
+
+def test_start_thumb_autopush_single_flight():
+    import threading
+
+    from src import webui as webui_module
+
+    release = threading.Event()
+    assert webui_module._start_thumb_autopush(release.wait) is True
+    assert webui_module._start_thumb_autopush(lambda: None) is False  # 运行中去重
+    release.set()
+    for _ in range(200):
+        with webui_module._thumb_autopush_lock:
+            if not webui_module._thumb_autopush_running:
+                break
+        time.sleep(0.01)
+    with webui_module._thumb_autopush_lock:
+        assert webui_module._thumb_autopush_running is False  # 结束复位可再起
 
 
 def test_push_thumbs_list_fallback_uses_file_exists(sync_env, monkeypatch):
@@ -678,11 +730,18 @@ def test_run_auto_sync_cloud_hook(js, monkeypatch):
         "_start_cloud_refresh",
         lambda fetched=None: calls.append(fetched) or True,
     )
+    autopush = []
+    monkeypatch.setattr(
+        webui_module,
+        "_start_thumb_autopush",
+        lambda w: autopush.append(w) or True,
+    )
 
     result = js.api.run_auto_sync()
 
     assert result["error"] == ""
     assert calls == [None]  # fetch 关闭 → 线程内自拉
+    assert autopush == [js.api._auto_push_thumbs]  # 启动挂缩略图补传
 
     manifest = {"memes": []}
     monkeypatch.setattr(sync, "download_index", lambda: manifest)
@@ -692,6 +751,12 @@ def test_run_auto_sync_cloud_hook(js, monkeypatch):
 
     assert result["fetched"] is True
     assert calls == [None, manifest]  # fetch 结果复用
+    assert len(autopush) == 2
+
+    # 关闭自动补传开关则不再挂线程
+    js.cfg.set("cloud_thumb_auto_push", False)
+    js.api.run_auto_sync()
+    assert len(autopush) == 2
 
 
 def test_cloud_refresh_api_calls_start(js, monkeypatch):

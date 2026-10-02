@@ -521,6 +521,43 @@ def test_manifest_include_favorites_settings_contract():
     assert '"manifest_include_favorites": True' in reset_src
 
 
+def test_cloud_thumb_auto_push_settings_contract():
+    """设置页「启动时自动补传缺失的云端缩略图」开关（HTML 复选框 + JS 读写 + 后端配置键）"""
+    import inspect
+
+    from src.config import Config
+    from src.webui import HTML_DIR, SettingsApi
+
+    assert Config.DEFAULTS.get("cloud_direct") is True
+    assert Config.DEFAULTS.get("cloud_thumb_auto_push") is True
+    settings_html = (HTML_DIR / "settings.html").read_text(encoding="utf-8")
+    assert 'id="s-cloud-thumb-push"' in settings_html
+    settings_js = (HTML_DIR / "settings.js").read_text(encoding="utf-8")
+    assert "s.cloud_thumb_auto_push !== false" in settings_js
+    assert "cloud_thumb_auto_push:" in settings_js
+    src = inspect.getsource(SettingsApi.get_settings)
+    assert '"cloud_thumb_auto_push"' in src
+    reset_src = inspect.getsource(SettingsApi.reset_settings)
+    assert '"cloud_thumb_auto_push": True' in reset_src
+    assert '"cloud_direct": True' in reset_src
+
+
+def test_cloud_direct_confirm_buttons_contract():
+    """首次配置云端的弹窗按钮为「开启/关闭」（showConfirm 第 3/4 参），Esc/遮罩返回 null 不改动"""
+    from src.webui import HTML_DIR
+
+    settings_js = (HTML_DIR / "settings.js").read_text(encoding="utf-8")
+    assert re.search(
+        r"'云端直接使用'[\s\S]{0,400}?'开启'\s*,\s*'关闭'", settings_js
+    ), "云端直接使用确认弹窗必须用「开启/关闭」按钮"
+    show_confirm = re.search(
+        r"function showConfirm\([\s\S]*?\n}", settings_js
+    ).group(0)
+    assert "okText = '确定'" in show_confirm
+    assert "cancelText = '取消'" in show_confirm
+    assert "resolve(null)" in show_confirm  # Esc/遮罩 = 不改动
+
+
 def test_about_links_static_contract():
     """关于页 GitHub/QQ 群外链按钮（HTML 按钮 + JS URL 常量 + open_url 接口）"""
     from src.webui import HTML_DIR

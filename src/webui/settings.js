@@ -81,8 +81,8 @@ function visibleSettingsOverlay() {
 let _settingsDirty = false;
 // 云端直接使用：记录已加载的存储类型，空→非空（首次配置云端）时询问是否开启
 let _lastSyncType = '';
-// 云端直接使用：记录已保存的开关值，本次保存刚开启时询问是否上传一次缩略图
-let _lastCloudDirect = false;
+// 云端直接使用：记录已保存的开关值，本次保存刚开启时询问是否上传一次缩略图（默认开启）
+let _lastCloudDirect = true;
 function markSettingsDirty() { _settingsDirty = true; }
 
 // 收集表单输入，未保存的修改在关闭/按 Esc 时提示
@@ -186,19 +186,20 @@ async function checkConnectivity() {
 /* 局域网互联 */
 let lanPollTimer = null;
 
-function showConfirm(title, message) {
+// 确认弹窗：确定/取消文案可定制（如「开启/关闭」）；Esc/点遮罩关闭返回 null（与点取消的 false 区分）
+function showConfirm(title, message, okText = '确定', cancelText = '取消') {
   return new Promise(resolve => {
     const overlay = document.createElement('div');
     overlay.style.cssText = 'position:fixed;inset:0;background:rgba(0,0,0,.55);display:flex;align-items:center;justify-content:center;z-index:200;animation:fadeIn .15s';
-    overlay.onclick = (e) => { if (e.target === overlay) { overlay.remove(); resolve(false); } };
+    overlay.onclick = (e) => { if (e.target === overlay) { overlay.remove(); resolve(null); } };
     const box = document.createElement('div');
     box.setAttribute('role', 'dialog');
     box.setAttribute('aria-modal', 'true');
     box.style.cssText = 'background:var(--surface);border-radius:var(--radius-lg);padding:24px 28px;width:400px;border:1px solid var(--border);box-shadow:var(--shadow-lg)';
     box.innerHTML = '<div style="margin-bottom:16px"><h2 style="font-size:15px;font-weight:600;color:var(--fg);margin-bottom:8px">' + esc(title) + '</h2><p style="font-size:13px;color:var(--fg-secondary);line-height:1.7;white-space:pre-line">' + esc(message) + '</p></div>'
       + '<div style="display:flex;gap:8px;justify-content:flex-end">'
-      + '<button id="sconfirm-cancel" class="btn btn-secondary">取消</button>'
-      + '<button id="sconfirm-ok" class="btn btn-primary">确定</button></div>';
+      + '<button id="sconfirm-cancel" class="btn btn-secondary">' + esc(cancelText) + '</button>'
+      + '<button id="sconfirm-ok" class="btn btn-primary">' + esc(okText) + '</button></div>';
     overlay.appendChild(box);
     rememberSettingsFocus();
     document.body.appendChild(overlay);
@@ -206,7 +207,7 @@ function showConfirm(title, message) {
     const cleanup = () => { overlay.remove(); restoreSettingsFocus(); };
     document.getElementById('sconfirm-ok').onclick = () => { cleanup(); resolve(true); };
     document.getElementById('sconfirm-cancel').onclick = () => { cleanup(); resolve(false); };
-    overlay.onkeydown = (e) => { if (e.key === 'Escape') { e.stopPropagation(); cleanup(); resolve(false); } else trapSettingsFocus(box, e); };
+    overlay.onkeydown = (e) => { if (e.key === 'Escape') { e.stopPropagation(); cleanup(); resolve(null); } else trapSettingsFocus(box, e); };
   });
 }
 
@@ -426,6 +427,8 @@ async function getSettings() {
   const cld = document.getElementById('s-cloud-direct');
   if (cld) cld.checked = s.cloud_direct === true;
   _lastCloudDirect = s.cloud_direct === true;
+  const ctp = document.getElementById('s-cloud-thumb-push');
+  if (ctp) ctp.checked = s.cloud_thumb_auto_push !== false;
   if (st) { st.value = s.sync_type || ''; toggleSyncType(); _lastSyncType = s.sync_type || ''; }
   document.getElementById('s-ftp-host').value = s.ftp_host || '';
   document.getElementById('s-ftp-port').value = s.ftp_port || 21;
@@ -637,17 +640,24 @@ function toggleSyncType() {
   if (b) b.style.display = t ? 'block' : 'none';
 }
 
-// 云端直接使用：首次配置云端（存储类型空→非空）时询问是否顺带开启
+// 云端直接使用：首次配置云端（存储类型空→非空）时用「开启/关闭」二选一确认（Esc/遮罩=不改动）
 async function onSyncTypeChange() {
   const t = document.getElementById('s-sync-type')?.value || '';
   const wasEmpty = !_lastSyncType;
   _lastSyncType = t;
   if (!wasEmpty || !t) return;
   const cd = document.getElementById('s-cloud-direct');
-  if (!cd || cd.checked) return;
-  const ok = await showConfirm('云端直接使用', '检测到刚配置云端同步。是否开启「云端直接使用」？开启后启动时会显示云端缺失的表情（带云角标），点击即可下载并自动复制使用。');
-  if (ok) {
-    cd.checked = true;
+  if (!cd) return;
+  const on = await showConfirm(
+    '云端直接使用',
+    '检测到刚配置云端同步。是否开启「云端直接使用」？开启后启动时会显示云端缺失的表情（带云角标），点击即可下载并自动复制使用。',
+    '开启',
+    '关闭'
+  );
+  if (on === null) return;
+  const want = on === true;
+  if (cd.checked !== want) {
+    cd.checked = want;
     _settingsDirty = true;
   }
 }
@@ -661,6 +671,7 @@ function collectSyncSettings() {
     sync_remove_local: document.getElementById('s-remove-local')?.checked === true,
     sync_hide_upload_warning: document.getElementById('s-hide-upload-warn')?.checked === true,
     cloud_direct: document.getElementById('s-cloud-direct')?.checked === true,
+    cloud_thumb_auto_push: document.getElementById('s-cloud-thumb-push')?.checked === true,
     ftp_host: document.getElementById('s-ftp-host')?.value || '',
     ftp_port: parseInt(document.getElementById('s-ftp-port')?.value) || 21,
     ftp_user: document.getElementById('s-ftp-user')?.value || '',
@@ -838,8 +849,10 @@ async function resetSettings() {
     const mif2 = document.getElementById('s-manifest-include-favorites');
     if (mif2) mif2.checked = true;
     const cld2 = document.getElementById('s-cloud-direct');
-    if (cld2) cld2.checked = false;
-    _lastCloudDirect = false;
+    if (cld2) cld2.checked = true;
+    _lastCloudDirect = true;
+    const ctp2 = document.getElementById('s-cloud-thumb-push');
+    if (ctp2) ctp2.checked = true;
     if (st) { st.value = ''; toggleSyncType(); _lastSyncType = ''; }
     document.getElementById('s-ftp-host').value = '';
     document.getElementById('s-ftp-port').value = '21';
