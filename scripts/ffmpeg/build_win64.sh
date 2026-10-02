@@ -44,9 +44,14 @@ build_libvpx() {
     echo "== libvpx ${LIBVPX_VERSION} =="
     tar -xzf "$DL/libvpx.tar.gz" -C "$SRC"
     cd "$SRC/libvpx-${LIBVPX_VERSION}"
+    # --disable-multithread: 关掉 pthread 探测使 vpx.a 无 pthread_* 引用且 vpx.pc
+    # 不带 -lpthread —— ffmpeg configure 的 libvpx 检查兜底 check_lib 只链 "-lvpx -lm"
+    # （mingw 下 pthreads_extralibs 被 w32threads 门控恒为空），vpx 带 pthread 引用
+    # 会导致两条检查都失败并被裁掉 libvpx_vp9_decoder
     ./configure --target=x86_64-win64-gcc --prefix="$PREFIX" \
         --disable-examples --disable-tools --disable-unit-tests --disable-docs \
-        --disable-vp8 --enable-static --disable-shared --enable-small
+        --disable-vp8 --enable-static --disable-shared --enable-small \
+        --disable-multithread
     make -j"$JOBS"
     make install
 }
@@ -77,6 +82,8 @@ build_ffmpeg() {
     # 使 libwebp 的 require_pkg_config 精确报 "not found" —— 先用原生 pkg-config 预检
     pkg-config --exists --print-errors "libwebp >= 0.2.0" ||
         die "libwebp.pc not found (PKG_CONFIG_PATH=$PKG_CONFIG_PATH)"
+    pkg-config --exists --print-errors "vpx >= 1.4.0" ||
+        die "vpx.pc not found (PKG_CONFIG_PATH=$PKG_CONFIG_PATH)"
     # 只开 TG 转换所需组件（matroska 解封装 / libvpx-vp9 解码 / webp 动画编码 /
     # scale 滤镜 / file 协议），其余全部 --disable-everything
     ./configure \
@@ -106,6 +113,14 @@ build_ffmpeg() {
         tail -n 80 ffbuild/config.log >&2 || true
         die "ffmpeg configure failed"
     }
+    # configure 成功不等于启用：libvpx 检查失败只 warn+disable（reason 空上屏），
+    # 静默产出无解码器的 ffmpeg —— 这里硬断言，失败输出 config.log 的 vpx 线索
+    grep -q "^#define CONFIG_LIBVPX_VP9_DECODER 1" config_components.h ||
+    {
+        grep -A 4 -B 2 -i 'vpx' ffbuild/config.log >&2 || true
+        tail -n 60 ffbuild/config.log >&2 || true
+        die "ffmpeg configure did not enable libvpx_vp9_decoder"
+    }
     make -j"$JOBS"
     mkdir -p "$OUT"
     cp ffmpeg.exe "$OUT/ffmpeg.exe"
@@ -127,6 +142,13 @@ verify_exe() {
     if [ "$size" -gt "$SIZE_LIMIT" ]; then
         die "ffmpeg.exe exceeds ${SIZE_LIMIT} bytes budget (got $size)"
     fi
+    # 组件字符串存在性检查（任何平台）：解码器/编码器被 configure 裁掉时其名字
+    # 不会编进二进制，Linux CI 也能拦截，不用等 windows 侧 --verify-ffmpeg
+    local comp
+    for comp in libvpx-vp9 libwebp_anim matroska; do
+        grep -aq "$comp" "$exe" ||
+            die "ffmpeg.exe missing component string: $comp (configure trimmed it)"
+    done
     # 组件存在性执行检查仅在能运行 PE 的环境（MSYS2/Cygwin/Windows）；
     # Linux/WSL 交叉产物无法直接执行（Exec format error），CI 组件校验由
     # 打包侧 windows job 的 build.py --verify-ffmpeg 对产物端到端转换兜底

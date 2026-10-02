@@ -30,6 +30,7 @@
 
 ## 修复
 - **内置 ffmpeg CI 构建失败** — ffmpeg-win64 交叉编译因 runner 缺 `x86_64-w64-mingw32-pkg-config`（由 mingw-w64-tools 提供，未安装）被 ffmpeg configure 静默禁用 pkg-config 库检测（warn 只写 config.log 不上屏），libwebp 检查精确报 "not found" 中止构建；`build_win64.sh` 改用原生 `--pkg-config=pkg-config`（尊重脚本导出的 PKG_CONFIG_PATH）+ configure 前预检 `libwebp.pc`，失败时输出 `ffbuild/config.log` 尾部兜底诊断；组件存在性执行检查（`-decoders/-encoders`）改为仅在能运行 PE 的环境执行（Linux runner 上交叉产物直接执行报 `Exec format error`），CI 侧由打包 windows job 的 `--verify-ffmpeg` 对产物端到端转换兜底
+- **内置 ffmpeg 裁掉 libvpx-vp9 解码器** — 交叉编译的 libvpx 默认启用 pthread（mingw-w64 自带 pthread.h/libpthread.a），vpx.a 带 `pthread_*` 引用，而 ffmpeg configure 的 libvpx 检查兜底 check_lib 只链 `-lvpx -lm`（mingw 下 `pthreads_extralibs` 被 w32threads 门控恒为空），pkg/check 两条检查全失败被静默裁掉解码器（configure 仅 warn 不上屏），导致 `--verify-ffmpeg` 失败、TG WebM 转 WebP 缺 VP9 解码；libvpx 改 `--disable-multithread`（vpx.a 无 pthread 引用、vpx.pc 不带 -lpthread，两路检查与已通过的 libwebp 同形），并加固三道防线：configure 后硬断言 `config_components.h` 含 `CONFIG_LIBVPX_VP9_DECODER 1`（失败输出 config.log 的 vpx 线索）、configure 前预检 `vpx.pc`、产物二进制组件字符串检查（任何平台 `grep`，Linux CI 也能拦截被裁组件）
 
 # v0.6.4
 
