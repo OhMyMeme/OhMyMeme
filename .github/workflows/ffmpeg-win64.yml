@@ -32,7 +32,7 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends \
-            gcc-mingw-w64-x86-64 nasm pkg-config xz-utils
+            gcc-mingw-w64-x86-64 g++-mingw-w64-x86-64 nasm pkg-config xz-utils
       - name: Build trimmed ffmpeg
         if: steps.cache.outputs.cache_hit != 'true'
         run: bash scripts/ffmpeg/build_win64.sh

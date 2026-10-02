@@ -44,20 +44,23 @@ build_libvpx() {
     echo "== libvpx ${LIBVPX_VERSION} =="
     tar -xzf "$DL/libvpx.tar.gz" -C "$SRC"
     cd "$SRC/libvpx-${LIBVPX_VERSION}"
+    # CROSS 必须显式传入：libvpx 的 setup_gnu_toolchain 取 ${CROSS}gcc/ar/strip/nm，
+    # 而其源码从不设置 CROSS —— 只给 --target 会退化为宿主 gcc/ar，C 对象编成 ELF
+    # （仅 nasm 成员是 win64 COFF），mingw ld 按索引打开成员时格式不符被静默跳过，
+    # 只报 undefined reference（vpx_codec_control_/vpx_codec_vp9_dx）并裁掉解码器
     # --disable-multithread: vpx.a 无 pthread_* 引用，使 ffmpeg configure 的 libvpx
     # 检查兜底 check_lib（只链 "-lvpx -lm"，mingw 下 pthreads_extralibs 恒为空）也可通过
-    ./configure --target=x86_64-win64-gcc --prefix="$PREFIX" \
+    CROSS=x86_64-w64-mingw32- ./configure --target=x86_64-win64-gcc --prefix="$PREFIX" \
         --disable-examples --disable-tools --disable-unit-tests --disable-docs \
         --disable-vp8 --enable-static --disable-shared --enable-small \
         --disable-multithread
-    # HAVE_GNU_STRIP=no: strip --strip-debug 处理 mingw COFF 归档会破坏成员符号表
-    # （全局函数符号随 debug 信息一并丢掉），ffmpeg 链接 -lvpx 报 undefined reference
-    # （vpx_codec_vp9_dx / vpx_codec_control_）并静默裁掉 libvpx_vp9_decoder —— 走
-    # Makefile 的 cp 分支保留未 strip 的归档
+    grep -E '^(CC|CXX|AR|STRIP)=' config.mk || true
+    # HAVE_GNU_STRIP=no: 走 Makefile 的 cp 分支保留未 strip 归档，规避 strip 改写
+    # 归档索引的已知损坏类问题（grpc#6136），与 CROSS 互为双保险
     make HAVE_GNU_STRIP=no -j"$JOBS"
     make install
-    # 重建归档索引（防 strip 类损坏的另一形态），随后复刻 ffmpeg check_lib 做链接自检
-    x86_64-w64-mingw32-ranlib "$PREFIX/lib/libvpx.a"
+    # 重建归档索引，随后复刻 ffmpeg check_lib 做链接自检
+    x86_64-w64-mingw32-ranlib "$PREFIX/lib/libvpx.a" || die "libvpx.a ranlib failed"
     cat > "$WORK/vpx_check.c" <<'EOF'
 #include <vpx/vpx_decoder.h>
 #include <vpx/vp8dx.h>
@@ -72,9 +75,24 @@ EOF
         2>"$WORK/vpx_check.log" ||
     {
         cat "$WORK/vpx_check.log" >&2
-        x86_64-w64-mingw32-nm "$PREFIX/lib/libvpx.a" 2>/dev/null |
-            grep -E 'vpx_codec_vp9_dx|vpx_codec_control_' >&2 ||
-            echo "nm: symbols not found inside libvpx.a members" >&2
+        {
+            echo "--- libvpx diagnostics ---"
+            grep -E '^(CC|CXX|AR|LD|STRIP|NM)=|^ARFLAGS ?=' \
+                "$SRC/libvpx-${LIBVPX_VERSION}/config.mk" || true
+            head -c 8 "$PREFIX/lib/libvpx.a" | od -An -c || true
+            x86_64-w64-mingw32-objdump -f "$PREFIX/lib/libvpx.a" 2>/dev/null |
+                grep -oE 'file format [a-z0-9-]+' | sort | uniq -c || true
+            x86_64-w64-mingw32-nm -s "$PREFIX/lib/libvpx.a" 2>/dev/null |
+                grep -E 'vpx_codec_vp9_dx|vpx_codec_control_' ||
+                echo "nm -s: symbols NOT in archive index"
+            x86_64-w64-mingw32-gcc -static -I"$PREFIX/include" -L"$PREFIX/lib" \
+                -o "$WORK/vpx_check.exe" "$WORK/vpx_check.c" -lvpx -lm -Wl,-t \
+                2>&1 | grep -F libvpx || true
+            x86_64-w64-mingw32-gcc -static -I"$PREFIX/include" \
+                -o "$WORK/vpx_check2.exe" "$WORK/vpx_check.c" \
+                "$PREFIX/lib/libvpx.a" -lm 2>&1 | head -20 || true
+            x86_64-w64-mingw32-ld --version 2>&1 | head -1 || true
+        } >&2
         die "libvpx.a link self-check failed (ffmpeg would trim libvpx_vp9_decoder)"
     }
     rm -f "$WORK/vpx_check.c" "$WORK/vpx_check.exe" "$WORK/vpx_check.log"
