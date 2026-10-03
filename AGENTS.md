@@ -23,7 +23,7 @@ JsApi / SettingsApi → SQLite (WAL) + 本地缓存 + 远端同步
 ## 核心原则
 - **不得重构该项目** — 仅做最小必要修改，不改变现有架构、设计模式、代码组织
 - **尽量不创建新文件** — 优先修改现有文件
-- **增改同步** — 增加新功能或创建新文件后，同步修改 `README.md` 和 `AGENTS.md` 中对应描述
+- **增改同步** — 增加新功能或创建新文件后，同步修改 `README.md`、`CONTRIBUTING.md` 和 `AGENTS.md` 中对应描述（用户可见改动进 README，开发者环境/构建/CI 信息进 CONTRIBUTING，实现细节进 AGENTS）
 - **关联文件同步** — 修改后检查是否需要同步更新 `.gitignore`、`Makefile`、`pyproject.toml`、`requirements.txt`、`environment.yml` 等关联文件
 - 使用中文回答用户的问题
 
@@ -202,6 +202,7 @@ tests/
 - **孤儿清理互斥与进度**: `cleanup_remote_orphans(delete=True)` 删除前非阻塞获取 `_sync_run_lock`（被 push/pull 占用时返回「同步正在进行中」，绝不并发删除）；删除循环复用 `_sync_state`（`direction="delete"`，更新 current_file/files_done/files_total/progress，状态 deleting→done），前端复用 `#sync-progress-overlay` 轮询展示；扫描（delete=False）不互斥
 - **远端文件名校验**: `_safe_remote_fname()` 拒绝路径穿越/绝对路径/隐藏名；`_fetch_remote_memes` 解析远端 manifest 时过滤不安全文件名（含非 dict 条目），`_pull_worker` 下载前二次校验
 - **S3 后端 OSS 兼容**: boto3 客户端固定 `signature_version='s3'`（V2 签名，boto3 的 V4 与 chunked encoding 强耦合，OSS 不支持）；寻址方式由 `s3_addressing_style` 配置控制（默认 `"virtual"`，可选 `"path"`），映射到 `BotoConfig(s3={"addressing_style": ...})`；阿里云 OSS 仅支持 virtual-hosted style（bucket 作子域名），path-style 请求被拒绝；设置页 S3 表单「寻址方式」下拉框切换
+- **WebDAV 后端**: 配置项 `webdav_url`（服务地址，须 http(s):// 开头且含主机名）/`webdav_user`/`webdav_password`（Basic Auth，密码经 Fernet 加密存储）/`webdav_path`（远程路径前缀，可选）/`webdav_timeout`（默认 30s）；基于 Python 标准库 `urllib.request` 实现 PROPFIND/MKCOL/PUT/GET/HEAD/DELETE，无新增依赖
 
 ### 云端直接使用
 - 配置 `cloud_direct`（**默认开**），设置页「云端同步」区块开关；`sync_type` 空→非空（首次配置云端）时 `showConfirm` 用**「开启/关闭」**按钮二选一确认（默认已勾选时仍询问一次；Esc/点遮罩返回 `null` 表示不改动，与点「关闭」的 `false` 区分，其余调用方按 falsy 判断不受影响），「关闭」即取消勾选（随保存生效）；开启期间 push 上传缩略图（`_push_thumbs`，gate 该开关），远端删除联动删缩略图不 gate
@@ -288,6 +289,7 @@ tests/
 - **SettingsApi**: `backup_get_info`/`backup_pick_dir`/`backup_create`/`backup_delete`（文件名白名单校验防穿越）/`backup_pick_zip`/`backup_restore`/`backup_progress`；后台线程 + 前端 300ms 轮询进度（`_BACKUP_STATE`，与存储迁移同模式），恢复成功后自动 build_manifest
 - **设置页 UI**: 独立「备份与恢复」导航分组（日志与关于之间）：备份目录选择、立即备份、备份列表（文件名/大小/删除，删除走 showConfirm 危险确认）、从 ZIP 恢复（pick_zip → showConfirm → 恢复）；`backup-progress-overlay` 进度弹窗（运行中不可关闭，完成后"关闭"按钮 + Esc）；列入 _SETTINGS_OVERLAY_IDS 做 Tab 焦点陷阱
 - **测试**: TestBackup 覆盖创建/列表/删除（thumbnails 排除、路径穿越拒绝）、恢复元数据保真（tags/收藏/分组）、孤儿保留与同名覆盖、非空库拒绝（零落盘 + staging 清理）、非法包/非 ZIP（BadZipFile 上抛由 worker 捕获）/文件数不符
+- **危险操作（清空全部数据）**: 设置页「危险操作」区块两个入口，均走 showConfirm 双重确认（输入 confirm）：`SettingsApi.delete_all_local`（`db.delete_all()` 清空库 + 删除 cache/与 thumbnails/ 全部文件 + 重建空 manifest）与 `SettingsApi.delete_all_cloud`（`sync.delete_all_remote()` 遍历远端清单删除 `memes/` 全部文件并删除远端 `meme-index.json`）
 
 ### 剪贴板 (GIF/WebP 直接传送)
 - `_copy_gif_windows` 同时写入三个剪贴板格式:
@@ -451,6 +453,12 @@ tests/
 - **源码运行按需构建** (`_ensure_dev_helper`): 开发态缺 helper 时自动 `cmake` 构建一次并拷回源码目录（与 `main._ensure_vue_frontend` 同思路），保证新克隆仓库执行 `python -m src` 即可用微信导入；**pytest 下跳过**（沿用 `hotkey.py` 的 `PYTEST_CURRENT_TEST` 守卫），构建失败仅告警不阻断启动
 - **前端 UI**: 设置页「导入」分组下 `.import-row` 列表行（硬编码 SVG 图标 + 名称），点击微信行弹出对话框（目录选择 + 环境检测 + 多账号下拉 → 进度覆盖层）；对话框标题下常驻用户协议警告框（红字：「该功能可能不符合微信用户协议，请谨慎使用！」）
 
+## 数据与配置路径 (config.py)
+- **config_dir**（`_get_config_dir`）: Windows `%APPDATA%/OhMyMeme`；macOS `~/Library/Application Support/OhMyMeme`；Linux `$XDG_CONFIG_HOME/OhMyMeme`（默认 `~/.config/OhMyMeme`）
+- **data_dir**（`_get_data_dir`）: Windows `%LOCALAPPDATA%/OhMyMeme`；macOS `~/Library/Caches/OhMyMeme`；Linux `$XDG_DATA_HOME/OhMyMeme`（默认 `~/.local/share/OhMyMeme`）
+- config_dir 内容: `config.json`（唯一用户配置）、`env_check.json`（环境检测标记）、`plugins/<插件id>/settings.json`（插件设置）、`nickname_cache.json`（QQNT 昵称缓存）
+- data_dir 内容: `memes.db`、`cache/`（原图，可经 `cache_dir` 配置重定向）、`thumbnails/`、`meme-index.json`（同步清单）、`cloud-index.json`（云端清单缓存）、`hotkey.log`（热键事件日志）、`plugins/`（插件代码）、`plugins_data/<id>/`（插件私有数据）、`plugins_state.json`（启停状态）、`backups/`（备份目录，可经 `backup_dir` 重定向）、`storage_migration.json`（存储迁移清单，完成后删除）
+
 ## 构建 & 测试
 ```bash
 pip install -r requirements.txt
@@ -463,6 +471,32 @@ black src/        # 格式化
 python scripts/build.py  # PyInstaller + InnoSetup 完整构建
 python scripts/build.py --lang en  # 指定语言构建
 ```
+
+### CLI 参数 (main.py argparse)
+- `--debug` — 输出所有 DEBUG 级别日志（控制台级别由 INFO 提到 DEBUG）
+- `--silent` — 启动时最小化到托盘；源码模式下需显式传入（忽略配置文件的 `silent_start`）
+- `--debug-update` — 强制弹出更新对话框（测试用）
+- `--debug-startup` — 输出开机自启检测详情（注册表键、启动文件夹）
+- `--debug-adb` — 输出 ADB 检测详情及运行时日志（路径、版本、adb 命令）
+- `--debug-env` — 输出环境检测详情（WebView2/.NET）并强制打开检测窗口
+- `--env-check-ui` — 内部旗标（`argparse.SUPPRESS`，不显示在 help），独立运行环境检测 UI 子进程入口，在单实例检查之前执行
+
+### 构建脚本选项 (scripts/build.py, PyInstaller 6.0+)
+- `--windows`/`--linux`/`--macos` — 目标平台；**PyInstaller 不支持交叉编译**，各参数只能在对应系统上使用
+- `--macos --arch arm64|x86_64` — 指定 macOS 架构（默认按机器自动检测）；产出 `.app` + `.dmg`
+- `--linux --package all|appimage|deb|rpm` — Linux 包类型（默认 all）；构建机需 GTK/WebKit 依赖
+- `--build-only` — 仅 PyInstaller 打包，跳过安装包
+- `--installer-only` — 仅制作安装包（PyInstaller 已打包完时）
+- `--nightly`/`--version X` — 改写版本号构建（临时改写 `src/__init__.py`，完成后恢复）
+- `--verify-ffmpeg`/`--verify-helper` — 校验产物内置 ffmpeg/wechat_keyfinder（CI 打包后调用）
+- Windows 安装包需 InnoSetup 6/7；输出目录 `dist/`；原 Nuitka 构建脚本归档于 `scripts/nuitka/build.py`
+
+### Linux 源码运行依赖 (GTK 后端)
+- pywebview Linux 使用 GTK 后端（`WebKit2`），源码/venv/conda 运行需当前 Python 能导入 `gi`：
+  - 系统层安装 `python3-gi`（Debian/Ubuntu `apt install python3-gi`；Arch `pacman -S python-gobject`）+ WebKitGTK 运行库（`gir1.2-webkit2-4.1` 或 4.0，Arch 经 `yay -S webkit2gtk`）
+  - venv 创建时加 `--system-site-packages`，或运行前设 `PYTHONPATH=/usr/lib/python3/dist-packages`（Arch 为 `/usr/lib/python3.12/site-packages`）
+  - conda 环境内可直接 `conda install -c conda-forge pygobject`
+- deb/rpm 安装包已内置 `gi` 与 WebKit2/Soup typelib，无需 python3-gi，但依赖系统 `gir1.2-webkit2-*` 运行库
 - **构建自动编译 Vue 前端**: `build.py` 的 `ensure_vue_frontend()` 在打包前检查 `src/webui/dist/ohmymeme.js`（被 gitignore，CI 全新检出缺失），缺失时自动 `npm ci`（有 lockfile，否则 `npm install`）→ `npx vite build`，失败则中止构建；构建机需 node/npm（GitHub Actions runner 预装），dist 已存在时直接跳过
 - **C++ 测试 job（check.yml `keyfinder-tests`）**: 独立于 `check` job 且在 `windows-latest` 运行——helper 是 Windows-only（CMakeLists 对非 WIN32 直接 FATAL_ERROR），放进 ubuntu job 会必然失败；放在 check.yml 而非 build.yml 是为了让 PR 阶段即有反馈（build.yml 由 check 通过后的 workflow_run 触发）。
 - **构建自动编译 wechat_keyfinder**: `build.py` 的 `build_keyfinder_helper()` 在打包前用 cmake+MSVC 编译 helper 并 `--add-binary` 打入产物（`*.exe` 被 gitignore，CI 全新检出缺失，故必须构建期产出）；无需 OpenSSL。**Windows 构建机需 cmake + MSVC**（GitHub Actions 的 `windows-latest` 预装；本机可用 VS BuildTools），缺失时构建**中止**（`--allow-missing-keyfinder` 仅供本地开发放行）。`build.yml`/`nightly.yml` 的 windows job 在打包后统一调用 `python scripts/build.py --verify-helper`（**单一实现，消除此前两处内联脚本重复导致的 drift 风险**），由 `build.py` 的 `verify_keyfinder_bundle()` 执行三项检查：①helper 存在（按文件名在产物树内查找，**不硬编码 `_internal/...` 布局**，PyInstaller 调整结构后仍有效）；②可执行性——`--help` 退出码为 0（**取代原先的 `size < 20000` 魔数**：既覆盖截断/架构不符/缺依赖，又不会因合法体积变化误报）；③PE 版本资源 `CompanyName == OhMyMeme`（缺元数据会退回 Defender 误报特征）。任一项不过即 exit 1。测试 `tests/test_build_verify.py`
