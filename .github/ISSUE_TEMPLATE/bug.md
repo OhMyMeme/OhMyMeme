@@ -1,6 +1,6 @@
 ---
 name: Bug
-about: Bug
+about: Bug反馈
 title: "【Bug】"
 labels: ''
 assignees: ''

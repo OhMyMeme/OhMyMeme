@@ -1,6 +1,6 @@
 ---
 name: Feature
-about: Feature
+about: 功能请求
 title: "【Feature】"
 labels: ''
 assignees: ''
