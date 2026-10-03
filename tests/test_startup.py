@@ -471,6 +471,8 @@ def _start_fake_webui(monkeypatch, silent_start):
 def test_webui_start_normal_visibility_hides_without_placement(monkeypatch):
     ui, created = _start_fake_webui(monkeypatch, silent_start=False)
     assert created[0][1]["hidden"] is False
+    assert created[0][1]["width"] == 960
+    assert created[0][1]["height"] == 640
     assert ui._visible is True
 
     def fail_if_called():
@@ -624,6 +626,79 @@ def test_disable_auto_hide_settings_contract():
     assert '"disable_auto_hide"' in src
     reset_src = inspect.getsource(SettingsApi.reset_settings)
     assert '"disable_auto_hide": False' in reset_src
+
+
+def test_window_resize_settings_contract():
+    """设置页「允许调整窗口大小」开关（HTML 复选框 + JS 读写 + 8 向边框拖拽 + resize API）"""
+    import inspect
+
+    from src.config import Config
+    from src.webui import HTML_DIR, JsApi, SettingsApi, WebUI
+
+    assert Config.DEFAULTS.get("window_resize_enabled") is False
+    assert Config.DEFAULTS.get("settings_window_width") == 0
+    settings_html = (HTML_DIR / "settings.html").read_text(encoding="utf-8")
+    assert 'id="s-window-resize"' in settings_html
+    settings_js = (HTML_DIR / "settings.js").read_text(encoding="utf-8")
+    assert "s.window_resize_enabled === true" in settings_js
+    assert "window_resize_enabled," in settings_js
+    assert "applyWindowResizeHandles" in settings_js
+    vue_dir = HTML_DIR.parent / "vue-src"
+    main_css = (vue_dir / "style.css").read_text(encoding="utf-8")
+    assert "win-resize-handle" in main_css
+    app_vue = (vue_dir / "App.vue").read_text(encoding="utf-8")
+    assert "win-resize-layer" in app_vue
+    assert "syncWinResizeHandles" in app_vue
+    src = inspect.getsource(SettingsApi.get_settings)
+    assert '"window_resize_enabled"' in src
+    reset_src = inspect.getsource(SettingsApi.reset_settings)
+    assert '"window_resize_enabled": False' in reset_src
+    js_src = inspect.getsource(JsApi.get_settings)
+    assert '"window_resize_enabled"' in js_src
+    assert "window_resize_enabled" in inspect.getsource(JsApi.get_init_data)
+    assert hasattr(JsApi, "resize_window")
+    assert hasattr(SettingsApi, "resize_window")
+    assert hasattr(SettingsApi, "plugin_pick_file")
+    webui_src = inspect.getsource(WebUI._create_settings_window)
+    assert "resizable=True" in webui_src
+    assert "settings_window_width" in inspect.getsource(WebUI._save_settings_window_size)
+
+
+def test_resize_window_api_clamps():
+    """resize_window 尺寸钳制（主窗 480-8000x360-6000，设置窗 600-8000x480-6000）"""
+    from src.webui import JsApi, SettingsApi
+
+    class FakeWin:
+        def __init__(self):
+            self.size = None
+
+        def resize(self, w, h):
+            self.size = (w, h)
+
+    class FakeWebui:
+        pass
+
+    fw = FakeWebui()
+    fw._window = FakeWin()
+    api = JsApi.__new__(JsApi)
+    api._webui = fw
+    api.resize_window(100, 50)
+    assert fw._window.size == (480, 360)
+    api.resize_window(99999, 99999)
+    assert fw._window.size == (8000, 6000)
+    api.resize_window(1280, 800)
+    assert fw._window.size == (1280, 800)
+
+    fw2 = FakeWebui()
+    fw2._settings_window = FakeWin()
+    sa = SettingsApi.__new__(SettingsApi)
+    sa._webui = fw2
+    sa.resize_window(100, 50, False)
+    assert fw2._settings_window.size == (600, 480)
+    sa.resize_window(99999, 99999, False)
+    assert fw2._settings_window.size == (8000, 6000)
+    sa.resize_window(720, 560, False)
+    assert fw2._settings_window.size == (720, 560)
 
 
 def test_cloud_direct_confirm_buttons_contract():

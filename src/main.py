@@ -83,6 +83,13 @@ class OhMyMemeApp:
             logger.debug("cleanup stale temp files: %s", e)
 
         # 1. 创建 WebUI（先不启动 GUI 循环）
+        # 插件须在 WebUI 之前加载（路由/设置分组在 Bottle 装配时挂载）
+        try:
+            from .plugin_manager import get_plugin_manager
+
+            get_plugin_manager().init(self._cfg)
+        except Exception as e:
+            logger.warning("插件系统初始化失败: %s", e)
         self._webui = WebUI(
             update_debug=getattr(self, "_update_debug", False),
             silent_start=getattr(self, "_silent_start", False),
@@ -196,6 +203,12 @@ class OhMyMemeApp:
                 self._webui.stop()
             except Exception:
                 pass
+        try:
+            from .plugin_manager import get_plugin_manager
+
+            get_plugin_manager().unload()
+        except Exception:
+            pass
         if self._db:
             try:
                 self._db.close()

@@ -12,6 +12,8 @@ declare global {
     refreshCollections: () => void
     showGuide: () => void
     onCloudReady: () => void
+    ommPluginRefresh: (pluginId?: string) => void
+    ommPluginsReady?: Promise<void>
   }
 }
 

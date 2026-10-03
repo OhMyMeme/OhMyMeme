@@ -130,6 +130,11 @@ class Config:
         "theme": "dark",
         "window_x": -1,
         "window_y": -1,
+        "window_width": 0,  # 主窗口宽度持久化（0=默认 960）
+        "window_height": 0,  # 主窗口高度持久化（0=默认 640）
+        "window_resize_enabled": False,  # 允许拖窗口边框调整大小（主/设置窗口）
+        "settings_window_width": 0,  # 设置窗口宽度持久化（0=默认 720）
+        "settings_window_height": 0,  # 设置窗口高度持久化（0=默认 560）
         "auto_play_gif": True,
         "hover_to_play": False,
         "hover_zoom": True,  # 悬停卡片放大预览整图
@@ -137,6 +142,8 @@ class Config:
         "show_uncategorized": True,  # 显示「未分类」分组
         "record_recent_use": True,  # 复制时记录最近使用
         "show_startup_animation": True,  # 启动时播放启动动画（关闭时降级 300ms 延时）
+        # 插件
+        "plugin_dirs": [],  # 额外插件扫描目录（开发直连或集合）
     }
 
     def __init__(self, path: Path = None):
@@ -219,9 +226,6 @@ class Config:
         saved_ver = raw.get("version", "")
         if saved_ver == _CONFIG_VERSION:
             return
-        # 0.2.0 及之前：删除 window_width/window_height
-        for k in ("window_width", "window_height"):
-            self._data.pop(k, None)
         # 旧布尔开关迁移到 copy_resize_mode（旧配置里没有 copy_resize_mode 键）
         if "copy_resize_mode" not in raw and (
             "copy_resize_enabled" in raw or "experimental_stego" in raw

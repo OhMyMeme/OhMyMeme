@@ -77,6 +77,7 @@ from .config import (
 )
 from .database import get_db
 from .manifest import build as build_manifest
+from .plugin_manager import get_plugin_manager, route_content_type
 
 logger = logging.getLogger(__name__)
 
@@ -150,6 +151,60 @@ _STATIC_MIME_TYPES = {
     ".ico": "image/x-icon",
     ".woff2": "font/woff2",
 }
+
+# 主窗口启动动画默认视频源（插件可经 startup 覆盖）
+_DEFAULT_STARTUP_VIDEO = "/resources/OhMyMeme.mp4"
+
+
+def _inject_before(html: str, marker: str, inject: str) -> str:
+    """在最后一个 marker 前插入 inject（无 marker 或无内容时原样返回）"""
+    if not inject or marker not in html:
+        return html
+    idx = html.rfind(marker)
+    return html[:idx] + inject + "\n" + html[idx:]
+
+
+def _inject_after(html: str, marker: str, inject: str) -> str:
+    """在第一个 marker 后插入 inject"""
+    if not inject or marker not in html:
+        return html
+    idx = html.index(marker)
+    return html[: idx + len(marker)] + "\n" + inject + html[idx + len(marker) :]
+
+
+def _split_asset_tags(tags: str):
+    """asset_tags 输出拆成 (link 标签块, script 标签块)"""
+    links = [ln for ln in tags.splitlines() if ln.startswith("<link")]
+    scripts = [ln for ln in tags.splitlines() if ln.startswith("<script")]
+    return "\n".join(links), "\n".join(scripts)
+
+
+def _make_plugin_route_cb(pid: str, rule: str, fn):
+    """插件自定义路由回调：返回 str 或 dict（JSON），Content-Type 按扩展名推断"""
+    import json as _json
+
+    def cb():
+        try:
+            ok, val = get_plugin_manager().call_route(
+                pid, fn, dict(bottle.request.params)
+            )
+        except Exception as e:
+            logger.warning(f"plugin route error: {e}")
+            bottle.response.status = 500
+            return ""
+        if not ok:
+            bottle.response.status = 404
+            return ""
+        if isinstance(val, dict):
+            bottle.response.content_type = "application/json"
+            return _json.dumps(val, ensure_ascii=False)
+        ctype = route_content_type(rule)
+        if ctype:
+            bottle.response.content_type = ctype
+        return val if isinstance(val, str) else str(val)
+
+    return cb
+
 
 # ─── 工具函数  ───
 
@@ -819,13 +874,22 @@ class JsApi:
         """批返回初始化所需数据，减少 JS bridge 往返"""
         memes = self.search_memes("", None, None, 0, MEME_PAGE)
         collections = self._sys_collections() + self._build_collection_tree()
+        fields = get_plugin_manager().init_fields()
         return {
             "memes": memes,
             "tags": self.get_tags(),
             "collections": collections,
             "show_startup_animation": self._cfg.get("show_startup_animation", True),
             "hover_zoom": self._cfg.get("hover_zoom", True),
-            "startup_bg_color": _STARTUP_BG_COLOR,
+            "window_resize_enabled": self._cfg.get("window_resize_enabled", False),
+            "startup_bg_color": fields.get("startup_bg_color") or _STARTUP_BG_COLOR,
+            "startup_video_src": fields.get("startup_video_src")
+            or _DEFAULT_STARTUP_VIDEO,
+            "startup_media_duration_ms": fields.get("startup_media_duration_ms") or 0,
+            "startup_media_type": fields.get("startup_media_type") or "",
+            "plugin_buttons": fields.get("plugin_buttons") or [],
+            "plugin_button_constraints": fields.get("plugin_button_constraints")
+            or {"hide": [], "order": {}},
             "guide_ok": guide_ok(),
         }
 
@@ -1737,6 +1801,14 @@ class JsApi:
         lan.confirm_device(bool(approved))
         return {"ok": True}
 
+    def plugin_call(self, plugin_id: str, method: str, args=None) -> dict:
+        """分发主窗口插件方法（manifest main_api 声明的逻辑）"""
+        return get_plugin_manager().call_main(str(plugin_id), str(method), args or [])
+
+    def plugin_button_click(self, plugin_id: str, key: str) -> dict:
+        """主窗口顶栏插件按钮点击分发"""
+        return get_plugin_manager().call_button(str(plugin_id), str(key))
+
     def get_settings(self) -> dict:
         d = self._cfg.to_dict()
         from .platform_util import is_auto_start_enabled
@@ -1784,6 +1856,7 @@ class JsApi:
             "hover_zoom": d.get("hover_zoom", True),
             "copy_avoid_webp": d.get("copy_avoid_webp", False),
             "disable_auto_hide": d.get("disable_auto_hide", False),
+            "window_resize_enabled": d.get("window_resize_enabled", False),
         }
 
     def save_settings(self, settings: dict):
@@ -1860,7 +1933,20 @@ class JsApi:
             "show_download_done": True,
             "show_startup_animation": True,
             "hover_zoom": True,
+            "window_resize_enabled": False,
         }
+
+    def resize_window(self, width: int, height: int):
+        """拖动边框调整主窗口大小（window_resize_enabled 开启时前端调用）"""
+        w = self._webui._window
+        if not w:
+            return
+        try:
+            nw = max(480, min(8000, int(width)))
+            nh = max(360, min(6000, int(height)))
+            w.resize(nw, nh)
+        except Exception:
+            pass
 
     def move_window(self, dx: int, dy: int):
         w = self._webui._window
@@ -2425,6 +2511,40 @@ class SettingsApi:
             "allow_secret_config": lan.get_status()["allow_secret_config"],
         }
 
+    def plugin_list(self) -> list:
+        """插件列表（manifest 元信息 + 状态 + 权限清单）"""
+        return get_plugin_manager().list_info()
+
+    def plugin_set_enabled(self, plugin_id: str, enabled: bool) -> dict:
+        """切换插件启用状态（禁用立即生效，启用需重启）"""
+        return get_plugin_manager().set_enabled(str(plugin_id), bool(enabled))
+
+    def plugin_get_settings(self, plugin_id: str) -> dict:
+        """读取插件自有设置"""
+        return get_plugin_manager().get_settings(str(plugin_id))
+
+    def plugin_save_settings(self, plugin_id: str, data: dict) -> dict:
+        """保存插件自有设置（成功后通知前端刷新插件样式）"""
+        result = get_plugin_manager().save_settings(str(plugin_id), data or {})
+        if result.get("ok"):
+            import json as _json
+
+            get_plugin_manager().evaluate_js(
+                "window.ommPluginRefresh&&window.ommPluginRefresh(%s)"
+                % _json.dumps(str(plugin_id))
+            )
+        return result
+
+    def plugin_open_dir(self) -> dict:
+        """在系统文件管理器打开插件安装目录"""
+        return get_plugin_manager().open_plugins_dir()
+
+    def plugin_call(self, plugin_id: str, method: str, args=None) -> dict:
+        """分发设置窗口插件方法（manifest settings_api 声明的逻辑）"""
+        return get_plugin_manager().call_settings(
+            str(plugin_id), str(method), args or []
+        )
+
     def lan_confirm_device(self, approved: bool) -> dict:
         from . import lan
 
@@ -2488,6 +2608,7 @@ class SettingsApi:
             "manifest_include_favorites": d.get("manifest_include_favorites", True),
             "cloud_direct": d.get("cloud_direct", True),
             "cloud_thumb_auto_push": d.get("cloud_thumb_auto_push", True),
+            "window_resize_enabled": d.get("window_resize_enabled", False),
         }
 
     def _safe_refresh(self, js_function: str) -> dict:
@@ -2648,7 +2769,24 @@ class SettingsApi:
             "manifest_include_favorites": True,
             "cloud_direct": True,
             "cloud_thumb_auto_push": True,
+            "window_resize_enabled": False,
         }
+
+    def resize_window(self, width: int, height: int, persist: bool = False):
+        """拖动边框调整设置窗口大小；persist=True 时同时持久化尺寸"""
+        w = self._webui._settings_window
+        if not w:
+            return
+        try:
+            nw = max(600, min(8000, int(width)))
+            nh = max(480, min(6000, int(height)))
+            w.resize(nw, nh)
+            if persist:
+                self._cfg.set("settings_window_width", nw)
+                self._cfg.set("settings_window_height", nh)
+                self._cfg.save()
+        except Exception:
+            pass
 
     def move_window(self, dx: int, dy: int):
         w = self._webui._settings_window
@@ -2983,6 +3121,26 @@ class SettingsApi:
             return {"ok": False, "cancelled": True}
         path = result[0] if isinstance(result, (tuple, list)) else result
         return {"ok": True, "path": path}
+
+    def plugin_pick_file(self, plugin_id: str, media: str = "any") -> dict:
+        """为插件打开文件选择对话框（插件设置区块用，media=video/image/any）"""
+        pid = str(plugin_id)
+        info = get_plugin_manager().list_info()
+        if not any(p.get("id") == pid and p.get("status") == "loaded" for p in info):
+            return {"ok": False, "error": "plugin_disabled"}
+        types = {
+            "video": ("Video (*.mp4;*.webm;*.mov;*.mkv;*.avi)",),
+            "image": ("Images (*.png;*.jpg;*.jpeg;*.gif;*.webp;*.bmp;*.avif)",),
+            "any": (
+                "Media (*.mp4;*.webm;*.mov;*.gif;*.png;*.jpg;*.jpeg;*.webp;*.bmp)",
+                "All files (*.*)",
+            ),
+        }.get(str(media), ("All files (*.*)",))
+        result = self._dialog(webview.FileDialog.OPEN, file_types=types)
+        if not result:
+            return {"ok": False, "cancelled": True}
+        path = result[0] if isinstance(result, (tuple, list)) else result
+        return {"ok": True, "path": str(path)}
 
     def apply_storage_dir(self, path, move_files=False):
         """应用新的表情包存储目录；move_files=True 时后台迁移现有文件"""
@@ -4454,6 +4612,15 @@ class WebUI:
             vue_html = HTML_DIR / "vue.html"
             # 仅当 vue.html 与构建产物都存在时才走 Vue 前端，否则回退旧 index.html
             if vue_html.exists() and (HTML_DIR / "dist" / "ohmymeme.js").exists():
+                tags = get_plugin_manager().asset_tags("main")
+                if tags:
+                    try:
+                        html = vue_html.read_text(encoding="utf-8")
+                        html = _inject_before(html, "</body>", tags)
+                        bottle.response.content_type = "text/html; charset=utf-8"
+                        return html
+                    except OSError as e:
+                        logger.warning(f"vue.html 读取失败回退静态: {e}")
                 return bottle.static_file("vue.html", root=str(HTML_DIR))
             html_path = HTML_DIR / "index.html"
             if html_path.exists():
@@ -4464,6 +4631,21 @@ class WebUI:
         def settings_page():
             html_path = HTML_DIR / "settings.html"
             if html_path.exists():
+                links, scripts = _split_asset_tags(
+                    get_plugin_manager().asset_tags("settings")
+                )
+                sections = get_plugin_manager().settings_sections()
+                if links or scripts or sections:
+                    try:
+                        html = html_path.read_text(encoding="utf-8")
+                        html = _inject_before(html, "</head>", links)
+                        html = _inject_after(html, "<!-- plugin-sections -->", sections)
+                        # settings.js 之后注入（defer 按文档序执行，插件可访问其全局）
+                        html = _inject_before(html, "</body>", scripts)
+                        bottle.response.content_type = "text/html; charset=utf-8"
+                        return html
+                    except OSError as e:
+                        logger.warning(f"settings.html 读取失败回退静态: {e}")
                 return bottle.static_file("settings.html", root=str(HTML_DIR))
             return "<h1>设置</h1><p>settings.html not found</p>"
 
@@ -4610,6 +4792,26 @@ class WebUI:
                 bottle.abort(404, "Not Found")
             return bottle.static_file(name, root=str(RESOURCES_DIR))
 
+        # 插件资产与自定义路由：须注册在兜底静态路由之前（Bottle 按注册序匹配）
+        @app.route("/plugins/<plugin_id>/<relpath:path>")
+        def serve_plugin_asset(plugin_id, relpath):
+            resolved = get_plugin_manager().resolve_asset(plugin_id, relpath)
+            if not resolved:
+                bottle.abort(404, "Not Found")
+            path, ctype = resolved
+            return bottle.static_file(
+                os.path.basename(path),
+                root=os.path.dirname(path),
+                mimetype=ctype or "application/octet-stream",
+            )
+
+        for _pid, _rule, _fn in get_plugin_manager().custom_routes():
+            app.route(
+                _rule,
+                method=["GET", "POST"],
+                callback=_make_plugin_route_cb(_pid, _rule, _fn),
+            )
+
         @app.route("/<filepath:path>")
         def static_files(filepath):
             # 按扩展名强制 MIME，规避本机 .js 映射被改写成 text/plain 时
@@ -4723,12 +4925,13 @@ class WebUI:
         url = f"http://127.0.0.1:{self._port}/"
         wx = self._cfg.get("window_x", -1)
         wy = self._cfg.get("window_y", -1)
+        width, height = self._resolve_window_size()
         self._window = webview.create_window(
             "OhMyMeme",
             url,
             js_api=self._api,
-            width=960,
-            height=640,
+            width=width,
+            height=height,
             x=wx if (wx is not None and wx >= 0) else None,
             y=wy if (wy is not None and wy >= 0) else None,
             resizable=True,
@@ -4752,12 +4955,17 @@ class WebUI:
     def _create_settings_window(self):
         try:
             if self._settings_window is not None:
+                self._save_settings_window_size()
                 try:
                     self._settings_window.destroy()
                 except Exception:
                     pass
                 self._settings_window = None
 
+            sw = int(self._cfg.get("settings_window_width", 0) or 0)
+            sh = int(self._cfg.get("settings_window_height", 0) or 0)
+            sw = sw if 600 <= sw <= 8000 else 720
+            sh = sh if 480 <= sh <= 6000 else 560
             settings_url = f"http://127.0.0.1:{self._port}/settings/"
             sx = sy = None
             if self._window is not None:
@@ -4765,19 +4973,19 @@ class WebUI:
                     mx, my = self._window.x, self._window.y
                     mw, mh = self._window.width, self._window.height
                     if mx is not None and my is not None and mw and mh:
-                        sx = mx + (mw - 720) // 2
-                        sy = my + (mh - 560) // 2
+                        sx = mx + (mw - sw) // 2
+                        sy = my + (mh - sh) // 2
                 except Exception:
                     sx = sy = None
             self._settings_window = webview.create_window(
                 "设置 - OhMyMeme",
                 settings_url,
                 js_api=self._settings_api,
-                width=720,
-                height=560,
+                width=sw,
+                height=sh,
                 x=sx,
                 y=sy,
-                resizable=False,
+                resizable=True,
                 frameless=True,
                 easy_drag=False,
             )
@@ -4785,6 +4993,19 @@ class WebUI:
         except Exception as e:
             logger.warning(f"create settings window error: {e}")
             return False
+
+    def _save_settings_window_size(self):
+        """设置窗口销毁前持久化尺寸（下次打开沿用）"""
+        w = self._settings_window
+        if not w:
+            return
+        try:
+            if w.width and w.height:
+                self._cfg.set("settings_window_width", int(w.width))
+                self._cfg.set("settings_window_height", int(w.height))
+                self._cfg.save()
+        except Exception:
+            pass
 
     def focus_settings_window(self):
         """把设置窗口重新拉到前台（对话框关闭后恢复焦点用）"""
@@ -4803,6 +5024,7 @@ class WebUI:
 
     def close_settings(self):
         if self._settings_window:
+            self._save_settings_window_size()
             try:
                 self._settings_window.destroy()
             except Exception as e:
@@ -4816,12 +5038,37 @@ class WebUI:
         except Exception:
             pass
 
+    def _resolve_window_size(self):
+        """主窗口尺寸：插件 window 覆盖 > 持久化尺寸 > 默认 960x640"""
+        try:
+            overrides = get_plugin_manager().window_params()
+        except Exception:
+            overrides = {}
+
+        def _norm(value, fallback, lo, hi):
+            try:
+                value = int(value)
+            except (TypeError, ValueError):
+                return fallback
+            return value if lo <= value <= hi else fallback
+
+        width = _norm(overrides.get("width"), None, 480, 8000)
+        height = _norm(overrides.get("height"), None, 360, 6000)
+        if width is None:
+            width = _norm(self._cfg.get("window_width", 0), 960, 480, 8000)
+        if height is None:
+            height = _norm(self._cfg.get("window_height", 0), 640, 360, 6000)
+        return width, height
+
     def _save_window_position(self):
         if not self._window:
             return
         try:
             self._cfg.set("window_x", self._window.x)
             self._cfg.set("window_y", self._window.y)
+            if self._window.width and self._window.height:
+                self._cfg.set("window_width", int(self._window.width))
+                self._cfg.set("window_height", int(self._window.height))
             self._cfg.save()
         except Exception:
             pass

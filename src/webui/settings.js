@@ -91,7 +91,11 @@ function initDirtyTracking() {
   if (!root) return;
   const track = (e) => {
     const t = e.target;
-    if (t && t.matches && t.matches('input, select, textarea')) markSettingsDirty();
+    if (t && t.matches && t.matches('input, select, textarea')) {
+      // 插件自管输入（data-plugin）单独保存，不计入宿主未保存状态
+      if (t.closest && t.closest('[data-plugin]')) return;
+      markSettingsDirty();
+    }
   };
   root.addEventListener('input', track);
   root.addEventListener('change', track);
@@ -402,6 +406,10 @@ async function getSettings() {
   if (hp) hp.checked = s.hover_to_play === true;
   const hz = document.getElementById('s-hover-zoom');
   if (hz) hz.checked = s.hover_zoom !== false;
+  const wr = document.getElementById('s-window-resize');
+  if (wr) wr.checked = s.window_resize_enabled === true;
+  winResizeEnabled = s.window_resize_enabled === true;
+  applyWindowResizeHandles();
   const to = document.getElementById('s-try-original');
   if (to) to.checked = s.try_original_image === true;  // DeepSeek V4 Flash
   const cm = document.getElementById('s-copy-mode');
@@ -763,10 +771,12 @@ async function saveSettings() {
   const lan_secret = document.getElementById('s-lan-secret')?.value || '';
   const hover_play = document.getElementById('s-hover-play')?.checked === true;
   const hover_zoom = document.getElementById('s-hover-zoom')?.checked !== false;
+  const window_resize_enabled = document.getElementById('s-window-resize')?.checked === true;
   await api('save_settings', {
     hotkey, hotkey_show_at_mouse, auto_play_gif: gif, hover_to_play: hover_play,
     hover_zoom,
     disable_auto_hide,
+    window_resize_enabled,
     try_original_image: try_original,  // DeepSeek V4 Flash
     copy_resize_mode: copy_mode,
     copy_avoid_webp,
@@ -777,6 +787,8 @@ async function saveSettings() {
   });
   showToast('设置已保存');
   _settingsDirty = false;
+  winResizeEnabled = window_resize_enabled;
+  applyWindowResizeHandles();
   // 云端直接使用刚开启：询问是否立即上传一次，把缩略图推上云端供缺失表情显示
   const cloudNow = sync.cloud_direct === true;
   if (cloudNow && !_lastCloudDirect && sync.sync_type) {
@@ -837,6 +849,10 @@ async function resetSettings() {
     if (hp) hp.checked = s.hover_to_play === true;
     const hz = document.getElementById('s-hover-zoom');
     if (hz) hz.checked = true;
+    const wr2 = document.getElementById('s-window-resize');
+    if (wr2) wr2.checked = false;
+    winResizeEnabled = false;
+    applyWindowResizeHandles();
     const tgtd = document.getElementById('s-tg-tdata');
     if (tgtd) tgtd.value = s.tg_tdata_path || '';
     const to = document.getElementById('s-try-original');  // DeepSeek V4 Flash
@@ -2027,6 +2043,73 @@ document.addEventListener('mouseup', () => {
   dragState = null;
 });
 
+/* ─── 窗口边框拖拽调整大小（window_resize_enabled 开启时）─── */
+const WIN_RESIZE_DIRS = [
+  ['n', 'n-resize'], ['s', 's-resize'], ['w', 'w-resize'], ['e', 'e-resize'],
+  ['nw', 'nw-resize'], ['ne', 'ne-resize'], ['sw', 'sw-resize'], ['se', 'se-resize'],
+];
+let winResizeEnabled = false;
+let winResizeState = null;
+
+function applyWindowResizeHandles() {
+  let layer = document.getElementById('win-resize-layer');
+  if (!winResizeEnabled) {
+    if (layer) layer.remove();
+    return;
+  }
+  if (layer) return;
+  layer = document.createElement('div');
+  layer.id = 'win-resize-layer';
+  layer.setAttribute('aria-hidden', 'true');
+  WIN_RESIZE_DIRS.forEach(([dir, cursor]) => {
+    const h = document.createElement('div');
+    h.className = 'win-resize-handle dir-' + dir;
+    h.style.cursor = cursor;
+    h.addEventListener('pointerdown', (e) => {
+      if (e.button !== 0) return;
+      winResizeState = {
+        dir, sx: e.screenX, sy: e.screenY,
+        w: window.innerWidth, h: window.innerHeight,
+        tw: 0, th: 0, raf: null, moved: false,
+      };
+      h.setPointerCapture(e.pointerId);
+      e.preventDefault();
+      e.stopPropagation();
+    });
+    h.addEventListener('pointermove', (e) => {
+      const st = winResizeState;
+      if (!st) return;
+      const dx = e.screenX - st.sx, dy = e.screenY - st.sy;
+      if (!st.moved && Math.abs(dx) < 2 && Math.abs(dy) < 2) return;
+      st.moved = true;
+      let tw = st.w, th = st.h;
+      if (st.dir.indexOf('e') !== -1) tw = st.w + dx;
+      if (st.dir.indexOf('w') !== -1) tw = st.w - dx;
+      if (st.dir.indexOf('s') !== -1) th = st.h + dy;
+      if (st.dir.indexOf('n') !== -1) th = st.h - dy;
+      st.tw = tw;
+      st.th = th;
+      if (st.raf) return;
+      st.raf = requestAnimationFrame(() => {
+        if (!winResizeState) return;
+        winResizeState.raf = null;
+        api('resize_window', winResizeState.tw, winResizeState.th, false);
+      });
+    });
+    const finish = () => {
+      const st = winResizeState;
+      if (!st) return;
+      if (st.raf) cancelAnimationFrame(st.raf);
+      if (st.moved && st.tw) api('resize_window', st.tw, st.th, true);
+      winResizeState = null;
+    };
+    h.addEventListener('pointerup', finish);
+    h.addEventListener('pointercancel', finish);
+    layer.appendChild(h);
+  });
+  document.body.appendChild(layer);
+}
+
 /* Keyboard shortcuts */
 document.addEventListener('keydown', (e) => {
   if (e.key === 'Tab') {
@@ -2412,6 +2495,141 @@ async function startBackupRestore() {
   backupPollTimer = setInterval(pollBackupProgress, 300);
 }
 
+/* 插件：列表渲染/启停/自管设置收集（输入带 data-plugin + data-key） */
+const PLUGIN_PERM_LABELS = {
+  'route': '网络路由', 'main_api': '主窗口 API', 'settings_api': '设置窗口 API',
+  'assets:serve': '静态资源', 'settings:section': '设置页区块', 'buttons': '顶栏按钮',
+  'startup': '启动动画', 'window': '窗口尺寸', 'host:evaluate_js': '窗口脚本注入'
+};
+
+function renderPluginItem(p) {
+  const ok = p.status === 'loaded';
+  const statusText = ok ? '已启用' : (p.status === 'disabled' ? '已停用' : '加载失败');
+  const statusCls = p.status === 'loaded' ? 'status-ok' : (p.status === 'failed' ? 'status-error' : 'plugin-status-off');
+  const perms = (p.permissions || []).map(x => PLUGIN_PERM_LABELS[x] || x).join('、') || '无特殊权限';
+  const meta = ['v' + esc(p.version || '?'), p.author ? esc(p.author) : ''].filter(Boolean).join(' · ');
+  const repo = p.repo ? '<div class="plugin-repo">' + esc(p.repo) + '</div>' : '';
+  const reason = p.reason ? '<div class="plugin-reason">' + esc(p.reason) + '</div>' : '';
+  const desc = p.description ? '<div class="plugin-desc">' + esc(p.description) + '</div>' : '';
+  return '<div class="plugin-item" data-pid="' + esc(p.id) + '">' +
+    '<div class="plugin-head plugin-acc-head" role="button" tabindex="0" aria-expanded="false"' +
+      ' onclick="pluginToggleCollapse(\'' + esc(p.id) + '\')"' +
+      ' onkeydown="pluginAccKey(event, \'' + esc(p.id) + '\')">' +
+      '<span class="plugin-acc-arrow" aria-hidden="true">▸</span>' +
+      '<span class="plugin-acc-title">' + esc(p.name || p.id) + '</span>' +
+      '<label class="plugin-toggle" onclick="event.stopPropagation()"><input type="checkbox" ' + (ok ? 'checked' : '') +
+        ' onchange="pluginToggle(this, \'' + esc(p.id) + '\')"><span class="plugin-status ' +
+        statusCls + '">' + statusText + '</span></label>' +
+    '</div>' +
+    '<div class="plugin-acc-body" id="plugin-body-' + esc(p.id) + '" hidden>' +
+      '<div class="plugin-meta"><b>' + meta + '</b></div>' + desc + repo +
+      '<div class="plugin-perms">权限: ' + esc(perms) + '</div>' + reason +
+    '</div>' +
+  '</div>';
+}
+
+function pluginToggleCollapse(pid) {
+  const body = document.getElementById('plugin-body-' + pid);
+  if (!body) return;
+  const open = body.hasAttribute('hidden');
+  if (open) body.removeAttribute('hidden');
+  else body.setAttribute('hidden', '');
+  const head = body.previousElementSibling;
+  if (head && head.classList.contains('plugin-acc-head')) {
+    head.setAttribute('aria-expanded', open ? 'true' : 'false');
+  }
+  body.closest('.plugin-item').classList.toggle('open', open);
+}
+
+function pluginAccKey(ev, pid) {
+  if (ev.key === 'Enter' || ev.key === ' ') {
+    ev.preventDefault();
+    pluginToggleCollapse(pid);
+  }
+}
+
+let initPluginRetries = 0;
+
+async function initPlugins() {
+  let list = await api('plugin_list');
+  // 桥接未就绪时 api() 返回 null，与 initSettings 同样重试后再判定为空
+  if (!Array.isArray(list)) {
+    if (initPluginRetries < 20) {
+      initPluginRetries++;
+      setTimeout(initPlugins, 200);
+    }
+    return;
+  }
+  initPluginRetries = 0;
+  const root = document.getElementById('plugin-list');
+  if (root) {
+    root.innerHTML = list.length
+      ? list.map(renderPluginItem).join('')
+      : '<div class="plugin-empty">暂无插件。把插件文件夹放入插件目录后重启软件即可加载。</div>';
+  }
+  for (const p of list) {
+    const body = document.getElementById('plugin-body-' + p.id);
+    if (body) {
+      document.querySelectorAll('.section[data-plugin="' + p.id + '"]').forEach(sec => {
+        if (!body.contains(sec)) body.appendChild(sec);
+      });
+    }
+    if (p.status !== 'loaded') continue;
+    const values = await api('plugin_get_settings', p.id);
+    if (!values) continue;
+    document.querySelectorAll('[data-plugin="' + p.id + '"][data-key]').forEach(el => {
+      const v = values[el.dataset.key];
+      if (v === undefined || v === null) return;
+      if (el.type === 'checkbox') el.checked = !!v;
+      else el.value = v;
+    });
+    window.dispatchEvent(new CustomEvent('omm-plugin-section-filled', { detail: { plugin_id: p.id } }));
+  }
+}
+
+async function pluginToggle(el, pid) {
+  const r = await api('plugin_set_enabled', pid, el.checked);
+  if (!r || !r.ok) {
+    showToast('操作失败');
+    el.checked = !el.checked;
+    return;
+  }
+  if (r.restart) showToast('已启用，重启软件后生效');
+  else showToast(r.enabled ? '已启用' : '已停用');
+}
+
+async function pluginSaveSection(pid) {
+  const data = {};
+  document.querySelectorAll('[data-plugin="' + pid + '"][data-key]').forEach(el => {
+    if (!el.dataset.key) return;
+    data[el.dataset.key] = el.type === 'checkbox' ? el.checked : el.value;
+  });
+  const r = await api('plugin_save_settings', pid, data);
+  if (!r || !r.ok) {
+    showToast('保存失败：' + ((r && r.error) || '未知错误'));
+    return;
+  }
+  showToast('插件设置已保存');
+}
+
+function pluginOpenDir() {
+  Promise.resolve(api('plugin_open_dir')).then(r => {
+    if (!r || !r.ok) showToast('打开插件目录失败');
+  }).catch(() => {});
+}
+
+// 插件设置保存后由后端推送：刷新插件 CSS link（改 URL 防缓存）+ 通知插件脚本
+window.ommPluginRefresh = function (pid) {
+  document.querySelectorAll('link[href*="/plugins/"]').forEach(link => {
+    try {
+      const url = new URL(link.getAttribute('href'), location.href);
+      url.searchParams.set('t', Date.now());
+      link.href = url.pathname + url.search;
+    } catch (e) {}
+  });
+  window.dispatchEvent(new CustomEvent('omm-plugin-refresh', { detail: { plugin_id: pid } }));
+};
+
 /* 左栏分组导航：显示对应分组的 section，隐藏其余 */
 function switchSettingsGroup(group) {
   document.querySelectorAll('#settings-nav .nav-item').forEach(btn => {
@@ -2434,4 +2652,5 @@ document.addEventListener('DOMContentLoaded', () => {
   initSettings();
   setTimeout(initVersion, 500);
   initDirtyTracking();
+  initPlugins();
 });
