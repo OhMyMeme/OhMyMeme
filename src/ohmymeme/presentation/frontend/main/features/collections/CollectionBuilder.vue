@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { useCollectionBuilder } from './useCollectionBuilder'
 import { trapTabFocus } from '../../shared/bridge'
+import { NInput, NButton } from 'naive-ui'
 
 const cb = useCollectionBuilder()
 
@@ -19,13 +20,11 @@ function onBoxKeydown(e: KeyboardEvent) {
       <div class="cb-header">
         <h2 id="cb-title">添加分组</h2>
         <div class="cb-name-wrap">
-          <input
-            id="cb-name"
-            v-model="cb.collectionName.value"
-            type="text"
+          <NInput
+            v-model:value="cb.collectionName.value"
+            :input-props="{ id: 'cb-name', autocomplete: 'off', spellcheck: 'false' }"
             placeholder="输入分组名或选择已有分组..."
-            autocomplete="off"
-            spellcheck="false"
+            style="width: 100%"
             @focus="cb.showDropdown.value = true"
           />
           <div v-if="cb.showDropdown.value" id="cb-dropdown" class="cb-dropdown show">
@@ -49,12 +48,11 @@ function onBoxKeydown(e: KeyboardEvent) {
       </div>
 
       <div class="cb-search">
-        <input
-          v-model="cb.searchQuery.value"
-          type="text"
+        <NInput
+          v-model:value="cb.searchQuery.value"
+          :input-props="{ autocomplete: 'off', spellcheck: 'false' }"
           placeholder="搜索表情包添加到分组..."
-          autocomplete="off"
-          spellcheck="false"
+          style="width: 100%"
         />
       </div>
 
@@ -108,12 +106,12 @@ function onBoxKeydown(e: KeyboardEvent) {
 
       <div v-if="cb.memberLoadError.value" class="cb-error">
         <span>分组信息加载失败，请重试</span>
-        <button class="btn btn-sm btn-secondary" @click="cb.retryLoadMembers()">重试</button>
+        <NButton class="btn btn-sm btn-secondary" size="small" @click="cb.retryLoadMembers()">重试</NButton>
       </div>
 
       <div class="cb-footer">
-        <button class="btn btn-secondary" @click="cb.close()">取消</button>
-        <button class="btn btn-primary" :disabled="cb.memberLoading.value || cb.memberLoadError.value || !cb.collectionName.value.trim()" @click="cb.confirm()">{{ cb.selectedId.value != null ? '保存到该分组' : '创建分组' }}</button>
+        <NButton class="btn btn-secondary" @click="cb.close()">取消</NButton>
+        <NButton class="btn btn-primary" type="primary" :disabled="cb.memberLoading.value || cb.memberLoadError.value || !cb.collectionName.value.trim()" @click="cb.confirm()">{{ cb.selectedId.value != null ? '保存到该分组' : '创建分组' }}</NButton>
       </div>
     </div>
   </div>

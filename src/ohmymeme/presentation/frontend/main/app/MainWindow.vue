@@ -16,6 +16,7 @@ import TagEditor from '../features/tags/TagEditor.vue'
 import UpdateDialog from '../features/updates/UpdateDialog.vue'
 import type { Meme } from '../shared/types'
 import { api } from '../shared/bridge'
+import { NButton } from 'naive-ui'
 
 const { state, setMemes, search, goToPage, setSearch, toggleTag, setActiveCollection, refreshTags, refreshCollections, copyMeme, reorderMemes, canReorder, startNativeDrag, selectAllVisible, clearSelection, loadInitData } = useMemes()
 const ctx = useContextMenu()
@@ -877,9 +878,9 @@ onUnmounted(() => {
 
         <div v-if="selectMode" id="batch-bar">
           <span class="count">已选 {{ state.selectedIds.size }} 项</span>
-          <button class="btn btn-sm" :disabled="state.memes.length === 0" @click="selectAllVisible">全选当前页</button>
-          <button class="btn btn-sm btn-secondary" :disabled="state.selectedIds.size === 0" @click="clearSelection">取消选择</button>
-          <button class="btn btn-sm btn-danger" :disabled="state.selectedIds.size === 0" @click="batchDelete">批量删除</button>
+          <NButton class="btn btn-sm" size="small" :disabled="state.memes.length === 0" @click="selectAllVisible">全选当前页</NButton>
+          <NButton class="btn btn-sm btn-secondary" size="small" :disabled="state.selectedIds.size === 0" @click="clearSelection">取消选择</NButton>
+          <NButton class="btn btn-sm btn-danger" size="small" type="error" :disabled="state.selectedIds.size === 0" @click="batchDelete">批量删除</NButton>
         </div>
 
         <div id="grid-wrap">
@@ -966,7 +967,7 @@ onUnmounted(() => {
               <path d="M8.5 13.5h7M8.5 16.5h4.5"/>
             </svg>
             <div class="text">还没有表情包</div>
-            <button class="btn btn-primary" @click="showImportMenu()">导入表情包</button>
+            <NButton class="btn btn-primary" type="primary" @click="showImportMenu()">导入表情包</NButton>
           </div>
         </div>
       </div>
