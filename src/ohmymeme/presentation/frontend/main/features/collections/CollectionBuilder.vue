@@ -1,8 +1,63 @@
 <script setup lang="ts">
+import { computed, h, ref } from 'vue'
+import { NAutoComplete, NButton, NInput, NModal, NSpin } from 'naive-ui'
 import { useCollectionBuilder } from './useCollectionBuilder'
-import { NInput, NButton, NModal } from 'naive-ui'
+import type { CollectionOption } from './useCollectionBuilder'
 
 const cb = useCollectionBuilder()
+
+// 创建项值前缀，避免与已有分组同名时选项 key 冲突
+const CREATE_VALUE_PREFIX = '\u0000create:'
+// 名称输入是否聚焦：聚焦且存在候选时展开候选列表
+const nameFocused = ref(false)
+
+interface NameOption {
+  label: string
+  value: string
+  create?: boolean
+  option?: CollectionOption
+}
+
+// 名称候选：已输入名称时首项为创建新分组，随后为已有分组
+const nameOptions = computed<NameOption[]>(() => {
+  const name = cb.collectionName.value.trim()
+  const options: NameOption[] = []
+  if (name) options.push({ label: name, value: CREATE_VALUE_PREFIX + name, create: true })
+  for (const o of cb.collectionOptions.value) options.push({ label: o.name, value: o.name, option: o })
+  return options
+})
+
+// 候选列表是否展开：聚焦且存在候选时展开已有分组列表
+function showNameOptions() {
+  return nameFocused.value && nameOptions.value.length > 0
+}
+
+// 候选渲染：创建项加「创建新分组」提示，已有分组仅显示名称
+function renderNameLabel(option: NameOption) {
+  if (!option.create) return option.label
+  return h('span', { style: 'display:flex;align-items:center;justify-content:space-between;width:100%' }, [
+    h('span', { style: 'color:var(--primary)' }, '「' + option.label + '」'),
+    h('span', { style: 'font-size:11px;color:var(--muted);margin-left:8px' }, '创建新分组'),
+  ])
+}
+
+// 输入变化：同步到分组名（选中已有分组时 watch 会回退为新建）
+function onNameInput(value: string) {
+  cb.collectionName.value = value
+}
+
+// 选择候选：创建项走新建并保留已输入名称，已有分组走选中并回填名称
+function onNameSelect(value: unknown) {
+  const opt = nameOptions.value.find(o => o.value === value)
+  if (!opt) return
+  if (opt.create) {
+    cb.createNew()
+    cb.collectionName.value = opt.label
+  } else if (opt.option) {
+    cb.selectCollection(opt.option)
+    cb.collectionName.value = opt.option.name
+  }
+}
 
 // 关闭分组编辑器且不把 Esc 传给窗口快捷键。
 function onBoxKeydown(e: KeyboardEvent) {
@@ -26,34 +81,20 @@ function onShowChange(show: boolean) {
     <div id="cb-box" role="dialog" aria-modal="true" aria-labelledby="cb-title" @keydown="onBoxKeydown">
       <div class="cb-header">
         <h2 id="cb-title">添加分组</h2>
-        <div class="cb-name-wrap">
-          <NInput
-            v-model:value="cb.collectionName.value"
-            :input-props="{ id: 'cb-name', autocomplete: 'off', spellcheck: 'false' }"
-            placeholder="输入分组名或选择已有分组..."
-            style="width: 100%"
-            @focus="cb.showDropdown.value = true"
-          />
-          <div v-if="cb.showDropdown.value" id="cb-dropdown" class="cb-dropdown show">
-            <div class="cb-dd-section" v-if="cb.collectionName.value.trim() || cb.selectedId.value == null">新建分组</div>
-            <NButton v-if="cb.collectionName.value.trim()" class="cb-dd-item cb-dd-new-item" quaternary block @click="cb.createNew()">
-              <span class="cb-dd-new">「{{ cb.collectionName.value }}」</span>
-              <span class="cb-dd-hint">创建新分组</span>
-            </NButton>
-            <div class="cb-dd-section">加入已有分组</div>
-            <NButton
-              v-for="opt in cb.collectionOptions.value"
-              :key="opt.id"
-              class="cb-dd-item"
-              :class="{ 'cb-dd-selected': cb.selectedId.value === opt.id }"
-              quaternary
-              block
-              @click="cb.selectCollection(opt)"
-            >
-              {{ opt.name }}
-            </NButton>
-          </div>
-        </div>
+        <NAutoComplete
+          :value="cb.collectionName.value"
+          :options="nameOptions"
+          :render-label="renderNameLabel"
+          :input-props="{ id: 'cb-name', autocomplete: 'off', spellcheck: 'false' }"
+          :get-show="showNameOptions"
+          placeholder="输入分组名或选择已有分组..."
+          style="width: 100%"
+          blur-after-select
+          @update:value="onNameInput"
+          @select="onNameSelect"
+          @focus="nameFocused = true"
+          @blur="nameFocused = false"
+        />
       </div>
 
       <div class="cb-search">
@@ -65,7 +106,7 @@ function onShowChange(show: boolean) {
         />
       </div>
 
-      <div v-if="cb.loading.value" class="cb-loading">加载中...</div>
+      <div v-if="cb.loading.value" class="cb-loading"><NSpin size="small" /></div>
 
       <div v-else id="cb-cols">
         <div class="cb-col">
@@ -148,69 +189,6 @@ function onShowChange(show: boolean) {
   font-size: 15px;
   font-weight: 600;
   margin-bottom: 10px;
-}
-
-.cb-name-wrap {
-  position: relative;
-}
-
-.cb-dropdown {
-  position: absolute;
-  top: 100%;
-  left: 0;
-  right: 0;
-  background: var(--surface);
-  border: 1px solid var(--border);
-  border-radius: var(--radius-sm);
-  max-height: 200px;
-  overflow-y: auto;
-  z-index: 10;
-  box-shadow: var(--shadow-lg);
-  margin-top: 4px;
-}
-
-.cb-dd-item {
-  padding: 8px 12px;
-  font-size: 13px;
-  cursor: pointer;
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-}
-
-.cb-dd-item :deep(.n-button__content) {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  width: 100%;
-}
-
-.cb-dd-section {
-  padding: 5px 12px;
-  font-size: 11px;
-  font-weight: 600;
-  color: var(--muted);
-  background: var(--surface-2);
-  text-transform: uppercase;
-  letter-spacing: 0.3px;
-}
-
-.cb-dd-selected {
-  color: var(--primary);
-  font-weight: 600;
-}
-
-.cb-dd-item:hover {
-  background: var(--surface-2);
-}
-
-.cb-dd-new {
-  color: var(--primary);
-}
-
-.cb-dd-hint {
-  font-size: 11px;
-  color: var(--muted);
 }
 
 .cb-search {

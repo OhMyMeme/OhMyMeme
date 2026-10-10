@@ -1,6 +1,7 @@
 <script setup lang="ts">
-import { ref, watch, nextTick } from 'vue'
-import { NButton } from 'naive-ui'
+import { computed, h, onUnmounted, watch } from 'vue'
+import type { VNodeChild } from 'vue'
+import { NDropdown } from 'naive-ui'
 import type { MenuItem, MenuTrigger } from './useContextMenu'
 
 const props = defineProps<{
@@ -9,165 +10,67 @@ const props = defineProps<{
   y: number
   items: MenuItem[]
   trigger: MenuTrigger
-  submenuVisible: boolean
-  submenuItems: MenuItem[]
-  submenuX: number
-  submenuY: number
 }>()
 
 const emit = defineEmits<{
   action: [action: string, trigger: MenuTrigger]
-  'show-submenu': [items: MenuItem[], x: number, y: number]
-  'hide-submenu': []
   close: []
 }>()
 
-const menuEl = ref<HTMLElement>()
-const submenuEl = ref<HTMLElement>()
-const pos = ref({ x: props.x, y: props.y })
-const subPos = ref({ x: props.submenuX, y: props.submenuY })
-
-// 把菜单位置钳制在窗口可见范围内（越界时翻转/内移）
-function clamp(el: HTMLElement | undefined, x: number, y: number) {
-  if (!el) return { x, y }
-  const w = el.offsetWidth
-  const h = el.offsetHeight
-  const vw = window.innerWidth
-  const vh = window.innerHeight
-  let left = x
-  let top = y
-  if (left + w > vw) left = Math.max(4, vw - w - 4)
-  if (top + h > vh) top = Math.max(4, vh - h - 4)
-  if (left < 4) left = 4
-  if (top < 4) top = 4
-  return { x: left, y: top }
+// MenuItem 转 NDropdown 选项（保留子菜单、危险色与禁用态）
+function toOption(item: MenuItem): Record<string, unknown> {
+  const option: Record<string, unknown> = {
+    key: item.action,
+    label: item.label,
+    disabled: item.disabled === true,
+    danger: item.danger === true,
+  }
+  if (item.children && item.children.length) option.children = item.children.map(toOption)
+  return option
 }
 
-watch(() => [props.visible, props.items, props.x, props.y], async () => {
-  if (props.visible) {
-    await nextTick()
-    pos.value = clamp(menuEl.value, props.x, props.y)
-  }
-})
+const options = computed(() => props.items.map(toOption))
 
-watch(() => [props.submenuVisible, props.submenuItems, props.submenuX, props.submenuY], async () => {
-  if (props.submenuVisible) {
-    await nextTick()
-    subPos.value = clamp(submenuEl.value, props.submenuX, props.submenuY)
-  }
-})
-
-// 点击子菜单项切换展开/收起；子菜单位于该项右缘，避免锚在鼠标点漂移
-function onItemClick(e: MouseEvent, item: MenuItem) {
-  if (item.action === 'add-to-subgroup') {
-    if (props.submenuVisible) {
-      emit('hide-submenu')
-    } else {
-      const r = (e.currentTarget as HTMLElement).getBoundingClientRect()
-      emit('show-submenu', [], r.right + 4, r.top)
-    }
-    return
-  }
-  emit('action', item.action, {} as MenuTrigger)
+// 危险项用主题 danger 色渲染（Naive 菜单无内建 danger 色）
+function renderLabel(option: Record<string, unknown>): VNodeChild {
+  const label = String(option.label ?? '')
+  if (option.danger === true) return h('span', { style: 'color: var(--danger)' }, label)
+  return label
 }
+
+// 选中菜单项：动作交回父组件分发
+function onSelect(key: string | number) {
+  emit('action', String(key), props.trigger)
+}
+
+// 菜单关闭（选择/点外/键盘）统一通知父组件
+function onShowChange(show: boolean) {
+  if (!show) emit('close')
+}
+
+// 菜单打开期间屏蔽系统右键菜单并按旧行为关闭
+function onDocContextMenu(e: MouseEvent) {
+  e.preventDefault()
+  emit('close')
+}
+watch(() => props.visible, (visible) => {
+  if (visible) document.addEventListener('contextmenu', onDocContextMenu, true)
+  else document.removeEventListener('contextmenu', onDocContextMenu, true)
+})
+onUnmounted(() => document.removeEventListener('contextmenu', onDocContextMenu, true))
 </script>
 
 <template>
-  <div v-if="visible" class="ctx-overlay" @click="emit('close')" @contextmenu.prevent="emit('close')">
-    <div ref="menuEl" class="ctx-menu" :style="{ left: pos.x + 'px', top: pos.y + 'px' }">
-      <NButton
-        v-for="item in items"
-        :key="item.action"
-        class="ctx-item"
-        :class="{ danger: item.danger }"
-        :disabled="item.disabled"
-        quaternary
-        block
-        @click.stop="onItemClick($event, item)"
-      >
-        <span class="ctx-item-label">{{ item.label }}</span>
-        <span v-if="item.action === 'add-to-subgroup'" class="ctx-item-arrow">▸</span>
-      </NButton>
-    </div>
-    <div v-if="submenuVisible" ref="submenuEl" class="ctx-submenu" :style="{ left: subPos.x + 'px', top: subPos.y + 'px' }">
-      <NButton
-        v-for="item in submenuItems"
-        :key="item.action"
-        class="ctx-item"
-        quaternary
-        block
-        @click.stop="onItemClick($event, item)"
-      >
-        <span class="ctx-item-label">{{ item.label }}</span>
-      </NButton>
-    </div>
-  </div>
+  <NDropdown
+    trigger="manual"
+    placement="bottom-start"
+    :show="visible"
+    :x="x"
+    :y="y"
+    :options="options"
+    :render-label="renderLabel"
+    @select="onSelect"
+    @update:show="onShowChange"
+    @clickoutside="onShowChange(false)"
+  />
 </template>
-
-<style scoped>
-.ctx-overlay {
-  position: fixed;
-  inset: 0;
-  z-index: 700;
-}
-
-.ctx-menu, .ctx-submenu {
-  position: fixed;
-  background: var(--surface);
-  border: 1px solid var(--border);
-  border-radius: var(--radius-sm);
-  padding: 4px;
-  min-width: 160px;
-  box-shadow: var(--shadow-lg);
-  z-index: 701;
-  animation: ctxFadeIn 0.1s ease;
-}
-
-@keyframes ctxFadeIn {
-  from { opacity: 0; transform: scale(0.95); }
-  to { opacity: 1; transform: scale(1); }
-}
-
-.ctx-item {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  width: 100%;
-  padding: 7px 12px;
-  font-size: 12px;
-  text-align: left;
-}
-
-.ctx-item :deep(.n-button__content) {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  width: 100%;
-}
-
-.ctx-item-label {
-  flex: 1;
-  text-align: left;
-}
-
-.ctx-item-arrow {
-  color: var(--muted);
-  font-size: 11px;
-  margin-left: 12px;
-}
-
-.ctx-menu .ctx-item,
-.ctx-submenu .ctx-item {
-  color: var(--fg);
-}
-
-.ctx-menu .ctx-item.danger,
-.ctx-submenu .ctx-item.danger {
-  color: var(--danger);
-}
-
-.ctx-menu .ctx-item.danger:hover,
-.ctx-submenu .ctx-item.danger:hover {
-  background: rgba(239, 68, 68, 0.1);
-}
-</style>

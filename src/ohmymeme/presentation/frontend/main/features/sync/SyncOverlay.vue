@@ -1,12 +1,14 @@
 <script setup lang="ts">
 import { ref, computed } from 'vue'
-import { NModal, NButton, NProgress, NCheckbox } from 'naive-ui'
+import { NModal, NButton, NProgress, NCheckbox, useMessage } from 'naive-ui'
 import { api } from '../../shared/bridge'
 
 const emit = defineEmits<{
   synced: []
   done: []
 }>()
+
+const message = useMessage()
 
 const progressVisible = ref(false)
 const progressTitle = ref('同步中...')
@@ -38,11 +40,7 @@ function formatSpeed(bytesPerSec: number) {
 }
 
 function showToast(msg: string) {
-  const el = document.getElementById('toast')
-  if (!el) return
-  el.textContent = msg
-  el.classList.add('show')
-  setTimeout(() => el.classList.remove('show'), 1600)
+  message.info(msg, { duration: 1600 })
 }
 
 async function showUploadWarning(): Promise<boolean> {

@@ -1,7 +1,9 @@
 <script setup lang="ts">
 import { ref, onUnmounted } from 'vue'
-import { NModal, NButton, NProgress } from 'naive-ui'
+import { NModal, NButton, NProgress, useMessage } from 'naive-ui'
 import { api, renderMarkdown } from '../../shared/bridge'
+
+const message = useMessage()
 
 const visible = ref(false)
 const current = ref('')
@@ -35,11 +37,7 @@ function onShowChange(v: boolean) {
 }
 
 function showToast(msg: string) {
-  const el = document.getElementById('toast')
-  if (!el) return
-  el.textContent = msg
-  el.classList.add('show')
-  setTimeout(() => el.classList.remove('show'), 1600)
+  message.info(msg, { duration: 1600 })
 }
 
 async function startDownload() {

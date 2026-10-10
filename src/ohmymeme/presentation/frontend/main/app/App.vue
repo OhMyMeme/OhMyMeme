@@ -6,7 +6,7 @@ import { naiveThemeOverrides } from '../../shared/naive-theme'
 
 <template>
   <NConfigProvider :theme="darkTheme" :theme-overrides="naiveThemeOverrides" :locale="zhCN" :date-locale="dateZhCN">
-    <NMessageProvider>
+    <NMessageProvider placement="bottom">
       <NDialogProvider>
         <MainWindow />
       </NDialogProvider>

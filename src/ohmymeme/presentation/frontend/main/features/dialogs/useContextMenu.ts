@@ -1,4 +1,4 @@
-import { ref, reactive } from 'vue'
+import { ref } from 'vue'
 
 export interface MenuItem {
   action: string
@@ -6,6 +6,7 @@ export interface MenuItem {
   danger?: boolean
   disabled?: boolean
   divider?: boolean
+  children?: MenuItem[]
 }
 
 export interface MenuTrigger {
@@ -26,35 +27,20 @@ const x = ref(0)
 const y = ref(0)
 const items = ref<MenuItem[]>([])
 const trigger = ref<MenuTrigger>({})
-const submenuVisible = ref(false)
-const submenuItems = ref<MenuItem[]>([])
-const submenuX = ref(0)
-const submenuY = ref(0)
 
 export function useContextMenu() {
+  // 打开菜单：记录条目、上下文与坐标（子菜单由条目 children 携带）
   function show(newItems: MenuItem[], newTrigger: MenuTrigger, posX: number, posY: number) {
     items.value = newItems
     trigger.value = newTrigger
     x.value = posX
     y.value = posY
     visible.value = true
-    submenuVisible.value = false
   }
 
+  // 关闭菜单
   function hide() {
     visible.value = false
-    submenuVisible.value = false
-  }
-
-  function showSubmenu(subItems: MenuItem[], sx: number, sy: number) {
-    submenuItems.value = subItems
-    submenuX.value = sx
-    submenuY.value = sy
-    submenuVisible.value = true
-  }
-
-  function hideSubmenu() {
-    submenuVisible.value = false
   }
 
   return {
@@ -63,13 +49,7 @@ export function useContextMenu() {
     y,
     items,
     trigger,
-    submenuVisible,
-    submenuItems,
-    submenuX,
-    submenuY,
     show,
     hide,
-    showSubmenu,
-    hideSubmenu,
   }
 }

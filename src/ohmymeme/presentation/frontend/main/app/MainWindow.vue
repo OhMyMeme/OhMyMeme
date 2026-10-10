@@ -16,12 +16,13 @@ import TagEditor from '../features/tags/TagEditor.vue'
 import UpdateDialog from '../features/updates/UpdateDialog.vue'
 import type { Meme } from '../shared/types'
 import { api } from '../shared/bridge'
-import { NButton, NInput, NTag, NModal } from 'naive-ui'
+import { NButton, NInput, NTag, NModal, NSpin, useMessage } from 'naive-ui'
 import { lanConfirmVisible, lanConfirmDevice, confirmLanDevice, onLanConfirmShowChange } from '../features/lan/showLanDeviceConfirm'
 
 const { state, setMemes, search, goToPage, setSearch, toggleTag, setActiveCollection, refreshTags, refreshCollections, copyMeme, reorderMemes, canReorder, startNativeDrag, selectAllVisible, clearSelection, loadInitData } = useMemes()
 const ctx = useContextMenu()
 const cb = useCollectionBuilder()
+const message = useMessage()
 const tagEditor = ref<InstanceType<typeof TagEditor> | null>(null)
 const updateDialog = ref<InstanceType<typeof UpdateDialog> | null>(null)
 const inputDialog = ref<InstanceType<typeof InputDialog> | null>(null)
@@ -177,12 +178,9 @@ async function handleCopy(meme: Meme) {
   else showToast('复制失败')
 }
 
+// 消息提示：走 Naive NMessage，保留原 toast 的 1600ms 时长
 function showToast(msg: string) {
-  const el = document.getElementById('toast')
-  if (!el) return
-  el.textContent = msg
-  el.classList.add('show')
-  setTimeout(() => el.classList.remove('show'), 1600)
+  message.info(msg, { duration: 1600 })
 }
 
 // 卡片悬停快速收藏（右键菜单外的一键入口）
@@ -301,45 +299,11 @@ function onWindowMouseMove(e: MouseEvent) {
 
 function onWindowMouseUp() { dragState = null }
 
-function onMemeRightClick(e: MouseEvent, meme: Meme) {
-  e.preventDefault()
-  e.stopPropagation()
-  const items: MenuItem[] = [
-    { action: 'rename', label: '重命名' },
-    { action: 'favorite', label: meme.favorited ? '取消收藏' : '收藏' },
-    { action: 'tag', label: '打标签' },
-    { action: 'collection', label: '添加分组' },
-  ]
-  if (state.activeCollection && state.activeCollection > 0) {
-    items.push({ action: 'add-to-subgroup', label: '加入小分组' })
-    items.push({ action: 'remove-collection', label: '移出该分组' })
-  }
-  if (state.activeCollection === -3) {
-    items.push({ action: 'remove-recent', label: '从最近使用中删除' })
-  }
-  items.push({ action: 'delete', label: '删除', danger: true })
-  ctx.show(items, { memeId: meme.id, filename: meme.filename, memeName: meme.name, favorited: meme.favorited }, e.clientX, e.clientY)
-}
-
-function onFolderRightClick(e: MouseEvent, folderId: number, folderName: string) {
-  e.preventDefault()
-  e.stopPropagation()
-  const items: MenuItem[] = [{ action: 'rename-collection', label: '重命名' }]
-  if (folderId === -3) {
-    items.push({ action: 'clear-recent', label: '清空最近使用', danger: true })
-  } else if (folderId > 0) {
-    items.push({ action: 'add-to-subgroup', label: '新建子分组' })
-    items.push({ action: 'delete-collection', label: '删除', danger: true })
-  }
-  ctx.show(items, { folderId, folderName, isFolder: true }, e.clientX, e.clientY)
-}
-
-// 右键「加入小分组」子菜单：加载已有分组
-async function onShowSubmenu(_items: any[], x: number, y: number) {
-  // 只显示当前分组（正 ID）下的子分组；不在分组内时无子分组
+// 右键子菜单项：加载当前分组（正 ID）下的子分组
+async function buildSubgroupItems(): Promise<MenuItem[]> {
   const targetCol = state.activeCollection && state.activeCollection > 0 ? state.activeCollection : null
   const children = targetCol ? ((await api('get_child_collections', targetCol)) || []) : []
-  const sub: { action: string; label: string }[] = []
+  const sub: MenuItem[] = []
   if (!targetCol) {
     sub.push({ action: '__new-subgroup__', label: '新建分组' })
   } else {
@@ -348,7 +312,44 @@ async function onShowSubmenu(_items: any[], x: number, y: number) {
       sub.push({ action: 'subgroup-' + ch.id, label: ch.name })
     }
   }
-  ctx.showSubmenu(sub, x, y)
+  return sub
+}
+
+async function onMemeRightClick(e: MouseEvent, meme: Meme) {
+  e.preventDefault()
+  e.stopPropagation()
+  const posX = e.clientX
+  const posY = e.clientY
+  const items: MenuItem[] = [
+    { action: 'rename', label: '重命名' },
+    { action: 'favorite', label: meme.favorited ? '取消收藏' : '收藏' },
+    { action: 'tag', label: '打标签' },
+    { action: 'collection', label: '添加分组' },
+  ]
+  if (state.activeCollection && state.activeCollection > 0) {
+    items.push({ action: 'add-to-subgroup', label: '加入小分组', children: await buildSubgroupItems() })
+    items.push({ action: 'remove-collection', label: '移出该分组' })
+  }
+  if (state.activeCollection === -3) {
+    items.push({ action: 'remove-recent', label: '从最近使用中删除' })
+  }
+  items.push({ action: 'delete', label: '删除', danger: true })
+  ctx.show(items, { memeId: meme.id, filename: meme.filename, memeName: meme.name, favorited: meme.favorited }, posX, posY)
+}
+
+async function onFolderRightClick(e: MouseEvent, folderId: number, folderName: string) {
+  e.preventDefault()
+  e.stopPropagation()
+  const posX = e.clientX
+  const posY = e.clientY
+  const items: MenuItem[] = [{ action: 'rename-collection', label: '重命名' }]
+  if (folderId === -3) {
+    items.push({ action: 'clear-recent', label: '清空最近使用', danger: true })
+  } else if (folderId > 0) {
+    items.push({ action: 'add-to-subgroup', label: '新建子分组', children: await buildSubgroupItems() })
+    items.push({ action: 'delete-collection', label: '删除', danger: true })
+  }
+  ctx.show(items, { folderId, folderName, isFolder: true }, posX, posY)
 }
 
 async function onCtxAction(action: string) {
@@ -1041,10 +1042,7 @@ onUnmounted(() => {
   <ContextMenu
     :visible="ctx.visible.value" :x="ctx.x.value" :y="ctx.y.value"
     :items="ctx.items.value" :trigger="ctx.trigger.value"
-    :submenu-visible="ctx.submenuVisible.value" :submenu-items="ctx.submenuItems.value"
-    :submenu-x="ctx.submenuX.value" :submenu-y="ctx.submenuY.value"
     @action="onCtxAction" @close="ctx.hide"
-    @show-submenu="onShowSubmenu" @hide-submenu="ctx.hideSubmenu"
   />
 
   <div id="drop-overlay" :class="{ 'drag-over': dragOver }">
@@ -1056,8 +1054,7 @@ onUnmounted(() => {
     </div>
   </div>
 
-  <div id="toast" role="status" aria-live="polite"></div>
-  <div id="loading" :class="{ show: state.loading }"><div class="spinner"></div></div>
+  <div id="loading" :class="{ show: state.loading }"><NSpin :size="32" /></div>
 
   <Transition name="startup-fade">
     <div v-if="startupAnim" id="startup-anim" :style="{ background: state.startupBgColor }" @click="dismissStartupAnim">

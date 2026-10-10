@@ -1,12 +1,14 @@
 <script setup lang="ts">
 import { ref } from 'vue'
-import { NModal, NButton, NCheckbox } from 'naive-ui'
+import { NModal, NButton, NCheckbox, useMessage } from 'naive-ui'
 import { api } from '../../shared/bridge'
 
 const emit = defineEmits<{
   imported: []
   error: [msg: string]
 }>()
+
+const message = useMessage()
 
 const visible = ref(false)
 const pending = ref(false)
@@ -95,11 +97,7 @@ function importQQ() {
 }
 
 function showToast(msg: string) {
-  const el = document.getElementById('toast')
-  if (!el) return
-  el.textContent = msg
-  el.classList.add('show')
-  setTimeout(() => el.classList.remove('show'), 1600)
+  message.info(msg, { duration: 1600 })
 }
 
 defineExpose({ open, close })

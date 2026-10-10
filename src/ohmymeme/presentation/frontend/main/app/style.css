@@ -609,7 +609,7 @@ body {
   z-index: 2;
 }
 
-/* 底部批量操作栏（flow 布局，不与 toast/弹层重叠） */
+/* 底部批量操作栏（flow 布局，不与消息/弹层重叠） */
 #batch-bar {
   display: flex;
   align-items: center;
@@ -697,30 +697,6 @@ body {
   font-weight: 500;
 }
 
-/* Toast */
-#toast {
-  position: fixed;
-  bottom: 24px;
-  left: 50%;
-  transform: translateX(-50%) translateY(20px);
-  background: var(--surface-2);
-  border: 1px solid var(--border);
-  color: var(--fg);
-  padding: 10px 20px;
-  border-radius: var(--radius);
-  font-size: 13px;
-  opacity: 0;
-  pointer-events: none;
-  transition: all 0.2s;
-  z-index: 1000;
-  box-shadow: var(--shadow-lg);
-}
-
-#toast.show {
-  opacity: 1;
-  transform: translateX(-50%) translateY(0);
-}
-
 /* Loading */
 #loading {
   position: fixed;
@@ -738,19 +714,6 @@ body {
 #loading.show {
   opacity: 1;
   pointer-events: all;
-}
-
-.spinner {
-  width: 32px;
-  height: 32px;
-  border: 3px solid var(--border);
-  border-top-color: var(--primary);
-  border-radius: 50%;
-  animation: spin 0.8s linear infinite;
-}
-
-@keyframes spin {
-  to { transform: rotate(360deg); }
 }
 
 /* Startup animation (仅启动时播放) */

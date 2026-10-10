@@ -1,4 +1,4 @@
-import { ref, computed, onMounted, onUnmounted, watch, nextTick } from 'vue'
+import { ref, computed, watch, nextTick } from 'vue'
 import { api, rememberFocus, restoreFocus } from '../../shared/bridge'
 
 export interface CollectionBuilderMeme {
@@ -27,7 +27,6 @@ const allMemes = ref<CollectionBuilderMeme[]>([])
 const selectedIds = ref(new Set<number>())
 const collectionName = ref('')
 const collectionOptions = ref<CollectionOption[]>([])
-const showDropdown = ref(false)
 // 已选中的已有分组 id（null = 新建分组）
 const selectedId = ref<number | null>(null)
 const selectedName = ref('')
@@ -56,7 +55,6 @@ export function useCollectionBuilder() {
     collectionName.value = ''
     selectedId.value = null
     selectedName.value = ''
-    showDropdown.value = false
 
     const [memes, collections] = await Promise.all([
       api('search_memes', '', [], null, 0, 999999),
@@ -80,7 +78,6 @@ export function useCollectionBuilder() {
     memberLoading.value = false
     memberLoadError.value = false
     visible.value = false
-    showDropdown.value = false
     restoreFocus()
   }
 
@@ -113,7 +110,6 @@ export function useCollectionBuilder() {
     selectedId.value = opt.id
     selectedName.value = opt.name
     collectionName.value = opt.name
-    showDropdown.value = false
     // 已有分组：加载其现有成员，并保留预选的表情（右键带入的新增项）
     loadMembers(opt.id)
   }
@@ -123,9 +119,7 @@ export function useCollectionBuilder() {
     memberLoadError.value = false
     selectedId.value = null
     selectedName.value = ''
-    collectionName.value = ''
     selectedIds.value = new Set(preselectIds.value)
-    showDropdown.value = false
   }
   function retryLoadMembers() {
     if (selectedId.value != null) loadMembers(selectedId.value)
@@ -160,27 +154,6 @@ export function useCollectionBuilder() {
     )
   })
 
-  // 点击 NInput wrapper 或下拉之外的区域时收起分组下拉
-  function onClickOutside(e: MouseEvent) {
-    const dropdown = document.getElementById('cb-dropdown')
-    // NInput 的 id 落在内部 input 上，需向上取整个 wrapper 再判断点击区域
-    const nameInput = document.getElementById('cb-name')
-    const inputWrap = nameInput?.closest('.n-input') || nameInput
-    const target = e.target as Node
-    if (dropdown && !dropdown.contains(target) &&
-        inputWrap && !inputWrap.contains(target)) {
-      showDropdown.value = false
-    }
-  }
-
-  onMounted(() => {
-    document.addEventListener('click', onClickOutside)
-  })
-
-  onUnmounted(() => {
-    document.removeEventListener('click', onClickOutside)
-  })
-
   return {
     visible,
     loading,
@@ -191,7 +164,6 @@ export function useCollectionBuilder() {
     selectedId,
     collectionName,
     collectionOptions,
-    showDropdown,
     allMemes,
     filteredMemes,
     open,
