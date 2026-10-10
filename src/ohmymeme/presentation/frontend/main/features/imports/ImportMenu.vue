@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { ref } from 'vue'
+import { NModal, NButton, NCheckbox } from 'naive-ui'
 import { api } from '../../shared/bridge'
 
 const emit = defineEmits<{
@@ -9,6 +10,7 @@ const emit = defineEmits<{
 
 const visible = ref(false)
 const pending = ref(false)
+const makeGroup = ref(true)
 
 function open() {
   visible.value = true
@@ -16,6 +18,11 @@ function open() {
 
 function close() {
   visible.value = false
+}
+
+// 遮罩点击等关闭统一走 close
+function onShowChange(show: boolean) {
+  if (!show) close()
 }
 
 function appendRejected(msg: string, count?: number) {
@@ -42,10 +49,10 @@ async function importLocal() {
 async function importFolder() {
   close()
   if (pending.value) return
-  const makeGroup = document.getElementById('import-folder-group')?.checked !== false
+  const makeGroupValue = makeGroup.value
   pending.value = true
   try {
-    const r = await api('import_folder', makeGroup)
+    const r = await api('import_folder', makeGroupValue)
     if (!r) return
     if (!r.ok) {
       if (r.cancelled) return
@@ -99,33 +106,34 @@ defineExpose({ open, close })
 </script>
 
 <template>
-  <div v-if="visible" class="import-overlay" @click.self="close">
-    <div class="import-box">
+  <NModal
+    :show="visible"
+    :close-on-esc="false"
+    :theme-overrides="{ boxShadow: 'none' }"
+    transform-origin="center"
+    @update:show="onShowChange"
+  >
+    <div
+      class="import-box"
+      role="dialog"
+      aria-modal="true"
+      aria-label="选择导入方式"
+      @keydown.esc.stop="close"
+    >
       <div class="import-title">选择导入方式</div>
-      <button class="btn btn-primary btn-block" :disabled="pending" @click="importLocal">本地导入</button>
-      <button class="btn btn-primary btn-block" :disabled="pending" @click="importFolder">导入文件夹</button>
-      <button class="btn btn-primary btn-block" :disabled="pending" @click="importClipboard">从剪贴板导入</button>
-      <button class="btn btn-secondary btn-block" @click="importQQ">从手机版 QQ 缓存获取</button>
-      <label class="import-group-label">
-        <input id="import-folder-group" type="checkbox" checked> 导入文件夹时自动创建分组
-      </label>
-      <button class="btn btn-ghost btn-sm" @click="close">取消</button>
+      <NButton type="primary" block :disabled="pending" @click="importLocal">本地导入</NButton>
+      <NButton type="primary" block :disabled="pending" @click="importFolder">导入文件夹</NButton>
+      <NButton type="primary" block :disabled="pending" @click="importClipboard">从剪贴板导入</NButton>
+      <NButton block @click="importQQ">从手机版 QQ 缓存获取</NButton>
+      <div class="import-group-label">
+        <NCheckbox v-model:checked="makeGroup">导入文件夹时自动创建分组</NCheckbox>
+      </div>
+      <NButton quaternary size="small" @click="close">取消</NButton>
     </div>
-  </div>
+  </NModal>
 </template>
 
 <style scoped>
-.import-overlay {
-  position: fixed;
-  inset: 0;
-  background: rgba(0, 0, 0, 0.4);
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  z-index: 400;
-  animation: fadeIn 0.15s ease;
-}
-
 .import-box {
   background: var(--surface);
   border-radius: var(--radius-lg);
@@ -145,24 +153,13 @@ defineExpose({ open, close })
   margin-bottom: 6px;
 }
 
-.btn-block {
-  width: 100%;
-}
-
 .import-group-label {
   display: flex;
   align-items: center;
-  gap: 8px;
   justify-content: center;
   margin-top: 4px;
   font-size: 12px;
   color: var(--fg-secondary);
-  cursor: pointer;
   user-select: none;
-}
-
-@keyframes fadeIn {
-  from { opacity: 0; }
-  to { opacity: 1; }
 }
 </style>

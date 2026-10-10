@@ -1,5 +1,6 @@
 <script setup lang="ts">
-import { ref } from 'vue'
+import { ref, computed } from 'vue'
+import { NModal, NButton, NProgress, NCheckbox } from 'naive-ui'
 import { api } from '../../shared/bridge'
 
 const emit = defineEmits<{
@@ -23,6 +24,12 @@ const warningResolve = ref<((ok: boolean) => void) | null>(null)
 const warnHide = ref(false)
 
 let pollTimer: ReturnType<typeof setInterval> | null = null
+
+// NProgress 需要数值百分比，从 progressBar 字符串解析
+const progressValue = computed(() => {
+  const n = parseFloat(progressBar.value)
+  return Number.isFinite(n) ? n : 0
+})
 
 function formatSpeed(bytesPerSec: number) {
   if (bytesPerSec >= 1048576) return (bytesPerSec / 1048576).toFixed(1) + ' MB/s'
@@ -63,6 +70,11 @@ function cancelWarning() {
   warningVisible.value = false
   warningResolve.value?.(false)
   warningResolve.value = null
+}
+
+// NModal 遮罩点击等关闭统一按取消处理
+function onWarningShowChange(show: boolean) {
+  if (!show) cancelWarning()
 }
 
 async function start(method: string, title: string, progressSetting: string, doneSetting: string) {
@@ -125,58 +137,89 @@ defineExpose({ start, hideProgress, hideDone })
 
 <template>
   <!-- 进度浮层 -->
-  <div v-if="progressVisible" id="sync-progress-overlay">
-    <div class="sync-box">
+  <NModal
+    :show="progressVisible"
+    :close-on-esc="false"
+    :mask-closable="false"
+    :theme-overrides="{ boxShadow: 'none' }"
+    transform-origin="center"
+  >
+    <div
+      id="sync-progress-overlay"
+      class="sync-box"
+      role="dialog"
+      aria-modal="true"
+      @keydown.esc.stop="hideProgress"
+    >
       <div class="sync-title">{{ progressTitle }}</div>
       <div class="sync-file">{{ progressFile }}</div>
-      <div class="sync-bar-wrap">
-        <div class="sync-bar" :style="{ width: progressBar }"></div>
-      </div>
+      <NProgress
+        class="sync-bar"
+        :percentage="progressValue"
+        :height="8"
+        :border-radius="4"
+        :fill-border-radius="4"
+        :show-indicator="false"
+        color="var(--accent)"
+        rail-color="var(--bg)"
+      />
       <div class="sync-meta">
         <span>{{ progressPct }}</span>
         <span style="margin-left: 12px">{{ progressSpeed }}</span>
       </div>
-      <button class="btn btn-secondary btn-sm" @click="hideProgress">后台运行</button>
+      <NButton size="small" @click="hideProgress">后台运行</NButton>
     </div>
-  </div>
+  </NModal>
 
   <!-- 完成浮层 -->
-  <div v-if="doneVisible" id="sync-done-overlay">
-    <div class="sync-box">
+  <NModal
+    :show="doneVisible"
+    :close-on-esc="false"
+    :mask-closable="false"
+    :theme-overrides="{ boxShadow: 'none' }"
+    transform-origin="center"
+  >
+    <div
+      id="sync-done-overlay"
+      class="sync-box"
+      role="dialog"
+      aria-modal="true"
+      @keydown.esc.stop="hideDone"
+    >
       <div class="sync-title">{{ doneTitle }}</div>
       <div class="sync-detail">{{ doneDetail }}</div>
-      <button class="btn btn-primary" @click="hideDone">关闭</button>
+      <NButton type="primary" @click="hideDone">关闭</NButton>
     </div>
-  </div>
+  </NModal>
 
   <!-- 上传警告 -->
-  <div v-if="warningVisible" class="sync-warning-overlay" @click.self="cancelWarning">
-    <div class="sync-box">
+  <NModal
+    :show="warningVisible"
+    :close-on-esc="false"
+    :theme-overrides="{ boxShadow: 'none' }"
+    transform-origin="center"
+    @update:show="onWarningShowChange"
+  >
+    <div
+      class="sync-box"
+      role="dialog"
+      aria-modal="true"
+      @keydown.esc.stop="cancelWarning"
+    >
       <div class="sync-title">上传确认</div>
       <p class="sync-warning-text">上传会将本地的完整状态同步到远端，包括新增、更新和删除操作。远程文件将被覆盖，建议先下载备份。</p>
-      <label class="sync-warning-label">
-        <input v-model="warnHide" type="checkbox" style="width:15px;height:15px;accent-color:var(--accent);cursor:pointer"> 不再提醒
-      </label>
-      <div style="display:flex;gap:8px;justify-content:flex-end">
-        <button class="btn btn-secondary" @click="cancelWarning">取消</button>
-        <button class="btn btn-primary" @click="confirmWarning">继续上传</button>
+      <div class="sync-warning-label">
+        <NCheckbox v-model:checked="warnHide">不再提醒</NCheckbox>
+      </div>
+      <div class="sync-warning-actions">
+        <NButton @click="cancelWarning">取消</NButton>
+        <NButton type="primary" @click="confirmWarning">继续上传</NButton>
       </div>
     </div>
-  </div>
+  </NModal>
 </template>
 
 <style scoped>
-#sync-progress-overlay, #sync-done-overlay, .sync-warning-overlay {
-  position: fixed;
-  inset: 0;
-  background: rgba(0, 0, 0, 0.6);
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  z-index: 500;
-  animation: fadeIn 0.15s ease;
-}
-
 .sync-box {
   background: var(--surface);
   border-radius: var(--radius-lg);
@@ -201,20 +244,9 @@ defineExpose({ start, hideProgress, hideDone })
   word-break: break-all;
 }
 
-.sync-bar-wrap {
-  width: 100%;
-  height: 8px;
-  background: var(--bg);
-  border-radius: 4px;
-  overflow: hidden;
-  margin-bottom: 6px;
-}
-
 .sync-bar {
-  height: 100%;
-  background: var(--accent);
-  border-radius: 4px;
-  transition: width 0.3s;
+  width: 100%;
+  margin-bottom: 6px;
 }
 
 .sync-meta {
@@ -240,16 +272,16 @@ defineExpose({ start, hideProgress, hideDone })
 .sync-warning-label {
   display: flex;
   align-items: center;
-  gap: 8px;
-  cursor: pointer;
+  justify-content: center;
   font-size: 12.5px;
   color: var(--muted);
   margin-bottom: 16px;
   user-select: none;
 }
 
-@keyframes fadeIn {
-  from { opacity: 0; }
-  to { opacity: 1; }
+.sync-warning-actions {
+  display: flex;
+  gap: 8px;
+  justify-content: flex-end;
 }
 </style>

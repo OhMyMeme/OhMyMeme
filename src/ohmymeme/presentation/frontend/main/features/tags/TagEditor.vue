@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { ref, computed, nextTick } from 'vue'
-import { api, rememberFocus, restoreFocus, trapTabFocus } from '../../shared/bridge'
+import { NModal, NInput, NButton, NTag } from 'naive-ui'
+import { api } from '../../shared/bridge'
 
 const emit = defineEmits<{
   confirm: [tags: string[] | null, memeId: number]
@@ -12,14 +13,12 @@ const allTags = ref<string[]>([])
 const selected = ref<string[]>([])
 const query = ref('')
 const loading = ref(false)
-const boxEl = ref<HTMLElement>()
-const inputEl = ref<HTMLInputElement>()
+const inputRef = ref<InstanceType<typeof NInput> | null>(null)
 
 let resolveFn: ((tags: string[] | null) => void) | null = null
 
 async function open(id: number): Promise<string[] | null> {
   memeId.value = id
-  rememberFocus()
   visible.value = true
   loading.value = true
   query.value = ''
@@ -36,14 +35,12 @@ async function open(id: number): Promise<string[] | null> {
     selected.value = []
   }
   loading.value = false
-  await nextTick()
-  inputEl.value?.focus()
+  nextTick(focusInput)
   return new Promise(resolve => { resolveFn = resolve })
 }
 
 function close(tags: string[] | null) {
   visible.value = false
-  restoreFocus()
   emit('confirm', tags, memeId.value)
   if (resolveFn) { resolveFn(tags); resolveFn = null }
 }
@@ -66,13 +63,18 @@ const filtered = computed(() => {
   return allTags.value.filter(t => (q ? t.toLowerCase().includes(q) : true))
 })
 
-function onKeydown(e: KeyboardEvent) {
-  if (e.key === 'Enter') { e.preventDefault(); addFromInput() }
+function focusInput() {
+  inputRef.value?.focus()
 }
 
-function onBoxKeydown(e: KeyboardEvent) {
-  if (e.key === 'Escape') { e.preventDefault(); e.stopPropagation(); close(null) }
-  else if (boxEl.value) trapTabFocus(boxEl.value, e)
+// NModal 出现后聚焦输入框（已在可见状态重复打开时 after-enter 不再触发，open 里另补一次）
+function onAfterEnter() {
+  focusInput()
+}
+
+// 遮罩点击等关闭统一按取消处理
+function onShowChange(show: boolean) {
+  if (!show) close(null)
 }
 
 function confirm() {
@@ -84,74 +86,68 @@ defineExpose({ open })
 </script>
 
 <template>
-  <div v-if="visible" class="tag-editor-overlay" @click.self="close(null)">
-    <div class="tag-editor-box" ref="boxEl" role="dialog" aria-modal="true" aria-labelledby="tag-editor-title" @keydown="onBoxKeydown">
+  <NModal
+    :show="visible"
+    :close-on-esc="false"
+    :theme-overrides="{ boxShadow: 'none' }"
+    transform-origin="center"
+    @update:show="onShowChange"
+    @after-enter="onAfterEnter"
+  >
+    <div
+      class="tag-editor-box"
+      role="dialog"
+      aria-modal="true"
+      aria-labelledby="tag-editor-title"
+      @keydown.esc.stop="close(null)"
+    >
       <div id="tag-editor-title" class="tag-editor-title">编辑标签</div>
 
-      <input
-        id="tag-editor-input"
-        ref="inputEl"
-        v-model="query"
-        class="tag-editor-input"
-        type="text"
-        placeholder="搜索已有标签或输入新标签，回车添加"
-        autocomplete="off"
-        spellcheck="false"
-        @keydown="onKeydown"
-      >
+      <div class="tag-editor-input-wrap" @keydown.enter.prevent="addFromInput">
+        <NInput
+          ref="inputRef"
+          v-model:value="query"
+          class="tag-editor-input"
+          type="text"
+          placeholder="搜索已有标签或输入新标签，回车添加"
+          :input-props="{ autocomplete: 'off', spellcheck: 'false' }"
+        />
+      </div>
 
       <div class="tag-editor-list">
-        <span
+        <NTag
           v-for="tag in filtered"
           :key="tag"
-          class="tag"
-          :class="{ active: selected.includes(tag) }"
-          role="button"
-          tabindex="0"
-          :aria-pressed="selected.includes(tag)"
-          @click="toggleTag(tag)"
-          @keydown.enter.prevent="toggleTag(tag)"
-          @keydown.space.prevent="toggleTag(tag)"
-        >{{ tag }}</span>
+          size="small"
+          checkable
+          :checked="selected.includes(tag)"
+          @update:checked="toggleTag(tag)"
+        >{{ tag }}</NTag>
         <div v-if="!loading && filtered.length === 0" class="tag-editor-empty">
           {{ query.trim() ? `无匹配标签，回车创建"${query.trim()}"` : '暂无标签' }}
         </div>
       </div>
 
       <div v-if="selected.length" class="tag-editor-selected">
-        <span
+        <NTag
           v-for="tag in selected"
           :key="'sel-' + tag"
-          class="tag active"
-          role="button"
-          tabindex="0"
-          aria-pressed="true"
-          @click="toggleTag(tag)"
-          @keydown.enter.prevent="toggleTag(tag)"
-          @keydown.space.prevent="toggleTag(tag)"
-        >{{ tag }} ×</span>
+          size="small"
+          type="primary"
+          closable
+          @close="toggleTag(tag)"
+        >{{ tag }}</NTag>
       </div>
 
       <div class="tag-editor-actions">
-        <button class="btn btn-secondary" @click="close(null)">取消</button>
-        <button class="btn btn-primary" @click="confirm">确定</button>
+        <NButton @click="close(null)">取消</NButton>
+        <NButton type="primary" @click="confirm">确定</NButton>
       </div>
     </div>
-  </div>
+  </NModal>
 </template>
 
 <style scoped>
-.tag-editor-overlay {
-  position: fixed;
-  inset: 0;
-  background: rgba(0, 0, 0, 0.55);
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  z-index: 200;
-  animation: fadeIn 0.15s ease;
-}
-
 .tag-editor-box {
   background: var(--surface);
   border-radius: var(--radius-lg);
@@ -168,23 +164,8 @@ defineExpose({ open })
   margin-bottom: 14px;
 }
 
-.tag-editor-input {
-  width: 100%;
-  padding: 8px 12px;
-  border: 1px solid var(--border);
-  border-radius: var(--radius-sm);
-  background: var(--bg);
-  color: var(--fg);
-  font-size: 13px;
-  font-family: inherit;
-  outline: none;
-  box-sizing: border-box;
+.tag-editor-input-wrap {
   margin-bottom: 10px;
-  transition: border-color 0.15s;
-}
-
-.tag-editor-input:focus {
-  border-color: var(--primary);
 }
 
 .tag-editor-list {
@@ -216,10 +197,5 @@ defineExpose({ open })
   display: flex;
   gap: 8px;
   justify-content: flex-end;
-}
-
-@keyframes fadeIn {
-  from { opacity: 0; }
-  to { opacity: 1; }
 }
 </style>
