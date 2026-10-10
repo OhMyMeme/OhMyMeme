@@ -239,7 +239,8 @@ def check_pyinstaller():
 def ensure_vue_frontend():
     """确保 Vue 前端产物存在（dist/ 被 gitignore），缺失则 npm ci + vite build"""
     dist_js = SRC_DIR / "webui" / "dist" / "ohmymeme.js"
-    if dist_js.exists():
+    settings_js = SRC_DIR / "webui" / "dist" / "settings-vue.js"
+    if dist_js.exists() and settings_js.exists():
         return
     if not (PROJECT_ROOT / "package.json").exists():
         print("WARNING: package.json not found, cannot build Vue frontend")
@@ -252,13 +253,14 @@ def ensure_vue_frontend():
         cmd = [ci, "ci"] if lock.exists() else [ci, "install"]
         cmds.append(cmd)
     cmds.append([npx, "vite", "build"])
+    cmds.append([npx, "vite", "build", "--config", "vite.settings.config.ts"])
     for c in cmds:
         print("Running:", " ".join(c))
         result = _run_bounded(c, cwd=str(PROJECT_ROOT))
         if result.returncode != 0:
             print(L("vue_build_failed"))
             sys.exit(result.returncode)
-    if not dist_js.exists():
+    if not dist_js.exists() or not settings_js.exists():
         print(L("vue_build_failed"))
         sys.exit(1)
 

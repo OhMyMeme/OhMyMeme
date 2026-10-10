@@ -1819,6 +1819,10 @@ class WebUI:
 
         @app.route("/settings/")
         def settings_page():
+            vue_settings = self._html_dir / "vue-settings.html"
+            # 仅当 vue-settings.html 与构建产物都存在时才走 Vue 设置窗口，否则回退旧 settings.html
+            if vue_settings.exists() and (self._html_dir / "dist" / "settings-vue.js").exists():
+                return bottle.static_file("vue-settings.html", root=str(self._html_dir))
             html_path = self._html_dir / "settings.html"
             if html_path.exists():
                 return bottle.static_file("settings.html", root=str(self._html_dir))

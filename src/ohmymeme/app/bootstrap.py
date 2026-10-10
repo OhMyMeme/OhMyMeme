@@ -33,11 +33,18 @@ def _ensure_vue_frontend():
         return
     root = Path(__file__).resolve().parents[3]
     dist_js = root / "src" / "webui" / "dist" / "ohmymeme.js"
-    if dist_js.exists() or not (root / "package.json").exists():
+    settings_js = root / "src" / "webui" / "dist" / "settings-vue.js"
+    if (dist_js.exists() and settings_js.exists()) or not (root / "package.json").exists():
         return
     try:
         npx = "npx.cmd" if os.name == "nt" else "npx"
-        subprocess.run([npx, "vite", "build"], cwd=str(root), check=False, timeout=600)
+        if not dist_js.exists():
+            subprocess.run([npx, "vite", "build"], cwd=str(root), check=False, timeout=600)
+        if not settings_js.exists():
+            subprocess.run(
+                [npx, "vite", "build", "--config", "vite.settings.config.ts"],
+                cwd=str(root), check=False, timeout=600,
+            )
     except OSError:
         logger.warning("Vue 自动编译失败")
 
