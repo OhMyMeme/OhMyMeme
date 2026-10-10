@@ -2323,12 +2323,27 @@ class WebUI:
                 self._settings_window = None
 
             settings_url = f"http://127.0.0.1:{self._port}/settings/"
+            sx = None
+            sy = None
+            try:
+                if self._window is not None:
+                    wx = self._window.x
+                    wy = self._window.y
+                    if wx is not None and wx >= 0:
+                        sx = wx + (960 - 720) // 2
+                    if wy is not None and wy >= 0:
+                        sy = wy + (640 - 560) // 2
+            except Exception:
+                sx = None
+                sy = None
             self._settings_window = webview.create_window(
                 "设置 - OhMyMeme",
                 settings_url,
                 js_api=self._settings_api,
                 width=720,
                 height=560,
+                x=sx,
+                y=sy,
                 resizable=False,
                 frameless=True,
                 easy_drag=False,
