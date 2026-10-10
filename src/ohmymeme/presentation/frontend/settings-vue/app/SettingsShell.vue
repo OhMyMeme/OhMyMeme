@@ -1,8 +1,8 @@
 <script setup lang="ts">
 import { onMounted, onUnmounted, ref, watch } from 'vue'
-import { useDialog, NButton } from 'naive-ui'
+import { useDialog, useMessage, NButton } from 'naive-ui'
 import { api } from '../shared/bridge'
-import { activeGroup, dirty, save, reset, resetSignal } from '../shared/store'
+import { activeGroup, dirty, save, reset, resetSignal, registerMessage } from '../shared/store'
 import BaseGroup from '../features/base/BaseGroup.vue'
 import LogsGroup from '../features/logs/LogsGroup.vue'
 import BackupGroup from '../features/backup/BackupGroup.vue'
@@ -13,6 +13,8 @@ import ImportGroup from '../features/import/ImportGroup.vue'
 import PluginsGroup from '../features/plugins/PluginsGroup.vue'
 
 const dialog = useDialog()
+// 注册应用内消息 API，供 store 的全局提示复用同一 provider 主题
+registerMessage(useMessage())
 
 const pluginsRef = ref<InstanceType<typeof PluginsGroup> | null>(null)
 
@@ -133,7 +135,5 @@ defineExpose({ switchGroup, closeSettings })
       <NButton @click="closeSettings">取消</NButton>
       <NButton type="primary" @click="onSave">保存</NButton>
     </div>
-
-    <div id="toast" role="status" aria-live="polite"></div>
   </div>
 </template>

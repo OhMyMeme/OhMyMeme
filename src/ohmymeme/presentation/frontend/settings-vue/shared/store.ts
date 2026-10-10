@@ -1,4 +1,5 @@
 import { reactive, ref } from 'vue'
+import type { MessageApi } from 'naive-ui'
 import type { SettingsData, SettingsPatch } from '../../main/shared/generated/bridge'
 import { api, bridgeReady } from './bridge'
 import { loadPluginUI } from './plugin-ui'
@@ -23,16 +24,12 @@ export function screenLabel(screen: string): string | undefined {
   return pluginUILabels[screen]
 }
 
-// 全局 toast：复用静态 #toast 节点，与原 settings 行为一致
-let toastTimer: ReturnType<typeof setTimeout> | undefined
-export function showToast(msg: string) {
-  const el = document.getElementById('toast')
-  if (!el) return
-  el.textContent = msg
-  el.classList.add('show')
-  clearTimeout(toastTimer)
-  toastTimer = setTimeout(() => el.classList.remove('show'), 1600)
-}
+// 应用内消息 API：由 SettingsShell 在 NMessageProvider 内注册后供全局调用
+let messageApi: MessageApi | null = null
+export function registerMessage(api: MessageApi) { messageApi = api }
+
+// 全局提示：走 Naive NMessage，无注册时静默降级
+export function showToast(msg: string) { messageApi?.info(msg, { duration: 1600 }) }
 
 // 任意输入转整数（端口等数值字段统一落到 number，避免表单字符串泄漏到载荷）
 export function toInt(value: unknown, fallback: number): number {

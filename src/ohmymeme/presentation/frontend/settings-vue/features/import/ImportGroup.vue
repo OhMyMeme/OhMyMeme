@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { ref, onMounted } from 'vue'
+import type { InputHTMLAttributes } from 'vue'
 import { NButton, NCheckbox, NInput, NInputNumber, NSelect } from 'naive-ui'
 import { showToast } from '../../shared/store'
 import { getPluginUI } from '../../shared/plugin-ui'
@@ -86,6 +87,15 @@ function collectPayload(
 // 枚举字段下拉选项
 function enumOptions(field: PluginInjectionField): { label: string; value: string }[] {
   return (field.options || []).map((option) => ({ label: option, value: option }))
+}
+
+// 注入字段真实 input 属性（data 属性供测试定位，需落在内层 input）
+function fieldInputProps(provider: string, field: PluginInjectionField): InputHTMLAttributes {
+  return {
+    id: 'import-field-' + provider + '-' + field.key,
+    'aria-label': field.label,
+    'data-inject-field': field.key,
+  } as InputHTMLAttributes
 }
 
 // imports.row 注入判别（收窄到面板注入形状）
@@ -224,7 +234,7 @@ onMounted(initImportSources)
               v-else-if="field.type === 'int'"
               size="small"
               :show-button="false"
-              :input-props="{ id: 'import-field-' + row.provider + '-' + field.key, 'aria-label': field.label, 'data-inject-field': field.key }"
+              :input-props="fieldInputProps(row.provider, field)"
               :value="Number(row.values[field.key] ?? 0)"
               @update:value="(v) => setFieldValue(row, field.key, v ?? 0)"
             />
@@ -232,7 +242,7 @@ onMounted(initImportSources)
               v-else
               size="small"
               :type="field.type === 'secret' ? 'password' : 'text'"
-              :input-props="{ id: 'import-field-' + row.provider + '-' + field.key, 'aria-label': field.label, 'data-inject-field': field.key }"
+              :input-props="fieldInputProps(row.provider, field)"
               :placeholder="field.placeholder || ''"
               :value="String(row.values[field.key] ?? '')"
               @update:value="(v) => setFieldValue(row, field.key, v)"

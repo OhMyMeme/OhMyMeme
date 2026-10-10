@@ -62,7 +62,7 @@ defineExpose({ ready, failure, init })
 
 <template>
   <NConfigProvider :theme="darkTheme" :theme-overrides="naiveThemeOverrides" :locale="zhCN" :date-locale="dateZhCN">
-    <NMessageProvider>
+    <NMessageProvider placement="bottom">
       <NDialogProvider>
         <SettingsShell v-if="ready" />
         <div v-else-if="failure" class="settings-load-failed" role="alert">{{ failure }}</div>

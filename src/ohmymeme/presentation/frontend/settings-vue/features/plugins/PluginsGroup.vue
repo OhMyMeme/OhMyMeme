@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { ref, reactive, onMounted, onUnmounted } from 'vue'
-import { NButton, NCheckbox, NInput, NInputNumber, NSelect, useDialog } from 'naive-ui'
+import { NButton, NCheckbox, NInput, NInputNumber, NSelect, NUpload, useDialog } from 'naive-ui'
+import type { UploadFileInfo } from 'naive-ui'
 import { showToast, markDirty, disabledPlugins } from '../../shared/store'
 import type {
   PluginIframeInjection,
@@ -50,7 +51,8 @@ const enabledState = reactive<Record<string, boolean>>({})
 const openDetails = reactive<Record<string, boolean>>({})
 // 已加载的详情数据缓存（panel 配置值 + iframe 挂载标记）
 const detailData = reactive<Record<string, PluginDetail>>({})
-const fileInput = ref<HTMLInputElement | null>(null)
+// NUpload 不自动上传，仅承载本地文件选择
+const installFiles = ref<UploadFileInfo[]>([])
 
 const KIND_LABELS: Record<string, string> = { source: '导入来源', sync: '同步', transport: '传输' }
 
@@ -146,13 +148,12 @@ function onToggleEnabled(id: string, value: boolean) {
   markDirty()
 }
 
-// 安装本地 ZIP 插件
-async function installPluginFile(e: Event) {
-  const input = e.target as HTMLInputElement
-  const file = input && input.files && input.files[0]
-  if (!file) return
+// 安装本地 ZIP 插件（选择文件后直接以字节流提交）
+async function onPluginFileChange({ file }: { file: UploadFileInfo }) {
+  const raw = file?.file
   try {
-    const buffer = await file.arrayBuffer()
+    if (!raw) return
+    const buffer = await raw.arrayBuffer()
     const resp = await fetch('/api/plugins/install', {
       method: 'POST', credentials: 'same-origin',
       headers: { 'Content-Type': 'application/octet-stream' }, body: buffer,
@@ -164,7 +165,7 @@ async function installPluginFile(e: Event) {
   } catch (error) {
     showToast('安装失败：' + errMessage(error))
   } finally {
-    input.value = ''
+    installFiles.value = []
   }
 }
 
@@ -401,7 +402,15 @@ function setFieldValue(panel: PanelView, key: string, value: string | number | b
     <div class="section-title">插件</div>
     <p style="font-size:11.5px;color:var(--muted);margin-bottom:10px;line-height:1.6">官方插件随应用分发并在后台独立进程运行。禁用或启用后<b>重启应用</b>生效；禁用的插件不会加载，也不会出现在对应导入/同步入口。第三方插件可通过本地 ZIP 包安装（安装前会再次确认），重载后按磁盘版本启动。</p>
     <div style="display:flex;gap:8px;margin-bottom:8px;align-items:center">
-      <input id="plugin-install-file" ref="fileInput" type="file" accept=".zip,.omplugin" aria-label="选择插件安装包" style="font-size:12px" @change="installPluginFile">
+      <NUpload
+        v-model:file-list="installFiles"
+        :show-file-list="false"
+        :default-upload="false"
+        accept=".zip,.omplugin"
+        @change="onPluginFileChange"
+      >
+        <NButton size="small">选择插件安装包</NButton>
+      </NUpload>
     </div>
 
     <div v-if="!plugins.length" style="font-size:12px;color:var(--muted)">暂无插件</div>
