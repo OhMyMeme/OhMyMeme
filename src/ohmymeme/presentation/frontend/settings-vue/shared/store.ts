@@ -25,31 +25,10 @@ export function showToast(msg: string) {
   toastTimer = setTimeout(() => el.classList.remove('show'), 1600)
 }
 
-// 同步后端表单校验：缺字段返回提示并中止保存（契约与原 validateSync 一致）
-function validateSync(s: Record<string, any>): boolean {
-  if (s.sync_type === 'ftp') {
-    if (!String(s.ftp_host || '').trim()) { showToast('请输入 FTP 服务器地址'); return false }
-    const port = parseInt(s.ftp_port)
-    if (!port || port < 1 || port > 65535) { showToast('端口号无效（1-65535）'); return false }
-  }
-  if (s.sync_type === 's3') {
-    if (!String(s.s3_endpoint || '').trim()) { showToast('请输入 Endpoint URL'); return false }
-    if (!String(s.s3_bucket || '').trim()) { showToast('请输入 Bucket 名称'); return false }
-  }
-  if (s.sync_type === 'r2') {
-    if (!String(s.r2_account_id || '').trim()) { showToast('请输入 Cloudflare Account ID'); return false }
-    if (!String(s.r2_bucket || '').trim()) { showToast('请输入 Bucket 名称'); return false }
-  }
-  if (s.sync_type === 'webdav') {
-    if (!String(s.webdav_url || '').trim()) { showToast('请输入 WebDAV URL'); return false }
-  }
-  return true
-}
-
-// 组装 save_settings 载荷：从响应式 settings 读取（而非扫 DOM），键与原实现逐一对齐
-export async function save(): Promise<void> {
+// 组装同步子配置：键与原 collectSyncSettings 逐一对齐（save 与同步操作共用）
+export function collectSync(): Record<string, any> {
   const s = settings
-  const sync = {
+  return {
     sync_auto_fetch_index: s.sync_auto_fetch_index === true,
     sync_auto_sync: s.sync_auto_sync === true,
     sync_type: s.sync_type || '',
@@ -79,6 +58,33 @@ export async function save(): Promise<void> {
     webdav_password: s.webdav_password || '',
     webdav_path: s.webdav_path || '',
   }
+}
+
+// 同步后端表单校验：缺字段返回提示并中止保存（契约与原 validateSync 一致）
+export function validateSync(s: Record<string, any>): boolean {
+  if (s.sync_type === 'ftp') {
+    if (!String(s.ftp_host || '').trim()) { showToast('请输入 FTP 服务器地址'); return false }
+    const port = parseInt(s.ftp_port)
+    if (!port || port < 1 || port > 65535) { showToast('端口号无效（1-65535）'); return false }
+  }
+  if (s.sync_type === 's3') {
+    if (!String(s.s3_endpoint || '').trim()) { showToast('请输入 Endpoint URL'); return false }
+    if (!String(s.s3_bucket || '').trim()) { showToast('请输入 Bucket 名称'); return false }
+  }
+  if (s.sync_type === 'r2') {
+    if (!String(s.r2_account_id || '').trim()) { showToast('请输入 Cloudflare Account ID'); return false }
+    if (!String(s.r2_bucket || '').trim()) { showToast('请输入 Bucket 名称'); return false }
+  }
+  if (s.sync_type === 'webdav') {
+    if (!String(s.webdav_url || '').trim()) { showToast('请输入 WebDAV URL'); return false }
+  }
+  return true
+}
+
+// 组装 save_settings 载荷：从响应式 settings 读取（而非扫 DOM），键与原实现逐一对齐
+export async function save(): Promise<void> {
+  const s = settings
+  const sync = collectSync()
   if (!validateSync(sync)) return
   await api('save_settings', {
     hotkey: s.hotkey || 'Ctrl+Alt+N',

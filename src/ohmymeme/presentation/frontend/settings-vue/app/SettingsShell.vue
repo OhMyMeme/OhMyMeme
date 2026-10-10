@@ -8,6 +8,7 @@ import LogsGroup from '../features/logs/LogsGroup.vue'
 import BackupGroup from '../features/backup/BackupGroup.vue'
 import DangerGroup from '../features/danger/DangerGroup.vue'
 import AboutGroup from '../features/about/AboutGroup.vue'
+import NetworkGroup from '../features/network/NetworkGroup.vue'
 
 const dialog = useDialog()
 
@@ -110,7 +111,7 @@ defineExpose({ switchGroup, closeSettings })
         <!-- 各功能分组组件在后续阶段挂载到此处 -->
         <div v-show="activeGroup === 'base'"><BaseGroup /></div>
         <div v-show="activeGroup === 'import'" class="group-placeholder" data-group="import"></div>
-        <div v-show="activeGroup === 'network'" class="group-placeholder" data-group="network"></div>
+        <div v-show="activeGroup === 'network'"><NetworkGroup /></div>
         <div v-show="activeGroup === 'danger'"><DangerGroup /></div>
         <div v-show="activeGroup === 'logs'"><LogsGroup /></div>
         <div v-show="activeGroup === 'backup'"><BackupGroup /></div>
