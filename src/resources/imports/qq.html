@@ -1,0 +1,12 @@
+<!DOCTYPE html>
+<html lang="zh-CN"><head><meta charset="UTF-8"><title>手机 QQ 导入</title></head><body>
+<div id="qq-import-overlay" class="import-panel" role="dialog" aria-label="手机 QQ 导入">
+  <h2 id="qq-import-title">正在导入…</h2><p id="qq-import-msg">准备中</p>
+  <div class="progress-track"><div id="qq-import-bar" class="progress-bar"></div></div><p id="qq-import-pct">0%</p>
+  <button id="btn-qq-save" class="btn btn-primary" onclick="saveQQZip()" style="display:none">选择保存位置</button>
+  <div id="qq-after-save" style="display:none"><p>从 ZIP 筛选需要的表情后，可在此选择文件导入。</p><button id="btn-qq-import-files" class="btn btn-primary" onclick="startImportFromZip()">选择文件导入</button></div>
+  <button id="btn-qq-help" class="btn btn-secondary" onclick="openADBHelp()" style="display:none">ADB 连接帮助</button>
+  <button id="btn-qq-close" class="btn btn-secondary" onclick="closeQQOverlay()">关闭</button>
+  <div id="qq-import-error" role="alert" style="display:none"></div><div id="qq-status" style="display:none"></div>
+</div>
+</body></html>

@@ -1,0 +1,14 @@
+<!DOCTYPE html>
+<html lang="zh-CN"><head><meta charset="UTF-8"><title>抖音导入</title></head><body>
+<div id="dy-import-overlay" class="import-panel" role="dialog" aria-label="抖音导入">
+  <div id="dy-config"><h2>从抖音导入</h2><p>下载自定义表情包，按原格式保存；请提供网页版登录 Cookie。</p>
+    <div class="form-group"><label for="s-dy-cookie">抖音 Cookie</label><input id="s-dy-cookie" type="password" autocomplete="off" placeholder="粘贴抖音网页版 Cookie"></div>
+    <div id="dy-status" role="status"></div>
+    <div class="actions"><button id="btn-dy-start" class="btn btn-primary" onclick="startDYImport()">开始下载</button><button class="btn btn-secondary" onclick="closeDYOverlay()">取消</button></div>
+  </div>
+  <div id="dy-progress" style="display:none"><h2 id="dy-import-title">正在下载…</h2><p id="dy-import-msg">准备中</p>
+    <div class="progress-track"><div id="dy-import-bar" class="progress-bar"></div></div><p id="dy-import-pct">0%</p>
+    <button id="btn-dy-close" class="btn btn-secondary" onclick="closeDYOverlay()">关闭</button><div id="dy-import-error" role="alert" style="display:none"></div>
+  </div>
+</div>
+</body></html>

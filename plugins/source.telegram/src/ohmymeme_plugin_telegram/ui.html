@@ -1,0 +1,23 @@
+<!DOCTYPE html>
+<html lang="zh-CN"><head><meta charset="UTF-8"><title>Telegram 导入</title></head><body>
+<div id="tg-import-overlay" class="import-panel" role="dialog" aria-label="Telegram 导入">
+  <div id="tg-config">
+    <h2>从 Telegram Desktop 导入</h2>
+    <p>从本地缓存解密提取表情包。WebM 转 WebP 保留透明动画，需要 ffmpeg。</p>
+    <div class="form-group"><label for="s-tg-tdata">tdata 目录</label><input id="s-tg-tdata" readonly placeholder="未设置，将自动检测"></div>
+    <button id="btn-tg-pick" class="btn btn-secondary" onclick="pickTGTdata()">手动指定 tdata 目录</button>
+    <div class="form-group"><label for="s-tg-passcode">本地密码（可选）</label><input id="s-tg-passcode" type="password" autocomplete="off" placeholder="设置了 Telegram 本地密码时填写"></div>
+    <label class="check-row"><input id="s-tg-convert" type="checkbox" checked>WebM 转 WebP</label>
+    <div id="tg-status" role="status"></div>
+    <div class="actions"><button id="btn-tg-start" class="btn btn-primary" onclick="startTGImport()">开始导入</button><button class="btn btn-secondary" onclick="closeTGOverlay()">取消</button></div>
+  </div>
+  <div id="tg-progress" style="display:none">
+    <h2 id="tg-import-title">正在导入…</h2><p id="tg-import-msg">准备中</p>
+    <div class="progress-track"><div id="tg-import-bar" class="progress-bar"></div></div>
+    <p><span id="tg-import-pct">0%</span> <span id="tg-import-eta"></span></p>
+    <button id="btn-tg-retry" class="btn btn-secondary" onclick="tgRetryPick()" style="display:none">手动选择 tdata 目录</button>
+    <button id="btn-tg-close" class="btn btn-secondary" onclick="closeTGOverlay()">关闭</button>
+    <div id="tg-import-error" role="alert" style="display:none"></div>
+  </div>
+</div>
+</body></html>

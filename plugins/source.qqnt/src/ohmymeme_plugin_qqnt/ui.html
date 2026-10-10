@@ -1,0 +1,18 @@
+<!DOCTYPE html>
+<html lang="zh-CN"><head><meta charset="UTF-8"><title>QQNT 提取</title></head><body>
+<div id="qqnt-overlay" class="import-panel" role="dialog" aria-label="QQNT 提取">
+  <h2>从电脑版 QQ 提取</h2>
+  <div id="qqnt-step-1"><p id="qqnt-env-msg">正在检查环境…</p><div id="qqnt-accounts"></div>
+    <div id="qqnt-env-actions" style="display:none"><p id="qqnt-env-actions-msg"></p><div class="actions"><button id="qqnt-pick-ini" class="btn btn-secondary" onclick="qqntPickIni()">选择配置文件</button><button id="qqnt-pick-userdata" class="btn btn-secondary" onclick="qqntPickUserdata()">选择用户数据目录</button></div></div>
+  </div>
+  <div id="qqnt-step-2" style="display:none"><p>选择保存文件夹，提取结果会写入独立的账号目录。</p>
+    <div class="form-group"><label for="qqnt-out-base">保存位置</label><input id="qqnt-out-base" readonly placeholder="选择保存文件夹"></div><button class="btn btn-secondary" onclick="qqntPickBase()">选择文件夹</button>
+    <div class="form-group"><label for="qqnt-out-dir">输出目录</label><input id="qqnt-out-dir" readonly></div>
+    <label class="check-row"><input id="qqnt-image-only" type="checkbox">仅提取图片</label><label class="check-row"><input id="qqnt-overwrite" type="checkbox">输出目录已存在时覆盖清空</label>
+  </div>
+  <div id="qqnt-step-3" style="display:none"><h3 id="qqnt-progress-title">正在提取…</h3><p id="qqnt-progress-msg">准备中</p><div class="progress-track"><div id="qqnt-progress-bar" class="progress-bar"></div></div><p id="qqnt-progress-pct">0%</p><pre id="qqnt-progress-log"></pre></div>
+  <div id="qqnt-step-4" style="display:none"><h3 id="qqnt-done-title">提取完成</h3><p id="qqnt-done-detail"></p><button id="qqnt-open-dir" class="btn btn-secondary" onclick="qqntOpenDir()">打开输出目录</button></div>
+  <div id="qqnt-error" role="alert" style="display:none"></div>
+  <div class="actions"><button id="qqnt-prev" class="btn btn-secondary" onclick="qqntPrev()">上一步</button><button id="qqnt-next" class="btn btn-primary" onclick="qqntNext()">下一步</button><button id="qqnt-close" class="btn btn-secondary" onclick="qqntClose()">关闭</button></div>
+</div>
+</body></html>

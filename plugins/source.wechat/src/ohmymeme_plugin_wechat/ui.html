@@ -1,0 +1,11 @@
+<!DOCTYPE html>
+<html lang="zh-CN"><head><meta charset="UTF-8"><title>微信导入</title></head><body>
+<div id="wechat-import-overlay" class="import-panel" role="dialog" aria-label="微信导入">
+  <div id="wechat-config"><h2>从微信导入</h2><p>需微信正在运行，仅支持 Windows。请选择包含账号数据的微信文件根目录。</p>
+    <div class="form-group"><label for="s-wechat-root">微信文件根目录</label><input id="s-wechat-root" readonly placeholder="未设置，将自动检测"></div><button id="btn-wechat-pick" class="btn btn-secondary" onclick="pickWechatRoot()">手动指定微信目录</button>
+    <div id="s-wechat-account-group" class="form-group" hidden><label for="s-wechat-account">账号</label><select id="s-wechat-account"><option value="">自动选择</option></select></div>
+    <div id="wechat-status" role="status"></div><div class="actions"><button id="btn-wechat-inspect" class="btn btn-secondary" onclick="inspectWechat()">检测环境</button><button id="btn-wechat-start" class="btn btn-primary" onclick="startWechatImport()">开始导入</button></div>
+  </div>
+  <div id="wechat-progress" style="display:none"><h2 id="wechat-import-title">正在导入…</h2><p id="wechat-import-msg">准备中</p><div class="progress-track"><div id="wechat-import-bar" class="progress-bar"></div></div><p id="wechat-import-pct">0%</p><button id="btn-wechat-close" class="btn btn-secondary" onclick="closeWechatOverlay()">取消导入</button><div id="wechat-import-error" role="alert" style="display:none"></div></div>
+</div>
+</body></html>
