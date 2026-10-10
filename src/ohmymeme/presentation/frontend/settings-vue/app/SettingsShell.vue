@@ -4,6 +4,9 @@ import { useDialog, NButton } from 'naive-ui'
 import { api } from '../shared/bridge'
 import { activeGroup, dirty, save, reset } from '../shared/store'
 import BaseGroup from '../features/base/BaseGroup.vue'
+import LogsGroup from '../features/logs/LogsGroup.vue'
+import DangerGroup from '../features/danger/DangerGroup.vue'
+import AboutGroup from '../features/about/AboutGroup.vue'
 
 const dialog = useDialog()
 
@@ -107,11 +110,11 @@ defineExpose({ switchGroup, closeSettings })
         <div v-show="activeGroup === 'base'"><BaseGroup /></div>
         <div v-show="activeGroup === 'import'" class="group-placeholder" data-group="import"></div>
         <div v-show="activeGroup === 'network'" class="group-placeholder" data-group="network"></div>
-        <div v-show="activeGroup === 'danger'" class="group-placeholder" data-group="danger"></div>
-        <div v-show="activeGroup === 'logs'" class="group-placeholder" data-group="logs"></div>
+        <div v-show="activeGroup === 'danger'"><DangerGroup /></div>
+        <div v-show="activeGroup === 'logs'"><LogsGroup /></div>
         <div v-show="activeGroup === 'backup'" class="group-placeholder" data-group="backup"></div>
         <div v-show="activeGroup === 'plugins'" class="group-placeholder" data-group="plugins"></div>
-        <div v-show="activeGroup === 'about'" class="group-placeholder" data-group="about"></div>
+        <div v-show="activeGroup === 'about'"><AboutGroup /></div>
       </div>
     </div>
 
