@@ -40,6 +40,11 @@ export const naiveThemeOverrides: GlobalThemeOverrides = {
   },
   Button: {
     borderRadiusMedium: '6px',
+    colorPrimary: primaryStrong,
+    colorHoverPrimary: primaryStrong,
+    colorPressedPrimary: '#1e40af',
+    colorFocusPrimary: primaryStrong,
+    textColorPrimary: '#ffffff',
   },
   Input: {
     color: bg,

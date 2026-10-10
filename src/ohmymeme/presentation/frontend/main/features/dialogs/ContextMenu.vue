@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { ref, watch, nextTick } from 'vue'
+import { NButton } from 'naive-ui'
 import type { MenuItem, MenuTrigger } from './useContextMenu'
 
 const props = defineProps<{
@@ -74,26 +75,31 @@ function onItemClick(e: MouseEvent, item: MenuItem) {
 <template>
   <div v-if="visible" class="ctx-overlay" @click="emit('close')" @contextmenu.prevent="emit('close')">
     <div ref="menuEl" class="ctx-menu" :style="{ left: pos.x + 'px', top: pos.y + 'px' }">
-      <button
+      <NButton
         v-for="item in items"
         :key="item.action"
         class="ctx-item"
-        :class="{ danger: item.danger, disabled: item.disabled, 'has-submenu': item.action === 'add-to-subgroup' }"
+        :class="{ danger: item.danger }"
         :disabled="item.disabled"
+        quaternary
+        block
         @click.stop="onItemClick($event, item)"
       >
-        {{ item.label }}
-      </button>
+        <span class="ctx-item-label">{{ item.label }}</span>
+        <span v-if="item.action === 'add-to-subgroup'" class="ctx-item-arrow">▸</span>
+      </NButton>
     </div>
     <div v-if="submenuVisible" ref="submenuEl" class="ctx-submenu" :style="{ left: subPos.x + 'px', top: subPos.y + 'px' }">
-      <button
+      <NButton
         v-for="item in submenuItems"
         :key="item.action"
         class="ctx-item"
+        quaternary
+        block
         @click.stop="onItemClick($event, item)"
       >
-        {{ item.label }}
-      </button>
+        <span class="ctx-item-label">{{ item.label }}</span>
+      </NButton>
     </div>
   </div>
 </template>
@@ -123,45 +129,45 @@ function onItemClick(e: MouseEvent, item: MenuItem) {
 }
 
 .ctx-item {
-  display: block;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
   width: 100%;
   padding: 7px 12px;
-  border: none;
-  border-radius: 4px;
-  background: transparent;
-  color: var(--fg);
   font-size: 12px;
   text-align: left;
-  cursor: pointer;
-  transition: background 0.1s;
 }
 
-.ctx-item:hover {
-  background: var(--surface-2);
+.ctx-item :deep(.n-button__content) {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  width: 100%;
 }
 
-.ctx-item.danger {
-  color: var(--danger);
+.ctx-item-label {
+  flex: 1;
+  text-align: left;
 }
 
-.ctx-item.danger:hover {
-  background: rgba(239, 68, 68, 0.1);
-}
-
-.ctx-item.has-submenu::after {
-  content: '▸';
-  float: right;
+.ctx-item-arrow {
   color: var(--muted);
   font-size: 11px;
   margin-left: 12px;
 }
 
-.ctx-item.disabled {
-  opacity: 0.4;
-  cursor: not-allowed;
+.ctx-menu .ctx-item,
+.ctx-submenu .ctx-item {
+  color: var(--fg);
 }
 
-.ctx-item.disabled:hover {
-  background: transparent;
+.ctx-menu .ctx-item.danger,
+.ctx-submenu .ctx-item.danger {
+  color: var(--danger);
+}
+
+.ctx-menu .ctx-item.danger:hover,
+.ctx-submenu .ctx-item.danger:hover {
+  background: rgba(239, 68, 68, 0.1);
 }
 </style>

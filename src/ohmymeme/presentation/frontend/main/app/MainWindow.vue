@@ -16,7 +16,8 @@ import TagEditor from '../features/tags/TagEditor.vue'
 import UpdateDialog from '../features/updates/UpdateDialog.vue'
 import type { Meme } from '../shared/types'
 import { api } from '../shared/bridge'
-import { NButton } from 'naive-ui'
+import { NButton, NInput, NTag, NModal } from 'naive-ui'
+import { lanConfirmVisible, lanConfirmDevice, confirmLanDevice, onLanConfirmShowChange } from '../features/lan/showLanDeviceConfirm'
 
 const { state, setMemes, search, goToPage, setSearch, toggleTag, setActiveCollection, refreshTags, refreshCollections, copyMeme, reorderMemes, canReorder, startNativeDrag, selectAllVisible, clearSelection, loadInitData } = useMemes()
 const ctx = useContextMenu()
@@ -196,9 +197,9 @@ async function quickFavorite(meme: Meme) {
   showToast(ok ? '已收藏' : '已取消收藏')
 }
 
-function onSearchInput(e: Event) {
-  const q = (e.target as HTMLInputElement).value
-  setSearch(q)
+// 搜索框输入：同步关键字并防抖触发搜索
+function onSearchInput(value: string) {
+  setSearch(value)
   debounceSearch()
 }
 
@@ -723,6 +724,7 @@ async function onDrop(e: DragEvent) {
 // ESC：右键菜单 → 多选 → 整理模式 → 隐藏窗口
 function onDocKeydown(e: KeyboardEvent) {
   if (e.key !== 'Escape') return
+  if (lanConfirmVisible.value) { confirmLanDevice(false); return }
   if (ctx.visible.value) { ctx.hide(); return }
   if (selectMode.value) { toggleSelect(); return }
   if (sortEnabled.value) { toggleSort(); return }
@@ -796,22 +798,30 @@ onUnmounted(() => {
       </div>
       <span class="spacer"></span>
       <div class="titlebar__actions">
-        <button class="icon-btn" :class="{ 'sort-on': sortEnabled }" title="拖拽排序" aria-label="拖拽排序" @click="toggleSort">
-          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M7 10l5-5 5 5M7 14l5 5 5-5"/></svg>
-        </button>
-        <button class="icon-btn" :class="{ 'sort-on': selectMode }" title="多选" aria-label="多选" @click="toggleSelect">
-          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M9 11l3 3L22 4"/><path d="M21 12v7a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11"/></svg>
-        </button>
-        <button class="icon-btn" title="上传到远端" aria-label="上传到远端" @click="syncUpload()">
-          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 19V5m-7 7l7-7 7 7"/></svg>
-        </button>
-        <button class="icon-btn" title="从远端下载" aria-label="从远端下载" @click="syncDownload()">
-          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 5v14m-7-7l7 7 7-7"/></svg>
-        </button>
-        <button class="title-btn" @click="showImportMenu()">导入</button>
-        <button class="title-btn" @click="rescanCache()">刷新</button>
-        <button class="title-btn" @click="openSettings()">设置</button>
-        <button class="title-btn close-btn" aria-label="隐藏窗口" @click="hideWindow()">×</button>
+        <NButton class="icon-btn" quaternary :type="sortEnabled ? 'primary' : 'default'" title="拖拽排序" aria-label="拖拽排序" @click="toggleSort">
+          <template #icon>
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M7 10l5-5 5 5M7 14l5 5 5-5"/></svg>
+          </template>
+        </NButton>
+        <NButton class="icon-btn" quaternary :type="selectMode ? 'primary' : 'default'" title="多选" aria-label="多选" @click="toggleSelect">
+          <template #icon>
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M9 11l3 3L22 4"/><path d="M21 12v7a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11"/></svg>
+          </template>
+        </NButton>
+        <NButton class="icon-btn" quaternary title="上传到远端" aria-label="上传到远端" @click="syncUpload()">
+          <template #icon>
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 19V5m-7 7l7-7 7 7"/></svg>
+          </template>
+        </NButton>
+        <NButton class="icon-btn" quaternary title="从远端下载" aria-label="从远端下载" @click="syncDownload()">
+          <template #icon>
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 5v14m-7-7l7 7 7-7"/></svg>
+          </template>
+        </NButton>
+        <NButton class="title-btn" quaternary @click="showImportMenu()">导入</NButton>
+        <NButton class="title-btn" quaternary @click="rescanCache()">刷新</NButton>
+        <NButton class="title-btn" quaternary @click="openSettings()">设置</NButton>
+        <NButton class="title-btn close-btn" quaternary aria-label="隐藏窗口" @click="hideWindow()">×</NButton>
       </div>
     </header>
 
@@ -834,38 +844,53 @@ onUnmounted(() => {
 
       <div id="main">
         <div id="search-wrap">
-          <button class="sidebar-toggle" :class="{ collapsed: sidebarCollapsed }" @click="toggleSidebar" title="折叠/展开侧边栏" aria-label="折叠/展开侧边栏" :aria-expanded="!sidebarCollapsed">
-            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-              <line x1="3" y1="6" x2="21" y2="6"/><line x1="3" y1="12" x2="21" y2="12"/><line x1="3" y1="18" x2="21" y2="18"/>
-            </svg>
-          </button>
-          <input id="search" type="text" placeholder="搜索表情包..." :value="state.searchQuery" @input="onSearchInput" autofocus spellcheck="false">
-          <button v-if="state.searchQuery" class="search-clear" title="清除搜索" aria-label="清除搜索" @click="clearSearch">×</button>
+          <NButton class="sidebar-toggle" :class="{ collapsed: sidebarCollapsed }" quaternary title="折叠/展开侧边栏" aria-label="折叠/展开侧边栏" :aria-expanded="!sidebarCollapsed" @click="toggleSidebar">
+            <template #icon>
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                <line x1="3" y1="6" x2="21" y2="6"/><line x1="3" y1="12" x2="21" y2="12"/><line x1="3" y1="18" x2="21" y2="18"/>
+              </svg>
+            </template>
+          </NButton>
+          <NInput
+            class="search-input"
+            :value="state.searchQuery"
+            :input-props="{ id: 'search', autocomplete: 'off', spellcheck: 'false', style: 'padding-right:32px' }"
+            placeholder="搜索表情包..."
+            autofocus
+            @input="onSearchInput"
+          />
+          <NButton v-if="state.searchQuery" class="search-clear" quaternary circle size="tiny" title="清除搜索" aria-label="清除搜索" @click="clearSearch">×</NButton>
         </div>
 
         <div id="tagbar">
-          <span
+          <NTag
             v-for="tag in state.allTags"
             :key="tag"
             class="tag"
-            :class="{ active: state.activeTags.has(tag) }"
+            checkable
+            round
+            size="small"
             role="button"
             tabindex="0"
+            :checked="state.activeTags.has(tag)"
             :aria-pressed="state.activeTags.has(tag)"
-            @click="toggleTag(tag)"
+            @update:checked="toggleTag(tag)"
             @keydown.enter.prevent="toggleTag(tag)"
             @keydown.space.prevent="toggleTag(tag)"
-          >{{ tag }}</span>
+          >{{ tag }}</NTag>
         </div>
 
         <div v-if="breadcrumb.length > 1" id="breadcrumb">
           <template v-for="(crumb, idx) in breadcrumb" :key="idx">
             <span v-if="idx > 0" class="crumb-sep">›</span>
-            <button
+            <NButton
               class="crumb"
               :class="{ current: idx === breadcrumb.length - 1 }"
+              :strong="idx === breadcrumb.length - 1"
+              quaternary
+              size="tiny"
               @click="onBreadcrumbClick(crumb.id)"
-            >{{ crumb.name }}</button>
+            >{{ crumb.name }}</NButton>
           </template>
         </div>
 
@@ -942,17 +967,22 @@ onUnmounted(() => {
                 >
                   <img :src="memeSrc(meme)" :alt="meme.name" loading="lazy">
                   <span v-if="state.selectedIds.has(meme.id)" class="select-badge">✓</span>
-                  <button
+                  <NButton
                     v-if="!selectMode && !sortEnabled"
                     class="fav-btn"
                     :class="{ active: meme.favorited }"
+                    quaternary
+                    circle
+                    size="tiny"
                     :aria-label="meme.favorited ? '取消收藏' : '收藏'"
                     :title="meme.favorited ? '取消收藏' : '收藏'"
                     @click.stop="quickFavorite(meme)"
                     @pointerdown.stop
                   >
-                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M20.84 4.61a5.5 5.5 0 0 0-7.78 0L12 5.67l-1.06-1.06a5.5 5.5 0 0 0-7.78 7.78l1.06 1.06L12 21.23l7.78-7.78 1.06-1.06a5.5 5.5 0 0 0 0-7.78z"/></svg>
-                  </button>
+                    <template #icon>
+                      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M20.84 4.61a5.5 5.5 0 0 0-7.78 0L12 5.67l-1.06-1.06a5.5 5.5 0 0 0-7.78 7.78l1.06 1.06L12 21.23l7.78-7.78 1.06-1.06a5.5 5.5 0 0 0 0-7.78z"/></svg>
+                    </template>
+                  </NButton>
                   <span v-if="meme.from_stego" class="gif-badge stego-badge">隐写导入</span>
                   <span v-else-if="meme.is_animated" class="gif-badge">{{ meme.is_gif ? 'GIF' : 'WebP' }}</span>
                   <span class="meme-name">{{ meme.name }}</span>
@@ -981,6 +1011,31 @@ onUnmounted(() => {
   <UpdateDialog ref="updateDialog" />
   <InputDialog ref="inputDialog" />
   <ConfirmDialog ref="confirmDialog" />
+
+  <NModal
+    :show="lanConfirmVisible"
+    :close-on-esc="false"
+    :theme-overrides="{ boxShadow: 'none' }"
+    transform-origin="center"
+    @update:show="onLanConfirmShowChange"
+  >
+    <div class="lan-confirm-box" role="dialog" aria-modal="true" aria-labelledby="lan-confirm-title" @keydown.esc.stop="confirmLanDevice(false)">
+      <h2 id="lan-confirm-title">设备连接请求</h2>
+      <p>以下设备请求连接本机 OhMyMeme：</p>
+      <div class="lan-confirm-info">
+        <div><span class="k">设备：</span><b class="v">{{ lanConfirmDevice.name || '未知设备' }}</b></div>
+        <div><span class="k">型号：</span><span class="v">{{ lanConfirmDevice.model || '-' }}</span></div>
+        <div><span class="k">系统：</span><span class="v">{{ lanConfirmDevice.os || '-' }}</span></div>
+        <div><span class="k">版本：</span><span class="v">{{ lanConfirmDevice.ver || '-' }}</span></div>
+      </div>
+      <p class="lan-confirm-note">允许后该设备可同步表情包与配置。请确认是你信任的设备。</p>
+      <div class="lan-confirm-actions">
+        <NButton @click="confirmLanDevice(false)">拒绝</NButton>
+        <NButton type="primary" @click="confirmLanDevice(true)">允许连接</NButton>
+      </div>
+    </div>
+  </NModal>
+
   <ContextMenu
     :visible="ctx.visible.value" :x="ctx.x.value" :y="ctx.y.value"
     :items="ctx.items.value" :trigger="ctx.trigger.value"

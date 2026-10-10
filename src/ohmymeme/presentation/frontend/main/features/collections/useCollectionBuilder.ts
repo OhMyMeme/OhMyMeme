@@ -160,11 +160,15 @@ export function useCollectionBuilder() {
     )
   })
 
+  // 点击 NInput wrapper 或下拉之外的区域时收起分组下拉
   function onClickOutside(e: MouseEvent) {
     const dropdown = document.getElementById('cb-dropdown')
-    const input = document.getElementById('cb-name')
-    if (dropdown && !dropdown.contains(e.target as Node) &&
-        input && !input.contains(e.target as Node)) {
+    // NInput 的 id 落在内部 input 上，需向上取整个 wrapper 再判断点击区域
+    const nameInput = document.getElementById('cb-name')
+    const inputWrap = nameInput?.closest('.n-input') || nameInput
+    const target = e.target as Node
+    if (dropdown && !dropdown.contains(target) &&
+        inputWrap && !inputWrap.contains(target)) {
       showDropdown.value = false
     }
   }

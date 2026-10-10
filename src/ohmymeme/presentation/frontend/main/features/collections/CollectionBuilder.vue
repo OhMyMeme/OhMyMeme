@@ -1,21 +1,28 @@
 <script setup lang="ts">
 import { useCollectionBuilder } from './useCollectionBuilder'
-import { trapTabFocus } from '../../shared/bridge'
-import { NInput, NButton } from 'naive-ui'
+import { NInput, NButton, NModal } from 'naive-ui'
 
 const cb = useCollectionBuilder()
 
+// 关闭分组编辑器且不把 Esc 传给窗口快捷键。
 function onBoxKeydown(e: KeyboardEvent) {
   if (e.key === 'Escape') { e.stopPropagation(); cb.close() }
-  else if (e.key === 'Tab') {
-    const box = document.getElementById('cb-box')
-    if (box) trapTabFocus(box, e)
-  }
+}
+
+// NModal 遮罩点击等关闭统一按取消处理
+function onShowChange(show: boolean) {
+  if (!show) cb.close()
 }
 </script>
 
 <template>
-  <div v-if="cb.visible.value" id="cb-overlay">
+  <NModal
+    :show="cb.visible.value"
+    :close-on-esc="false"
+    :theme-overrides="{ boxShadow: 'none' }"
+    transform-origin="center"
+    @update:show="onShowChange"
+  >
     <div id="cb-box" role="dialog" aria-modal="true" aria-labelledby="cb-title" @keydown="onBoxKeydown">
       <div class="cb-header">
         <h2 id="cb-title">添加分组</h2>
@@ -29,20 +36,22 @@ function onBoxKeydown(e: KeyboardEvent) {
           />
           <div v-if="cb.showDropdown.value" id="cb-dropdown" class="cb-dropdown show">
             <div class="cb-dd-section" v-if="cb.collectionName.value.trim() || cb.selectedId.value == null">新建分组</div>
-            <div v-if="cb.collectionName.value.trim()" class="cb-dd-item cb-dd-new-item" @click="cb.createNew()">
+            <NButton v-if="cb.collectionName.value.trim()" class="cb-dd-item cb-dd-new-item" quaternary block @click="cb.createNew()">
               <span class="cb-dd-new">「{{ cb.collectionName.value }}」</span>
               <span class="cb-dd-hint">创建新分组</span>
-            </div>
+            </NButton>
             <div class="cb-dd-section">加入已有分组</div>
-            <div
+            <NButton
               v-for="opt in cb.collectionOptions.value"
               :key="opt.id"
               class="cb-dd-item"
               :class="{ 'cb-dd-selected': cb.selectedId.value === opt.id }"
+              quaternary
+              block
               @click="cb.selectCollection(opt)"
             >
               {{ opt.name }}
-            </div>
+            </NButton>
           </div>
         </div>
       </div>
@@ -114,21 +123,10 @@ function onBoxKeydown(e: KeyboardEvent) {
         <NButton class="btn btn-primary" type="primary" :disabled="cb.memberLoading.value || cb.memberLoadError.value || !cb.collectionName.value.trim()" @click="cb.confirm()">{{ cb.selectedId.value != null ? '保存到该分组' : '创建分组' }}</NButton>
       </div>
     </div>
-  </div>
+  </NModal>
 </template>
 
 <style scoped>
-#cb-overlay {
-  position: fixed;
-  inset: 0;
-  background: rgba(0, 0, 0, 0.55);
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  z-index: 450;
-  animation: fadeIn 0.15s ease;
-}
-
 #cb-box {
   background: var(--surface);
   border: 1px solid var(--border);
@@ -156,21 +154,6 @@ function onBoxKeydown(e: KeyboardEvent) {
   position: relative;
 }
 
-.cb-name-wrap input {
-  width: 100%;
-  padding: 8px 12px;
-  border-radius: var(--radius-sm);
-  border: 1px solid var(--border);
-  background: var(--bg);
-  color: var(--fg);
-  font-size: 13px;
-  outline: none;
-}
-
-.cb-name-wrap input:focus {
-  border-color: var(--primary);
-}
-
 .cb-dropdown {
   position: absolute;
   top: 100%;
@@ -193,6 +176,13 @@ function onBoxKeydown(e: KeyboardEvent) {
   display: flex;
   align-items: center;
   justify-content: space-between;
+}
+
+.cb-dd-item :deep(.n-button__content) {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  width: 100%;
 }
 
 .cb-dd-section {
@@ -226,21 +216,6 @@ function onBoxKeydown(e: KeyboardEvent) {
 .cb-search {
   padding: 12px 20px;
   border-bottom: 1px solid var(--border);
-}
-
-.cb-search input {
-  width: 100%;
-  padding: 7px 12px;
-  border-radius: var(--radius-sm);
-  border: 1px solid var(--border);
-  background: var(--bg);
-  color: var(--fg);
-  font-size: 13px;
-  outline: none;
-}
-
-.cb-search input:focus {
-  border-color: var(--primary);
 }
 
 .cb-loading {
@@ -355,10 +330,5 @@ function onBoxKeydown(e: KeyboardEvent) {
   display: flex;
   justify-content: flex-end;
   gap: 8px;
-}
-
-@keyframes fadeIn {
-  from { opacity: 0; }
-  to { opacity: 1; }
 }
 </style>

@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { ref, computed } from 'vue'
+import { NButton } from 'naive-ui'
 import type { Collection } from '../../shared/types'
 
 const props = defineProps<{
@@ -71,12 +72,14 @@ function onMoreClick(e: MouseEvent) {
       </span>
       <span v-if="!collapsed" class="tree-label">{{ node.name }}</span>
       <span v-if="!collapsed" class="tree-count">{{ node.count || 0 }}</span>
-      <button
+      <NButton
         v-if="!collapsed"
         class="tree-more"
+        quaternary
+        size="tiny"
         aria-label="分组操作"
         @click.stop="onMoreClick"
-      >⋯</button>
+      >⋯</NButton>
     </div>
 
     <div v-if="hasChildren && expanded && !collapsed" class="tree-children">
@@ -169,13 +172,7 @@ function onMoreClick(e: MouseEvent) {
 .tree-more {
   width: 22px;
   height: 22px;
-  border: none;
-  border-radius: 4px;
-  background: transparent;
-  color: var(--muted);
-  font-size: 14px;
-  line-height: 1;
-  cursor: pointer;
+  padding: 0;
   flex-shrink: 0;
   opacity: 0;
   transition: opacity 0.1s;
@@ -184,11 +181,6 @@ function onMoreClick(e: MouseEvent) {
 .tree-row:hover .tree-more,
 .tree-more:focus-visible {
   opacity: 1;
-}
-
-.tree-more:hover {
-  background: var(--surface-2);
-  color: var(--fg);
 }
 
 .tree-label {

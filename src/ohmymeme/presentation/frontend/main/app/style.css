@@ -1,24 +1,4 @@
-:root {
-  --bg: #0d0d0f;
-  --bg-elevated: #141417;
-  --surface: #1a1a1f;
-  --surface-2: #222228;
-  --fg: #e2e8f0;
-  --fg-secondary: #94a3b8;
-  --muted: #8a94a8;
-  --border: #2a2a32;
-  --border-light: #33333d;
-  --primary: #3b82f6;
-  --primary-light: #dbeafe;
-  --primary-strong: #1d4ed8;
-  --danger: #ef4444;
-  --accent: #3b82f6;
-  --radius: 8px;
-  --radius-sm: 4px;
-  --radius-lg: 12px;
-  --shadow-lg: 0 20px 25px -5px rgba(0,0,0,.3), 0 8px 10px -6px rgba(0,0,0,.3);
-  --border-hair: rgba(255,255,255,0.06);
-}
+@import '../../shared/theme.css';
 
 * { margin: 0; padding: 0; box-sizing: border-box; }
 
@@ -86,24 +66,12 @@ body {
 
 #titlebar .spacer { flex: 1; }
 
-.sidebar-toggle {
+/* 标题栏/搜索栏控件：外观交给 Naive NButton/NInput，这里只保留尺寸与图标规则 */
+#search-wrap .sidebar-toggle {
   width: 30px;
   height: 30px;
-  border-radius: var(--radius-sm);
-  border: none;
-  background: transparent;
-  color: var(--fg-secondary);
-  cursor: pointer;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  transition: all 0.15s;
+  padding: 0;
   -webkit-app-region: no-drag;
-}
-
-.sidebar-toggle:hover {
-  background: var(--surface-2);
-  color: var(--fg);
 }
 
 .sidebar-toggle svg {
@@ -116,29 +84,11 @@ body {
   transform: rotate(90deg);
 }
 
-.icon-btn {
+#titlebar .icon-btn {
   width: 32px;
   height: 32px;
-  border-radius: var(--radius-sm);
-  border: 1px solid transparent;
-  background: transparent;
-  color: var(--fg-secondary);
-  cursor: pointer;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  transition: all 0.15s;
+  padding: 0;
   -webkit-app-region: no-drag;
-}
-
-.icon-btn:hover {
-  background: var(--surface-2);
-  color: var(--fg);
-}
-
-.icon-btn.sort-on {
-  color: var(--primary-strong);
-  background: var(--primary-light);
 }
 
 .icon-btn svg {
@@ -146,28 +96,20 @@ body {
   height: 16px;
 }
 
-.title-btn {
+/* 图标按钮仅含图标：清掉 Naive 图标 wrapper 的右外边距，保证居中 */
+#titlebar .icon-btn .n-button__icon,
+#search-wrap .sidebar-toggle .n-button__icon,
+.meme-card .fav-btn .n-button__icon {
+  margin: 0;
+}
+
+#titlebar .title-btn {
   height: 32px;
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
   padding: 0 10px;
-  border-radius: var(--radius-sm);
-  border: 1px solid var(--border);
-  background: transparent;
-  color: var(--fg-secondary);
-  cursor: pointer;
-  font-size: 12px;
-  transition: all 0.15s;
   -webkit-app-region: no-drag;
 }
 
-.title-btn:hover {
-  background: var(--surface-2);
-  color: var(--fg);
-}
-
-.title-btn.close-btn {
+#titlebar .title-btn.close-btn {
   font-size: 16px;
   padding: 4px 8px;
 }
@@ -181,45 +123,15 @@ body {
   flex-shrink: 0;
 }
 
-#search {
+.search-input {
   flex: 1;
   min-width: 0;
-  padding: 7px 32px 7px 12px;
-  border-radius: var(--radius-sm);
-  border: 1px solid var(--border);
-  background: var(--surface);
-  color: var(--fg);
-  font-size: 13px;
-  outline: none;
-  transition: border-color 0.15s;
 }
 
 .search-clear {
-  width: 26px;
-  height: 26px;
   margin-left: -34px;
-  border-radius: 50%;
-  border: none;
-  background: var(--surface-2);
-  color: var(--muted);
-  font-size: 14px;
-  line-height: 1;
-  cursor: pointer;
-  display: flex;
-  align-items: center;
-  justify-content: center;
   flex-shrink: 0;
-  transition: all 0.15s;
   z-index: 1;
-}
-
-.search-clear:hover {
-  color: var(--fg);
-  background: var(--border);
-}
-
-#search:focus {
-  border-color: var(--primary);
 }
 
 /* Content Layout */
@@ -377,25 +289,12 @@ body {
 
 #breadcrumb::-webkit-scrollbar { display: none; }
 
-.crumb {
-  border: none;
-  background: transparent;
-  color: var(--fg-secondary);
+#breadcrumb .crumb {
   font-size: 12px;
-  font-family: inherit;
-  cursor: pointer;
   padding: 3px 6px;
-  border-radius: 4px;
-  transition: all 0.12s;
 }
 
-.crumb:hover:not(.current) {
-  color: var(--fg);
-  background: var(--surface-2);
-}
-
-.crumb.current {
-  color: var(--fg);
+#breadcrumb .crumb.current {
   font-weight: 600;
   cursor: default;
 }
@@ -418,27 +317,8 @@ body {
   overflow-y: auto;
 }
 
-.tag {
-  padding: 4px 10px;
-  border-radius: 20px;
+#tagbar .tag {
   font-size: 11px;
-  background: var(--surface);
-  border: 1px solid var(--border);
-  color: var(--fg-secondary);
-  cursor: pointer;
-  transition: all 0.15s;
-}
-
-.tag:hover {
-  border-color: var(--primary);
-  color: var(--fg);
-}
-
-.tag.active {
-  background: var(--primary-light);
-  border-color: var(--primary);
-  color: var(--primary-strong);
-  font-weight: 500;
 }
 
 /* Grid */
@@ -625,41 +505,37 @@ body {
   color: #fff;
 }
 
-.fav-btn {
+.meme-card .fav-btn {
   position: absolute;
   top: 6px;
   left: 6px;
   width: 26px;
   height: 26px;
-  border-radius: 50%;
+  padding: 0;
   border: 1px solid var(--border);
   background: rgba(0, 0, 0, 0.55);
   color: #fff;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  cursor: pointer;
   opacity: 0;
   transition: opacity 0.12s, background 0.12s, color 0.12s;
   z-index: 3;
 }
 
-.fav-btn svg {
+.meme-card .fav-btn svg {
   width: 14px;
   height: 14px;
 }
 
-.fav-btn:hover {
+.meme-card .fav-btn:hover {
   background: rgba(0, 0, 0, 0.75);
 }
 
 .meme-card:hover .fav-btn,
-.fav-btn:focus-visible,
-.fav-btn.active {
+.meme-card .fav-btn:focus-visible,
+.meme-card .fav-btn.active {
   opacity: 1;
 }
 
-.fav-btn.active {
+.meme-card .fav-btn.active {
   color: #f43f5e;
 }
 
@@ -999,4 +875,52 @@ body {
 
 ::-webkit-scrollbar-thumb:hover {
   background: var(--muted);
+}
+
+/* LAN 设备确认弹窗 */
+.lan-confirm-box {
+  background: var(--surface);
+  border-radius: var(--radius-lg);
+  padding: 24px 28px;
+  width: 400px;
+  border: 1px solid var(--border);
+  box-shadow: var(--shadow-lg);
+}
+
+.lan-confirm-box h2 {
+  font-size: 15px;
+  font-weight: 600;
+  color: var(--fg);
+  margin-bottom: 8px;
+}
+
+.lan-confirm-box p {
+  font-size: 13px;
+  color: var(--fg-secondary);
+  line-height: 1.6;
+}
+
+.lan-confirm-info {
+  background: var(--card);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  padding: 12px 14px;
+  margin: 12px 0;
+  font-size: 13px;
+  line-height: 1.8;
+}
+
+.lan-confirm-info .k { color: var(--muted); }
+.lan-confirm-info .v { color: var(--fg); }
+
+.lan-confirm-note {
+  font-size: 12px;
+  color: var(--muted);
+}
+
+.lan-confirm-actions {
+  display: flex;
+  gap: 8px;
+  justify-content: flex-end;
+  margin-top: 14px;
 }
