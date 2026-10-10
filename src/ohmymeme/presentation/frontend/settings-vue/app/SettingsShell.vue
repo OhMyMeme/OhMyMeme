@@ -1,8 +1,8 @@
 <script setup lang="ts">
-import { onMounted, onUnmounted } from 'vue'
+import { onMounted, onUnmounted, ref, watch } from 'vue'
 import { useDialog, NButton } from 'naive-ui'
 import { api } from '../shared/bridge'
-import { activeGroup, dirty, save, reset } from '../shared/store'
+import { activeGroup, dirty, save, reset, resetSignal } from '../shared/store'
 import BaseGroup from '../features/base/BaseGroup.vue'
 import LogsGroup from '../features/logs/LogsGroup.vue'
 import BackupGroup from '../features/backup/BackupGroup.vue'
@@ -10,11 +10,17 @@ import DangerGroup from '../features/danger/DangerGroup.vue'
 import AboutGroup from '../features/about/AboutGroup.vue'
 import NetworkGroup from '../features/network/NetworkGroup.vue'
 import ImportGroup from '../features/import/ImportGroup.vue'
+import PluginsGroup from '../features/plugins/PluginsGroup.vue'
 
 const dialog = useDialog()
 
+const pluginsRef = ref<any>(null)
+
 function onSave() { save() }
 function onReset() { reset() }
+
+// 恢复默认后重拉插件面板（对齐旧 resetSettings 的 initPluginsPanel 调用）
+watch(resetSignal, () => { pluginsRef.value?.initPanel?.() })
 
 // 全局快捷键：Esc 关闭设置窗口（覆盖层由各自 NModal 的 esc 处理，不冒泡到此），Ctrl+Enter 保存
 function onKeydown(e: KeyboardEvent) {
@@ -116,7 +122,7 @@ defineExpose({ switchGroup, closeSettings })
         <div v-show="activeGroup === 'danger'"><DangerGroup /></div>
         <div v-show="activeGroup === 'logs'"><LogsGroup /></div>
         <div v-show="activeGroup === 'backup'"><BackupGroup /></div>
-        <div v-show="activeGroup === 'plugins'" class="group-placeholder" data-group="plugins"></div>
+        <div v-show="activeGroup === 'plugins'"><PluginsGroup ref="pluginsRef" /></div>
         <div v-show="activeGroup === 'about'"><AboutGroup /></div>
       </div>
     </div>
