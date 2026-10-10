@@ -4,12 +4,13 @@ import { readFileSync } from 'node:fs'
 import { fileURLToPath } from 'node:url'
 
 const root = fileURLToPath(new URL('../../src/webui/', import.meta.url))
+// 现用两窗口入口：主窗口 vue.html/dist/ohmymeme.js，设置窗口 vue-settings.html/dist/settings-vue.js
 const files = new Map([
   ['/vue.html', ['vue.html', 'text/html; charset=utf-8']],
   ['/dist/ohmymeme.js', ['dist/ohmymeme.js', 'text/javascript; charset=utf-8']],
-  ['/settings/', ['settings.html', 'text/html; charset=utf-8']],
-  ['/settings.css', ['settings.css', 'text/css; charset=utf-8']],
-  ['/settings.js', ['settings.js', 'text/javascript; charset=utf-8']],
+  ['/settings/', ['vue-settings.html', 'text/html; charset=utf-8']],
+  ['/dist/settings-vue.js', ['dist/settings-vue.js', 'text/javascript; charset=utf-8']],
+  ['/api/plugin-ui', ['plugin-ui.json', 'application/json; charset=utf-8']],
 ])
 
 function startServer() {
@@ -56,17 +57,26 @@ test('main bridge rejects malformed init payload without breaking the shell', as
   }
 })
 
-test('settings decoder turns malformed async result into a closed null result', async ({ page }) => {
+test('settings decoder turns a malformed bridge result into a fail-closed UI state', async ({ page }) => {
   const server = await startServer()
   const address = server.address()
   if (address === null || typeof address === 'string') throw new Error('server address unavailable')
   try {
     await page.addInitScript(() => {
-      window.pywebview = { api: { check_connectivity: async () => 'malformed' } }
+      window.pywebview = { api: {
+        get_settings: async () => ({ hotkey: 'Ctrl+Alt+N' }),
+        check_connectivity: async () => 'malformed',
+      } }
     })
     await page.goto(`http://127.0.0.1:${address.port}/settings/`)
-    const result = await page.evaluate(() => window.api('check_connectivity'))
-    expect(result).toBeNull()
+
+    // 外壳挂载后，BaseGroup 挂载即探测；坏 bridge 结果只呈现可读 fail-closed 文案
+    await expect(page.locator('#settings-nav [data-group="base"]')).toBeVisible()
+    await expect(page.getByText('● 无网络连接')).toBeVisible()
+    // 用户再次触发同一探测，仍返回同一 fail-closed 结果（不暴露全局 api）
+    await page.getByText('浏览器来源尝试获取原图').click()
+    await expect(page.getByText('● 无网络连接')).toBeVisible()
+    await expect(page.locator('#settings-nav [data-group="base"]')).toBeVisible()
   } finally {
     await page.close()
     server.closeAllConnections()

@@ -77,9 +77,8 @@ def _call_arity(text, start):
 
 def _callers(root, surface, action):
     # Reconcile actual call expressions, including the two fixed sync wrappers.
-    files = sorted((root / FRONTEND / surface).rglob("*"))
-    if surface == "settings":
-        files.append(root / "src/webui/settings.js")
+    directory = "settings-vue" if surface == "settings" else surface
+    files = sorted((root / FRONTEND / directory).rglob("*"))
     result = []
     for path in files:
         if path.suffix not in (".js", ".ts", ".vue") or "generated" in path.parts:
@@ -88,14 +87,14 @@ def _callers(root, surface, action):
         arities = {
             _call_arity(text, match.end())
             for match in re.finditer(
-                r"\bapi\(\s*['\"]" + re.escape(action) + r"['\"]", text
+                r"\b(?:api|call)\(\s*['\"]" + re.escape(action) + r"['\"]", text
             )
         }
         indirect = action in ("sync_push", "sync_pull") and (
             f"doSyncWithProgress('{action}'," in text or f".start('{action}'," in text
         )
         indirect = indirect or (
-            action == "delete_all_cloud" and "api('delete_all_' + dangerTarget)" in text
+            action == "delete_all_cloud" and "api('delete_all_' +" in text
         )
         if indirect:
             arities.add(0)

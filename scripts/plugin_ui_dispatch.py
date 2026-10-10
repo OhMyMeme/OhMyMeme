@@ -22,12 +22,56 @@ from ohmymeme.presentation.desktop.api.ui_contributions import (
 ROOT = Path(__file__).resolve().parents[1]
 SCHEMA = ROOT / "schemas/plugin/ui-contribution.schema.json"
 ASSET = ROOT / "src/webui/plugin-ui.json"
-RUNTIME = ROOT / "src/webui/settings.js"
+FRONTEND = ROOT / "src/ohmymeme/presentation/frontend/settings-vue"
+# 历史兼容基线不参与生产加载。
+BASELINE_HTML = ROOT / "fixtures/plugin-parity/settings-ui-baseline.html"
+# 现用 Vue 设置窗口的静态消费点（read source 接线校验，不是运行时证明）。
+RUNTIME = FRONTEND / "features/network/NetworkGroup.vue"
+CONSUMER_TOKENS = (
+    ("shared/plugin-ui.ts", ("checkPluginUIArguments", "pluginProgressValue")),
+    ("shared/bridge.ts", ("checkPluginUIArguments",)),
+    (
+        "app/App.vue",
+        ("await loadProjection()", "await loadSettings()", '<SettingsShell v-if="ready"'),
+    ),
+    ("features/import/ImportGroup.vue", ("getPluginUI()", "rowLabel(")),
+    ("features/import/QqntWizard.vue", ("pluginProgressValue(", "qqnt_get_progress")),
+    (
+        "features/import/TelegramWizard.vue",
+        ("pluginProgressValue(", "get_tg_import_progress"),
+    ),
+    (
+        "features/import/DouyinWizard.vue",
+        ("pluginProgressValue(", "get_douyin_import_progress"),
+    ),
+    (
+        "features/import/WechatWizard.vue",
+        ("pluginProgressValue(", "get_wechat_import_progress"),
+    ),
+)
+RUNTIME_TOKENS = ("pluginProgressValue", "getPluginUI", "api(")
+
+
+def _consumer_errors():
+    # 静态确认现用 Vue 消费点仍通过固定 bridge/projection/参数/进度接口调用。
+    errors = []
+    targets = [(FRONTEND / name, tokens) for name, tokens in CONSUMER_TOKENS]
+    targets.append((RUNTIME, RUNTIME_TOKENS))
+    for path, tokens in targets:
+        try:
+            text = path.read_text("utf-8")
+        except OSError as error:
+            errors.append(f"consumer.{path.name}: {error}")
+            continue
+        for token in tokens:
+            if token not in text:
+                errors.append(f"consumer.{path.name}: missing {token}")
+    return errors
 
 
 def characterize(actions):
     # Capture the original HTML/ABI independently, never the new projection output.
-    html = (ROOT / "src/webui/settings.html").read_text("utf-8")
+    html = BASELINE_HTML.read_text("utf-8")
     rows = re.findall(
         r'<button class="import-row" onclick="(\w+)\(\)">(.*?)</button>',
         html,
@@ -155,22 +199,7 @@ def check(actions_path, fixture_path):
         projected = candidate
         bundled = load_ui_projection(ASSET)
         errors.extend(exact_errors(bundled, projected, "host_asset"))
-        entry = ROOT / "src/ohmymeme/presentation/frontend/settings/entry.mjs"
-        modules = re.findall(r'"([^"\n]+\.js)"', entry.read_text("utf-8"))
-        prefix = (
-            "/* Generated host-owned UI data; no plugin code. */\n"
-            "const fixedPluginUI = "
-        )
-        assembled = (
-            prefix
-            + json.dumps(load_json(ASSET), ensure_ascii=False, separators=(",", ":"))
-            + ";\n"
-        )
-        assembled += "\n".join(
-            (entry.parent / name).read_text("utf-8") for name in modules
-        )
-        if RUNTIME.read_text("utf-8") != assembled:
-            errors.append("settings.js: stale assembled runtime")
+        errors.extend(_consumer_errors())
     return {
         "schema_version": 1,
         "status": "REJECTED" if errors else "PASS",
@@ -178,16 +207,17 @@ def check(actions_path, fixture_path):
         "library_projection": None if errors else projected,
         "host_asset_projection": None if errors else bundled,
         "consumer": (
-            "WebUI._setup_bottle /api/plugin-ui -> initSettings -> installPluginUI"
-            " -> api/toggleSyncType/progress polls"
+            "WebUI._setup_bottle /api/plugin-ui -> settings-vue App/SettingsShell"
+            " -> shared/plugin-ui.ts installPluginUI/checkPluginUIArguments"
+            " -> NetworkGroup/wizards pluginProgressValue + api/call"
         ),
         "execution": {
             "provider_calls": [],
             "bridge_calls": [],
             "dom_calls": [],
             "scope": (
-                "validation and JSON projection only; "
-                "frontend execution tested separately"
+                "静态 schema/action/host_asset 与现用 Vue 消费点接线校验；"
+                "不是运行时执行证明，前端执行由前端测试另行覆盖"
             ),
         },
     }
@@ -205,16 +235,17 @@ def _rejected_report(error):
         "library_projection": None,
         "host_asset_projection": None,
         "consumer": (
-            "WebUI._setup_bottle /api/plugin-ui -> initSettings -> installPluginUI"
-            " -> api/toggleSyncType/progress polls"
+            "WebUI._setup_bottle /api/plugin-ui -> settings-vue App/SettingsShell"
+            " -> shared/plugin-ui.ts installPluginUI/checkPluginUIArguments"
+            " -> NetworkGroup/wizards pluginProgressValue + api/call"
         ),
         "execution": {
             "provider_calls": [],
             "bridge_calls": [],
             "dom_calls": [],
             "scope": (
-                "validation and JSON projection only; "
-                "frontend execution tested separately"
+                "静态 schema/action/host_asset 与现用 Vue 消费点接线校验；"
+                "不是运行时执行证明，前端执行由前端测试另行覆盖"
             ),
         },
     }

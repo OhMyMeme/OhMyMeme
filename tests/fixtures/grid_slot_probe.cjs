@@ -2,22 +2,33 @@ const fs = require('fs');
 const path = require('path');
 const vm = require('vm');
 
+// 现用主窗口拖拽几何在 useDragSort.ts：提取 gridMetrics/gridSlotIndex（TS 类型标注剥离后）在本地 DOM 桩上执行。
 const source = fs.readFileSync(
-  path.resolve(__dirname, '..', '..', 'src', 'webui', 'index.js'),
+  path.resolve(
+    __dirname,
+    '..',
+    '..',
+    'src',
+    'ohmymeme',
+    'presentation',
+    'frontend',
+    'main',
+    'features',
+    'sorting',
+    'useDragSort.ts'
+  ),
   'utf8'
 );
-const start = source.indexOf('function memeCardsInGrid()');
+const start = source.indexOf('function gridMetrics(');
 const end = source.indexOf('function moveInArray(', start);
 if (start < 0 || end < 0) throw new Error('drag geometry helpers not found');
 
-const folder = { classList: { contains: name => name === 'folder-card' } };
-const meme = () => ({
-  offsetWidth: 100,
-  offsetHeight: 80,
-  classList: { contains: () => false },
-});
+const geometry = source
+  .slice(start, end)
+  .replace(/:\s*(?:HTMLElement|number|string|boolean|GridMetrics(?:\s*\|\s*null)?)/g, '');
+
+const meme = () => ({ offsetWidth: 100, offsetHeight: 80 });
 const memes = [meme(), meme(), meme(), meme(), meme()];
-const allCards = [folder, ...memes];
 const layout = { left: 200, top: 100 };
 const style = {
   paddingLeft: '10px',
@@ -30,26 +41,16 @@ const grid = {
   clientLeft: 0,
   clientTop: 0,
   clientWidth: 340,
+  querySelectorAll: () => memes,
   getBoundingClientRect: () => ({ left: layout.left, top: layout.top }),
 };
-folder.offsetLeft = 218;
-folder.offsetTop = 110;
 
-const context = {
-  document: {
-    getElementById: id => {
-      if (id !== 'meme-grid') throw new Error('unexpected element id: ' + id);
-      return grid;
-    },
-    querySelectorAll: selector => selector.includes(':not(.folder-card)') ? memes : allCards,
-  },
-  getComputedStyle: () => style,
-};
+const context = { getComputedStyle: () => style };
 vm.createContext(context);
-vm.runInContext(source.slice(start, end), context);
+vm.runInContext(geometry + '\nglobalThis.gridMetrics = gridMetrics; globalThis.gridSlotIndex = gridSlotIndex;', context);
 
 function assertSlot(label, x, y, expected) {
-  const actual = context.gridSlotIndex(x, y);
+  const actual = context.gridSlotIndex(grid, x, y);
   if (actual !== expected) {
     throw new Error(label + ': expected meme index ' + expected + ', got ' + actual);
   }
@@ -58,8 +59,11 @@ function assertSlot(label, x, y, expected) {
 function assertVisibleSlots(label) {
   const originX = layout.left + 10;
   const originY = layout.top + 10;
-  assertSlot(label + ' first meme after folder', originX + 110 + 50, originY + 40, 0);
-  assertSlot(label + ' third meme on next row', originX + 50, originY + 100 + 40, 2);
+  assertSlot(label + ' first slot', originX + 5, originY + 5, 0);
+  assertSlot(label + ' second column', originX + 115, originY + 5, 1);
+  assertSlot(label + ' third column', originX + 225, originY + 5, 2);
+  assertSlot(label + ' second row first column', originX + 5, originY + 105, 3);
+  assertSlot(label + ' second row second column', originX + 115, originY + 105, 4);
 }
 
 assertVisibleSlots('expanded sidebar');
@@ -75,7 +79,7 @@ style.paddingRight = 'not-a-number';
 style.paddingTop = 'Infinity';
 style.columnGap = 'Infinity';
 style.rowGap = 'NaN';
-const metrics = context.gridMetrics();
+const metrics = context.gridMetrics(grid);
 if (!Object.values(metrics).every(Number.isFinite)) {
   throw new Error('malformed styles must produce finite grid metrics');
 }

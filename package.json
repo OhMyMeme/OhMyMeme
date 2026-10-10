@@ -5,8 +5,8 @@
   "type": "module",
   "scripts": {
     "dev": "vite",
-    "build": "node scripts/build_settings.mjs && vite build && vite build --config vite.settings.config.ts",
-    "build:settings": "node scripts/build_settings.mjs",
+    "build": "vite build && vite build --config vite.settings.config.ts",
+    "build:settings": "vite build --config vite.settings.config.ts",
     "preview": "vite preview",
     "typecheck": "vue-tsc --noEmit -p tsconfig.json",
     "test": "vitest run",

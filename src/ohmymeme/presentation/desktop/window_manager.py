@@ -88,7 +88,7 @@ _LOG_BUFFER = []
 _LOG_LOCK = threading.Lock()
 _LOG_MAX = 5000
 
-# 分页：主窗口单页展示的表情包数量（与前端 index.js MEME_PAGE 保持一致）
+# 分页：主窗口单页展示的表情包数量（与前端 useMemes.ts MEME_PAGE 保持一致）
 MEME_PAGE = 200
 _UPLOAD_BODY_LIMIT = UPLOAD_BODY_LIMIT
 
@@ -1809,24 +1809,29 @@ class WebUI:
         @app.route("/")
         def index():
             vue_html = self._html_dir / "vue.html"
-            # 仅当 vue.html 与构建产物都存在时才走 Vue 前端，否则回退旧 index.html
+            # 主窗口唯一入口为 Vue；构建产物缺失时返回可读 503 说明而非回退旧页面
             if vue_html.exists() and (self._html_dir / "dist" / "ohmymeme.js").exists():
                 return bottle.static_file("vue.html", root=str(self._html_dir))
-            html_path = self._html_dir / "index.html"
-            if html_path.exists():
-                return bottle.static_file("index.html", root=str(self._html_dir))
-            return "<h1>OhMyMeme</h1><p>index.html not found</p>"
+            bottle.response.status = 503
+            return (
+                "主窗口前端产物缺失：请先构建两个窗口"
+                "（vite build 与 vite build --config vite.settings.config.ts）"
+            )
 
         @app.route("/settings/")
         def settings_page():
             vue_settings = self._html_dir / "vue-settings.html"
-            # 仅当 vue-settings.html 与构建产物都存在时才走 Vue 设置窗口，否则回退旧 settings.html
-            if vue_settings.exists() and (self._html_dir / "dist" / "settings-vue.js").exists():
+            # 设置窗口唯一入口为 Vue；构建产物缺失时返回可读 503 说明而非回退旧页面
+            if (
+                vue_settings.exists()
+                and (self._html_dir / "dist" / "settings-vue.js").exists()
+            ):
                 return bottle.static_file("vue-settings.html", root=str(self._html_dir))
-            html_path = self._html_dir / "settings.html"
-            if html_path.exists():
-                return bottle.static_file("settings.html", root=str(self._html_dir))
-            return "<h1>设置</h1><p>settings.html not found</p>"
+            bottle.response.status = 503
+            return (
+                "设置窗口前端产物缺失：请先构建两个窗口"
+                "（vite build 与 vite build --config vite.settings.config.ts）"
+            )
 
         @app.route("/api/plugin-ui")
         def plugin_ui():

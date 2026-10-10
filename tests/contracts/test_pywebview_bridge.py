@@ -201,6 +201,7 @@ def test_bridge_baseline_freezes_public_method_names_and_defaults():
 
 
 def test_bridge_schema_and_generated_files_are_present_and_deterministic():
+    # 单源 DTO：只有主窗口 generated/bridge.ts 由生成器产出
     schema_path = ROOT / "schemas" / "bridge" / "bridge.schema.json"
     main_dto = (
         ROOT / "src/ohmymeme/presentation/frontend/main/shared/generated/bridge.ts"
@@ -213,12 +214,13 @@ def test_bridge_schema_and_generated_files_are_present_and_deterministic():
     schema = json.loads(schema_path.read_text(encoding="utf-8"))
     assert schema["$schema"] == "https://json-schema.org/draft/2020-12/schema"
     assert main_dto.is_file()
-    assert settings_dto.is_file()
+    assert not settings_dto.is_file()
     attributes = (ROOT / ".gitattributes").read_text(encoding="utf-8")
-    for dto in (main_dto, settings_dto):
-        assert b"\r\n" not in dto.read_bytes()
-        assert f"{dto.relative_to(ROOT).as_posix()} text eol=lf" in attributes
-    assert main_dto.read_bytes() == settings_dto.read_bytes()
+    assert b"\r\n" not in main_dto.read_bytes()
+    assert f"{main_dto.relative_to(ROOT).as_posix()} text eol=lf" in attributes
+    assert (
+        f"{settings_dto.relative_to(ROOT).as_posix()} text eol=lf" not in attributes
+    )
     result = subprocess.run(
         ["mise", "run", "generate-schemas", "--", "--check"],
         cwd=ROOT,
@@ -401,7 +403,9 @@ def test_facade_projects_typed_settings_patch_and_rejects_unknown_fields():
 
 
 def test_settings_decoder_source_is_owned_and_declares_fail_closed_decoder():
-    decoder = ROOT / "src/ohmymeme/presentation/frontend/settings/shared/decoder.js"
+    decoder = (
+        ROOT / "src/ohmymeme/presentation/frontend/settings-vue/shared/bridge.ts"
+    )
     source = decoder.read_text(encoding="utf-8")
     assert "decodeBridgeResult" in source
     assert "BridgeDecodeError" in source

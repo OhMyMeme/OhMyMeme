@@ -12,7 +12,6 @@ ROOT = Path(__file__).resolve().parents[1]
 SCHEMA_PATH = ROOT / "schemas" / "bridge" / "bridge.schema.json"
 DTO_PATHS = (
     ROOT / "src/ohmymeme/presentation/frontend/main/shared/generated/bridge.ts",
-    ROOT / "src/ohmymeme/presentation/frontend/settings/shared/generated/bridge.ts",
 )
 
 

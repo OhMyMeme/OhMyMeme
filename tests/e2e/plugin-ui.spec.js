@@ -4,10 +4,10 @@ import { readFileSync } from 'node:fs'
 import { fileURLToPath } from 'node:url'
 
 const root = fileURLToPath(new URL('../../src/webui/', import.meta.url))
+// 现用 Vue 设置窗口：入口 vue-settings.html + 构建产物 dist/settings-vue.js + 宿主 plugin-ui.json
 const files = new Map([
-  ['/settings/', ['settings.html', 'text/html; charset=utf-8']],
-  ['/settings.css', ['settings.css', 'text/css; charset=utf-8']],
-  ['/settings.js', ['settings.js', 'text/javascript; charset=utf-8']],
+  ['/settings/', ['vue-settings.html', 'text/html; charset=utf-8']],
+  ['/dist/settings-vue.js', ['dist/settings-vue.js', 'text/javascript; charset=utf-8']],
   ['/api/plugin-ui', ['plugin-ui.json', 'application/json; charset=utf-8']],
 ])
 
@@ -64,9 +64,10 @@ test('settings import area reflects source status and injected rows', async ({ p
     await page.addInitScript(() => {
       window.pywebview = {
         api: {
-          check_connectivity: async () => 'ok',
           get_settings: async () => ({ hotkey: 'Ctrl+Alt+N' }),
-          get_current_version: async () => '0.0.0',
+          qqnt_check_env: async () => ({ ok: false, error: '' }),
+          lan_get_status: async () => ({ status: 'stopped', port: 17852 }),
+          lan_get_ip: async () => '127.0.0.1',
         },
       }
     })
@@ -77,25 +78,34 @@ test('settings import area reflects source status and injected rows', async ({ p
       return route.fulfill({ json: { ok: true, result: {} } })
     })
     await page.goto(`http://127.0.0.1:${address.port}/settings/`)
-    await page.evaluate(() => switchSettingsGroup('import'))
 
-    const qqnt = page.locator('[onclick="startQQNTWizard()"]')
+    // 用户可见导航：通过 data-group / 角色按钮切到「导入」分组，不调用暴露的全局函数
+    const importNav = page.locator('#settings-nav [data-group="import"]')
+    await expect(importNav).toBeVisible()
+    await importNav.click()
+
+    const qqnt = page.getByRole('button', { name: '电脑版 QQ（QQNT 本地缓存）' })
     await expect(qqnt).toHaveClass(/import-row-disabled/)
     await expect(qqnt.locator('.import-status')).toHaveText('已禁用（重启生效）')
     await expect(qqnt).toBeDisabled()
 
-    const telegram = page.locator('[onclick="openTGImportDialog()"]')
-    await expect(telegram).toBeHidden()
+    // 无对应插件包时该固定行不渲染
+    await expect(page.getByRole('button', { name: 'Telegram Desktop' })).toBeHidden()
 
-    const douyin = page.locator('[onclick="openDYImportDialog()"]')
+    const douyin = page.getByRole('button', { name: '抖音' })
     await expect(douyin).not.toHaveClass(/import-row-disabled|import-row-missing/)
     await expect(douyin).toBeEnabled()
 
-    const injected = page.locator('#import-injected .import-injected-row')
+    const injected = page.locator('.import-injected-row')
     await expect(injected).toHaveCount(1)
     await expect(injected.locator('.import-name')).toHaveText('Demo 来源')
-    await injected.locator('input[data-inject-field="source_dir"]').fill('D:/tmp')
-    await injected.locator('input[data-inject-field="limit"]').fill('5')
+    // 现用 Vue 注入真实 input：直接使用宿主写入的 data-inject-field 定位
+    const sourceDir = injected.locator('[data-inject-field="source_dir"]')
+    const limit = injected.locator('[data-inject-field="limit"]')
+    await expect(sourceDir).toHaveCount(1)
+    await expect(limit).toHaveCount(1)
+    await sourceDir.fill('D:/tmp')
+    await limit.fill('5')
     await injected.getByRole('button', { name: '运行' }).click()
     await expect.poll(() => actions.length).toBe(1)
     expect(actions[0]).toMatchObject({

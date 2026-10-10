@@ -3,7 +3,6 @@ config/plugin-manifest.json text eol=lf
 fixtures/plugin-parity/frozen-staging/ohmymeme/config/plugin-manifest.json text eol=lf
 fixtures/plugin-parity/frozen-staging/staging-manifest.json text eol=lf
 src/ohmymeme/presentation/frontend/main/shared/generated/bridge.ts text eol=lf
-src/ohmymeme/presentation/frontend/settings/shared/generated/bridge.ts text eol=lf
 fixtures/plugin-parity/frozen-staging/*.dist-info/** -text
 fixtures/plugin-parity/frozen-staging/*.dist-info/METADATA text eol=lf
 fixtures/plugin-parity/frozen-staging/*.dist-info/entry_points.txt text eol=lf

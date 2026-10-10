@@ -1,33 +1,28 @@
-import { readFileSync } from 'node:fs'
 import { describe, expect, it } from 'vitest'
-import { runInNewContext } from 'node:vm'
-import { resolve } from 'node:path'
 
-const source = readFileSync(
-  resolve(process.cwd(), 'src/ohmymeme/presentation/frontend/settings/shared/decoder.js'),
-  'utf8',
-)
-
-function decoder() {
-  const context = { console: { error: () => undefined } }
-  runInNewContext(`${source}; globalThis.decodeBridgeResult = decodeBridgeResult`, context)
-  return context.decodeBridgeResult
-}
+// 现用设置窗口的唯一 decoder：直接从 settings-vue 的受控桥接导入，不再 vm 执行旧 decoder.js
+import {
+  decodeBridgeResult,
+} from '../../src/ohmymeme/presentation/frontend/settings-vue/shared/bridge'
 
 describe('settings bridge decoder', () => {
   it('preserves boolean and void method results', () => {
-    const decode = decoder()
-    expect(decode('start_window_drag', true)).toBe(true)
-    expect(decode('refresh_memes', null)).toBeNull()
+    expect(decodeBridgeResult('start_window_drag', true)).toBe(true)
+    expect(decodeBridgeResult('refresh_memes', null)).toBeNull()
   })
 
   it('rejects malformed boolean results', () => {
-    const decode = decoder()
     try {
-      decode('start_window_drag', { ok: true })
+      decodeBridgeResult('start_window_drag', { ok: true })
       throw new Error('malformed boolean was accepted')
     } catch (error) {
       expect(error.name).toBe('BridgeDecodeError')
     }
+  })
+
+  it('closes a malformed async result into null without throwing', async () => {
+    await expect(
+      decodeBridgeResult('check_connectivity', Promise.resolve('malformed')),
+    ).resolves.toBeNull()
   })
 })

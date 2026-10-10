@@ -25,8 +25,10 @@ def record_ui_observations():
 
 
 def test_characterize_fixed_ui_and_bundle():
-    # Freeze the existing shell independently of the future projection output.
-    html = (ROOT / "src/webui/settings.html").read_text(encoding="utf-8")
+    # 历史兼容基线：旧 Vanilla settings.html 冻结为只读 fixture，独立于新投影输出。
+    html = (ROOT / "fixtures/plugin-parity/settings-ui-baseline.html").read_text(
+        encoding="utf-8"
+    )
     for handler, label in (
         ("startQQImport", "手机版 QQ（ADB 拉取）"),
         ("startQQNTWizard", "电脑版 QQ（QQNT 本地缓存）"),
@@ -430,8 +432,11 @@ def test_schema_and_stale_host_asset_rejected(monkeypatch, tmp_path):
         "schema.properties.schema_version.type" in error for error in report["errors"]
     )
     OBSERVATIONS.append({"case": "stale-schema", "report": report})
-    path = tmp_path / "settings.js"
-    path.write_text(cli.RUNTIME.read_text("utf-8") + "// stale\n", "utf-8")
+    path = tmp_path / "NetworkGroup.vue"
+    path.write_text(
+        cli.RUNTIME.read_text("utf-8").replace("pluginProgressValue", ""),
+        "utf-8",
+    )
     with monkeypatch.context() as changed:
         changed.setattr(cli, "RUNTIME", path)
         report = cli.check(
@@ -439,9 +444,11 @@ def test_schema_and_stale_host_asset_rejected(monkeypatch, tmp_path):
             ROOT / "fixtures/plugin-parity/ui-valid.json",
         )
     assert report["status"] == "REJECTED"
-    assert "settings.js: stale assembled runtime" in report["errors"]
+    assert any("pluginProgressValue" in error for error in report["errors"]), report[
+        "errors"
+    ]
     assert report["library_projection"] is None
-    OBSERVATIONS.append({"case": "stale-assembled-runtime", "report": report})
+    OBSERVATIONS.append({"case": "broken-consumer-wiring", "report": report})
     asset = json.loads(cli.ASSET.read_text("utf-8"))
     asset["contributions"][0]["label"] = "stale asset"
     path = tmp_path / "asset.json"

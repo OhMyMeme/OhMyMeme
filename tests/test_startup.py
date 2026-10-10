@@ -502,47 +502,65 @@ def test_webui_html_exists():
     from ohmymeme.presentation.desktop.window_manager import HTML_DIR
 
     root = Path(__file__).resolve().parent.parent
+    frontend = root / "src" / "ohmymeme" / "presentation" / "frontend"
     assert HTML_DIR.exists()
-    assert (HTML_DIR / "index.html").exists()
-    html = (HTML_DIR / "index.html").read_text(encoding="utf-8")
-    assert "OhMyMeme" in html
-    assert "search" in html
-    # 前端样式/脚本已从 HTML 拆分为独立静态文件
-    assert (HTML_DIR / "index.css").exists()
-    assert (HTML_DIR / "index.js").exists()
-    assert (HTML_DIR / "settings.html").exists()
-    assert (HTML_DIR / "settings.css").exists()
-    assert (HTML_DIR / "settings.js").exists()
-    assert 'src="/index.js"' in html
-    assert 'href="/index.css"' in html
-    settings_html = (HTML_DIR / "settings.html").read_text(encoding="utf-8")
-    assert 'src="/settings.js"' in settings_html
-    assert 'href="/settings.css"' in settings_html
-    assert 'id="s-hotkey-show-at-mouse"' in settings_html
-    settings_js = (HTML_DIR / "settings.js").read_text(encoding="utf-8")
-    assert settings_js.count("s.hotkey_show_at_mouse === true") == 2
-    assert "hotkey_show_at_mouse," in settings_js
-    settings_source = (
-        root / "src" / "ohmymeme" / "presentation" / "frontend" / "settings"
-    )
-    assert (settings_source / "entry.mjs").exists()
-    assert (settings_source / "core" / "runtime.js").exists()
-    assert (settings_source / "core" / "window.js").exists()
-    assert (settings_source / "features" / "base.js").exists()
-    assert (settings_source / "features" / "storage.js").exists()
-    assert (settings_source / "features" / "lan.js").exists()
-    assert (settings_source / "features" / "sync" / "settings.js").exists()
-    assert (settings_source / "features" / "sync" / "operations.js").exists()
-    assert (settings_source / "features" / "imports" / "qq.js").exists()
-    assert (settings_source / "features" / "imports" / "douyin.js").exists()
-    assert (settings_source / "features" / "imports" / "telegram.js").exists()
-    assert (settings_source / "features" / "imports" / "wechat.js").exists()
-    assert (settings_source / "features" / "imports" / "qqnt.js").exists()
-    assert (settings_source / "features" / "update.js").exists()
-    assert (settings_source / "features" / "danger.js").exists()
-    assert (settings_source / "features" / "logs.js").exists()
+    vue_html = (HTML_DIR / "vue.html").read_text(encoding="utf-8")
+    assert 'id="app-mount"' in vue_html
+    assert 'src="/dist/ohmymeme.js"' in vue_html
+    settings_html = (HTML_DIR / "vue-settings.html").read_text(encoding="utf-8")
+    assert 'id="app-mount"' in settings_html
+    assert 'src="/dist/settings-vue.js"' in settings_html
+    # 插件详情页 iframe 协议资产保留（非 Vue 入口也不删除）
+    assert (HTML_DIR / "import-frame.js").exists()
+    # 两窗口页面路由只返回 Vue 入口，产物缺失返回 503，不再回退旧 index/settings
+    desktop = (
+        root
+        / "src"
+        / "ohmymeme"
+        / "presentation"
+        / "desktop"
+        / "window_manager.py"
+    ).read_text(encoding="utf-8")
+    assert '"vue.html"' in desktop and '"vue-settings.html"' in desktop
+    assert '"index.html"' not in desktop
+    assert '"settings.html"' not in desktop
+    settings_vue = frontend / "settings-vue"
+    assert (settings_vue / "app" / "SettingsShell.vue").exists()
+    assert (settings_vue / "shared" / "bridge.ts").exists()
+    assert (settings_vue / "shared" / "plugin-ui.ts").exists()
+    assert (settings_vue / "shared" / "store.ts").exists()
+    shell = (settings_vue / "app" / "SettingsShell.vue").read_text(encoding="utf-8")
+    for label in (
+        "基础设置",
+        "导入",
+        "联网",
+        "危险操作",
+        "日志",
+        "备份与恢复",
+        "插件",
+        "关于",
+    ):
+        assert label in shell
+    import_group = settings_vue / "features" / "import"
+    for wizard in (
+        "QqWizard.vue",
+        "QqntWizard.vue",
+        "TelegramWizard.vue",
+        "DouyinWizard.vue",
+        "WechatWizard.vue",
+    ):
+        assert (import_group / wizard).exists()
+    assert (settings_vue / "features" / "network" / "NetworkGroup.vue").exists()
+    assert (settings_vue / "features" / "plugins" / "PluginsGroup.vue").exists()
     package = (root / "package.json").read_text(encoding="utf-8")
-    assert '"build:settings": "node scripts/build_settings.mjs"' in package
+    assert (
+        '"build": "vite build && vite build --config vite.settings.config.ts"'
+        in package
+    )
+    assert (
+        '"build:settings": "vite build --config vite.settings.config.ts"' in package
+    )
+    assert "build_settings.mjs" not in package
 
 
 def test_vue_main_window_feature_layout_static_contract():
@@ -591,162 +609,72 @@ def test_vue_main_window_feature_layout_static_contract():
 
 
 def test_sorting_visual_feedback_static_contract():
+    # 现用主窗口前端为 Vue：排序/多选语义读取 MainWindow.vue/useMemes.ts/useDragSort.ts/style.css
     root = Path(__file__).resolve().parent.parent
-    index_js = (root / "src" / "webui" / "index.js").read_text(encoding="utf-8")
-    index_css = (root / "src" / "webui" / "index.css").read_text(encoding="utf-8")
-    initial_state = index_js.split("function ", 1)[0]
-
-    assert re.search(
-        r"\bcollections\s*=\s*\[\]", initial_state
-    ), "the initial view must initialize without collections"
-    assert re.search(
-        r"\bactiveCollection\s*=\s*null\b", initial_state
-    ), "the initial view must remain the all-memes view"
-
-    grid_wrap = re.search(r"#grid-wrap\s*\{(?:(?!\}).)*?\}", index_css, re.DOTALL)
-    assert grid_wrap, "grid wrapper styles must remain locally inspectable"
-    assert re.search(r"overflow-y\s*:\s*scroll", grid_wrap.group(0))
-    assert re.search(r"overflow-x\s*:\s*hidden", grid_wrap.group(0))
-
-    meme_grid = re.search(r"#meme-grid\s*\{(?:(?!\}).)*?\}", index_css, re.DOTALL)
-    assert meme_grid, "meme grid styles must remain locally inspectable"
-    grid_padding = re.search(r"padding\s*:\s*([^;]+)", meme_grid.group(0))
-    assert grid_padding, "meme grid must reserve space for sorting outlines"
-    padding_values = [
-        float(value)
-        for value in re.findall(r"(?:^|\s)(\d+(?:\.\d+)?)px", grid_padding.group(1))
-    ]
-    assert len(padding_values) in (1, 2, 3, 4)
-    if len(padding_values) == 1:
-        padding_top = padding_right = padding_bottom = padding_left = padding_values[0]
-    elif len(padding_values) == 2:
-        padding_top = padding_bottom = padding_values[0]
-        padding_right = padding_left = padding_values[1]
-    elif len(padding_values) == 3:
-        padding_top, padding_right, padding_bottom = padding_values
-        padding_left = padding_right
-    else:
-        padding_top, padding_right, padding_bottom, padding_left = padding_values
-    assert padding_top >= 6
-    assert padding_right >= 6
-    assert padding_left >= 6
-    assert padding_bottom >= 6
-
-    card_rule = re.search(r"\.meme-card\s*\{(?:(?!\}).)*?\}", index_css, re.DOTALL)
-    assert card_rule, "meme card base styles must remain locally inspectable"
-    assert re.search(r"outline\s*:\s*0\s+solid\s+transparent", card_rule.group(0))
-    assert re.search(r"outline-offset\s*:\s*3px", card_rule.group(0))
-    transition = re.search(r"transition\s*:\s*([^;]+)", card_rule.group(0))
-    assert transition, "meme card transitions must remain locally inspectable"
-    transition_value = transition.group(1)
-    for property_name in ("transform", "outline-color", "outline-width"):
-        assert re.search(rf"\b{property_name}\s+var\(--transition\)", transition_value)
-
-    render_grid = re.search(
-        r"function renderGrid\(\)\s*\{(?:(?!\n\}).)*\n\}", index_js, re.DOTALL
+    main = root / "src" / "ohmymeme" / "presentation" / "frontend" / "main"
+    style_css = (main / "app" / "style.css").read_text(encoding="utf-8")
+    main_window = (main / "app" / "MainWindow.vue").read_text(encoding="utf-8")
+    use_memes = (main / "features" / "memes" / "useMemes.ts").read_text(
+        encoding="utf-8"
     )
-    assert render_grid, "renderGrid must remain locally inspectable"
-    render_grid_body = render_grid.group(0)
-    assert re.search(r"const\s+sortEnabled\s*=\s*canReorderMemes\(\)", render_grid_body)
-    remove_sort = re.search(
-        r"grid\.classList\.remove\(\s*['\"]sort-enabled['\"]\s*\)",
-        render_grid_body,
-    )
-    clear_grid = re.search(r"grid\.innerHTML\s*=\s*['\"]['\"]", render_grid_body)
-    assert remove_sort and clear_grid
-    assert remove_sort.start() < clear_grid.start()
-
-    animation = re.search(
-        r"requestAnimationFrame\(\s*\(\)\s*=>\s*\{(?P<body>.*?)\}\s*\)\s*;",
-        render_grid_body,
-        re.DOTALL,
-    )
-    assert animation, "sorting state must be applied in requestAnimationFrame"
-    animation_body = animation.group("body")
-    assert re.search(
-        r"if\s*\(\s*renderToken\s*!==\s*gridRenderToken\s*\)\s*return\s*;",
-        animation_body,
-    ), "stale render callbacks must be ignored"
-    assert re.search(
-        r"grid\.classList\.toggle\(\s*['\"]sort-enabled['\"]\s*,\s*sortEnabled\s*\)",
-        animation_body,
+    use_drag = (main / "features" / "sorting" / "useDragSort.ts").read_text(
+        encoding="utf-8"
     )
 
-    can_reorder = re.search(
-        r"function canReorderMemes\(\)\s*\{(?:(?!\n\}).)*\n\}", index_js, re.DOTALL
-    )
-    assert can_reorder, "sorting eligibility must remain locally inspectable"
-    can_reorder_body = can_reorder.group(0)
-    assert re.search(
-        r"if\s*\(\s*q\s*\|\|\s*activeTags\s*\.\s*size\s*>\s*0\s*\)\s*"
-        r"return\s+false\s*;",
-        can_reorder_body,
-    )
-    assert re.search(
-        r"if\s*\(\s*!\s*dragSortEnabled\s*\)\s*return\s+false\s*;",
-        can_reorder_body,
-    )
-    assert re.search(
-        r"return\s+activeCollection\s*===\s*null\s*\|\|\s*"
-        r"activeCollection\s*===\s*-4\s*\|\|\s*"
-        r"activeCollection\s*>\s*0\s*;",
-        can_reorder_body,
-    )
-    assert re.search(
-        r"activeCollection\s*>\s*0[\s\S]*?api\(\s*['\"]reorder_collection_members['\"]\s*,\s*activeCollection",
-        index_js,
-    ), (
-        "sortable collections must persist their member order through "
-        "the active collection"
-    )
-    assert re.search(
-        r"api\(\s*['\"]reorder_memes['\"]\s*,\s*memes\.map\([^)]*\.id\s*\)",
-        index_js,
-    ), "the all-memes view must persist its global order through reorder_memes"
+    def rule(selector):
+        match = re.search(
+            re.escape(selector) + r"\s*\{(?:(?!\}).)*?\}", style_css, re.DOTALL
+        )
+        assert match, f"sorting styles must remain locally inspectable: {selector}"
+        return match.group(0)
 
-    normal_card_selector = (
-        "#meme-grid.sort-enabled .meme-card:not(.folder-card):not(.dragging)"
-    )
-    sorting_rule = re.search(
-        re.escape(normal_card_selector) + r"\s*\{(?:(?!\}).)*?\}",
-        index_css,
-        re.DOTALL,
-    )
-    assert (
-        sorting_rule
-    ), "sorting feedback must target only ordinary, non-dragging cards"
-    assert re.search(r"transform\s*:\s*scale\(0\.95\)", sorting_rule.group(0))
-    assert re.search(
-        r"outline\s*:\s*3px\s+solid\s+var\(--border-light\)", sorting_rule.group(0)
-    )
-    assert re.search(r"outline-offset\s*:\s*[^;]+", sorting_rule.group(0))
+    # 初始全视图：分组为空且 activeCollection 为 null
+    assert re.search(r"\bcollections:\s*\[\]", use_memes)
+    assert re.search(r"\bactiveCollection:\s*null\b", use_memes)
 
+    # 网格容器：纵向滚动 + 预留排序描边空间
+    grid_wrap = rule("#grid-wrap")
+    assert re.search(r"overflow-y\s*:\s*auto", grid_wrap)
+    assert re.search(r"padding\s*:\s*10px", grid_wrap)
+    meme_grid = rule("#meme-grid,\n.meme-grid")
+    assert re.search(
+        r"grid-template-columns\s*:\s*repeat\(auto-fill, minmax\(112px, 1fr\)\)",
+        meme_grid,
+    )
+    assert re.search(r"gap\s*:\s*10px", meme_grid)
+
+    # 排序模式卡片：缩放 + 描边
+    sorting_rule = rule("#meme-grid.sort-enabled .meme-card")
+    assert re.search(r"transform\s*:\s*scale\(0\.95\)", sorting_rule)
+    assert re.search(
+        r"outline\s*:\s*3px\s+solid\s+var\(--border-light\)", sorting_rule
+    )
+    assert re.search(r"outline-offset\s*:\s*3px", sorting_rule)
+
+    # 稳定卡晃动：排除拖拽/FLIP/入场态，用独立 rotate 属性（不得用 transform）
     shake_selector = (
         "#meme-grid.sort-enabled:not(.drag-active) "
-        ".meme-card:not(.folder-card):not(.dragging):not(.sort-enter)"
+        ".meme-card:not(.dragging):not(.sort-enter)"
     )
-    shake_rule = re.search(
-        re.escape(shake_selector) + r"\s*\{(?:(?!\}).)*?\}",
-        index_css,
-        re.DOTALL,
-    )
-    assert shake_rule, "sorting shake must exclude drag, FLIP, folder, and entry states"
-    assert re.search(r"animation\s*:\s*sort-shake\s+[^;]+", shake_rule.group(0))
-    assert "transform" not in shake_rule.group(0), (
+    shake_rule = rule(shake_selector)
+    assert re.search(r"animation\s*:\s*sort-shake\s+", shake_rule)
+    assert "transform" not in shake_rule, (
         "sorting shake must use the independent rotate property so it cannot replace "
         "drag or FLIP transforms"
     )
     shake_keyframes = re.search(
         r"@keyframes\s+sort-shake\s*\{(?P<body>.*?)\n\}",
-        index_css,
+        style_css,
         re.DOTALL,
     )
     assert shake_keyframes, "sorting shake must define named keyframes"
-    assert re.search(r"rotate\s*:\s*-?0\.75deg", shake_keyframes.group("body"))
+    assert re.search(r"rotate\s*:\s*-0\.75deg", shake_keyframes.group("body"))
     assert re.search(r"rotate\s*:\s*0\.75deg", shake_keyframes.group("body"))
+
+    # reduced-motion 尊重
     reduced_motion = re.search(
         r"@media\s*\(prefers-reduced-motion\s*:\s*reduce\)\s*\{(?P<body>.*?)\n\}",
-        index_css,
+        style_css,
         re.DOTALL,
     )
     assert reduced_motion, "sorting shake must respect reduced-motion preferences"
@@ -754,147 +682,76 @@ def test_sorting_visual_feedback_static_contract():
     assert re.search(r"animation\s*:\s*none", reduced_motion.group("body"))
     assert re.search(r"rotate\s*:\s*0deg", reduced_motion.group("body"))
 
-    toggle_sort = re.search(
-        r"function toggleDragSort\(\)\s*\{(?P<body>.*?)\n\}",
-        index_js,
-        re.DOTALL,
-    )
-    assert toggle_sort, "toolbar sort toggle must remain locally inspectable"
-    toggle_sort_body = toggle_sort.group("body")
-    assert re.search(r"if\s*\(\s*dragSortEnabled\s*\)", toggle_sort_body)
-    enable_branch = re.search(
-        r"if\s*\(\s*dragSortEnabled\s*\)\s*\{(?P<body>.*?)\}",
-        toggle_sort_body,
-        re.DOTALL,
-    )
-    assert enable_branch, "enabling sort must have a distinct branch"
-    assert re.search(r"refreshMemes\s*\(\s*\)", enable_branch.group("body"))
+    # 拖拽中取消过渡
+    dragging = rule("#meme-grid.sort-enabled .meme-card.dragging")
+    assert re.search(r"transition\s*:\s*none", dragging)
 
-    disable_branch = toggle_sort_body[enable_branch.end() :]
-    assert not re.search(r"refreshMemes\s*\(\s*\)", disable_branch)
-    assert not re.search(r"grid\.innerHTML\s*=", disable_branch)
-    assert re.search(r"\+\+\s*gridRenderToken", disable_branch)
-    disable_animation = re.search(
-        r"requestAnimationFrame\(\s*\(\)\s*=>\s*\{(?P<body>.*?)\}\s*\)",
-        disable_branch,
-        re.DOTALL,
-    )
-    assert disable_animation, "disabling sort must defer exit feedback removal"
-    disable_animation_body = disable_animation.group("body")
-    assert re.search(
-        r"if\s*\(\s*\w+\s*!==\s*gridRenderToken\s*\|\|\s*dragSortEnabled\s*\)\s*return\s*;",
-        disable_animation_body,
-    )
-    assert re.search(
-        r"grid\.classList\.remove\(\s*['\"]sort-enabled['\"]\s*\)",
-        disable_animation_body,
-    )
+    # FLIP 让位：TransitionGroup name="meme-list" + .meme-list-move 过渡
+    assert re.search(r'name="meme-list"', main_window)
+    flip = rule(".meme-list-move")
+    assert re.search(r"transition\s*:\s*transform\s+0\.2s\s+ease", flip)
 
-    sort_enter_selector = (
-        "#meme-grid.sort-enabled .meme-card.sort-enter:not(.folder-card):not(.dragging)"
-    )
-    sort_enter_rule = re.search(
-        re.escape(sort_enter_selector) + r"\s*\{(?:(?!\}).)*?\}",
-        index_css,
-        re.DOTALL,
-    )
-    assert (
-        sort_enter_rule
-    ), "pagination entry feedback must have a matching CSS baseline"
-    assert re.search(r"transform\s*:\s*scale\(1\)", sort_enter_rule.group(0))
-    assert re.search(r"outline\s*:\s*0\s+solid\s+transparent", sort_enter_rule.group(0))
-    assert re.search(r"outline-offset\s*:\s*3px", sort_enter_rule.group(0))
+    # 拖拽原位缩放 0.90；不得叠加 scale
+    assert re.search(r"scale\(0\.90\)", use_drag)
+    assert not re.search(r"scale\([^)]*\)\s+scale\(", use_drag)
+    assert "slotOrigin" in use_drag
 
-    load_more = re.search(
-        r"async function loadMoreMemes\(\)\s*\{.*?\n\}\s*\n\s*"
-        r"async function refreshTags",
-        index_js,
-        re.DOTALL,
-    )
-    assert load_more, "pagination loader must remain locally inspectable"
-    load_more_body = load_more.group(0)
-    assert re.search(r"if\s*\(\s*sortEnabled\s*\)\s*cards\.forEach\(", load_more_body)
-    assert re.search(
-        r"cards\.forEach\(\s*card\s*=>\s*card\.classList\.add\(\s*['\"]sort-enter['\"]\s*\)\s*\)",
-        load_more_body,
-    )
-    assert re.search(
-        r"requestAnimationFrame\(\s*\(\)\s*=>\s*\{\s*cards\.forEach\(\s*card\s*=>\s*card\.classList\.remove\(\s*['\"]sort-enter['\"]\s*\)\s*\)\s*;?\s*\}\s*\)",
-        load_more_body,
-        re.DOTALL,
-    )
-    layout_read = (
-        r"(?:getBoundingClientRect\(\)|offset(?:Width|Height)|client(?:Width|Height))"
-    )
-    pagination_append = re.search(
-        r"cards\.forEach\(\s*card\s*=>\s*grid\.appendChild\(\s*card\s*\)\s*\)",
-        load_more_body,
-    )
-    pagination_animation = re.search(r"requestAnimationFrame\(", load_more_body)
-    assert pagination_append and pagination_animation
-    assert re.search(
-        layout_read,
-        load_more_body[pagination_append.end() : pagination_animation.start()],
-    ), "pagination sort baseline must commit layout before requestAnimationFrame"
-
-    drag_scales = [
-        float(scale)
-        for scale in re.findall(
-            r"d\.card\.style\.transform\s*=\s*['\"][^'\"]*?translate\([^)]*\)\s*"
-            r"scale\((0?\.\d+)\)",
-            index_js,
-        )
-    ]
-    assert drag_scales == [0.90, 0.90]
-    assert re.search(
-        r"c\.style\.transform\s*=\s*[^;]+?scale\(0\.95\)",
-        index_js,
-    ), "FLIP displacement must preserve the sorting-mode baseline scale"
-    assert not re.search(r"scale\([^)]*\)\s*scale\(", index_js)
-    assert (
-        "#meme-grid.drag-active .meme-card:not(.folder-card):not(.dragging)"
-        in index_css
-    )
-
-    grid_metrics = re.search(
-        r"function gridMetrics\(\)\s*\{(?:(?!\n\}).)*\n\}", index_js, re.DOTALL
-    )
-    assert grid_metrics, "grid slot metrics must remain locally inspectable"
-    assert "offsetWidth" in grid_metrics.group(0)
-    assert "offsetHeight" in grid_metrics.group(0), (
+    # 网格几何：无变换布局尺寸 + 计算 padding + 客户端宽度
+    assert "offsetWidth" in use_drag
+    assert "offsetHeight" in use_drag, (
         "grid slot geometry must use untransformed layout dimensions so sorting scale "
         "cannot shift drag insertion slots"
     )
-    grid_metrics_body = grid_metrics.group(0)
-    assert re.search(r"getComputedStyle\(\s*grid\s*\)", grid_metrics_body)
-    assert re.search(r"padding(?:Left|Right)", grid_metrics_body)
-    assert re.search(
-        r"(?:grid\.clientWidth|(?:gRect|gridRect)\.width)\s*-\s*"
-        r"[^;]*padding(?:Left|left)[^;]*padding(?:Right|right)",
-        grid_metrics_body,
-    ), "grid columns must use usable width after computed horizontal padding"
+    assert re.search(r"getComputedStyle\(\s*grid\s*\)", use_drag)
+    assert re.search(r"padding(?:Left|Right)", use_drag)
+    assert re.search(r"grid\.clientWidth\s*-\s*paddingLeft", use_drag)
 
     grid_slot = re.search(
-        r"function gridSlotIndex\(x, y\)\s*\{(?:(?!\n\}).)*\n\}",
-        index_js,
+        r"function gridSlotIndex\([^)]*\)\s*\{(?P<body>.*?)\n\}",
+        use_drag,
         re.DOTALL,
     )
     assert grid_slot, "grid slot index must remain locally inspectable"
-    grid_slot_body = grid_slot.group(0)
-    assert "originX" in grid_metrics_body and "originY" in grid_metrics_body
-    assert re.search(r"x\s*-\s*originX", grid_slot_body)
-    assert re.search(r"y\s*-\s*originY", grid_slot_body)
-    assert not re.search(r"gRect\.left|gRect\.top", grid_slot_body)
-    initial_append = re.search(
-        r"memes\.forEach\(\s*m\s*=>\s*grid\.appendChild\(\s*renderMemeCard\(\s*m\s*\)\s*\)\s*\)",
-        render_grid_body,
-    )
-    initial_animation = re.search(r"requestAnimationFrame\(", render_grid_body)
-    assert initial_append and initial_animation
+    grid_slot_body = grid_slot.group("body")
+    assert "originX" in use_drag and "originY" in use_drag
+    assert re.search(r"x\s*-\s*m\.originX", grid_slot_body)
+    assert re.search(r"y\s*-\s*m\.originY", grid_slot_body)
+    assert not re.search(r"gRect\.(?:left|top)", grid_slot_body)
+
+    # 持久化：分组内走 reorder_collection_members；全部/未分类走 reorder_memes
+    assert re.search(r"reorder_collection_members", use_memes)
+    assert re.search(r"reorder_memes", use_memes)
     assert re.search(
-        layout_read,
-        render_grid_body[initial_append.end() : initial_animation.start()],
-    ), "initial sort baseline must commit layout before requestAnimationFrame"
+        r"state\.activeCollection\s*&&\s*state\.activeCollection\s*>\s*0",
+        use_memes,
+    )
+    assert re.search(r"persistFn\(ids\)", use_drag)
+
+    # 排序资格：搜索/标签禁用；全部/未分类/正 ID 可排
+    assert re.search(r"q\s*\|\|\s*state\.activeTags\.size\s*>\s*0", use_memes)
+    assert re.search(
+        r"state\.activeCollection\s*===\s*null\s*\|\|\s*"
+        r"state\.activeCollection\s*===\s*-4\s*\|\|\s*"
+        r"state\.activeCollection\s*>\s*0",
+        use_memes,
+    )
+
+    # MainWindow 绑定：sort-enabled 仅在可排序时启用；多选独立；复制被整理/多选守卫
+    assert re.search(
+        r"'sort-enabled':\s*sortEnabled\s*&&\s*canReorder\(\)", main_window
+    )
+    assert re.search(r"'select-enabled':\s*selectMode", main_window)
+    assert 'class="meme-card folder-card"' in main_window.split("<drag-select", 1)[0]
+    toggle_sort = re.search(
+        r"function toggleSort\(\)\s*\{(?P<body>.*?)\n\}", main_window, re.DOTALL
+    )
+    assert toggle_sort, "toolbar sort toggle must remain locally inspectable"
+    assert re.search(r"selectMode\.value\s*=\s*false", toggle_sort.group("body"))
+    assert re.search(r"drag\.enable\(\)", toggle_sort.group("body"))
+    assert re.search(
+        r"if\s*\(sortEnabled\.value\s*\|\|\s*selectMode\.value\)\s*return",
+        main_window,
+    )
 
 
 def test_grid_slot_hit_testing_stays_aligned_when_layout_moves_and_scrolls():
