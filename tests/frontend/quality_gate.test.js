@@ -1,24 +1,26 @@
 import { mount } from '@vue/test-utils'
 import { describe, expect, it } from 'vitest'
+import { NPagination } from 'naive-ui'
 
 import Pager from '../../src/ohmymeme/presentation/frontend/main/features/memes/Pager.vue'
 
 describe('Pager', () => {
-  it('emits the next page when the next button is clicked', async () => {
+  it('emits the next page when the pagination advances', async () => {
     const wrapper = mount(Pager, {
       props: { page: 3, pageCount: 8 },
     })
 
-    await wrapper.get('[title="下一页"]').trigger('click')
+    wrapper.findComponent(NPagination).vm.$emit('update:page', 4)
+    await wrapper.vm.$nextTick()
 
     expect(wrapper.emitted('go')).toEqual([[4]])
   })
 
-  it('shows gaps between non-adjacent page choices', () => {
+  it('stays hidden when there is a single page', () => {
     const wrapper = mount(Pager, {
-      props: { page: 5, pageCount: 10 },
+      props: { page: 1, pageCount: 1 },
     })
 
-    expect(wrapper.findAll('.pager-dots')).toHaveLength(2)
+    expect(wrapper.find('.pager').exists()).toBe(false)
   })
 })

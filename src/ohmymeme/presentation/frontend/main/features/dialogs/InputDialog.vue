@@ -1,33 +1,31 @@
 <script setup lang="ts">
 import { ref, nextTick } from 'vue'
-import { rememberFocus, restoreFocus, trapTabFocus } from '../../shared/bridge'
+import { NModal, NInput, NButton } from 'naive-ui'
 
 const visible = ref(false)
 const title = ref('')
 const value = ref('')
 const placeholder = ref('')
-const inputEl = ref<HTMLInputElement>()
-const boxEl = ref<HTMLElement>()
+const inputRef = ref<InstanceType<typeof NInput> | null>(null)
 
 let resolveFn: ((v: string | null) => void) | null = null
 
-async function open(t: string, initial: string = '', ph: string = ''): Promise<string | null> {
+// 打开对话框：记录初值后显示，返回 Promise 供调用方 await
+function open(t: string, initial: string = '', ph: string = ''): Promise<string | null> {
   // 若上一个对话框尚未关闭，先结算其 Promise，避免旧调用方永久阻塞
   if (resolveFn) { resolveFn(null); resolveFn = null }
   title.value = t
   value.value = initial
   placeholder.value = ph
-  rememberFocus()
   visible.value = true
-  await nextTick()
-  inputEl.value?.focus()
-  inputEl.value?.select()
+  // 已在可见状态重复打开时 after-enter 不再触发，这里补一次聚焦
+  nextTick(focusInput)
   return new Promise(resolve => { resolveFn = resolve })
 }
 
+// 关闭并结算 Promise：确定传 trim 后的值，取消/Esc/遮罩传 null
 function close(v: string | null) {
   visible.value = false
-  restoreFocus()
   if (resolveFn) { resolveFn(v); resolveFn = null }
 }
 
@@ -35,49 +33,59 @@ function confirm() {
   close(value.value.trim())
 }
 
-function onKeydown(e: KeyboardEvent) {
-  if (e.key === 'Enter') { e.preventDefault(); confirm() }
-  else if (e.key === 'Escape') { e.stopPropagation(); close(null) }
-  else if (boxEl.value) trapTabFocus(boxEl.value, e)
+function focusInput() {
+  inputRef.value?.focus()
+  inputRef.value?.select()
+}
+
+// NModal 出现后聚焦并选中输入框
+function onAfterEnter() {
+  focusInput()
+}
+
+// NModal 遮罩点击等关闭统一按取消处理
+function onShowChange(show: boolean) {
+  if (!show) close(null)
 }
 
 defineExpose({ open })
 </script>
 
 <template>
-  <div v-if="visible" class="input-dialog-overlay" @click.self="close(null)">
-    <div class="input-dialog-box" ref="boxEl" role="dialog" aria-modal="true" aria-labelledby="input-dialog-title" @keydown="onKeydown">
+  <NModal
+    :show="visible"
+    :close-on-esc="false"
+    :theme-overrides="{ boxShadow: 'none' }"
+    transform-origin="center"
+    @update:show="onShowChange"
+    @after-enter="onAfterEnter"
+  >
+    <div
+      class="input-dialog-box"
+      role="dialog"
+      aria-modal="true"
+      aria-labelledby="input-dialog-title"
+      @keydown.enter.prevent="confirm"
+      @keydown.esc.stop="close(null)"
+    >
       <div id="input-dialog-title" class="input-dialog-title">{{ title }}</div>
-      <input
-        id="input-dialog-input"
-        ref="inputEl"
-        v-model="value"
+      <NInput
+        ref="inputRef"
+        v-model:value="value"
         class="input-dialog-input"
         type="text"
         :placeholder="placeholder"
-        autocomplete="off"
-        spellcheck="false"
-      >
+        :input-props="{ autocomplete: 'off', spellcheck: 'false' }"
+      />
       <div class="input-dialog-actions">
-        <button class="btn btn-secondary" @click="close(null)">取消</button>
-        <button class="btn btn-primary" :disabled="!value.trim()" @click="confirm">确定</button>
+        <NButton @click="close(null)">取消</NButton>
+        <NButton type="primary" :disabled="!value.trim()" @click="confirm">确定</NButton>
       </div>
     </div>
-  </div>
+  </NModal>
 </template>
 
 <style scoped>
-.input-dialog-overlay {
-  position: fixed;
-  inset: 0;
-  background: rgba(0, 0, 0, 0.55);
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  z-index: 250;
-  animation: fadeIn 0.15s ease;
-}
-
 .input-dialog-box {
   background: var(--surface);
   border: 1px solid var(--border);
@@ -95,32 +103,12 @@ defineExpose({ open })
 }
 
 .input-dialog-input {
-  width: 100%;
-  padding: 8px 12px;
-  border: 1px solid var(--border);
-  border-radius: var(--radius-sm);
-  background: var(--bg);
-  color: var(--fg);
-  font-size: 13px;
-  font-family: inherit;
-  outline: none;
-  box-sizing: border-box;
   margin-bottom: 16px;
-  transition: border-color 0.15s;
-}
-
-.input-dialog-input:focus {
-  border-color: var(--primary);
 }
 
 .input-dialog-actions {
   display: flex;
   gap: 8px;
   justify-content: flex-end;
-}
-
-@keyframes fadeIn {
-  from { opacity: 0; }
-  to { opacity: 1; }
 }
 </style>

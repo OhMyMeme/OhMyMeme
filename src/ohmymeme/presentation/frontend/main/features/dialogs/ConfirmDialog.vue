@@ -1,67 +1,77 @@
 <script setup lang="ts">
 import { ref, nextTick } from 'vue'
-import { rememberFocus, restoreFocus, trapTabFocus } from '../../shared/bridge'
+import { NModal, NButton } from 'naive-ui'
 
 const visible = ref(false)
 const title = ref('')
 const message = ref('')
-const boxEl = ref<HTMLElement>()
-const cancelEl = ref<HTMLButtonElement>()
+const boxEl = ref<HTMLElement | null>(null)
 
 let resolveFn: ((v: boolean) => void) | null = null
 
-async function open(t: string, msg: string): Promise<boolean> {
+// 打开确认框并返回用户选择
+function open(t: string, msg: string): Promise<boolean> {
   if (resolveFn) { resolveFn(false); resolveFn = null }
   title.value = t
   message.value = msg
-  rememberFocus()
   visible.value = true
-  await nextTick()
-  // 默认聚焦「取消」，危险操作需显式点「确定」
-  cancelEl.value?.focus()
+  // 已在可见状态重复打开时 after-enter 不再触发，这里补一次聚焦
+  nextTick(focusCancel)
   return new Promise(resolve => { resolveFn = resolve })
 }
 
+// 关闭并结算 Promise：确定 true，取消/Esc/遮罩 false
 function close(v: boolean) {
   visible.value = false
-  restoreFocus()
   if (resolveFn) { resolveFn(v); resolveFn = null }
 }
 
-function onKeydown(e: KeyboardEvent) {
-  // 危险操作不响应 Enter 自动确认，避免误触；Escape 取消；Tab 循环
-  if (e.key === 'Escape') { e.stopPropagation(); close(false) }
-  else if (boxEl.value) trapTabFocus(boxEl.value, e)
+function focusCancel() {
+  boxEl.value?.querySelector<HTMLButtonElement>('.confirm-dialog-cancel')?.focus()
+}
+
+// NModal 出现后默认聚焦「取消」，危险操作需显式点「确定」（不响应 Enter 自动确认）
+function onAfterEnter() {
+  focusCancel()
+}
+
+// NModal 遮罩点击等关闭统一按取消处理
+function onShowChange(show: boolean) {
+  if (!show) close(false)
 }
 
 defineExpose({ open })
 </script>
 
 <template>
-  <div v-if="visible" class="confirm-dialog-overlay" @click.self="close(false)">
-    <div class="confirm-dialog-box" ref="boxEl" role="dialog" aria-modal="true" aria-labelledby="confirm-dialog-title" aria-describedby="confirm-dialog-message" @keydown="onKeydown">
+  <NModal
+    :show="visible"
+    :close-on-esc="false"
+    :theme-overrides="{ boxShadow: 'none' }"
+    transform-origin="center"
+    @update:show="onShowChange"
+    @after-enter="onAfterEnter"
+  >
+    <div
+      ref="boxEl"
+      class="confirm-dialog-box"
+      role="dialog"
+      aria-modal="true"
+      aria-labelledby="confirm-dialog-title"
+      aria-describedby="confirm-dialog-message"
+      @keydown.esc.stop="close(false)"
+    >
       <div id="confirm-dialog-title" class="confirm-dialog-title">{{ title }}</div>
       <div id="confirm-dialog-message" class="confirm-dialog-message">{{ message }}</div>
       <div class="confirm-dialog-actions">
-        <button class="btn btn-danger" @click="close(true)">确定</button>
-        <button ref="cancelEl" class="btn btn-secondary" @click="close(false)">取消</button>
+        <NButton type="error" @click="close(true)">确定</NButton>
+        <NButton class="confirm-dialog-cancel" @click="close(false)">取消</NButton>
       </div>
     </div>
-  </div>
+  </NModal>
 </template>
 
 <style scoped>
-.confirm-dialog-overlay {
-  position: fixed;
-  inset: 0;
-  background: rgba(0, 0, 0, 0.55);
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  z-index: 260;
-  animation: fadeIn 0.15s ease;
-}
-
 .confirm-dialog-box {
   background: var(--surface);
   border: 1px solid var(--border);
@@ -89,10 +99,5 @@ defineExpose({ open })
   display: flex;
   gap: 8px;
   justify-content: flex-end;
-}
-
-@keyframes fadeIn {
-  from { opacity: 0; }
-  to { opacity: 1; }
 }
 </style>

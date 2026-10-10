@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { ref, onUnmounted } from 'vue'
+import { NModal, NButton, NProgress } from 'naive-ui'
 import { api, renderMarkdown } from '../../shared/bridge'
 
 const visible = ref(false)
@@ -26,6 +27,11 @@ function show(cur: string, latestVer: string, dlUrl: string, notes: string) {
 function close() {
   visible.value = false
   if (pollTimer) { clearInterval(pollTimer); pollTimer = null }
+}
+
+// NModal 遮罩点击等关闭统一走 close（同时清理轮询）
+function onShowChange(v: boolean) {
+  if (!v) close()
 }
 
 function showToast(msg: string) {
@@ -75,7 +81,13 @@ defineExpose({ show })
 </script>
 
 <template>
-  <div v-if="visible" class="upd-overlay" @click.self="close">
+  <NModal
+    :show="visible"
+    :close-on-esc="false"
+    :theme-overrides="{ boxShadow: 'none' }"
+    transform-origin="center"
+    @update:show="onShowChange"
+  >
     <div class="upd-box" @keydown.esc.stop="close">
       <div class="upd-header">
         <h2>发现新版本</h2>
@@ -90,37 +102,33 @@ defineExpose({ show })
       <!-- 下载进度 -->
       <div v-if="phase === 'downloading'" class="upd-progress">
         <div class="upd-progress-text">下载中 {{ progress }}%</div>
-        <div class="upd-progress-bar-wrap">
-          <div class="upd-progress-bar" :style="{ width: progress + '%' }"></div>
-        </div>
+        <NProgress
+          class="upd-progress-bar"
+          :percentage="progress"
+          :height="8"
+          :border-radius="4"
+          :fill-border-radius="4"
+          :show-indicator="false"
+          color="var(--accent)"
+          rail-color="var(--bg-elevated)"
+        />
       </div>
       <div v-if="phase === 'done'" class="upd-progress-text">下载完成，启动安装...</div>
       <div v-if="phase === 'error'" class="upd-error">
         下载失败: {{ errorMsg }}
-        <button class="btn btn-primary" style="width:100%;margin-top:8px" @click="retry">重试</button>
+        <NButton type="primary" block class="upd-retry" @click="retry">重试</NButton>
       </div>
 
       <!-- 操作按钮 -->
       <div v-if="phase === 'idle'" class="upd-actions">
-        <button class="btn btn-primary btn-block" @click="startDownload">更新</button>
-        <button class="btn btn-secondary btn-block" @click="close">稍后提示</button>
+        <NButton type="primary" block @click="startDownload">更新</NButton>
+        <NButton block @click="close">稍后提示</NButton>
       </div>
     </div>
-  </div>
+  </NModal>
 </template>
 
 <style scoped>
-.upd-overlay {
-  position: fixed;
-  inset: 0;
-  background: rgba(0, 0, 0, 0.55);
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  z-index: 300;
-  animation: fadeIn 0.15s ease;
-}
-
 .upd-box {
   background: var(--surface);
   border-radius: var(--radius-lg);
@@ -190,40 +198,19 @@ defineExpose({ show })
   text-align: center;
 }
 
-.upd-progress-bar-wrap {
-  width: 100%;
-  height: 8px;
-  background: var(--bg-elevated);
-  border-radius: 4px;
-  overflow: hidden;
-}
-
-.upd-progress-bar {
-  width: 0%;
-  height: 100%;
-  background: var(--accent);
-  border-radius: 4px;
-  transition: width 0.3s;
-}
-
 .upd-error {
   font-size: 12px;
   color: #ef4444;
   text-align: center;
 }
 
+.upd-retry {
+  margin-top: 8px;
+}
+
 .upd-actions {
   display: flex;
   flex-direction: column;
   gap: 8px;
-}
-
-.btn-block {
-  width: 100%;
-}
-
-@keyframes fadeIn {
-  from { opacity: 0; }
-  to { opacity: 1; }
 }
 </style>
