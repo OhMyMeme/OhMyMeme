@@ -582,6 +582,8 @@ def test_vue_main_window_feature_layout_static_contract():
     assert 'src="/dist/ohmymeme.js"' in vue_html
     assert "window.focusSearch" in entry
     assert "window.showLanDeviceConfirm" in entry
+    assert 'v-for="c in visibleCollections"' in main_window
+    assert "c.id !== -4 || (c.count || 0) > 0" in main_window
     assert "<MainWindow />" in app_shell
     assert "await loadInitData()" in main_window
     assert main_window.index("api('rescan_cache')") < main_window.index(

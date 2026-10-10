@@ -72,6 +72,8 @@ const drag = useDragSort(
 )
 
 const sidebarCollapsed = ref(false)
+// 未分类没有成员时隐藏条目，保留其他集合的显示规则。
+const visibleCollections = computed(() => state.collections.filter(c => c.id !== -4 || (c.count || 0) > 0))
 const dragOver = ref(false)
 let dragCounter = 0
 let nativeDragActive = false
@@ -830,7 +832,7 @@ onUnmounted(() => {
         <div id="sidebar-header"><span v-if="!sidebarCollapsed">分组</span></div>
         <div id="tree">
           <CollectionTreeNode
-            v-for="c in state.collections"
+            v-for="c in visibleCollections"
             :key="c.id"
             :node="c"
             :active-id="sidebarCollapsed ? activeTopLevel : state.activeCollection"

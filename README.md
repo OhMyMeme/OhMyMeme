@@ -124,14 +124,14 @@ pip install -r requirements.txt
 python -m ohmymeme
 ```
 
-主窗口前端为 **Vue 3**（`src/ohmymeme/presentation/frontend/main/`，按 app、features 与 shared 组织，Vite 构建 IIFE 单文件 `src/webui/dist/ohmymeme.js`）。`src/ohmymeme` 是唯一 Python 包，不能使用已移除的 `src.*` 模块路径导入。**源码运行**时若产物缺失会自动执行一次 `npx vite build`；手动构建方式：
+主窗口与设置窗口都是 **Vue 3 + Naive UI**：主窗口源码在 `src/ohmymeme/presentation/frontend/main/`（按 app、features 与 shared 组织），设置窗口源码在 `src/ohmymeme/presentation/frontend/settings-vue/`，两者共用 `frontend/shared/` 的 Naive 主题与设计 token。每个窗口都是独立 webview，分别由 `vite.config.ts` 与 `vite.settings.config.ts` 构建为 IIFE 单文件 `src/webui/dist/ohmymeme.js` 与 `src/webui/dist/settings-vue.js`。`src/ohmymeme` 是唯一 Python 包，不能使用已移除的 `src.*` 模块路径导入。**源码运行**时若任一产物缺失会自动执行对应构建；手动构建方式：
 
 ```bash
-npm install        # 首次构建前安装依赖
-npx vite build     # 构建 Vue 前端 → src/webui/dist/ohmymeme.js
+mise exec -- npm ci       # 按 package-lock.json 安装前端依赖
+mise run build-frontend   # 依次构建两个窗口 → src/webui/dist/{ohmymeme,settings-vue}.js
 ```
 
-设置窗口仍为 vanilla 前端（`src/webui/settings.*`，独立 webview，无需构建）。`src/webui` 与 `src/resources` 是源码运行时静态资源，不是 Python 包。冻结构建会将它们分别放入 `ohmymeme/webui` 与 `ohmymeme/resources`，并将 `config/offsets.json` 与 canonical `config/plugin-manifest.json` 原样放入 `ohmymeme/config/`。
+`src/webui` 与 `src/resources` 是源码运行时静态资源，不是 Python 包；对应产物缺失时页面返回 503 并给出构建提示。冻结构建会将它们分别放入 `ohmymeme/webui` 与 `ohmymeme/resources`，并将 `config/offsets.json` 与 canonical `config/plugin-manifest.json` 原样放入 `ohmymeme/config/`。
 
 ### 同步与 LAN 实现包
 
@@ -143,7 +143,7 @@ npx vite build     # 构建 Vue 前端 → src/webui/dist/ohmymeme.js
 
 ### 固定插件兼容边界
 
-设置页通过只读 `/api/plugin-ui` 消费 `src/webui/plugin-ui.json` 的九个固定宿主 UI 投影。`api/ui_contributions.py` 逐字段严格校验既有 label/icon/screen/handler、action 参数 schema 与进度映射，`initSettings` 验证整份数据后才绑定原来源行和同步面板；SVG、布局、取消/结果和 Bridge 公开签名不变。UI 数据由 `scripts/plugin_ui_dispatch.py --write-host --actions docs/plugin-action-matrix.json` 从 Todo6 固定矩阵生成，再运行 `mise exec -- npm run build:settings` 拼接；`--check` 同时核对矩阵、schema、fixture 和产物是否过期。固定投影之外，插件 UI 仅经声明式 UI 注入白名单（`ui.json`：导入区行、详情面板，字段类型受白名单约束）与详情页沙箱 iframe（显式加载、严格 CSP、postMessage 动作 allowlist）接入；不加载任意插件 HTML 到宿主 DOM，不支持额外字段、动态 Bridge/DOM 注入；UI 记录不进入 Config，手机版 QQ/ADB 仍在边界外。
+设置页通过只读 `/api/plugin-ui` 消费 `src/webui/plugin-ui.json` 的九个固定宿主 UI 投影。`api/ui_contributions.py` 逐字段严格校验既有 label/icon/screen/handler、action 参数 schema 与进度映射，设置窗口先整体校验该投影且设置加载成功后才挂载外壳并绑定原来源行和同步面板；SVG、布局、取消/结果和 Bridge 公开签名不变。UI 数据由 `scripts/plugin_ui_dispatch.py --write-host --actions docs/plugin-action-matrix.json` 从 Todo6 固定矩阵生成，再运行 `mise exec -- npm run build:settings` 构建设置窗口产物；`--check` 核对矩阵、schema、fixture、宿主 JSON 产物与现用 Vue 消费接线，不证明冻结制品或浏览器运行结果。固定投影之外，插件 UI 仅经声明式 UI 注入白名单（`ui.json`：导入区行、详情面板，字段类型受白名单约束）与详情页沙箱 iframe（显式加载、严格 CSP、postMessage 动作 allowlist）接入；不加载任意插件 HTML 到宿主 DOM，不支持额外字段、动态 Bridge/DOM 注入；UI 记录不进入 Config，手机版 QQ/ADB 仍在边界外。
 
 桌面 Bridge 的四个导入入口（QQNT、Telegram、抖音、微信）经宿主 `HostDispatcher`、`PluginRegistry` 与 `HostActionAdapter` 调度，保留原方法、参数默认值、成功/取消对象及进度字段。当前内置适配器继续调用已有实现；显式缺失、禁用或不兼容的 provider 仅返回该方法的旧失败哨兵，不改用其他 provider。同步与 LAN 保持宿主固定动作映射，手机版 QQ/ADB 不参与插件分派。
 
@@ -285,7 +285,7 @@ python -m ohmymeme
 
 ## 构建
 
-依赖 PyInstaller 6.0+。构建脚本使用 `src/ohmymeme/__main__.py` 作为包入口，不能依赖已移除的 `src.*` 入口。构建前请确认前端产物已生成：`src/webui/dist/ohmymeme.js`，源码运行时缺失会自动构建。
+依赖 PyInstaller 6.0+。构建脚本使用 `src/ohmymeme/__main__.py` 作为包入口，不能依赖已移除的 `src.*` 入口。构建前请确认两个前端产物已生成：`src/webui/dist/ohmymeme.js` 与 `src/webui/dist/settings-vue.js`，源码运行时缺失会自动构建。
 
 > **⚠️ 注意**: PyInstaller **不支持交叉编译**。`--windows` 参数只能在 Windows 系统上使用，`--linux` 参数只能在 Linux 系统上使用，`--macos` 参数只能在 macOS 上使用。
 > 如需在本地构建其他平台安装包，请使用 [GitHub Actions](#ci-github-actions)（推送到 `main` 分支自动触发，或手动运行 workflow）。
@@ -387,7 +387,7 @@ CI 会自动运行上述统一质量门禁。
 └─────────────┘     └──────────────────┘
 ```
 
-主窗口前端基于 **Vue 3**（`src/ohmymeme/presentation/frontend/main/`，Vite 构建为 IIFE 单文件 `src/webui/dist/ohmymeme.js`），通过 shared bridge 调用后端 `JsApi`；设置窗口仍为 vanilla（`src/webui/settings.*`）。这些是静态资源路径，不是可导入的 `src.*` 模块路径。
+两个窗口前端基于 **Vue 3 + Naive UI**：主窗口（`frontend/main/`）通过 `shared/bridge.ts` 调用后端 `JsApi`，设置窗口（`frontend/settings-vue/`）通过自身受控桥接调用 `SettingsApi`，分别构建为 `src/webui/dist/ohmymeme.js` 与 `src/webui/dist/settings-vue.js`。这些是静态资源路径，不是可导入的 `src.*` 模块路径。
 
 ## 实现要点
 
@@ -419,7 +419,7 @@ Windows 上 GIF 复制同时写入三个剪贴板格式：`CF_DIB`（首帧 BMP�
 
 | 模块 | 技术 | 理由 |
 |------|------|------|
-| UI | PyWebView (v6) + Bottle + Vue 3 | 原生 WebView 渲染，Vue 3 组件化前端（Vite 构建） |
+| UI | PyWebView (v6) + Bottle + Vue 3 + Naive UI | 原生 WebView 渲染，Vue 3 + Naive UI 组件化前端（Vite 构建） |
 | 托盘 | pystray | 最轻跨平台托盘库 |
 | 热键 | keyboard → pynput → 轮询回退 | 三级降级保障 |
 | 图片 | Pillow | 业界标准 |

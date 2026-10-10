@@ -39,13 +39,13 @@ OhMyMeme/
 ├── fixtures/                                     [test]
 │   └── plugin-parity/                             插件边界与 parity 离线 fixture
 │       ├── inventory-invalid.json                  Todo1 inventory 失效样例
+│       ├── settings-ui-baseline.html               历史设置窗口 HTML 基线（仅固定 SVG/文案与历史兼容证据，不参与生产或构建）
 │       ├── docs-invalid/                           Todo16 固定文档失效样例
 │       └── docs-conflicting-nonfeatures/           Todo16 矛盾非功能声明样例
 ├── resource/                                     [source]
 │   └── picture.gif                                README 展示图片
 ├── scripts/                                      [source]
 │   ├── build.py                                   PyInstaller、前端检查和安装包构建
-│   ├── build_settings.mjs                         拼接 settings JS 源文件
 │   ├── launcher.py                                PyInstaller 启动器
 │   ├── merge-dev-to-main.bat                      Windows 分支合并辅助脚本
 │   ├── package_lifecycle.py                       构建产物生命周期验证
@@ -127,12 +127,16 @@ OhMyMeme/
 │   │   │   │       ├── pages.py                     HTML 页面路由
 │   │   │   │       └── upload.py                    上传和导入路由
 │   │   │   └── frontend/                            前端源码
-│   │   │       ├── main/                            Vue 3 主窗口
+│   │   │       ├── shared/                          两窗口共用的主题、设计 token 与文本转义
+│   │   │       │   ├── naive-theme.ts               Naive UI 深色主题覆写
+│   │   │       │   ├── theme.css                    两窗口共用样式变量
+│   │   │       │   └── markdown.ts                  转义与受控 Markdown 渲染
+│   │   │       ├── main/                            Vue 3 + Naive UI 主窗口
 │   │   │       │   ├── app/
-│   │   │       │   │   ├── App.vue                  根组件、启动动画和生命周期
-│   │   │       │   │   ├── MainWindow.vue           主窗口布局和组件组合
-│   │   │       │   │   ├── main.ts                  Vue/Vite 入口
-│   │   │       │   │   └── style.css                主窗口样式、主题和动画
+│   │   │       │   │   ├── App.vue                  NConfigProvider/provider 壳
+│   │   │       │   │   ├── MainWindow.vue           主窗口布局、启动动画与生命周期
+│   │   │       │   │   ├── main.ts                  Vite 入口
+│   │   │       │   │   └── style.css                主窗口样式（引入 shared/theme.css）
 │   │   │       │   ├── features/                    按功能拆分的 Vue 模块
 │   │   │       │   │   ├── collections/              分组树和分组编辑
 │   │   │       │   │   │   ├── CollectionBuilder.vue
@@ -158,31 +162,37 @@ OhMyMeme/
 │   │   │       │   │   │   └── TagEditor.vue
 │   │   │       │   │   └── updates/                  更新弹窗
 │   │   │       │   │       └── UpdateDialog.vue
-│   │   │       │   └── shared/                       前端共享边界
-│   │   │       │       ├── bridge.ts                 唯一 pywebview bridge、焦点和转义工具
-│   │   │       │       └── types.ts                  前端领域类型
-│   │   │       └── settings/                         Vanilla JS 设置窗口源码
-│   │   │           ├── entry.mjs                     settings 源文件拼接入口
-│   │   │           ├── core/
-│   │   │           │   ├── init.js                   设置初始化和 dirty tracking
-│   │   │           │   ├── runtime.js                设置运行时状态
-│   │   │           │   └── window.js                 设置窗口生命周期
-│   │   │           └── features/
-│   │   │               ├── base.js                   基础设置
-│   │   │               ├── danger.js                 危险操作
-│   │   │               ├── lan.js                    局域网设置
-│   │   │               ├── logs.js                   日志查看和导出
-│   │   │               ├── storage.js                存储位置和迁移
-│   │   │               ├── update.js                 更新检查
-│   │   │               ├── imports/
-│   │   │               │   ├── douyin.js              抖音导入
-│   │   │               │   ├── qq.js                  手机 QQ 导入
-│   │   │               │   ├── qqnt.js                QQNT 导入
-│   │   │               │   ├── telegram.js            Telegram 导入
-│   │   │               │   └── wechat.js              微信导入
-│   │   │               └── sync/
-│   │   │                   ├── operations.js           同步操作和进度
-│   │   │                   └── settings.js             远程同步配置
+│   │   │       │   └── shared/                       主窗口桥接与类型
+│   │   │       │       ├── bridge.ts                 唯一 pywebview bridge、转义/焦点工具
+│   │   │       │       ├── types.ts                  前端领域类型
+│   │   │       │       └── generated/
+│   │   │       │           └── bridge.ts             [generated] Bridge DTO 类型
+│   │   │       └── settings-vue/                     Vue 3 + Naive UI 设置窗口
+│   │   │           ├── app/
+│   │   │           │   ├── App.vue                   provider 壳与初始化/重试
+│   │   │           │   ├── SettingsShell.vue         导航与分组装配
+│   │   │           │   ├── main.ts                   Vite 入口
+│   │   │           │   └── style.css                 设置窗口布局样式
+│   │   │           ├── features/
+│   │   │           │   ├── about/AboutGroup.vue
+│   │   │           │   ├── backup/BackupGroup.vue
+│   │   │           │   ├── base/BaseGroup.vue
+│   │   │           │   ├── danger/DangerGroup.vue
+│   │   │           │   ├── import/                   导入分组与各来源向导
+│   │   │           │   │   ├── DouyinWizard.vue
+│   │   │           │   │   ├── ImportGroup.vue
+│   │   │           │   │   ├── QqntWizard.vue
+│   │   │           │   │   ├── QqWizard.vue
+│   │   │           │   │   ├── TelegramWizard.vue
+│   │   │           │   │   └── WechatWizard.vue
+│   │   │           │   ├── logs/LogsGroup.vue
+│   │   │           │   ├── network/NetworkGroup.vue
+│   │   │           │   └── plugins/PluginsGroup.vue
+│   │   │           └── shared/
+│   │   │               ├── bridge.ts                 设置窗口受控桥接与转义
+│   │   │               ├── plugin-ui.ts              宿主 UI 投影校验
+│   │   │               ├── store.ts                  设置状态、脏标记与保存
+│   │   │               └── markdown.ts               导出两窗口共用的受控 Markdown 工具
 │   │   └── services/                                业务服务层
 │   │       ├── __init__.py
 │   │       ├── updates.py                           GitHub Release 更新服务
@@ -202,18 +212,13 @@ OhMyMeme/
 │   │   ├── icon.png                                 通用图标
 │   │   └── .gitkeep
 │   ├── webui/                                       WebView 静态资源
-│   │   ├── vue.html                                 当前主窗口入口
-│   │   ├── settings.html                            设置窗口 HTML
-│   │   ├── settings.css                             设置窗口样式
-│   │   ├── settings.js                              [generated] settings 运行时脚本
-│   │   ├── index.html                               [legacy] 旧主窗口入口
-│   │   ├── index.css                                [legacy] 旧主窗口样式
-│   │   ├── index.js                                 [legacy] 旧主窗口脚本
-│   │   ├── test-vue/                                前端测试/演示页面
-│   │   │   ├── index.html
-│   │   │   └── ohmymeme-ui.js
+│   │   ├── vue.html                                 主窗口入口（Vue）
+│   │   ├── vue-settings.html                        设置窗口入口（Vue）
+│   │   ├── import-frame.js                          插件详情页 iframe 协议 SDK 资产
+│   │   ├── plugin-ui.json                           宿主固定插件 UI 投影
 │   │   └── dist/                                    [generated] Vite 构建目录
-│   │       └── ohmymeme.js                          Vue IIFE 构建产物
+│   │       ├── ohmymeme.js                          主窗口 IIFE 构建产物
+│   │       └── settings-vue.js                      设置窗口 IIFE 构建产物
 │   └── wechat_keyfinder/                            微信 C++ 辅助程序
 │       ├── CMakeLists.txt                            CMake 构建配置
 │       └── wechat_keyfinder.cpp                     进程内存密钥提取
@@ -271,6 +276,9 @@ OhMyMeme/
 ├── mise.lock                                       工具链锁定信息
 ├── package.json                                    前端依赖和 npm scripts
 ├── package-lock.json                               npm 依赖锁定信息
+├── tsconfig.json                                   前端严格类型配置（设置窗口与既有主窗口迁移范围）
+├── vite.config.ts                                  主窗口 Vite 配置（IIFE → ohmymeme.js）
+├── vite.settings.config.ts                         设置窗口 Vite 配置（IIFE → settings-vue.js）
 ├── pyproject.toml                                  Ruff 配置
 └── setup.py                                        Python 安装配置
 ```
@@ -300,7 +308,7 @@ app/container.py
     └── presentation/         WebView、Bottle、API 和前端
 ```
 
-主窗口 Vue 代码只能通过 `frontend/main/shared/bridge.ts` 调用 Python API；设置窗口由模块化 Vanilla JS 源码构建为 `src/webui/settings.js`。`src/webui/` 和 `src/resources/` 是运行时静态资源，不是 Python 包。
+主窗口 Vue 代码只能通过 `frontend/main/shared/bridge.ts` 调用 Python API，设置窗口只能通过 `frontend/settings-vue/shared/bridge.ts`；两个入口分别由 `vite.config.ts` 与 `vite.settings.config.ts` 构建为 `src/webui/dist/ohmymeme.js` 和 `src/webui/dist/settings-vue.js`，共用 `frontend/shared/` 的 Naive 主题与设计 token。`src/webui/` 和 `src/resources/` 是运行时静态资源，不是 Python 包。
 
 ## 官方插件重组边界
 
@@ -333,8 +341,8 @@ README.md
 
 - 后端：先看 `app` 或 `core`，再看对应 service/integration 和测试。
 - 主窗口 UI：先看 `frontend/main/app`，再看对应 `features`、`shared/bridge.ts` 和桌面 API。
-- 设置窗口：先看 `frontend/settings`，再看 `scripts/build_settings.mjs` 和 `src/webui/settings.js`。
-- 构建：先看 `package.json`、`vite.config.ts`，再看 `scripts/build.py`、安装器和 workflow。
+- 设置窗口：先看 `frontend/settings-vue/app` 和 `shared/bridge.ts`，再看 `features/`、`shared/plugin-ui.ts` 与桌面 `SettingsApi`。
+- 构建：先看 `package.json`、`vite.config.ts`/`vite.settings.config.ts`，再看 `scripts/build.py`、安装器和 workflow。
 - 微信辅助程序：按 `config/offsets.json` → `wechat_keyfinder/` → `integrations/imports/wechat.py` → 协议文档阅读。
 
 详细行为约束仍以 `AGENTS.md`、协议文档和各测试文件为准；本文档只负责说明目录结构和职责边界。
