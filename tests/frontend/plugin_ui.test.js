@@ -118,7 +118,7 @@ function isVisible(element) {
     if (node.style && node.style.display === 'none') return false
     node = node.parentElement
   }
-  return !!(element && element.isConnected)
+  return !!element
 }
 
 const mountedWrappers = []
@@ -137,7 +137,7 @@ function progressValue(wrapper) {
 }
 
 beforeEach(() => {
-  document.body.innerHTML = '<div id="toast" role="status" aria-live="polite"></div>'
+  document.body.innerHTML = ''
   vi.useFakeTimers()
 })
 
@@ -327,7 +327,7 @@ describe('settings Vue import group and wizards', () => {
       qqnt_default_dir: { ok: true, dir: 'D:/out/10001' },
       qqnt_get_progress: { status: 'running', progress: 40, message: 'qq-progress' },
     })
-    const wrapper = mountTracked(ui.wizards.QqntWizard, { global: { stubs: { NModal: ModalStub } } })
+    const wrapper = mountTracked(ui.wizards.QqntWizard, { global: { stubs: { Modal: ModalStub } } })
     await wrapper.vm.open()
     await flushPromises()
     expect(calls.map(call => call.method)).toContain('qqnt_check_env')
@@ -360,7 +360,7 @@ describe('settings Vue import group and wizards', () => {
       get_douyin_import_progress: { status: 'done', progress: 38, message: 'dy-progress' },
     })
 
-    const tg = mountTracked(ui.wizards.TelegramWizard, { global: { stubs: { NModal: ModalStub } } })
+    const tg = mountTracked(ui.wizards.TelegramWizard, { global: { stubs: { Modal: ModalStub } } })
     await tg.vm.open()
     await clickButton(tg, '开始导入')
     expect(calls.find(call => call.method === 'start_tg_import').args).toEqual([
@@ -376,7 +376,7 @@ describe('settings Vue import group and wizards', () => {
     await clickButton(tg, '关闭')
     expect(calls.some(call => call.method === 'cancel_tg_import')).toBe(true)
 
-    const dy = mountTracked(ui.wizards.DouyinWizard, { global: { stubs: { NModal: ModalStub } } })
+    const dy = mountTracked(ui.wizards.DouyinWizard, { global: { stubs: { Modal: ModalStub } } })
     await dy.vm.open()
     await dy.find('input[type="password"]').setValue('fixture-cookie')
     await clickButton(dy, '开始下载')
@@ -400,7 +400,7 @@ describe('settings Vue import group and wizards', () => {
       // 运行中：真实消费进度字段；关闭时仍在运行才取消（终态不取消）
       get_wechat_import_progress: { status: 'running', progress: 39, message: 'wx-progress' },
     })
-    const wz = mountTracked(ui.wizards.WechatWizard, { global: { stubs: { NModal: ModalStub } } })
+    const wz = mountTracked(ui.wizards.WechatWizard, { global: { stubs: { Modal: ModalStub } } })
     await wz.vm.open()
     await clickButton(wz, '检测环境')
     expect(calls.some(call => call.method === 'inspect_wechat_environment')).toBe(true)
@@ -437,7 +437,7 @@ describe('settings Vue network group', () => {
         return { ok: true }
       },
     })
-    const wrapper = mountTracked(ui.NetworkGroup, { global: { stubs: { NModal: ModalStub } } })
+    const wrapper = mountTracked(ui.NetworkGroup, { global: { stubs: { Modal: ModalStub } } })
     await flushPromises()
 
     const lanToggle = () => wrapper.findAll('.n-checkbox').find(el => el.text().includes('开启互联访问'))
@@ -469,7 +469,7 @@ describe('settings Vue network group', () => {
       lan_get_status: { status: 'stopped', port: 17852, clients: [], allow_secret_config: false },
       check_sync_status: { ok: true, synced: false, local_count: 5, remote_count: 3, local_extra: 2, local_missing: 0 },
     })
-    const wrapper = mountTracked(ui.NetworkGroup, { global: { stubs: { NModal: ModalStub } } })
+    const wrapper = mountTracked(ui.NetworkGroup, { global: { stubs: { Modal: ModalStub } } })
     await flushPromises()
     ui.store.settings.sync_type = 'ftp'
     ui.store.settings.ftp_host = 'fixture.invalid'
@@ -494,7 +494,7 @@ describe('settings Vue network group', () => {
       get_sync_progress: { status: 'uploading', current_file: 'one.webp', progress: 41, speed: 123 },
       sync_push: new Promise(resolve => { finish = resolve }),
     })
-    const wrapper = mountTracked(ui.NetworkGroup, { global: { stubs: { NModal: ModalStub } } })
+    const wrapper = mountTracked(ui.NetworkGroup, { global: { stubs: { Modal: ModalStub } } })
     await flushPromises()
     ui.store.settings.sync_type = 'ftp'
     ui.store.settings.ftp_host = 'fixture.invalid'
@@ -547,7 +547,17 @@ describe('settings Vue App shell gating', () => {
       await import('../../src/ohmymeme/presentation/frontend/settings-vue/app/App.vue')
     ).default
     bridgeStub({ get_settings: { hotkey: 'Ctrl+Alt+N' } })
-    globalThis.fetch = vi.fn(async () => ({ ok: true, json: async () => structuredClone(data) }))
+    // 挂壳后 ImportGroup/PluginsGroup 会请求 /api/plugins 与 /api/plugins/ui，按真实路由分派载荷
+    globalThis.fetch = vi.fn(async (url) => {
+      const target = String(url)
+      if (target.includes('/api/plugin-ui')) {
+        return { ok: true, json: async () => structuredClone(data) }
+      }
+      if (target.includes('/api/plugins/ui')) {
+        return { ok: true, json: async () => ({ contributions: [] }) }
+      }
+      return { ok: true, json: async () => ({ plugins: [] }) }
+    })
     const ok = mountTracked(ValidApp)
     await flushPromises()
     expect(ok.find('#settings-nav').exists()).toBe(true)

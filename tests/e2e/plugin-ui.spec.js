@@ -113,7 +113,7 @@ test('settings import area reflects source status and injected rows', async ({ p
       name: 'run',
       payload: { source_dir: 'D:/tmp', limit: 5 },
     })
-    await expect(page.locator('#toast')).toContainText('已执行')
+    await expect(page.locator('.n-message')).toContainText('已执行')
   } finally {
     await page.close()
     server.closeAllConnections()
