@@ -1,9 +1,26 @@
 <script setup lang="ts">
-import { useDialog } from 'naive-ui'
+import { onMounted, onUnmounted } from 'vue'
+import { useDialog, NButton } from 'naive-ui'
 import { api } from '../shared/bridge'
-import { activeGroup, dirty } from '../shared/store'
+import { activeGroup, dirty, save, reset } from '../shared/store'
+import BaseGroup from '../features/base/BaseGroup.vue'
 
 const dialog = useDialog()
+
+function onSave() { save() }
+function onReset() { reset() }
+
+// 全局快捷键：Esc 关闭设置窗口（覆盖层由各自 NModal 的 esc 处理，不冒泡到此），Ctrl+Enter 保存
+function onKeydown(e: KeyboardEvent) {
+  if (e.key === 'Escape') {
+    if (document.querySelector('.n-modal-mask')) return
+    closeSettings()
+  } else if (e.key === 'Enter' && e.ctrlKey) {
+    save()
+  }
+}
+onMounted(() => document.addEventListener('keydown', onKeydown))
+onUnmounted(() => document.removeEventListener('keydown', onKeydown))
 
 const groups = [
   { id: 'base', label: '基础设置' },
@@ -87,7 +104,7 @@ defineExpose({ switchGroup, closeSettings })
       </nav>
       <div id="settings-content">
         <!-- 各功能分组组件在后续阶段挂载到此处 -->
-        <div v-show="activeGroup === 'base'" class="group-placeholder" data-group="base"></div>
+        <div v-show="activeGroup === 'base'"><BaseGroup /></div>
         <div v-show="activeGroup === 'import'" class="group-placeholder" data-group="import"></div>
         <div v-show="activeGroup === 'network'" class="group-placeholder" data-group="network"></div>
         <div v-show="activeGroup === 'danger'" class="group-placeholder" data-group="danger"></div>
@@ -96,6 +113,13 @@ defineExpose({ switchGroup, closeSettings })
         <div v-show="activeGroup === 'plugins'" class="group-placeholder" data-group="plugins"></div>
         <div v-show="activeGroup === 'about'" class="group-placeholder" data-group="about"></div>
       </div>
+    </div>
+
+    <div id="bottom">
+      <NButton size="small" quaternary @click="onReset">恢复默认</NButton>
+      <span class="spacer" style="flex:1"></span>
+      <NButton @click="closeSettings">取消</NButton>
+      <NButton type="primary" @click="onSave">保存</NButton>
     </div>
 
     <div id="toast" role="status" aria-live="polite"></div>
