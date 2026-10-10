@@ -1,5 +1,7 @@
-// 设置窗口 pywebview 桥接：移植自 settings 的 decoder.js + runtime.js，运行时契约保持一致
+// 设置窗口受控 pywebview 桥接，保持固定返回形状。
 import { checkPluginUIArguments } from './plugin-ui'
+
+export { esc } from '../../shared/markdown'
 
 declare const pywebview: any
 
@@ -12,12 +14,12 @@ class BridgeDecodeError extends Error {
   }
 }
 
-const bridgeBooleanMethods = new Set([
+const bridgeBooleanMethods = new Set<string>([
   'open_adb_folder', 'open_adb_help', 'qqnt_open_dir', 'start_download',
   'run_downloaded_installer', 'start_window_drag',
 ])
-const bridgeStringMethods = new Set(['lan_get_ip', 'get_current_version', 'sync_test'])
-const bridgeVoidMethods = new Set([
+const bridgeStringMethods = new Set<string>(['lan_get_ip', 'get_current_version', 'sync_test'])
+const bridgeVoidMethods = new Set<string>([
   'save_settings', 'cancel_qq_import', 'cancel_tg_import', 'cancel_douyin_import',
   'cancel_wechat_import', 'qqnt_cancel', 'close_settings', 'move_window',
   'refresh_memes', 'refresh_tags', 'refresh_collections',
@@ -27,7 +29,13 @@ function isPlainObject(value: any): boolean {
   return value !== null && typeof value === 'object' && !Array.isArray(value)
 }
 
-function decodeBridgeResult(method: string, value: any): any {
+// 桥接就绪判定：供单元测试与初始化重试使用（不注册任何额外运行时全局）
+export function bridgeReady(): boolean {
+  return typeof pywebview !== 'undefined' && !!pywebview.api
+}
+
+// 结果按方法固定形状解码；Promise 在解析后再解码，失败返回 null
+export function decodeBridgeResult(method: string, value: any): any {
   if (value && typeof value.then === 'function') {
     return value.then(
       (resolved: any) => {
@@ -64,13 +72,4 @@ export function api(method: string, ...args: any[]): any {
     console.error('api error', method, e)
     return null
   }
-}
-
-export function esc(s: any): string {
-  return String(s)
-    .replace(/&/g, '&amp;')
-    .replace(/</g, '&lt;')
-    .replace(/>/g, '&gt;')
-    .replace(/"/g, '&quot;')
-    .replace(/'/g, '&#39;')
 }

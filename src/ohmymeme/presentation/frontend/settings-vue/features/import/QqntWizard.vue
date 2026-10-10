@@ -1,14 +1,19 @@
 <script setup lang="ts">
 import { ref, computed, watch, nextTick, onUnmounted } from 'vue'
-import { NModal, NCheckbox } from 'naive-ui'
+import { NModal, NCheckbox, NRadio, NInput, NButton, NProgress } from 'naive-ui'
 import { api } from '../../shared/bridge'
 import { showToast } from '../../shared/store'
 import { pluginUILabel, pluginProgressValue } from '../../shared/plugin-ui'
 
-// 解包桥接返回值（可能为 Promise 或同步值）
-async function call(method: string, ...args: any[]): Promise<any> {
-  const p = api(method, ...args)
-  return p && typeof p.then === 'function' ? await p : p
+// 解包桥接返回值（api 可能返回 Promise 或同步值）
+async function call(method: string, ...args: unknown[]): Promise<any> {
+  return await api(method, ...args)
+}
+
+interface QqntAccount {
+  qq: string
+  nickname?: string
+  count: number
 }
 
 // 覆盖层显隐
@@ -24,7 +29,7 @@ const showActions = ref(false)
 // 手动选择提示
 const actionsMsg = ref('')
 // 账号列表
-const accounts = ref<any[]>([])
+const accounts = ref<QqntAccount[]>([])
 // 未找到已加载账号提示显隐
 const showEmptyHint = ref(false)
 // 选中账号
@@ -60,8 +65,14 @@ const logEl = ref<HTMLElement | null>(null)
 // 进度轮询定时器
 let pollTimer: ReturnType<typeof setInterval> | null = null
 
-// 步骤 2 的下一步按钮文案取自宿主投影
-const nextText = computed(() => step.value === 1 ? '下一步' : step.value === 2 ? pluginUILabel('qqnt_start') : '')
+// 步骤 2 的下一步按钮文案取自宿主投影；投影缺失时回退
+const nextText = computed(() => {
+  if (step.value === 1) return '下一步'
+  if (step.value === 2) {
+    try { return pluginUILabel('qqnt_start') } catch { return '开始提取' }
+  }
+  return ''
+})
 
 // 停止轮询
 function stopPoll() {
@@ -115,7 +126,12 @@ function renderEnv(st: any) {
   envMsg.value = '请选择要提取的账号：'
   actionsMsg.value = '若当前 Windows 用户不在列表中，请手动选择其用户数据目录（含 QQ 号子目录的根目录）：'
   nextDisabled.value = false
-  selectedQQ.value = accounts.value[0].qq
+  selectedQQ.value = accounts.value[0]?.qq ?? ''
+}
+
+// 选择账号
+function selectAccount(qq: string, checked: boolean) {
+  if (checked) selectedQQ.value = qq
 }
 
 // 上一步
@@ -177,10 +193,10 @@ async function startExtract() {
   pollTimer = setInterval(async () => {
     const s = await call('qqnt_get_progress')
     if (!s) return
-    const progress = pluginProgressValue('qqnt_get_progress', s, 'progress')
-    progressBar.value = progress || 0
-    progressPct.value = (progress || 0) + '%'
-    progressMsg.value = pluginProgressValue('qqnt_get_progress', s, 'message') || ''
+    const progress = Number(pluginProgressValue('qqnt_get_progress', s, 'progress') ?? 0)
+    progressBar.value = progress
+    progressPct.value = progress + '%'
+    progressMsg.value = String(pluginProgressValue('qqnt_get_progress', s, 'message') ?? '')
     if (s.log) progressLog.value = s.log.join('\n')
     if (s.status === 'done') {
       stopPoll()
@@ -240,18 +256,18 @@ defineExpose({ open })
       <div v-show="step === 1">
         <div style="font-size:12px;color:var(--muted);margin-bottom:10px;line-height:1.6">{{ envMsg }}</div>
         <div style="max-height:220px;overflow-y:auto;margin-bottom:12px">
-          <label v-for="a in accounts" :key="a.qq" style="display:flex;align-items:center;gap:8px;padding:8px 10px;border:1px solid var(--border);border-radius:var(--radius-sm);margin-bottom:6px;cursor:pointer;background:var(--card)">
-            <input type="radio" name="qqnt-account" :value="a.qq" v-model="selectedQQ" style="width:15px;height:15px;accent-color:var(--accent)">
+          <div v-for="a in accounts" :key="a.qq" class="check-row" style="padding:8px 10px;border:1px solid var(--border);border-radius:var(--radius-sm);margin-bottom:6px;background:var(--card)">
+            <NRadio :checked="selectedQQ === a.qq" :value="a.qq" @update:checked="(v) => selectAccount(a.qq, v)" />
             <span style="font-size:13px;color:var(--fg)">{{ a.nickname ? a.nickname + '（' + a.qq + '）' : a.qq }}</span>
             <span style="margin-left:auto;font-size:11px;color:var(--muted)">{{ a.count }} 个</span>
-          </label>
+          </div>
           <div v-if="showEmptyHint" style="font-size:12px;color:var(--muted);line-height:1.6">请先在电脑版 QQ 中打开「收藏表情」，将表情全部加载（滑到底），再返回此处重试。</div>
         </div>
         <div v-show="showActions" style="margin-bottom:12px">
           <div style="font-size:12px;color:var(--muted);margin-bottom:8px">{{ actionsMsg }}</div>
           <div style="display:flex;gap:8px">
-            <button class="btn btn-secondary btn-sm" @click="pickIni">选择配置文件</button>
-            <button class="btn btn-secondary btn-sm" @click="pickUserdata">选择用户数据目录</button>
+            <NButton size="small" @click="pickIni">选择配置文件</NButton>
+            <NButton size="small" @click="pickUserdata">选择用户数据目录</NButton>
           </div>
         </div>
       </div>
@@ -259,41 +275,39 @@ defineExpose({ open })
       <div v-show="step === 2">
         <div style="font-size:12px;color:var(--muted);margin-bottom:10px;line-height:1.6">选择保存文件夹，将导出到其下「昵称（QQ号）_提取的表情」目录</div>
         <div style="display:flex;gap:8px;margin-bottom:10px">
-          <input :value="base" readonly placeholder="选择保存文件夹" style="flex:1">
-          <button class="btn btn-secondary btn-sm" @click="pickBase">选择文件夹</button>
+          <NInput readonly :value="base" placeholder="选择保存文件夹" style="flex:1" :input-props="{ id: 'qqnt-out-base' }" />
+          <NButton size="small" @click="pickBase">选择文件夹</NButton>
         </div>
-        <label style="font-size:11.5px;color:var(--muted);margin-bottom:4px">输出目录</label>
-        <input :value="outputDir" readonly style="margin-bottom:10px">
-        <label style="display:flex;align-items:center;gap:8px;cursor:pointer;font-size:12.5px;color:var(--muted);margin-bottom:8px;user-select:none">
-          <NCheckbox :checked="imageOnly" @update:checked="(v: boolean) => imageOnly = v" />仅提取图片（跳过非图片文件）
-        </label>
-        <label style="display:flex;align-items:center;gap:8px;cursor:pointer;font-size:12.5px;color:var(--muted);margin-bottom:8px;user-select:none">
-          <NCheckbox :checked="overwrite" @update:checked="(v: boolean) => overwrite = v" />输出目录已存在时覆盖清空
-        </label>
+        <label style="font-size:11.5px;color:var(--muted);margin-bottom:4px;display:block">输出目录</label>
+        <NInput readonly :value="outputDir" style="margin-bottom:10px" :input-props="{ id: 'qqnt-out-dir' }" />
+        <div class="check-row" style="margin-bottom:8px">
+          <NCheckbox :checked="imageOnly" @update:checked="(v) => imageOnly = v">仅提取图片（跳过非图片文件）</NCheckbox>
+        </div>
+        <div class="check-row" style="margin-bottom:8px">
+          <NCheckbox :checked="overwrite" @update:checked="(v) => overwrite = v">输出目录已存在时覆盖清空</NCheckbox>
+        </div>
       </div>
 
       <div v-show="step === 3">
         <div style="font-size:13px;font-weight:500;color:var(--fg);margin-bottom:4px">{{ progressTitle }}</div>
         <div style="font-size:12px;color:var(--fg-secondary);margin-bottom:12px;word-break:break-all">{{ progressMsg }}</div>
-        <div style="width:100%;height:8px;background:var(--bg);border-radius:4px;overflow:hidden;margin-bottom:6px">
-          <div :style="{ width: progressBar + '%', height: '100%', background: 'var(--accent)', borderRadius: '4px', transition: 'width .3s' }"></div>
-        </div>
-        <div style="font-size:11.5px;color:var(--muted);margin-bottom:12px"><span>{{ progressPct }}</span></div>
+        <NProgress type="line" :percentage="progressBar" :show-indicator="false" :height="8" />
+        <div style="font-size:11.5px;color:var(--muted);margin-top:6px;margin-bottom:12px"><span>{{ progressPct }}</span></div>
         <div ref="logEl" style="max-height:160px;overflow-y:auto;font-size:11px;color:var(--muted);text-align:left;line-height:1.6;background:var(--bg);border-radius:var(--radius-sm);padding:8px 10px">{{ progressLog }}</div>
       </div>
 
       <div v-show="step === 4">
         <div style="font-size:13px;font-weight:500;color:var(--fg);margin-bottom:10px">{{ doneTitle }}</div>
         <div style="font-size:12.5px;color:var(--fg-secondary);line-height:1.8;margin-bottom:14px">{{ doneDetail }}<br>{{ doneDir }}</div>
-        <button class="btn btn-secondary btn-sm" style="width:100%" @click="openDir">打开输出目录</button>
+        <NButton size="small" style="width:100%" @click="openDir">打开输出目录</NButton>
       </div>
 
       <div v-if="error" style="font-size:12px;color:var(--danger);margin-top:8px">{{ error }}</div>
 
       <div style="display:flex;gap:8px;justify-content:flex-end;margin-top:16px">
-        <button v-if="step === 2" class="btn btn-secondary btn-sm" @click="prev">上一步</button>
-        <button v-if="step <= 2" class="btn btn-primary btn-sm" :disabled="nextDisabled" @click="next">{{ nextText }}</button>
-        <button class="btn btn-ghost btn-sm" @click="close">关闭</button>
+        <NButton v-if="step === 2" size="small" @click="prev">上一步</NButton>
+        <NButton v-if="step <= 2" size="small" type="primary" :disabled="nextDisabled" @click="next">{{ nextText }}</NButton>
+        <NButton size="small" quaternary @click="close">关闭</NButton>
       </div>
     </div>
   </NModal>

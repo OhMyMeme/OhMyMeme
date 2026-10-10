@@ -22,7 +22,7 @@ const desc = computed(() => target.value === 'local'
 // 两个输入框都等于 confirm 才允许确认
 const matched = computed(() => input1.value === 'confirm' && input2.value === 'confirm')
 
-// 打开指定目标的确认弹窗
+// 打开指定目标的确认弹窗（NModal autoFocus 默认聚焦首个输入框）
 function showConfirm(t: 'local' | 'cloud') {
   target.value = t
   input1.value = ''
@@ -41,8 +41,7 @@ function cancel() {
 async function exec() {
   if (!target.value) return
   executing.value = true
-  const p = api('delete_all_' + target.value)
-  const r = p && typeof p.then === 'function' ? await p : p
+  const r = await api('delete_all_' + target.value)
   executing.value = false
   cancel()
   if (r && r.ok) {
@@ -58,8 +57,8 @@ async function exec() {
     <div class="section-title" style="color:var(--danger)">危险操作</div>
     <p style="font-size:11.5px;color:var(--muted);margin-bottom:12px;line-height:1.6">以下操作不可撤销，请谨慎使用</p>
     <div style="display:flex;gap:8px">
-      <button class="btn btn-flex" style="border-color:var(--danger);color:var(--danger)" @click="showConfirm('local')">删除本地所有表情包</button>
-      <button class="btn btn-flex" style="border-color:var(--danger);color:var(--danger)" @click="showConfirm('cloud')">删除云端所有表情包</button>
+      <NButton type="error" tertiary style="flex:1" @click="showConfirm('local')">删除本地所有表情包</NButton>
+      <NButton type="error" tertiary style="flex:1" @click="showConfirm('cloud')">删除云端所有表情包</NButton>
     </div>
 
     <NModal
@@ -72,8 +71,8 @@ async function exec() {
       <p style="font-size:13px;color:var(--fg-secondary);line-height:1.6;margin-bottom:12px">{{ desc }}</p>
       <p style="font-size:11.5px;color:var(--muted);margin-bottom:8px;line-height:1.6">请在下方两个输入框中输入 confirm 以确认</p>
       <div style="display:flex;flex-direction:column;gap:8px">
-        <NInput v-model:value="input1" placeholder="输入 confirm" />
-        <NInput v-model:value="input2" placeholder="再次输入 confirm" />
+        <NInput :value="input1" :input-props="{ id: 'danger-input-1' }" placeholder="输入 confirm" @update:value="(v) => input1 = v" />
+        <NInput :value="input2" :input-props="{ id: 'danger-input-2' }" placeholder="再次输入 confirm" @update:value="(v) => input2 = v" />
       </div>
       <template #footer>
         <div style="display:flex;justify-content:flex-end;gap:8px">

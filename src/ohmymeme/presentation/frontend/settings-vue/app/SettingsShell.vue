@@ -14,7 +14,7 @@ import PluginsGroup from '../features/plugins/PluginsGroup.vue'
 
 const dialog = useDialog()
 
-const pluginsRef = ref<any>(null)
+const pluginsRef = ref<InstanceType<typeof PluginsGroup> | null>(null)
 
 function onSave() { save() }
 function onReset() { reset() }
@@ -22,7 +22,7 @@ function onReset() { reset() }
 // 恢复默认后重拉插件面板（对齐旧 resetSettings 的 initPluginsPanel 调用）
 watch(resetSignal, () => { pluginsRef.value?.initPanel?.() })
 
-// 全局快捷键：Esc 关闭设置窗口（覆盖层由各自 NModal 的 esc 处理，不冒泡到此），Ctrl+Enter 保存
+// 全局快捷键：Esc 先关覆盖层（由各 NModal 自行处理，不冒泡到此），Ctrl+Enter 保存
 function onKeydown(e: KeyboardEvent) {
   if (e.key === 'Escape') {
     if (document.querySelector('.n-modal-mask')) return
@@ -34,7 +34,7 @@ function onKeydown(e: KeyboardEvent) {
 onMounted(() => document.addEventListener('keydown', onKeydown))
 onUnmounted(() => document.removeEventListener('keydown', onKeydown))
 
-const groups = [
+const groups: { id: string; label: string; danger?: boolean }[] = [
   { id: 'base', label: '基础设置' },
   { id: 'import', label: '导入' },
   { id: 'network', label: '联网' },
@@ -51,7 +51,7 @@ function switchGroup(id: string) {
   if (content) content.scrollTop = 0
 }
 
-// 窗口拖动：标题栏按下走原生拖动（Linux 交合成器），回退 JS 增量位移
+// 窗口拖动：标题栏按下走原生拖动（Linux 交合成器），回退 JS 增量位移（screenX/screenY）
 let dragState: { sx: number; sy: number } | null = null
 async function onTitlebarMouseDown(e: MouseEvent) {
   if (e.button !== 0) return
@@ -100,22 +100,22 @@ defineExpose({ switchGroup, closeSettings })
     <div id="titlebar" @mousedown="onTitlebarMouseDown">
       <div class="logo">OhMy<span>Meme</span> 设置</div>
       <span class="spacer"></span>
-      <button class="title-btn" aria-label="关闭设置" @click="closeSettings">×</button>
+      <NButton quaternary class="title-btn" aria-label="关闭设置" @click="closeSettings">×</NButton>
     </div>
 
     <div id="body">
       <nav id="settings-nav">
-        <button
+        <NButton
           v-for="g in groups"
           :key="g.id"
+          quaternary
           class="nav-item"
           :class="{ active: activeGroup === g.id, danger: g.danger }"
           :data-group="g.id"
           @click="switchGroup(g.id)"
-        >{{ g.label }}</button>
+        >{{ g.label }}</NButton>
       </nav>
       <div id="settings-content">
-        <!-- 各功能分组组件在后续阶段挂载到此处 -->
         <div v-show="activeGroup === 'base'"><BaseGroup /></div>
         <div v-show="activeGroup === 'import'"><ImportGroup /></div>
         <div v-show="activeGroup === 'network'"><NetworkGroup /></div>

@@ -1,6 +1,6 @@
 <script setup lang="ts">
-import { ref, onMounted } from 'vue'
-import { NModal, NButton } from 'naive-ui'
+import { ref, onMounted, onUnmounted } from 'vue'
+import { NModal, NButton, NProgress } from 'naive-ui'
 import { api } from '../../shared/bridge'
 import { showToast } from '../../shared/store'
 import { renderMarkdown } from '../../shared/markdown'
@@ -33,8 +33,7 @@ function sleep(ms: number): Promise<void> {
 
 // 拉取并显示当前版本号
 async function loadVersion() {
-  const p = api('get_current_version')
-  const ver = p && typeof p.then === 'function' ? await p : p
+  const ver = await api('get_current_version')
   current.value = ver || '--'
 }
 
@@ -42,12 +41,10 @@ async function loadVersion() {
 async function checkUpdate() {
   checking.value = true
   updateStatus.value = ''
-  let p = api('check_update', false, true)
-  let r = p && typeof p.then === 'function' ? await p : p
+  let r = await api('check_update', false, true)
   while (r && r.pending) {
     await sleep(1500)
-    const q = api('check_update', false, false)
-    r = q && typeof q.then === 'function' ? await q : q
+    r = await api('check_update', false, false)
   }
   checking.value = false
   if (!r) { updateStatus.value = '检查失败'; return }
@@ -77,15 +74,13 @@ function openUpdate(cur: string, lat: string, url: string, updateNotes: string) 
 // 开始下载并在完成后启动安装程序
 async function startDownload() {
   phase.value = 'preparing'
-  const p = api('start_download', downloadUrl.value)
-  const ok = p && typeof p.then === 'function' ? await p : p
+  const ok = await api('start_download', downloadUrl.value)
   if (!ok) { phase.value = 'idle'; return }
   phase.value = 'downloading'
   progress.value = 0
   progressText.value = '下载中 0%'
   poll = setInterval(async () => {
-    const q = api('get_download_progress')
-    const s = q && typeof q.then === 'function' ? await q : q
+    const s = await api('get_download_progress')
     if (!s) return
     const pct = s.progress || 0
     progress.value = pct
@@ -94,8 +89,7 @@ async function startDownload() {
     } else if (s.status === 'done') {
       if (poll) { clearInterval(poll); poll = null }
       progressText.value = '下载完成，启动安装...'
-      const i = api('run_downloaded_installer')
-      const r = i && typeof i.then === 'function' ? await i : i
+      const r = await api('run_downloaded_installer')
       showUpdate.value = false
       if (r) {
         showToast('安装程序已启动，安装完成后将自动更新')
@@ -118,6 +112,9 @@ function retry() {
 onMounted(() => {
   loadVersion()
 })
+onUnmounted(() => {
+  if (poll) { clearInterval(poll); poll = null }
+})
 </script>
 
 <template>
@@ -127,15 +124,15 @@ onMounted(() => {
       <div class="about-desc">轻量跨平台表情包管理系统</div>
     </div>
     <div class="about-version-row">
-      <span>当前版本: {{ current }}</span>
-      <button class="btn btn-secondary btn-sm" :disabled="checking" @click="checkUpdate">{{ checking ? '检查中...' : '检查更新' }}</button>
+      <span id="s-ver-current" class="about-version">当前版本: {{ current }}</span>
+      <NButton size="small" :loading="checking" @click="checkUpdate">检查更新</NButton>
     </div>
-    <div class="about-update-status">{{ updateStatus }}</div>
+    <div id="s-update-status" class="about-update-status">{{ updateStatus }}</div>
     <div class="section-title">贡献者</div>
     <div class="about-contributors">
-      <img v-if="contributorsOk" :src="'/api/contributors'" loading="lazy" alt="项目贡献者" @error="contributorsOk = false">
+      <img v-if="contributorsOk" id="contributors-img" :src="'/api/contributors'" loading="lazy" alt="项目贡献者" @error="contributorsOk = false">
     </div>
-    <div v-if="!contributorsOk" style="font-size:11.5px;color:var(--muted)">贡献者名单加载失败</div>
+    <div v-if="!contributorsOk" id="contributors-fallback" style="font-size:11.5px;color:var(--muted)">贡献者名单加载失败</div>
 
     <NModal
       v-model:show="showUpdate"
@@ -154,9 +151,7 @@ onMounted(() => {
         <NButton v-if="phase === 'preparing'" type="primary" style="width:100%" disabled>准备下载...</NButton>
         <div v-if="phase === 'downloading' || phase === 'error'" style="width:100%">
           <div style="font-size:12px;color:var(--fg-secondary);margin-bottom:4px;text-align:center">{{ progressText }}</div>
-          <div style="width:100%;height:8px;background:var(--bg-secondary);border-radius:4px;overflow:hidden">
-            <div :style="{ width: progress + '%', height: '100%', background: 'var(--accent)', borderRadius: '4px', transition: 'width .3s' }"></div>
-          </div>
+          <NProgress type="line" :percentage="progress" :show-indicator="false" :height="8" />
         </div>
         <NButton v-if="phase === 'error'" type="primary" style="width:100%" @click="retry">重试</NButton>
       </div>

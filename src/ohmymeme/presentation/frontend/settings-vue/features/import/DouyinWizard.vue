@@ -1,20 +1,19 @@
 <script setup lang="ts">
 import { ref, onUnmounted } from 'vue'
-import { NModal } from 'naive-ui'
+import { NModal, NInput, NButton, NProgress } from 'naive-ui'
 import { api } from '../../shared/bridge'
 import { pluginProgressValue } from '../../shared/plugin-ui'
 
-// 解包桥接返回值（可能为 Promise 或同步值）
-async function call(method: string, ...args: any[]): Promise<any> {
-  const p = api(method, ...args)
-  return p && typeof p.then === 'function' ? await p : p
+// 解包桥接返回值（api 可能返回 Promise 或同步值）
+async function call(method: string, ...args: unknown[]): Promise<any> {
+  return await api(method, ...args)
 }
 
 // 覆盖层显隐
 const visible = ref(false)
 // 阶段：config 配置 / progress 进度
 const phase = ref<'config' | 'progress'>('config')
-// 抖音 Cookie
+// 抖音 Cookie（瞬时操作密钥，仅用于本次下载，不进入设置）
 const cookie = ref('')
 // 配置阶段状态文案
 const status = ref('')
@@ -108,9 +107,8 @@ async function startImport() {
       }
       nullCount = 0
 
-      const progress = pluginProgressValue('get_douyin_import_progress', s, 'progress')
-      pct.value = progress || 0
-      progressMsg.value = pluginProgressValue('get_douyin_import_progress', s, 'message') || ''
+      pct.value = Number(pluginProgressValue('get_douyin_import_progress', s, 'progress') ?? 0)
+      progressMsg.value = String(pluginProgressValue('get_douyin_import_progress', s, 'message') ?? '')
 
       if (s.status === 'done') {
         progressTitle.value = '导入完成'
@@ -175,24 +173,22 @@ defineExpose({ open })
         <div style="font-size:12px;color:var(--muted);margin-bottom:12px;line-height:1.6">通过抖音网页版 API 下载自定义表情包（WebP 原格式保存，需登录 Cookie）</div>
         <div class="form-group">
           <label>抖音 Cookie</label>
-          <input type="password" placeholder="粘贴抖音网页版 Cookie（sessionid=xxx; ...）" autocomplete="off" :value="cookie" @input="cookie = ($event.target as HTMLInputElement).value">
+          <NInput type="password" placeholder="粘贴抖音网页版 Cookie（sessionid=xxx; ...）" :value="cookie" :input-props="{ id: 's-dy-cookie', autocomplete: 'off' }" @update:value="(v) => cookie = v" />
         </div>
         <div class="s-net-status" :class="{ 'status-ok': statusMode === 'ok', 'status-error': statusMode === 'error' }" style="font-size:11.5px;color:var(--muted);margin-bottom:10px;word-break:break-all;line-height:1.6">{{ status }}</div>
         <div style="display:flex;gap:8px">
-          <button class="btn btn-primary btn-sm btn-flex" :disabled="busy" @click="startImport">开始下载</button>
-          <button class="btn btn-secondary btn-sm" @click="close">取消</button>
+          <NButton size="small" type="primary" style="flex:1" :loading="busy" @click="startImport">开始下载</NButton>
+          <NButton size="small" @click="close">取消</NButton>
         </div>
       </div>
       <div v-show="phase === 'progress'" style="text-align:center">
         <div style="font-size:14px;font-weight:600;color:var(--fg);margin-bottom:4px">{{ progressTitle }}</div>
         <div style="font-size:12px;color:var(--fg-secondary);margin-bottom:12px;word-break:break-all">{{ progressMsg }}</div>
-        <div style="width:100%;height:8px;background:var(--bg);border-radius:4px;overflow:hidden;margin-bottom:6px">
-          <div :style="{ width: pct + '%', height: '100%', background: 'var(--accent)', borderRadius: '4px', transition: 'width .3s' }"></div>
-        </div>
-        <div style="font-size:11.5px;color:var(--muted);margin-bottom:16px">
+        <NProgress type="line" :percentage="pct" :show-indicator="false" :height="8" />
+        <div style="font-size:11.5px;color:var(--muted);margin-top:6px;margin-bottom:16px">
           <span>{{ pct }}%</span>
         </div>
-        <button class="btn btn-secondary btn-sm" @click="close">关闭</button>
+        <NButton size="small" @click="close">关闭</NButton>
         <div v-if="error" style="font-size:12px;color:var(--danger);margin-top:8px;word-break:break-all">{{ error }}</div>
       </div>
     </div>

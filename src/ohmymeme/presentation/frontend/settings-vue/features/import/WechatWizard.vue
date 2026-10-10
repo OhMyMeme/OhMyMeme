@@ -1,14 +1,19 @@
 <script setup lang="ts">
 import { ref, onUnmounted } from 'vue'
-import { NModal } from 'naive-ui'
+import { NModal, NInput, NSelect, NButton, NProgress } from 'naive-ui'
 import { api } from '../../shared/bridge'
 import { showToast } from '../../shared/store'
 import { pluginProgressValue } from '../../shared/plugin-ui'
 
-// 解包桥接返回值（可能为 Promise 或同步值）
-async function call(method: string, ...args: any[]): Promise<any> {
-  const p = api(method, ...args)
-  return p && typeof p.then === 'function' ? await p : p
+// 解包桥接返回值（api 可能返回 Promise 或同步值）
+async function call(method: string, ...args: unknown[]): Promise<any> {
+  return await api(method, ...args)
+}
+
+interface WechatAccount {
+  id: string
+  path: string
+  status: string
 }
 
 // 覆盖层显隐
@@ -20,7 +25,7 @@ const root = ref('')
 // 选中账号
 const account = ref('')
 // 可用账号列表
-const accounts = ref<any[]>([])
+const accounts = ref<WechatAccount[]>([])
 // 账号下拉显隐（仅多账号时）
 const accountGroupVisible = ref(false)
 // 配置阶段状态文案
@@ -45,8 +50,13 @@ const inspecting = ref(false)
 let pollTimer: ReturnType<typeof setInterval> | null = null
 
 // 账号是否可用
-function isUsable(a: any): boolean {
+function isUsable(a: WechatAccount): boolean {
   return a.status === 'supported' || a.status === 'encrypted_index'
+}
+
+// 账号下拉选项
+function accountOptions(): { label: string; value: string }[] {
+  return [{ label: '请选择账号', value: '' }, ...accounts.value.map((a) => ({ label: a.id, value: a.path }))]
 }
 
 // 停止轮询
@@ -75,7 +85,7 @@ async function pickRoot() {
 
 // 渲染可用账号下拉
 function renderAccounts(r: any) {
-  const list = ((r && r.accounts) || []).filter(isUsable)
+  const list: WechatAccount[] = ((r && r.accounts) || []).filter(isUsable)
   if (list.length > 1) {
     accountGroupVisible.value = true
     accounts.value = list
@@ -181,9 +191,8 @@ async function startImport() {
       }
       nullCount = 0
 
-      const progress = pluginProgressValue('get_wechat_import_progress', s, 'progress')
-      pct.value = progress || 0
-      progressMsg.value = pluginProgressValue('get_wechat_import_progress', s, 'message') || ''
+      pct.value = Number(pluginProgressValue('get_wechat_import_progress', s, 'progress') ?? 0)
+      progressMsg.value = String(pluginProgressValue('get_wechat_import_progress', s, 'message') ?? '')
 
       if (s.status === 'done') {
         progressTitle.value = '导入完成'
@@ -254,34 +263,31 @@ defineExpose({ open })
         <div style="font-size:12px;color:var(--muted);margin-bottom:12px;line-height:1.6">从微信电脑版本地缓存提取收藏表情（需微信正在运行，仅 Windows 支持）。微信文件目录是存放所有账号数据的根目录（xwechat_files），其下以 wxid_ 开头或含表情库（emoticon.db）的文件夹为各账号目录</div>
         <div class="form-group">
           <label>微信文件目录（根目录）</label>
-          <input :value="root" readonly placeholder="未设置，将自动检测">
+          <NInput readonly placeholder="未设置，将自动检测" :value="root" :input-props="{ id: 's-wechat-root' }" />
         </div>
         <div style="display:flex;gap:8px;margin-bottom:10px">
-          <button class="btn btn-secondary btn-sm btn-flex" @click="pickRoot">手动指定微信目录</button>
+          <NButton size="small" style="flex:1" @click="pickRoot">手动指定微信目录</NButton>
         </div>
         <div v-show="accountGroupVisible" class="form-group" style="margin-bottom:10px">
           <label>账号</label>
-          <select id="s-wechat-account" :value="account" @change="account = ($event.target as HTMLSelectElement).value">
-            <option value="">请选择账号</option>
-            <option v-for="a in accounts" :key="a.path" :value="a.path">{{ a.id }}</option>
-          </select>
+          <div id="s-wechat-account">
+            <NSelect :value="account" :options="accountOptions()" @update:value="(v) => account = String(v ?? '')" />
+          </div>
         </div>
         <div class="s-net-status" :class="{ 'status-ok': statusMode === 'ok', 'status-error': statusMode === 'error' }" style="font-size:11.5px;color:var(--muted);margin-bottom:10px;word-break:break-all;line-height:1.6">{{ status }}</div>
         <div style="display:flex;gap:8px">
-          <button class="btn btn-secondary btn-sm btn-flex" :disabled="inspecting" @click="inspect">检测环境</button>
-          <button class="btn btn-primary btn-sm btn-flex" :disabled="busy" @click="startImport">开始导入</button>
+          <NButton size="small" style="flex:1" :loading="inspecting" @click="inspect">检测环境</NButton>
+          <NButton size="small" type="primary" style="flex:1" :loading="busy" @click="startImport">开始导入</NButton>
         </div>
       </div>
       <div v-show="phase === 'progress'" style="text-align:center">
         <div style="font-size:14px;font-weight:600;color:var(--fg);margin-bottom:4px">{{ progressTitle }}</div>
         <div style="font-size:12px;color:var(--fg-secondary);margin-bottom:12px;word-break:break-all">{{ progressMsg }}</div>
-        <div style="width:100%;height:8px;background:var(--bg);border-radius:4px;overflow:hidden;margin-bottom:6px">
-          <div :style="{ width: pct + '%', height: '100%', background: 'var(--accent)', borderRadius: '4px', transition: 'width .3s' }"></div>
-        </div>
-        <div style="font-size:11.5px;color:var(--muted);margin-bottom:16px">
+        <NProgress type="line" :percentage="pct" :show-indicator="false" :height="8" />
+        <div style="font-size:11.5px;color:var(--muted);margin-top:6px;margin-bottom:16px">
           <span>{{ pct }}%</span>
         </div>
-        <button class="btn btn-secondary btn-sm" @click="close">{{ closeLabel }}</button>
+        <NButton size="small" @click="close">{{ closeLabel }}</NButton>
         <div v-if="error" style="font-size:12px;color:var(--danger);margin-top:8px;word-break:break-all">{{ error }}</div>
       </div>
     </div>

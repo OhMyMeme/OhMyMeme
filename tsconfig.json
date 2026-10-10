@@ -21,6 +21,8 @@
   "include": [
     "src/ohmymeme/presentation/frontend/main/features/memes/**/*.vue",
     "src/ohmymeme/presentation/frontend/main/shared/**/*.ts",
+    "src/ohmymeme/presentation/frontend/settings-vue/**/*.ts",
+    "src/ohmymeme/presentation/frontend/settings-vue/**/*.vue",
     "tests/frontend/**/*.ts"
   ],
   "exclude": [

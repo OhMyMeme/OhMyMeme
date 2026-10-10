@@ -1,17 +1,26 @@
 import { reactive, ref } from 'vue'
-import { api } from './bridge'
+import type { SettingsData, SettingsPatch } from '../../main/shared/generated/bridge'
+import { api, bridgeReady } from './bridge'
 import { loadPluginUI } from './plugin-ui'
 
-// 设置窗口共享状态：原始 settings dict、脏标记、当前导航分组
-export const settings = reactive<Record<string, any>>({})
+// 可编辑设置表单：以生成的 SettingsData 为唯一键集合，允许空值以便编辑期过渡
+// （不是 Record<string, any>，避免 TS4111 与拼写漂移）
+export type SettingsForm = { [K in keyof SettingsData]?: SettingsData[K] | null }
+
+// 设置窗口共享状态：设置表单、脏标记、当前导航分组、投影标签与禁用插件
+export const settings = reactive<SettingsForm>({})
 export const activeGroup = ref('base')
 export const dirty = ref(false)
 export const pluginUILabels = reactive<Record<string, string>>({})
-// 由插件面板维护的禁用插件 id 列表，save() 读取后随 save_settings 一起提交
 export const disabledPlugins = ref<string[]>([])
 
 export function markDirty() {
   dirty.value = true
+}
+
+// 按宿主投影的 screen 读取展示标签（无投影时返回 undefined）
+export function screenLabel(screen: string): string | undefined {
+  return pluginUILabels[screen]
 }
 
 // 全局 toast：复用静态 #toast 节点，与原 settings 行为一致
@@ -25,8 +34,14 @@ export function showToast(msg: string) {
   toastTimer = setTimeout(() => el.classList.remove('show'), 1600)
 }
 
+// 任意输入转整数（端口等数值字段统一落到 number，避免表单字符串泄漏到载荷）
+export function toInt(value: unknown, fallback: number): number {
+  const parsed = Number.parseInt(String(value ?? ''), 10)
+  return Number.isFinite(parsed) ? parsed : fallback
+}
+
 // 组装同步子配置：键与原 collectSyncSettings 逐一对齐（save 与同步操作共用）
-export function collectSync(): Record<string, any> {
+export function collectSync(): SettingsPatch {
   const s = settings
   return {
     sync_auto_fetch_index: s.sync_auto_fetch_index === true,
@@ -36,7 +51,7 @@ export function collectSync(): Record<string, any> {
     sync_remove_local: s.sync_remove_local === true,
     sync_hide_upload_warning: s.sync_hide_upload_warning === true,
     ftp_host: s.ftp_host || '',
-    ftp_port: parseInt(s.ftp_port) || 21,
+    ftp_port: toInt(s.ftp_port, 21),
     ftp_user: s.ftp_user || '',
     ftp_password: s.ftp_password || '',
     ftp_path: s.ftp_path || '/',
@@ -61,10 +76,10 @@ export function collectSync(): Record<string, any> {
 }
 
 // 同步后端表单校验：缺字段返回提示并中止保存（契约与原 validateSync 一致）
-export function validateSync(s: Record<string, any>): boolean {
+export function validateSync(s: SettingsPatch): boolean {
   if (s.sync_type === 'ftp') {
     if (!String(s.ftp_host || '').trim()) { showToast('请输入 FTP 服务器地址'); return false }
-    const port = parseInt(s.ftp_port)
+    const port = Number(s.ftp_port)
     if (!port || port < 1 || port > 65535) { showToast('端口号无效（1-65535）'); return false }
   }
   if (s.sync_type === 's3') {
@@ -81,28 +96,37 @@ export function validateSync(s: Record<string, any>): boolean {
   return true
 }
 
-// 组装 save_settings 载荷：从响应式 settings 读取（而非扫 DOM），键与原实现逐一对齐
+// 用后端返回的完整设置替换响应式状态（先清空旧键，避免残留）
+function replaceSettings(data: SettingsData): void {
+  for (const key of Object.keys(settings) as (keyof SettingsForm)[]) delete settings[key]
+  Object.assign(settings, data)
+  disabledPlugins.value = [...(data.disabled_plugins || [])]
+}
+
+// 组装 save_settings 载荷：从响应式表单读取（而非扫 DOM），键与原实现逐一对齐
 export async function save(): Promise<void> {
+  if (!bridgeReady()) { showToast('无法连接应用后端'); return }
   const s = settings
   const sync = collectSync()
   if (!validateSync(sync)) return
-  await api('save_settings', {
+  const patch: SettingsPatch = {
     hotkey: s.hotkey || 'Ctrl+Alt+N',
     hotkey_show_at_mouse: s.hotkey_show_at_mouse === true,
     auto_play_gif: s.auto_play_gif !== false,
     hover_to_play: s.hover_to_play === true,
     try_original_image: s.try_original_image === true,
-    copy_resize_mode: parseInt(String(s.copy_resize_mode ?? 1), 10),
+    copy_resize_mode: toInt(s.copy_resize_mode, 1),
     auto_start: s.auto_start === true,
     silent_start: s.silent_start === true,
     show_uncategorized: s.show_uncategorized !== false,
     record_recent_use: s.record_recent_use !== false,
     show_startup_animation: s.show_startup_animation !== false,
     disabled_plugins: [...disabledPlugins.value],
-    lan_port: parseInt(s.lan_port) || 17852,
+    lan_port: toInt(s.lan_port, 17852),
     lan_secret: s.lan_secret || '',
     ...sync,
-  })
+  }
+  await api('save_settings', patch)
   showToast('设置已保存')
   dirty.value = false
 }
@@ -110,11 +134,9 @@ export async function save(): Promise<void> {
 // 恢复默认：后端返回默认 dict 后覆盖响应式状态（LAN 停止等副作用由 network 组件 watch 处理）
 export const resetSignal = ref(0)
 export async function reset(): Promise<void> {
-  const s = api('reset_settings')
-  const resolved = s && typeof s.then === 'function' ? await s : s
-  if (!resolved) return
-  Object.keys(settings).forEach((k) => delete settings[k])
-  Object.assign(settings, resolved)
+  const resolved = await api('reset_settings')
+  if (!resolved || typeof resolved.hotkey !== 'string') return
+  replaceSettings(resolved as SettingsData)
   await api('lan_stop')
   await api('lan_set_allow_secret_config', false)
   resetSignal.value++
@@ -124,11 +146,9 @@ export async function reset(): Promise<void> {
 
 // 拉取后端设置并填充共享状态
 export async function loadSettings(): Promise<boolean> {
-  const s = api('get_settings')
-  const resolved = s && typeof s.then === 'function' ? await s : s
-  if (!resolved) return false
-  Object.keys(settings).forEach((k) => delete settings[k])
-  Object.assign(settings, resolved)
+  const resolved = await api('get_settings')
+  if (!resolved || typeof resolved.hotkey !== 'string') return false
+  replaceSettings(resolved as SettingsData)
   dirty.value = false
   return true
 }
@@ -137,6 +157,6 @@ export async function loadSettings(): Promise<boolean> {
 export async function loadProjection(): Promise<void> {
   const snapshot = await loadPluginUI()
   for (const contribution of snapshot.contributions) {
-    pluginUILabels[(contribution as any).screen] = (contribution as any).label
+    pluginUILabels[contribution.screen] = contribution.label
   }
 }

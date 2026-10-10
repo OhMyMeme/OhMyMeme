@@ -1,6 +1,6 @@
 <script setup lang="ts">
-import { ref, onMounted } from 'vue'
-import { NModal, NButton, useDialog } from 'naive-ui'
+import { ref, onMounted, onUnmounted } from 'vue'
+import { NModal, NButton, NProgress, useDialog } from 'naive-ui'
 import { api } from '../../shared/bridge'
 import { showToast } from '../../shared/store'
 
@@ -54,8 +54,7 @@ async function showConfirm(title: string, content: string): Promise<boolean> {
 
 // 拉取备份目录与列表
 async function loadBackupInfo() {
-  const p = api('backup_get_info')
-  const info = p && typeof p.then === 'function' ? await p : p
+  const info = await api('backup_get_info')
   if (!info || !info.ok) return
   directory.value = info.directory
   custom.value = !!info.custom
@@ -65,16 +64,14 @@ async function loadBackupInfo() {
 // 删除指定备份文件
 async function delBackup(file: any) {
   if (!await showConfirm('删除备份', '确定删除 ' + file.name + '？')) return
-  const p = api('backup_delete', file.name)
-  const r = p && typeof p.then === 'function' ? await p : p
+  const r = await api('backup_delete', file.name)
   if (!r || !r.ok) { showToast((r && r.error) || '删除失败'); return }
   loadBackupInfo()
 }
 
 // 选择备份目录
 async function pickBackupDir() {
-  const p = api('backup_pick_dir')
-  const r = p && typeof p.then === 'function' ? await p : p
+  const r = await api('backup_pick_dir')
   if (!r || !r.ok) {
     if (!(r && r.cancelled)) showToast((r && r.error) || '选择备份目录失败')
     return
@@ -84,20 +81,17 @@ async function pickBackupDir() {
 
 // 开始备份
 async function startBackupCreate() {
-  const p = api('backup_create')
-  const r = p && typeof p.then === 'function' ? await p : p
+  const r = await api('backup_create')
   if (!r || !r.ok) { showToast((r && r.error) || '无法开始备份'); return }
   showBackupProgress('备份中…')
 }
 
-// 从备份 ZIP 恢复
+// 从备份 ZIP 恢复（仅空库，后端落库前复核）
 async function startBackupRestore() {
-  const sp = api('backup_pick_zip')
-  const selected = sp && typeof sp.then === 'function' ? await sp : sp
+  const selected = await api('backup_pick_zip')
   if (!selected || !selected.ok) return
   if (!await showConfirm('恢复备份', '确定从此 ZIP 恢复？仅支持空库，恢复后保留标签、收藏和分组。')) return
-  const p = api('backup_restore', selected.path)
-  const r = p && typeof p.then === 'function' ? await p : p
+  const r = await api('backup_restore', selected.path)
   if (!r || !r.ok) { showToast((r && r.error) || '无法开始恢复'); return }
   showBackupProgress('恢复中…')
 }
@@ -111,8 +105,7 @@ function showBackupProgress(title: string) {
   showProgress.value = true
   if (pollTimer) clearInterval(pollTimer)
   pollTimer = setInterval(async () => {
-    const p = api('backup_progress')
-    const state = p && typeof p.then === 'function' ? await p : p
+    const state = await api('backup_progress')
     if (!state) return
     progress.value = state.progress || 0
     if (!['done', 'error', 'cancelled'].includes(state.status)) return
@@ -135,22 +128,25 @@ function closeBackupProgress() {
 onMounted(() => {
   loadBackupInfo()
 })
+onUnmounted(() => {
+  if (pollTimer) clearInterval(pollTimer)
+})
 </script>
 
 <template>
   <div class="section">
     <div class="section-title">备份</div>
     <p style="font-size:11.5px;color:var(--muted);margin-bottom:10px;line-height:1.6">备份包含全部表情原图与数据库（标签、收藏、分组、排序随库保留），用于 PC 间迁移。不包含缩略图（恢复后自动重建）与应用设置。</p>
-    <div style="font-size:11.5px;color:var(--muted);margin-bottom:8px;word-break:break-all">备份目录：<span>{{ directory }}</span><span v-if="custom" class="immediate-hint" style="margin-left:6px">自定义</span></div>
+    <div style="font-size:11.5px;color:var(--muted);margin-bottom:8px;word-break:break-all">备份目录：<span id="backup-dir">{{ directory }}</span><span v-if="custom" class="immediate-hint" style="margin-left:6px">自定义</span></div>
     <div style="display:flex;gap:8px;margin-bottom:8px">
-      <button class="btn btn-secondary btn-sm btn-flex" @click="pickBackupDir">选择备份目录</button>
-      <button class="btn btn-primary btn-sm btn-flex" @click="startBackupCreate">立即备份</button>
+      <NButton size="small" style="flex:1" @click="pickBackupDir">选择备份目录</NButton>
+      <NButton size="small" type="primary" style="flex:1" @click="startBackupCreate">立即备份</NButton>
     </div>
     <div class="section-title" style="margin-top:6px">备份列表</div>
-    <div style="display:flex;flex-direction:column;gap:6px">
+    <div id="backup-list" style="display:flex;flex-direction:column;gap:6px">
       <div v-for="file in backups" :key="file.name" style="display:flex;gap:8px;align-items:center">
         <span style="flex:1;word-break:break-all;font-size:12px">{{ file.name }} · {{ formatSize(file.size) }}</span>
-        <button class="btn btn-danger-outline btn-sm" @click="delBackup(file)">删除</button>
+        <NButton size="small" type="error" tertiary @click="delBackup(file)">删除</NButton>
       </div>
       <span v-if="!backups.length">暂无备份</span>
     </div>
@@ -158,8 +154,8 @@ onMounted(() => {
   <div class="section">
     <div class="section-title">恢复</div>
     <p style="font-size:11.5px;color:var(--muted);margin-bottom:10px;line-height:1.6">从备份 ZIP 恢复到本机。<b style="color:var(--danger)">仅允许在数据库为空时进行</b>（例如新设备首次使用），已有数据的库会被拒绝、不会覆盖。恢复完成后请重启应用。</p>
-    <button class="btn btn-secondary btn-sm btn-flex" @click="startBackupRestore">从备份 ZIP 恢复…</button>
-    <div style="font-size:11.5px;color:var(--muted);margin-top:6px">{{ restoreStatus }}</div>
+    <NButton size="small" style="flex:1" @click="startBackupRestore">从备份 ZIP 恢复…</NButton>
+    <div id="backup-restore-status" style="font-size:11.5px;color:var(--muted);margin-top:6px">{{ restoreStatus }}</div>
   </div>
 
   <NModal
@@ -173,10 +169,8 @@ onMounted(() => {
   >
     <div style="text-align:center">
       <div style="font-size:12px;color:var(--fg-secondary);margin-bottom:12px;word-break:break-all">{{ progressText }}</div>
-      <div style="width:100%;height:8px;background:var(--bg);border-radius:4px;overflow:hidden;margin-bottom:6px">
-        <div :style="{ width: progress + '%', height: '100%', background: 'var(--accent)', borderRadius: '4px', transition: 'width .3s' }"></div>
-      </div>
-      <div style="font-size:11.5px;color:var(--muted);margin-bottom:16px">{{ progress + '%' }}</div>
+      <NProgress type="line" :percentage="progress" :show-indicator="false" :height="8" />
+      <div style="font-size:11.5px;color:var(--muted);margin-top:6px;margin-bottom:16px">{{ progress + '%' }}</div>
     </div>
     <template #footer>
       <div v-if="!backupRunning" style="text-align:center">

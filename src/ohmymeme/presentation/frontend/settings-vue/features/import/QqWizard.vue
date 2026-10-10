@@ -1,13 +1,12 @@
 <script setup lang="ts">
 import { ref, onUnmounted } from 'vue'
-import { NModal } from 'naive-ui'
+import { NModal, NButton, NProgress } from 'naive-ui'
 import { api } from '../../shared/bridge'
 import { showToast } from '../../shared/store'
 
-// 解包桥接返回值（可能为 Promise 或同步值）
-async function call(method: string, ...args: any[]): Promise<any> {
-  const p = api(method, ...args)
-  return p && typeof p.then === 'function' ? await p : p
+// 解包桥接返回值（api 可能返回 Promise 或同步值）
+async function call(method: string, ...args: unknown[]): Promise<any> {
+  return await api(method, ...args)
 }
 
 // 覆盖层显隐
@@ -158,18 +157,16 @@ defineExpose({ open })
     <div style="background:var(--surface);border-radius:var(--radius-lg);padding:24px 28px;width:400px;border:1px solid var(--border);box-shadow:var(--shadow-lg);text-align:center">
       <div style="font-size:14px;font-weight:600;color:var(--fg);margin-bottom:4px">{{ title }}</div>
       <div style="font-size:12px;color:var(--fg-secondary);margin-bottom:12px;word-break:break-all">{{ message }}</div>
-      <div v-if="showBar" style="width:100%;height:8px;background:var(--bg);border-radius:4px;overflow:hidden;margin-bottom:6px">
-        <div :style="{ width: pct + '%', height: '100%', background: 'var(--accent)', borderRadius: '4px', transition: 'width .3s' }"></div>
-      </div>
-      <div v-if="pctText !== ''" style="font-size:11.5px;color:var(--muted);margin-bottom:16px"><span>{{ pctText }}</span></div>
+      <NProgress v-if="showBar" type="line" :percentage="pct" :show-indicator="false" :height="8" />
+      <div v-if="pctText !== ''" style="font-size:11.5px;color:var(--muted);margin-top:6px;margin-bottom:16px"><span>{{ pctText }}</span></div>
       <div v-else style="margin-bottom:16px"></div>
-      <button v-if="showSave" class="btn btn-primary" :disabled="saveBusy" @click="saveZip">{{ saveBusy ? '保存中...' : '选择保存位置' }}</button>
+      <NButton v-if="showSave" type="primary" :loading="saveBusy" @click="saveZip">选择保存位置</NButton>
       <div v-if="showAfterSave" style="margin-top:8px">
         <p style="font-size:12px;color:var(--fg-secondary);margin-bottom:12px;line-height:1.6">请从 ZIP 中筛选需要的表情包，然后点击下方按钮导入</p>
-        <button class="btn btn-primary" style="width:100%" :disabled="importBusy" @click="importFromZip">{{ importBusy ? '导入中...' : '选择文件导入' }}</button>
+        <NButton type="primary" style="width:100%" :loading="importBusy" @click="importFromZip">选择文件导入</NButton>
       </div>
-      <button v-if="showHelp" class="btn btn-ghost btn-sm" @click="openADBHelp">不知道怎么办？</button>
-      <button class="btn btn-secondary btn-sm" @click="close">关闭</button>
+      <NButton v-if="showHelp" quaternary size="small" @click="openADBHelp">不知道怎么办？</NButton>
+      <NButton size="small" @click="close">关闭</NButton>
       <div v-if="error" style="font-size:12px;color:var(--danger);margin-top:8px">{{ error }}</div>
     </div>
   </NModal>
