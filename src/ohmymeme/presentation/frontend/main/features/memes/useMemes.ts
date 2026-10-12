@@ -40,6 +40,16 @@ type WindowDemand = {
   promise: Promise<boolean>
 }
 
+// pin 令牌：区分冻结提交与扩展许可（释放幂等，且不跨代次操作新集合）
+type PinToken = {
+  kind: 'freeze' | 'extension'
+  life: number
+  released: boolean
+}
+
+// 提交模式：extension 只允许相邻连续扩展（禁止远跳接管与预算裁剪）
+type PinMode = 'normal' | 'extension'
+
 const state = reactive({
   collections: [] as any[],
   activeCollection: null as number | null,
@@ -77,7 +87,10 @@ let collectionsRetryCount = 0
 let activeDemand: WindowDemand | null = null
 // pin 期间暂缓的提交（只保留当前代次的最新需求）
 let deferredCommit: WindowDemand | null = null
-let pinCount = 0
+// 冻结 pin 集合：settle 一律暂缓提交（S2 pin 语义）
+const freezePins = new Set<PinToken>()
+// 扩展 pin 集合：允许相邻连续补页立即提交，禁止裁剪与远跳接管
+const extensionPins = new Set<PinToken>()
 let lastFailed: { demand: WindowDemand; refreshCount: boolean } | null = null
 let lastSpec: { targetLo: number; targetHi: number; direction: CacheDirection } | null = null
 // 同 offset 代次+查询+页的在途请求：并发需求复用同一 Promise
@@ -228,6 +241,27 @@ export function useMemes() {
     state.rangeLoading = !!activeDemand
   }
 
+  // 是否存在冻结 pin（冻结优先于扩展 pin）
+  function anyFreezePin(): boolean {
+    return freezePins.size > 0
+  }
+
+  // 是否处于扩展许可：无冻结 pin 且有扩展 pin
+  function extensionActive(): boolean {
+    return freezePins.size === 0 && extensionPins.size > 0
+  }
+
+  // 是否存在任意 pin（缓存命中裁剪只在完全无 pin 时恢复预算）
+  function anyPin(): boolean {
+    return freezePins.size > 0 || extensionPins.size > 0
+  }
+
+  // 使全部 pin 令牌失效（查询/初始化接管/总数漂移/dispose）：旧 release 不得触碰新集合
+  function invalidatePins() {
+    freezePins.clear()
+    extensionPins.clear()
+  }
+
   // 撤销当前活动需求（旧结果不得提交）
   function supersedeDemand() {
     const demand = activeDemand
@@ -313,22 +347,13 @@ export function useMemes() {
       demand.resolve(false)
       return
     }
-    if (pinCount > 0) {
+    // 冻结 pin 一律暂缓（扩展 pin 不改变冻结语义）：只保留当前代次最新需求
+    if (anyFreezePin()) {
       deferredCommit = demand
       demand.resolve(true)
       return
     }
-    const { ok, drift } = applyDemand(demand)
-    if (ok) {
-      state.loadError = false
-      lastFailed = null
-      clearRetry()
-      demand.resolve(true)
-      return
-    }
-    lastFailed = { demand, refreshCount: drift }
-    demand.resolve(false)
-    scheduleRetry(() => { void replayDemand(demand, drift) })
+    demand.resolve(commitDemand(demand, extensionActive() ? 'extension' : 'normal'))
   }
 
   // 重放失败需求（不经过 public search，不清选择、不推进查询代次）
@@ -348,8 +373,8 @@ export function useMemes() {
     return issueRange(demand.protectLo, demand.protectHi, demand.direction, { resetRetry: false, snapshot })
   }
 
-  // 扩展提交：头部/尾部只提交从旧边界连续成功的页，再按方向与预算裁剪
-  function applyExtension(demand: WindowDemand): { ok: boolean; drift: boolean } {
+  // 扩展提交：头部/尾部只提交从旧边界连续成功的页，再按方向与预算裁剪（扩展许可下不裁剪）
+  function applyExtension(demand: WindowDemand, allowTrim: boolean): { ok: boolean; drift: boolean } {
     const total = state.total
     const oldLo = state.lo
     const oldHi = state.hi
@@ -395,7 +420,7 @@ export function useMemes() {
     }
     // 结果漂移：本轮不提交，交由重试重读 count
     if (drift) return { ok: false, drift: true }
-    const [wLo, wHi] = trimWindow(lo, hi, demand)
+    const [wLo, wHi] = allowTrim ? trimWindow(lo, hi, demand) : [lo, hi]
     // 组装写入表并检查最终窗口是否密集、id 是否重复（跨页漂移）
     const covers: Array<{ page: number; from: number; to: number; items: Meme[] }> = []
     for (const write of writes) {
@@ -495,41 +520,76 @@ export function useMemes() {
 
   // 提交需求：按最终可用页与已提交窗口的关系重新判定语义（注册类型不再决定提交方式）
   // 合并后的远跳可能已连回旧窗口：此时只能按扩展提交并保留旧记录，绝不能清出孔洞
-  function applyDemand(demand: WindowDemand): { ok: boolean; drift: boolean } {
+  // extension 模式只允许相邻连续扩展：远跳接管被拒绝（blocked）且不做预算裁剪
+  function applyDemand(demand: WindowDemand, mode: PinMode): { ok: boolean; drift: boolean; blocked: boolean } {
     const total = state.total
-    if (!(total > 0)) return { ok: false, drift: false }
+    if (!(total > 0)) return { ok: false, drift: false, blocked: false }
     const { set, drift } = availablePages(demand)
-    if (drift) return { ok: false, drift: true }
+    if (drift) return { ok: false, drift: true, blocked: false }
     // 受保护起点页不可用则本轮无法提交（旧窗口保留），避免把缺口公布成连续窗口
     const startPage = Math.floor(Math.max(0, Math.min(demand.protectLo, total - 1)) / MEME_PAGE)
-    if (!set.has(startPage)) return { ok: false, drift: false }
+    if (!set.has(startPage)) return { ok: false, drift: false, blocked: false }
     let runLo = startPage
     while (set.has(runLo - 1)) runLo--
     let runHi = startPage + 1
     while (set.has(runHi)) runHi++
     const oldPage = { loPage: Math.floor(state.lo / MEME_PAGE), hiPage: Math.ceil(state.hi / MEME_PAGE) }
     if (rangesTouch(oldPage, { loPage: runLo, hiPage: runHi })) {
-      // 与旧窗口相连/重叠：扩展语义（只写缺失页、保留旧记录、按预算裁剪）
-      return applyExtension(demand)
+      // 与旧窗口相连/重叠：扩展语义（只写缺失页、保留旧记录；扩展许可下不裁剪）
+      const { ok, drift: extended } = applyExtension(demand, mode !== 'extension')
+      return { ok, drift: extended, blocked: false }
     }
+    if (mode === 'extension') return { ok: false, drift: false, blocked: true }
     // 远跳串：完整覆盖受保护范围才允许原子接管，否则保留旧窗口等待重试
     const covered = runLo * MEME_PAGE <= demand.protectLo
       && Math.min(runHi * MEME_PAGE, total) >= Math.min(demand.protectHi, total)
-    return covered ? applyJump(demand) : { ok: false, drift: false }
+    if (!covered) return { ok: false, drift: false, blocked: false }
+    const { ok, drift: jumped } = applyJump(demand)
+    return { ok, drift: jumped, blocked: false }
   }
 
-  // 预算裁剪：向视口反方向丢弃整页，受保护范围完整保留
-  function trimWindow(lo: number, hi: number, demand: WindowDemand): [number, number] {
+  // 需求提交：成功清错误与重试；扩展模式下被拒的远跳直接丢弃；失败记录并退避重放
+  function commitDemand(demand: WindowDemand, mode: PinMode): boolean {
+    const { ok, drift, blocked } = applyDemand(demand, mode)
+    if (ok) {
+      state.loadError = false
+      lastFailed = null
+      clearRetry()
+      return true
+    }
+    if (blocked) return false
+    lastFailed = { demand, refreshCount: drift }
+    scheduleRetry(() => { void replayDemand(demand, drift) })
+    return false
+  }
+
+  // 预算裁剪：受保护范围固定完整保留；先按方向从视口反方向释放整页，仍超预算时从另一端继续释放
+  function trimWindow(lo: number, hi: number, hold: { direction: CacheDirection; protectLo: number; protectHi: number }): [number, number] {
     if (hi - lo <= CACHE_BUDGET) return [lo, hi]
+    const protectLo = Math.max(lo, Math.min(hold.protectLo, hi))
+    const protectHi = Math.max(protectLo, Math.min(hold.protectHi, hi))
     let wLo = lo
     let wHi = hi
-    if (demand.direction === 'backward') {
-      wHi = Math.min(hi, Math.max(lo, Math.floor((lo + CACHE_BUDGET) / MEME_PAGE) * MEME_PAGE))
-    } else {
-      wLo = Math.max(lo, Math.min(hi, Math.ceil((hi - CACHE_BUDGET) / MEME_PAGE) * MEME_PAGE))
+    let steps = 0
+    // 单侧被保护范围拉回（如视口回到窗口头部）时，从另一端按页释放直到回到预算或触及保护边界
+    while (wHi - wLo > CACHE_BUDGET && steps < 4096) {
+      steps += 1
+      const trimHead = () => {
+        const next = Math.min(Math.ceil((wLo + 1) / MEME_PAGE) * MEME_PAGE, protectLo)
+        if (next <= wLo) return false
+        wLo = next
+        return true
+      }
+      const trimTail = () => {
+        const next = Math.max(Math.floor((wHi - 1) / MEME_PAGE) * MEME_PAGE, protectHi)
+        if (next >= wHi) return false
+        wHi = next
+        return true
+      }
+      const preferred = hold.direction === 'backward' ? trimTail : trimHead
+      const fallback = hold.direction === 'backward' ? trimHead : trimTail
+      if (!preferred() && !fallback()) break
     }
-    wLo = Math.min(wLo, Math.max(lo, Math.min(demand.protectLo, hi)))
-    wHi = Math.max(wHi, Math.min(hi, demand.protectHi))
     if (wHi <= wLo) return [lo, hi]
     return [wLo, wHi]
   }
@@ -551,6 +611,7 @@ export function useMemes() {
     pageWaiters.clear()
     state.rangeGen += 1
     supersedeDemand()
+    invalidatePins()
     deferredCommit = null
     lastFailed = null
     syncRangeLoading()
@@ -607,6 +668,16 @@ export function useMemes() {
         clearRetry()
         state.rangeGen += 1
         state.loadError = false
+      }
+      // 缓存命中同样恢复预算：无 pin 时按本次视口裁剪超长窗口（扩展 pin 释放后的长拖窗口回收）
+      if (!anyPin() && state.hi - state.lo > CACHE_BUDGET) {
+        const [wLo, wHi] = trimWindow(state.lo, state.hi, { direction, protectLo: qLo, protectHi: qHi })
+        if (wLo > state.lo || wHi < state.hi) {
+          for (let i = state.lo; i < wLo; i++) state.slots[i] = undefined
+          for (let i = Math.max(wHi, state.lo); i < state.hi; i++) state.slots[i] = undefined
+          state.lo = wLo
+          state.hi = wHi
+        }
       }
       return Promise.resolve(true)
     }
@@ -722,6 +793,7 @@ export function useMemes() {
     pageWaiters.clear()
     state.rangeGen += 1
     supersedeDemand()
+    invalidatePins()
     deferredCommit = null
     lastFailed = null
     clearRetry()
@@ -738,6 +810,7 @@ export function useMemes() {
     const life = lifeGen
     clearRetry()
     supersedeDemand()
+    invalidatePins()
     deferredCommit = null
     lastFailed = null
     lastSpec = null
@@ -822,6 +895,7 @@ export function useMemes() {
         pageWaiters.clear()
         state.rangeGen += 1
         supersedeDemand()
+        invalidatePins()
         deferredCommit = null
         lastFailed = null
         clearRetry()
@@ -853,36 +927,47 @@ export function useMemes() {
     return true
   }
 
-  // 暂缓页接管/裁剪（活动可见排序期间）；返回幂等的释放函数
-  function pinLoadedRange(): () => void {
-    pinCount += 1
-    const life = lifeGen
-    let released = false
+  // 释放冻结 pin 后提交暂缓需求（代次失效则丢弃；扩展许可下禁止远跳接管）
+  function applyDeferredCommit() {
+    const demand = deferredCommit
+    deferredCommit = null
+    if (!demand || demand.life !== lifeGen) return
+    const stale = demand.gen !== state.rangeGen
+      || demand.epoch !== pageEpoch
+      || demand.queryGen !== state.queryGen
+      || !snapshotMatchesCurrent(demand.snapshot)
+    if (stale) return
+    commitDemand(demand, extensionActive() ? 'extension' : 'normal')
+  }
+
+  // 申请窗口 pin：缺省冻结提交；allowExtension 允许相邻连续补页立即提交（拖拽扩展期间）
+  function pinLoadedRange(options?: { allowExtension?: boolean }): () => void {
+    const kind: 'freeze' | 'extension' = options?.allowExtension ? 'extension' : 'freeze'
+    const token: PinToken = { kind, life: lifeGen, released: false }
+    if (kind === 'freeze') freezePins.add(token)
+    else extensionPins.add(token)
     return () => {
-      if (released) return
-      released = true
-      // 先验证生命周期：旧 release 不得改动新生命周期的 pin 计数与暂缓提交
-      if (disposed || life !== lifeGen) return
-      pinCount = Math.max(0, pinCount - 1)
-      if (pinCount > 0) return
-      const demand = deferredCommit
-      deferredCommit = null
-      if (!demand || demand.life !== lifeGen) return
-      const stale = demand.gen !== state.rangeGen
-        || demand.epoch !== pageEpoch
-        || demand.queryGen !== state.queryGen
-        || !snapshotMatchesCurrent(demand.snapshot)
-      if (stale) return
-      const { ok, drift } = applyDemand(demand)
-      if (ok) {
-        state.loadError = false
-        lastFailed = null
-        clearRetry()
-        return
-      }
-      lastFailed = { demand, refreshCount: drift }
-      scheduleRetry(() => { void replayDemand(demand, drift) })
+      if (token.released) return
+      token.released = true
+      // 失效或已清理的 token 不属于当前集合：只标记释放，不触碰新会话
+      const held = kind === 'freeze' ? freezePins.delete(token) : extensionPins.delete(token)
+      if (!held || disposed || token.life !== lifeGen) return
+      if (anyFreezePin()) return
+      // 冻结全部释放：提交暂缓需求（扩展 pin 仍活动时按扩展语义）
+      if (kind === 'freeze') applyDeferredCommit()
     }
+  }
+
+  // 失效在途页需求（拖拽保存前调用）：推进页/窗口代次并清等待、暂缓、失败与重试，不动数据与选择
+  function invalidateRangeRequests() {
+    clearRetry()
+    supersedeDemand()
+    deferredCommit = null
+    lastFailed = null
+    lastSpec = null
+    pageEpoch += 1
+    pageWaiters.clear()
+    state.rangeGen += 1
   }
 
   // 卸载清理：清计时器、使在途请求过期（桥接无 Abort，只丢弃过期结果）
@@ -900,7 +985,7 @@ export function useMemes() {
     supersedeDemand()
     deferredCommit = null
     lastFailed = null
-    pinCount = 0
+    invalidatePins()
     selectAllBusy = false
     state.queryGen += 1
     state.rangeGen += 1
@@ -1013,6 +1098,7 @@ export function useMemes() {
     setLoadedSlice,
     retryRange,
     pinLoadedRange,
+    invalidateRangeRequests,
     dispose,
     setSearch,
     toggleTag,

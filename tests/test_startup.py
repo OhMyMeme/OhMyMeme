@@ -611,15 +611,19 @@ def test_vue_main_window_feature_layout_static_contract():
 
 
 def test_sorting_visual_feedback_static_contract():
-    # 现用主窗口前端为 Vue：排序/多选语义读取 MainWindow.vue/useMemes.ts/useDragSort.ts/style.css
+    # 现用主窗口前端为 Vue：排序/框选语义读取 MainWindow.vue/useMemes.ts/useDragSort.ts/gridInteraction.ts/style.css
     root = Path(__file__).resolve().parent.parent
     main = root / "src" / "ohmymeme" / "presentation" / "frontend" / "main"
     style_css = (main / "app" / "style.css").read_text(encoding="utf-8")
     main_window = (main / "app" / "MainWindow.vue").read_text(encoding="utf-8")
+    main_ts = (main / "app" / "main.ts").read_text(encoding="utf-8")
     use_memes = (main / "features" / "memes" / "useMemes.ts").read_text(
         encoding="utf-8"
     )
     use_drag = (main / "features" / "sorting" / "useDragSort.ts").read_text(
+        encoding="utf-8"
+    )
+    grid_interaction = (main / "features" / "sorting" / "gridInteraction.ts").read_text(
         encoding="utf-8"
     )
 
@@ -714,32 +718,41 @@ def test_sorting_visual_feedback_static_contract():
     assert main_window.index("<Virtualizer") < main_window.index('name="meme-list"')
     assert re.search(r'<TransitionGroup\s+:key="row\.key"', main_window)
 
-    # 拖拽原位缩放 0.90；不得叠加 scale
+    # 拖动预览在引擎内固定 scale(0.90)；不得叠加 scale
     assert re.search(r"scale\(0\.90\)", use_drag)
     assert not re.search(r"scale\([^)]*\)\s+scale\(", use_drag)
-    assert "slotOrigin" in use_drag
 
-    # 网格几何：无变换布局尺寸 + 计算 padding + 客户端宽度
-    assert "offsetWidth" in use_drag
-    assert "offsetHeight" in use_drag, (
+    # 全局槽位与原点数学在纯 helper：不读 DOM、不做 DOM 卡数 clamp
+    assert "slotOrigin" in grid_interaction
+    assert "slotOrigin(" in main_window, (
+        "visible-card FLIP must use the untransformed slot origin"
+    )
+    assert "getBoundingClientRect" not in grid_interaction
+    assert "querySelectorAll" not in grid_interaction
+
+    # 网格几何：由 MainWindow 采集未变换布局尺寸与客户区（scale 不进入槽位数学）
+    assert "offsetWidth" in main_window
+    assert "offsetHeight" in main_window, (
         "grid slot geometry must use untransformed layout dimensions so sorting scale "
         "cannot shift drag insertion slots"
     )
-    assert re.search(r"getComputedStyle\(\s*grid\s*\)", use_drag)
-    assert re.search(r"padding(?:Left|Right)", use_drag)
-    assert re.search(r"grid\.clientWidth\s*-\s*paddingLeft", use_drag)
+    assert re.search(r"getComputedStyle\(\s*wrap\s*\)", main_window)
+    assert re.search(r"getComputedStyle\(\s*grid\s*\)", main_window)
+    assert re.search(r"wrap\.clientWidth", main_window)
+    assert re.search(r"startMargin\.value\s*-\s*wrap\.scrollTop", main_window)
 
     grid_slot = re.search(
-        r"function gridSlotIndex\([^)]*\)\s*\{(?P<body>.*?)\n\}",
-        use_drag,
+        r"export function gridSlotIndex\([^)]*\)[^{]*\{(?P<body>.*?)\n\}",
+        grid_interaction,
         re.DOTALL,
     )
     assert grid_slot, "grid slot index must remain locally inspectable"
     grid_slot_body = grid_slot.group("body")
-    assert "originX" in use_drag and "originY" in use_drag
-    assert re.search(r"x\s*-\s*m\.originX", grid_slot_body)
-    assert re.search(r"y\s*-\s*m\.originY", grid_slot_body)
-    assert not re.search(r"gRect\.(?:left|top)", grid_slot_body)
+    assert re.search(r"clientX\s*-\s*originX", grid_slot_body)
+    assert re.search(r"clientY\s*-\s*originY", grid_slot_body)
+    assert re.search(r"row\s*\*\s*cols\s*\+\s*col", grid_slot_body)
+    assert "return null" in grid_slot_body
+    assert "querySelectorAll" not in grid_slot_body
 
     # 持久化：分组内走 reorder_collection_members；全部/未分类走 reorder_memes
     assert re.search(r"reorder_collection_members", use_memes)
@@ -749,6 +762,11 @@ def test_sorting_visual_feedback_static_contract():
         use_memes,
     )
     assert re.search(r"persistFn\(ids\)", use_drag)
+    # 提交取自扩展后的完整连续窗口，且保存期间冻结事件与分页（不可变副本）
+    assert re.search(r"getWindow\(\)\.items\.map", use_drag)
+    assert "freezeForPersist" in use_drag
+    assert "invalidateRequests" in use_drag
+    assert "dragState.saving" in use_drag
 
     # 排序资格：搜索/标签禁用；全部/未分类/正 ID 可排
     assert re.search(r"q\s*\|\|\s*state\.activeTags\.size\s*>\s*0", use_memes)
@@ -759,14 +777,16 @@ def test_sorting_visual_feedback_static_contract():
         use_memes,
     )
 
-    # MainWindow 绑定：sort-enabled 仅在可排序时启用；整理模式点选/拖拽合并；复制被整理模式守卫
+    # MainWindow 绑定：sort-enabled 仅在可排序时启用；整理模式点选/拖拽/框选合并；复制被整理模式守卫
     assert re.search(
         r"'sort-enabled':\s*sortEnabled\s*&&\s*canReorder\(\)", main_window
     )
     assert re.search(r"'select-enabled':\s*sortEnabled", main_window)
-    assert 'class="meme-card folder-card"' in main_window.split("<drag-select", 1)[0]
-    # folder 头块先于虚拟列表起点，且不包含 Virtualizer
+    # folder 头块先于虚拟列表起点，且不包含 Virtualizer；依赖库已彻底移除
+    assert 'class="meme-card folder-card"' in main_window.split("<Virtualizer", 1)[0]
     assert main_window.index("folder-grid") < main_window.index("<Virtualizer")
+    assert "drag-select" not in main_window
+    assert "drag-select" not in main_ts
     toggle_sort = re.search(
         r"function toggleSort\(\)\s*\{(?P<body>.*?)\n\}", main_window, re.DOTALL
     )
@@ -775,6 +795,17 @@ def test_sorting_visual_feedback_static_contract():
     assert re.search(r"if\s*\(sortEnabled\.value\)\s*return", main_window)
     assert re.search(r"function onCardClick\(meme: Meme\)", main_window)
     assert re.search(r"function toggleSelected\(id: number\)", main_window)
+    # ESC 优先级：LAN 确认 → 右键菜单 → 活动框选/排序手势（第一次不退出整理）→ 退出整理 → 隐藏窗口
+    esc = re.search(
+        r"function onDocKeydown\(e: KeyboardEvent\)\s*\{(?P<body>.*?)\n\}",
+        main_window,
+        re.DOTALL,
+    )
+    assert esc, "ESC ordering must remain locally inspectable"
+    esc_body = esc.group("body")
+    assert esc_body.index("lanConfirmVisible") < esc_body.index("ctx.visible")
+    assert esc_body.index("marqueeSession") < esc_body.index("sortEnabled.value")
+    assert esc_body.index("drag.dragState.active") < esc_body.index("sortEnabled.value")
 
 
 def test_virtual_meme_grid_static_contract():
@@ -803,17 +834,20 @@ def test_virtual_meme_grid_static_contract():
     assert re.search(r'<TransitionGroup\s+:key="row\.key"', virtualizer)
     assert ':data-row-start="row.start"' in virtualizer
 
-    # 未加载槽位生成同尺寸静态骨架：行内 template v-for 按「真卡 Meme.id / 骨架槽位」分键，无 img/事件/真实 id/option
+    # 未加载槽位生成同尺寸静态骨架：行内 template v-for 按「真卡 Meme.id / 骨架槽位」分键，无 img/事件/真实 id
     assert re.search(
         r'<template v-for="entry in rowSlots\(row\)" :key="entry\.meme \? \'m\' \+ entry\.meme\.id : \'s\' \+ entry\.index">',
         virtualizer,
     )
-    assert '<drag-select-option v-if="entry.meme" :value="entry.meme.id"' in virtualizer
+    # 真卡直接作为虚拟行 grid 子项（不再包依赖库 option），保留槽位/模型 id 与整理模式 aria
+    assert re.search(r'<div\s+v-if="entry\.meme"\s+class="meme-card"', virtualizer)
+    assert ':data-slot-index="entry.index"' in virtualizer
+    assert ':data-meme-id="entry.meme.id"' in virtualizer
+    assert ':aria-pressed="sortEnabled ? state.selectedIds.has(entry.meme.id) : undefined"' in virtualizer
     assert '<div v-else class="meme-card skeleton" aria-hidden="true"></div>' in virtualizer
     assert re.search(r"\.meme-card\.skeleton\s*\{", style_css)
 
-    # 真卡仍是原 drag-select-option + 原事件/图片/名称/徽标
-    assert '<drag-select-option v-if="entry.meme"' in virtualizer
+    # 真卡保留原事件/图片/名称/徽标
     for token in (
         "onCardClick",
         "onMemeRightClick",
@@ -824,6 +858,10 @@ def test_virtual_meme_grid_static_contract():
         "meme-name",
     ):
         assert token in virtualizer
+    assert "drag-select" not in virtualizer
+    # 仅为 registry 重挂保存的 cache 与 selectionEpoch 已随依赖库移除
+    assert ":cache=" not in virtualizer
+    assert "selectionEpoch" not in main_window
 
     # footer：共 N 项 + 加载/失败状态位 + aria-live
     assert 'class="grid-foot" aria-live="polite"' in main_window
@@ -859,8 +897,162 @@ def test_virtual_meme_grid_static_contract():
     assert "setLoadedSlice(" in main_window
     assert "ensureRange(" in main_window
     assert "pinLoadedRange()" in main_window
+    assert "pinLoadedRange({ allowExtension: true })" in main_window
+    assert "invalidateRangeRequests" in main_window
     assert "state.queryGen" in main_window
-    assert "state.rangeGen" in main_window
+    assert "browseKey" in main_window
+    # 拖拽失效判据不依赖普通补页推进的 rangeGen：扩展 pin 生命周期只由查询/布局/浏览键/总数约束
+    assert "state.rangeGen" not in main_window
+
+
+def test_visible_marquee_static_contract():
+    # 自研可见区框选：无依赖库 import/注册/option metrics/registry 残留；
+    # 空白入口、overlay、快照 XOR、取消路径与键盘替代可静态检查（不在 Python 里模拟浏览器布局）
+    root = Path(__file__).resolve().parent.parent
+    main = root / "src" / "ohmymeme" / "presentation" / "frontend" / "main"
+    main_window = (main / "app" / "MainWindow.vue").read_text(encoding="utf-8")
+    main_ts = (main / "app" / "main.ts").read_text(encoding="utf-8")
+    style_css = (main / "app" / "style.css").read_text(encoding="utf-8")
+    grid_interaction = (main / "features" / "sorting" / "gridInteraction.ts").read_text(
+        encoding="utf-8"
+    )
+
+    # 依赖库彻底移除：无 import、无注册、无 option metrics / registry 残留
+    assert "vue-drag-select" not in main_ts
+    assert "VueDragSelect" not in main_ts
+    assert "drag-select" not in main_ts
+    for removed in (
+        "dragSelectRef",
+        "drag-select-option",
+        "installOptionMetrics",
+        "optionMetricsInstalled",
+        "selectionEpoch",
+        "mountedRealCardFingerprint",
+        "maybeResetSelectionRegistry",
+        "flushPendingWork",
+        "onBoxSelection",
+        "boxSelecting",
+        "dragSelectDisabled",
+        "virtualCache",
+        "SCROLL_END_CLEANUP_DELAY",
+    ):
+        assert removed not in main_window
+    assert ".drag-select-option" not in style_css
+
+    # 框选数学由纯 helper 提供，MainWindow 只组合（不扫描 slots 全库、不用 index 造选项）
+    for helper in ("normalizeMarqueeRect", "rectIntersects", "applyMarqueeSelection"):
+        assert helper in grid_interaction
+    assert "normalizeMarqueeRect(" in main_window
+    assert "rectIntersects(" in main_window
+    assert "applyMarqueeSelection(" in main_window
+
+    # 空白起手入口与会话处理
+    assert '@pointerdown="onGridBlankPointerDown"' in main_window
+    assert "function onGridBlankPointerDown(" in main_window
+    assert "function onMarqueePointerMove(" in main_window
+    assert "function onMarqueePointerUp(" in main_window
+    assert "MARQUEE_THRESHOLD = 8" in main_window
+
+    # overlay：独立固定层、不接收指针、无 tabindex、aria-hidden
+    overlay = re.search(r"\.marquee-overlay\s*\{(?:(?!\}).)*?\}", style_css, re.DOTALL)
+    assert overlay, "marquee overlay styles must remain locally inspectable"
+    overlay_body = overlay.group(0)
+    assert re.search(r"position\s*:\s*fixed", overlay_body)
+    assert re.search(r"pointer-events\s*:\s*none", overlay_body)
+    assert re.search(r"z-index\s*:\s*15", overlay_body)
+    assert re.search(r"background\s*:\s*var\(--blue-a3\)", overlay_body)
+    assert 'class="marquee-overlay"' in main_window
+    assert 'aria-hidden="true"' in main_window
+
+    # 快照 XOR / 单帧命中 / 骨架排除 / 取消回滚
+    assert "baseSelected" in main_window
+    assert "marqueeSessionValid(" in main_window
+    assert "scheduleMarqueeFrame(" in main_window
+    assert "cancelMarquee(" in main_window
+    assert "pointHitsSkeleton(" in main_window
+    # 工具栏统一忙碌态：活动框选/排序期间禁用全选/取消选择/批量删除
+    assert "interactionBusy" in main_window
+    # 滚动取消与手势仲裁（卡片起手不画框、框选不抢卡片 click）
+    assert re.search(r"if\s*\(marqueeSession\)\s*cancelMarquee\('scroll'\)", main_window)
+    assert re.search(r"if\s*\(marqueeSession\)\s*return", main_window)
+    # 键盘替代：Enter/Space 勾选与工具栏按钮保持
+    assert "function toggleSelected(id: number)" in main_window
+    assert "全选" in main_window
+    assert "batchDelete" in main_window
+
+
+def test_drag_autoscroll_static_contract():
+    # 拖拽引擎静态契约：单 rAF pump、稳定容器捕获、全局槽位/挂载真卡门禁、
+    # 扩展 pin、整段提交与 saving 隔离；验证路径接线，不声称静态断言证明滚动体验
+    root = Path(__file__).resolve().parent.parent
+    main = root / "src" / "ohmymeme" / "presentation" / "frontend" / "main"
+    main_window = (main / "app" / "MainWindow.vue").read_text(encoding="utf-8")
+    style_css = (main / "app" / "style.css").read_text(encoding="utf-8")
+    use_drag = (main / "features" / "sorting" / "useDragSort.ts").read_text(
+        encoding="utf-8"
+    )
+    grid_interaction = (main / "features" / "sorting" / "gridInteraction.ts").read_text(
+        encoding="utf-8"
+    )
+
+    # 单 rAF pump：自排队、结束/取消取消帧、dt clamp 32ms
+    assert "function frameStep(" in use_drag
+    assert "requestAnimationFrame(next => frameStep(s, next))" in use_drag
+    assert "cancelAnimationFrame(" in use_drag
+    assert "FRAME_MS = 32" in use_drag
+    assert re.search(r"Math\.min\(FRAME_MS", use_drag)
+    # 速度曲线与阈值来自纯 helper（64px 触发区、±800px/s 二次曲线，上下对称）
+    assert "edgeScrollVelocity(" in use_drag
+    assert "export function edgeScrollVelocity(" in grid_interaction
+    assert re.search(r"EDGE_ZONE_MAX\s*=\s*64", grid_interaction)
+    assert re.search(r"EDGE_SPEED_MAX\s*=\s*800", grid_interaction)
+
+    # 稳定容器捕获 + 全局槽位/挂载真卡门禁 + 单飞扩页
+    assert "setPointerCapture(" in use_drag
+    assert "getScrollFrame" in use_drag
+    assert re.search(r"getTarget:\s*getDragTarget", main_window)
+    assert "data-slot-index" in main_window
+    assert "gridSlotIndex(" in main_window
+    assert "loadedScrollFrontier(" in main_window
+    assert "function ensureDragRange(" in main_window
+
+    # 双 pin：扩展许可 + 保存冻结；在途请求失效；saving 门禁拒绝新手势
+    assert "acquireExtensionPin" in use_drag
+    assert "freezeForPersist" in use_drag
+    assert "invalidateRequests" in use_drag
+    assert re.search(r"if\s*\(dragState\.saving \|\| session\)\s*return false", use_drag)
+    assert "pinLoadedRange({ allowExtension: true })" in main_window
+    assert "invalidateRangeRequests" in main_window
+
+    # 结算副作用按原会话上下文门控；丢捕获取消；手势结束补发视口请求；图片禁用原生 HTML5 拖拽
+    assert "contextLive" in use_drag
+    assert "onGridLostPointerCapture" in main_window
+    assert "restoreViewportBudget" in main_window
+    assert 'draggable="false"' in main_window
+    assert "pointerSlotLoadedAfter" in main_window
+
+    # 独立固定预览、原位占位与拖拽期间禁双 FLIP
+    ghost = re.search(r"\.drag-ghost\s*\{(?:(?!\}).)*?\}", style_css, re.DOTALL)
+    assert ghost, "drag ghost styles must remain locally inspectable"
+    assert re.search(r"position\s*:\s*fixed", ghost.group(0))
+    assert re.search(r"pointer-events\s*:\s*none", ghost.group(0))
+    assert "drag-placeholder" in style_css and "drag-placeholder" in main_window
+    assert "meme-list-move-disabled" in style_css
+    assert re.search(r"prefers-reduced-motion\s*:\s*reduce", style_css)
+
+    # S2 临时适配彻底移除（无 live-card / deltaY / 可见段剪裁 / 保存标志残留）
+    for removed in (
+        "deltaY",
+        "liveCard",
+        "createLiveCard",
+        "collectMountedSegment",
+        "insideVisibleSegment",
+        "normalizePointerEvent",
+        "visibleDragSession",
+        "persistInFlight",
+    ):
+        assert removed not in use_drag
+        assert removed not in main_window
 
 
 def test_grid_slot_hit_testing_stays_aligned_when_layout_moves_and_scrolls():

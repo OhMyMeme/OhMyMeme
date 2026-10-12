@@ -156,7 +156,8 @@ OhMyMeme/
 │   │   │       │   │   │   ├── Pager.vue
 │   │   │       │   │   │   └── useMemes.ts
 │   │   │       │   │   ├── sorting/                  整理模式
-│   │   │       │   │   │   └── useDragSort.ts
+│   │   │       │   │   │   ├── gridInteraction.ts    框选矩形/槽位换算/速度曲线/落点顺序纯函数
+│   │   │       │   │   │   └── useDragSort.ts        整理拖拽引擎（全局槽位/自动滚动/持久化门禁）
 │   │   │       │   │   ├── sync/                     同步进度
 │   │   │       │   │   │   └── SyncOverlay.vue
 │   │   │       │   │   ├── tags/                     标签编辑
@@ -238,8 +239,12 @@ OhMyMeme/
 │   │   └── test_desktop_bottle_security.py           Bottle 安全边界
 │   ├── protocol/
 │   │   └── test_lan_v1_protocol.py                   LAN v1 协议 oracle
+│   ├── frontend/                                     Vitest 前端契约（jsdom）
+│   │   ├── grid_interaction.test.ts                  gridInteraction 纯函数（框选/槽位/速度/落点顺序）
+│   │   ├── main_window_virtual.test.ts               MainWindow 虚拟网格拖拽与框选接线桩
+│   │   └── meme_cache.test.ts                        useMemes 连续缓存模型（分页/裁剪/代次/pin）
 │   ├── fixtures/
-│   │   ├── grid_slot_probe.cjs                       网格拖拽槽位探针
+│   │   ├── grid_slot_probe.cjs                       全局槽位同源探针（读 gridInteraction.ts）
 │   │   ├── lan-v1-oracle.json                        LAN v1 基准数据
 │   │   └── task-17.bin                               二进制测试数据
 │   ├── test_abogus.py                                ABogus、SM3、RC4

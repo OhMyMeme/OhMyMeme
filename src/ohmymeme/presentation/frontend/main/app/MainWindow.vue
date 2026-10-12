@@ -1,8 +1,9 @@
 <script setup lang="ts">
-import { ref, onMounted, onUnmounted, computed, h, watch, nextTick } from 'vue'
+import { ref, reactive, onMounted, onUnmounted, computed, h, watch, nextTick } from 'vue'
 import { Virtualizer } from 'virtua/vue'
 import { useMemes } from '../features/memes/useMemes'
-import { useDragSort } from '../features/sorting/useDragSort'
+import { useDragSort, type DragDirection, type DragDropResult, type PointerSample, type ScrollFrame } from '../features/sorting/useDragSort'
+import { applyMarqueeSelection, gridSlotIndex, normalizeMarqueeRect, rectIntersects, slotOrigin, type GridGeometry, type RectLike } from '../features/sorting/gridInteraction'
 import { useContextMenu, type MenuItem } from '../features/dialogs/useContextMenu'
 import { useCollectionBuilder } from '../features/collections/useCollectionBuilder'
 import ContextMenu from '../features/dialogs/ContextMenu.vue'
@@ -29,7 +30,7 @@ declare global {
   }
 }
 
-const { state, search, ensureRange, slot, loadedSlice, setLoadedSlice, pinLoadedRange, dispose, setSearch, toggleTag, setActiveCollection, refreshTags, refreshCollections, copyMeme, reorderMemes, canReorder, startNativeDrag, selectAll, clearSelection, loadInitData } = useMemes()
+const { state, search, ensureRange, slot, loadedSlice, setLoadedSlice, pinLoadedRange, invalidateRangeRequests, dispose, setSearch, toggleTag, setActiveCollection, refreshTags, refreshCollections, copyMeme, reorderMemes, canReorder, startNativeDrag, selectAll, clearSelection, loadInitData, MEME_PAGE } = useMemes()
 const ctx = useContextMenu()
 const cb = useCollectionBuilder()
 const message = useMessage()
@@ -40,18 +41,15 @@ const MEME_GAP = 10
 const MEME_MIN_WIDTH = 112
 const CARD_FRAME = 28 // 边框 2px×2 + 单行名称（16px 行高 + 上下 padding 12px）
 const RANGE_BUFFER = 200 // 与 Virtualizer bufferSize 一致的视口外缓冲像素
-const SCROLL_END_CLEANUP_DELAY = 120
 
 const gridWrapRef = ref<HTMLElement | null>(null)
 const folderGridRef = ref<HTMLElement | null>(null)
 const virtualizerRef = ref<any>(null)
-const dragSelectRef = ref<any>(null)
 const virtualReady = ref(true)
 const cols = ref(4)
 const cardHeight = ref(0)
 const startMargin = ref(0)
 const layoutKey = ref(0)
-const scrolling = ref(false)
 let layoutEpoch = 0
 let layoutRaf = 0
 let rangeRaf = 0
@@ -136,13 +134,6 @@ const gridStyle = computed(() => ({
 }))
 
 // 虚拟化前提：ResizeObserver 与元素滚动方法（缺失时显示不可用提示，不静默挂库）
-const virtualCache = ref<any>(null)
-const virtualCacheLength = ref(0)
-const virtualCacheForRender = computed(() => {
-  if (!virtualCache.value) return undefined
-  return virtualCacheLength.value === rows.value.length ? virtualCache.value : undefined
-})
-
 function finiteNumber(value: string): number {
   const parsed = parseFloat(value)
   return Number.isFinite(parsed) ? parsed : 0
@@ -201,8 +192,9 @@ function refreshLayout() {
   const layoutChanged = nextCols !== cols.value || nextCardHeight !== cardHeight.value
   const marginChanged = nextStartMargin !== startMargin.value
   if (!layoutChanged && !marginChanged) return
-  // 拖拽期间几何变化：统一取消并回滚（旧坐标/索引全部失效），再按新几何重建
-  if (visibleDragSession) cancelVisibleDrag()
+  // 拖拽/框选期间几何变化：统一取消并回滚（旧坐标/索引全部失效），再按新几何重建
+  if (drag.dragState.memeId != null) cancelGridDrag('layout')
+  if (marqueeSession) cancelMarquee('layout')
   if (layoutChanged && state.total > 0) {
     // 先记录可见位置，再改变列数/卡高重建虚拟izer，nextTick 后恢复
     const anchor = captureScrollAnchor()
@@ -210,13 +202,10 @@ function refreshLayout() {
     cardHeight.value = nextCardHeight
     startMargin.value = nextStartMargin
     layoutEpoch += 1
-    virtualCache.value = null
-    virtualCacheLength.value = 0
     layoutKey.value += 1
     void nextTick(() => {
       restoreScrollAnchor(anchor)
       requestVisibleRange()
-      scheduleSelectionCheck()
       // 新列数/卡高落盘后按新布局校准一次
       scheduleLayoutRefresh()
     })
@@ -252,7 +241,7 @@ function requestVisibleRange() {
 }
 
 function requestVisibleRangeNow() {
-  if (visibleDragSession) return
+  if (drag.dragState.saving) return
   if (state.total === 0) return
   const wrap = gridWrapRef.value
   if (!wrap) return
@@ -283,140 +272,328 @@ function requestVisibleRangeNow() {
   const slotStart = firstRow * width
   const slotEnd = Math.min(state.total, (lastRow + 1) * width)
   if (slotEnd <= slotStart) return
+  if (drag.dragState.active) {
+    // 拖拽中：统一走 ensureDragRange（单飞去重），避免普通视口请求取消预取需求
+    if (slotEnd > state.hi) ensureDragRange('forward')
+    else if (slotStart < state.lo) ensureDragRange('backward')
+    return
+  }
   void ensureRange(slotStart, slotEnd)
 }
 
+// 视口是否仍落在连续已加载路径内（滚动条远跳的取消判据）
+function scrollWithinLoadedPath(): boolean {
+  const wrap = gridWrapRef.value
+  if (!wrap || !(rowPitch.value > 0) || state.hi <= state.lo) return true
+  const width = Math.max(1, cols.value)
+  const firstRow = Math.floor(state.lo / width)
+  const lastRow = Math.ceil(state.hi / width) - 1
+  const contentTop = startMargin.value + firstRow * rowPitch.value
+  const contentBottom = startMargin.value + (lastRow + 1) * rowPitch.value
+  return wrap.scrollTop + wrap.clientHeight > contentTop && wrap.scrollTop < contentBottom
+}
+
 function onVirtualScroll() {
-  scrolling.value = true
-  if (visibleDragSession) cancelVisibleDrag()
+  // 框选期间发生任意滚动立即取消（起手坐标失效，按语义恢复起手快照）
+  if (marqueeSession) cancelMarquee('scroll')
+  if (drag.dragState.memeId != null && !drag.dragState.saving) {
+    // 越出连续已加载路径的远跳立即取消；路径内滚动按最新滚动位置重算目标
+    if (!scrollWithinLoadedPath()) cancelGridDrag('far-scroll')
+    else drag.onScroll()
+  }
   requestVisibleRange()
 }
 
 function onVirtualScrollEnd() {
-  scrolling.value = false
   requestVisibleRange()
-  scheduleSelectionCheck()
 }
 
 function onVirtualResize() {
   requestVisibleRange()
 }
 
-// ── 框选 registry 受控清理（依赖未修改：卸载 option 不会自动出栈，停滚后重挂清理） ──
-const selectionEpoch = ref(0)
-let selectionCheckTimer: ReturnType<typeof setTimeout> | null = null
-let mountedFingerprint = ''
-let pendingSelectionReset = false
+// ── 自研可见区框选：空白起手 + 起手快照 XOR 已挂载真卡（滚动/取消按语义回滚） ──
+// 会话 idle → armed → selecting：>8px 进入 selecting；单帧用「当前矩形 × 起手快照」重算预览，
+// 只命中当前挂载且与模型一致的已加载真卡；滚动立即取消，不做跨视口连续框选与修饰键语义。
 
-// 已挂载真卡指纹（布局代次 + 行 key + 行内真卡 id）；断开节点不计入
-function mountedRealCardFingerprint(): string {
+const MARQUEE_THRESHOLD = 8
+// 旧 WebView 无 PointerEvent 时用 mouse 事件归一成同一会话（两套起手不会同时启动）
+const MOUSE_POINTER_ID = 0
+
+type MarqueeOrigin = 'pointer' | 'mouse'
+
+type MarqueePhase = 'armed' | 'selecting'
+
+type MarqueeSession = {
+  phase: MarqueePhase
+  origin: MarqueeOrigin
+  pointerId: number
+  startX: number
+  startY: number
+  lastX: number
+  lastY: number
+  context: { queryGen: number; browseKey: string; layoutEpoch: number }
+  scrollTop: number
+  baseSelected: Set<number>
+  captured: boolean
+  frame: number
+}
+
+let marqueeSession: MarqueeSession | null = null
+const marqueeBusy = ref(false)
+const marqueeBox = reactive({ active: false, x: 0, y: 0, width: 0, height: 0 })
+
+// 工具栏统一忙碌态：活动框选/排序（含保存）期间禁用全选/取消选择/批量删除
+const interactionBusy = computed(() => marqueeBusy.value || drag.dragState.active || drag.dragState.saving)
+
+// 两个选择集合是否同内容（避免每帧重复赋值）
+function sameSelection(a: Set<number>, b: Set<number>): boolean {
+  if (a.size !== b.size) return false
+  for (const id of a) if (!b.has(id)) return false
+  return true
+}
+
+// 骨架 pointer-events:none：用当前骨架矩形做点命中排除，不能只看 event.target
+function pointHitsSkeleton(clientX: number, clientY: number): boolean {
   const grid = document.getElementById('meme-grid')
-  if (!grid) return ''
-  const parts: string[] = ['l' + layoutEpoch]
-  for (const row of Array.from(grid.querySelectorAll<HTMLElement>('.virtual-meme-row'))) {
-    const ids: string[] = []
-    for (const card of Array.from(row.querySelectorAll<HTMLElement>('.meme-card[data-meme-id]'))) {
-      if (card.isConnected) ids.push(card.dataset.memeId || '')
+  if (!grid) return false
+  for (const card of Array.from(grid.querySelectorAll<HTMLElement>('.meme-card.skeleton'))) {
+    const rect = card.getBoundingClientRect()
+    if (clientX >= rect.left && clientX <= rect.right && clientY >= rect.top && clientY <= rect.bottom) return true
+  }
+  return false
+}
+
+// 起手点校验：有效客户区（排除边框/滚动条/工具栏覆盖区）与网格内容右边界内，且不在骨架矩形上
+function marqueePointAllowed(clientX: number, clientY: number): boolean {
+  const frame = getScrollFrame()
+  if (!frame) return false
+  if (clientX < frame.left || clientX > frame.right || clientY < frame.top || clientY > frame.bottom) return false
+  const geometry = interactionGeometry()
+  if (geometry && clientX > geometry.originX + geometry.cols * geometry.pitchX) return false
+  return !pointHitsSkeleton(clientX, clientY)
+}
+
+// 空白起手资格：仅整理模式、主按钮/主指针、非保存、无现有手势、虚拟化就绪且有数据
+function marqueeStartable(target: EventTarget | null, button: number, isPrimary?: boolean): boolean {
+  if (!sortEnabled.value || !virtualReady.value) return false
+  if (drag.dragState.memeId != null || drag.dragState.saving || marqueeSession) return false
+  if (button !== 0 || isPrimary === false) return false
+  if (state.total <= 0) return false
+  const element = target as HTMLElement | null
+  if (element && typeof element.closest === 'function'
+    && element.closest('.meme-card, .folder-grid, #organize-bar, .grid-foot, #empty, button, a, input, textarea, select, [contenteditable="true"]')) {
+    return false
+  }
+  return true
+}
+
+// 旧 WebView 探测：支持 PointerEvent 时只用 pointer 路径
+function pointerEventsSupported(): boolean {
+  return typeof window !== 'undefined' && typeof window.PointerEvent === 'function'
+}
+
+// 会话校验：查询/浏览键/布局/滚动任一变化即取消（查询变化不恢复旧 Set）
+function marqueeSessionValid(session: MarqueeSession): boolean {
+  if (state.queryGen !== session.context.queryGen) return false
+  if (browseKey.value !== session.context.browseKey) return false
+  if (layoutEpoch !== session.context.layoutEpoch) return false
+  const wrap = gridWrapRef.value
+  if (wrap && wrap.scrollTop !== session.scrollTop) return false
+  return true
+}
+
+// 命中集合：全局槽位窗口（允许一格余量）→ 当前挂载真卡 → 裁入客户区后与框矩形相交（渲染矩形为准）
+function marqueeHits(rect: RectLike): Set<number> {
+  const hits = new Set<number>()
+  const geometry = interactionGeometry()
+  const frame = getScrollFrame()
+  if (!geometry || !frame) return hits
+  if (!(rect.right > rect.left) || !(rect.bottom > rect.top)) return hits
+  const width = Math.max(1, geometry.cols)
+  const firstRow = Math.max(0, Math.floor((rect.top - geometry.originY) / geometry.pitchY) - 1)
+  const lastRow = Math.max(firstRow, Math.floor((rect.bottom - 1 - geometry.originY) / geometry.pitchY) + 1)
+  const firstCol = Math.max(0, Math.floor((rect.left - geometry.originX) / geometry.pitchX) - 1)
+  const lastCol = Math.min(width - 1, Math.floor((rect.right - 1 - geometry.originX) / geometry.pitchX) + 1)
+  const lo = Math.max(0, firstRow * width + firstCol)
+  const hi = Math.min(state.total - 1, lastRow * width + lastCol)
+  const clip: RectLike = { left: frame.left, top: frame.top, right: frame.right, bottom: frame.bottom }
+  for (let index = lo; index <= hi; index++) {
+    const card = document.querySelector<HTMLElement>('#meme-grid .meme-card[data-slot-index="' + index + '"]')
+    if (!card || !card.isConnected) continue
+    const record = slot(index)
+    if (!record || card.dataset.memeId !== String(record.id)) continue
+    const cardRect = card.getBoundingClientRect()
+    const visible = normalizeMarqueeRect(cardRect.left, cardRect.top, cardRect.right, cardRect.bottom, clip)
+    if (!rectIntersects(rect, visible)) continue
+    hits.add(record.id)
+  }
+  return hits
+}
+
+// 单帧命中：当前矩形 × 起手快照做对称差并替换选择（不在上帧结果上累积）
+function applyMarqueeFrame(session: MarqueeSession) {
+  const frame = getScrollFrame()
+  if (!frame) return
+  const clip: RectLike = { left: frame.left, top: frame.top, right: frame.right, bottom: frame.bottom }
+  const rect = normalizeMarqueeRect(session.startX, session.startY, session.lastX, session.lastY, clip)
+  marqueeBox.x = rect.left
+  marqueeBox.y = rect.top
+  marqueeBox.width = rect.right - rect.left
+  marqueeBox.height = rect.bottom - rect.top
+  const next = applyMarqueeSelection(session.baseSelected, marqueeHits(rect))
+  if (!sameSelection(next, state.selectedIds)) state.selectedIds = next
+}
+
+function scheduleMarqueeFrame(session: MarqueeSession) {
+  if (session.frame) return
+  session.frame = requestAnimationFrame(() => {
+    session.frame = 0
+    if (marqueeSession !== session || session.phase !== 'selecting') return
+    applyMarqueeFrame(session)
+  })
+}
+
+// 结束会话：清 overlay/帧/捕获；restore 时仅在同一查询内恢复起手快照（查询变化不回填旧 Set）
+function endMarquee(restore: boolean): boolean {
+  const session = marqueeSession
+  if (!session) return false
+  const active = session.phase === 'selecting'
+  if (session.frame) { cancelAnimationFrame(session.frame); session.frame = 0 }
+  marqueeSession = null
+  marqueeBusy.value = false
+  marqueeBox.active = false
+  if (session.captured) {
+    const element = getScrollFrame()?.element
+    if (element) {
+      try {
+        if (typeof element.hasPointerCapture === 'function' && element.hasPointerCapture(session.pointerId)) {
+          element.releasePointerCapture(session.pointerId)
+        }
+      } catch (_) {}
     }
-    parts.push((row.dataset.rowKey || row.dataset.rowStart || '') + ':' + ids.join(','))
   }
-  return parts.join('|')
-}
-
-// drag-select 的命中用 option 的 offsetTop/offsetLeft 与框矩形比较；
-// 虚拟化后 option 的 offsetParent 是绝对定位的行外壳（局部 top≈0），坐标不可比。
-// 这里把每个已挂载 option 的 offsetTop/offsetLeft 改写为「相对 .drag-select 内容的坐标」，
-// 即与库内部 areaRect 同一坐标系（不改依赖库源码，指针按下时安装以保证框选前生效）
-const optionMetricsInstalled = new WeakSet<HTMLElement>()
-
-function installOptionMetrics() {
-  const grid = document.getElementById('meme-grid')
-  if (!grid) return
-  const content = grid.querySelector<HTMLElement>('.drag-select')
-  if (!content) return
-  for (const option of Array.from(grid.querySelectorAll<HTMLElement>('.drag-select-option'))) {
-    if (optionMetricsInstalled.has(option)) continue
-    optionMetricsInstalled.add(option)
-    Object.defineProperty(option, 'offsetTop', {
-      configurable: true,
-      get() {
-        return option.getBoundingClientRect().top - content.getBoundingClientRect().top + content.scrollTop
-      },
-    })
-    Object.defineProperty(option, 'offsetLeft', {
-      configurable: true,
-      get() {
-        return option.getBoundingClientRect().left - content.getBoundingClientRect().left + content.scrollLeft
-      },
-    })
+  if (restore && state.queryGen === session.context.queryGen && browseKey.value === session.context.browseKey) {
+    state.selectedIds = new Set(session.baseSelected)
   }
+  return active
 }
 
-function onGridPointerDownCapture() {
-  installOptionMetrics()
+// 取消（ESC/blur/cancel/滚动/布局/查询/关闭整理/卸载共用）：返回是否吞掉随后 click
+function cancelMarquee(reason: string): boolean {
+  void reason
+  const active = endMarquee(true)
+  if (active) ignoreClick = true
+  return active
 }
 
-function boxSelecting(): boolean {
-  return dragSelectRef.value?.isDragging === true
+// 建立会话：空白起手只记录起点与起手快照（未过门槛不改选择、不画框）
+function startMarqueeSession(clientX: number, clientY: number, pointerId: number, origin: MarqueeOrigin): boolean {
+  if (marqueeSession) return false
+  if (!marqueePointAllowed(clientX, clientY)) return false
+  marqueeSession = {
+    phase: 'armed',
+    origin,
+    pointerId,
+    startX: clientX,
+    startY: clientY,
+    lastX: clientX,
+    lastY: clientY,
+    context: { queryGen: state.queryGen, browseKey: browseKey.value, layoutEpoch },
+    scrollTop: gridWrapRef.value?.scrollTop ?? 0,
+    baseSelected: new Set(state.selectedIds),
+    captured: false,
+    frame: 0,
+  }
+  marqueeBusy.value = true
+  return true
 }
 
-function scheduleSelectionCheck() {
-  if (windowUnmounted) return
-  if (selectionCheckTimer) return
-  selectionCheckTimer = setTimeout(() => {
-    selectionCheckTimer = null
-    maybeResetSelectionRegistry(false)
-  }, SCROLL_END_CLEANUP_DELAY)
+function onGridBlankPointerDown(e: PointerEvent) {
+  if (!marqueeStartable(e.target, e.button, e.isPrimary)) return
+  startMarqueeSession(e.clientX, e.clientY, e.pointerId, 'pointer')
 }
 
-// 重挂前保存指纹，新挂载相同指纹不再次触发；活跃排序/框选手势推迟清理
-function maybeResetSelectionRegistry(force: boolean) {
-  if (visibleDragSession || drag.dragState.active === true || boxSelecting()) {
-    pendingSelectionReset = true
+// 旧 WebView 无 PointerEvent：mousedown 起手（有 PointerEvent 时直接让位给 pointer 路径）
+function onGridBlankMouseDown(e: MouseEvent) {
+  if (pointerEventsSupported()) return
+  if (!marqueeStartable(e.target, e.button)) return
+  startMarqueeSession(e.clientX, e.clientY, MOUSE_POINTER_ID, 'mouse')
+}
+
+// 移动：过 8px 门槛进入 selecting（稳定 wrap 捕获指针），随后按需单帧重算
+function applyMarqueeMove(session: MarqueeSession, clientX: number, clientY: number, preventDefault: () => void) {
+  if (!marqueeSessionValid(session)) { cancelMarquee('invalid'); return }
+  session.lastX = clientX
+  session.lastY = clientY
+  if (session.phase === 'armed') {
+    if (Math.hypot(clientX - session.startX, clientY - session.startY) <= MARQUEE_THRESHOLD) return
+    session.phase = 'selecting'
+    marqueeBox.active = true
+    preventDefault()
+    if (session.origin === 'pointer') {
+      const frame = getScrollFrame()
+      if (frame) {
+        try {
+          frame.element.setPointerCapture(session.pointerId)
+          session.captured = true
+        } catch (_) {}
+      }
+    }
+  }
+  scheduleMarqueeFrame(session)
+}
+
+// 抬起：同步完成最后一次命中并保留预览为提交结果；已激活手势吞掉随后 click
+function applyMarqueeUp(session: MarqueeSession, clientX: number, clientY: number) {
+  // 会话已失效（查询/布局/滚动变化）：只清资源并按语义回滚，不提交
+  if (!marqueeSessionValid(session)) { cancelMarquee('invalid'); return }
+  session.lastX = clientX
+  session.lastY = clientY
+  const wasSelecting = session.phase === 'selecting'
+  if (wasSelecting) applyMarqueeFrame(session)
+  endMarquee(false)
+  if (wasSelecting) ignoreClick = true
+}
+
+function onMarqueePointerMove(e: PointerEvent) {
+  const session = marqueeSession
+  if (!session || session.origin !== 'pointer') return
+  if (e.pointerId !== session.pointerId) return
+  if (e.buttons === 0) { cancelMarquee('buttons'); return }
+  applyMarqueeMove(session, e.clientX, e.clientY, () => e.preventDefault())
+}
+
+function onMarqueePointerUp(e: PointerEvent) {
+  const session = marqueeSession
+  if (!session || session.origin !== 'pointer') return
+  if (e.pointerId !== session.pointerId) return
+  applyMarqueeUp(session, e.clientX, e.clientY)
+}
+
+function onMarqueeMouseMove(e: MouseEvent) {
+  const session = marqueeSession
+  if (!session || session.origin !== 'mouse') return
+  if ((e.buttons & 1) === 0) { cancelMarquee('buttons'); return }
+  applyMarqueeMove(session, e.clientX, e.clientY, () => e.preventDefault())
+}
+
+function onMarqueeMouseUp(e: MouseEvent) {
+  const session = marqueeSession
+  if (!session || session.origin !== 'mouse') return
+  applyMarqueeUp(session, e.clientX, e.clientY)
+}
+
+// 指针捕获丢失（非本会话主动释放）：框选或拖拽都取消并清理资源；正常释放与 saving 结算不在此取消
+function onGridLostPointerCapture(e: PointerEvent) {
+  const marquee = marqueeSession
+  if (marquee && marquee.origin === 'pointer' && e.pointerId === marquee.pointerId) {
+    cancelMarquee('lost-capture')
     return
   }
-  const fingerprint = mountedRealCardFingerprint()
-  if (!force && (fingerprint === mountedFingerprint || mountedFingerprint === '')) {
-    mountedFingerprint = fingerprint
-    return
-  }
-  const handle = virtualizerRef.value
-  if (handle?.cache) {
-    virtualCache.value = handle.cache
-    virtualCacheLength.value = rows.value.length
-  }
-  mountedFingerprint = fingerprint
-  selectionEpoch.value += 1
-}
-
-// 手势结束/拖拽释放后补做被推迟的 registry 清理
-function flushPendingWork() {
-  if (pendingSelectionReset) {
-    pendingSelectionReset = false
-    maybeResetSelectionRegistry(false)
-  }
-}
-
-const dragSelectDisabled = computed(() => !sortEnabled.value || scrolling.value || drag.dragState.active === true)
-
-// 框选回传的是 drag-select 计算出的全量选择：只应用当前已挂载且已连接的真卡 id，保留离屏 id
-function onBoxSelection(next: unknown) {
-  const incoming: Set<unknown> = next instanceof Set ? next : new Set(Array.isArray(next) ? next : [])
-  const mounted = new Set<number>()
-  const grid = document.getElementById('meme-grid')
-  if (grid) {
-    for (const card of Array.from(grid.querySelectorAll<HTMLElement>('.meme-card[data-meme-id]'))) {
-      if (!card.isConnected) continue
-      const id = Number(card.dataset.memeId)
-      if (Number.isFinite(id)) mounted.add(id)
-    }
-  }
-  const result = new Set(state.selectedIds)
-  for (const id of mounted) {
-    if (incoming.has(id)) result.add(id)
-    else result.delete(id)
-  }
-  state.selectedIds = result
+  // saving：pointerup 的自动释放捕获不是取消（结算走 RPC 自己的上下文门禁）
+  if (drag.dragState.saving) return
+  if (drag.dragState.memeId != null && e.pointerId === drag.dragState.pointerId) cancelGridDrag('lost-capture')
 }
 
 const tagEditor = ref<InstanceType<typeof TagEditor> | null>(null)
@@ -476,382 +653,310 @@ function maybeShowUpdate(upd: UpdateInfo | null) {
 }
 
 const sortEnabled = ref(false)
-const drag = useDragSort(
-  () => (visibleDragSession ? visibleDragSession.segItems : []),
-  applyVisibleSegment,
-  canReorder,
-  () => sortEnabled.value,
-  persistVisibleOrder,
-  () => { showToast('排序保存失败'); search() },
-)
 
-// ── 整理模式：可见已加载段拖拽（引擎不改，坐标/索引/跨行重挂在 MainWindow 适配） ──
-interface VisibleDragSession {
-  gen: number
-  rangeGen: number
-  layout: number
-  memeId: number
-  firstRow: number
-  lastRow: number
-  segStart: number
-  segEnd: number
-  segItems: Meme[]
-  sliceStart: number
-  sliceItems: Meme[]
-  originalSlice: Meme[]
-  deltaY: number
-  rowPitch: number
-  pointerId: number
-  liveNode: HTMLElement | null
-  liveCard: HTMLElement | null
-  visual: { transform: string; zIndex: string }
-  visualNodes: Set<HTMLElement>
-  releasePin: (() => void) | null
-  finished: boolean
-}
+// ── 整理拖拽接线：全局槽位数学 + 连续扩展窗口（引擎持有手势/基准/持久化门禁与 rAF） ──
 
-let visibleDragSession: VisibleDragSession | null = null
-// persist 进行中禁止发起新会话（引擎 cleanup 是全局的，重入会清掉新手势）
-let persistInFlight = false
-// 保存已发出后收到的取消：结算后按数据库权威顺序重同步，不回滚旧快照
-let cancelDuringPersist = false
-
-// 收集当前已挂载行：必须连续、全部槽位已加载、DOM 真卡顺序与槽位一致（含骨架一律拒绝）
-function collectMountedSegment(grid: HTMLElement): {
-  firstRow: number
-  lastRow: number
-  segStart: number
-  segEnd: number
-  items: Meme[]
-  rows: HTMLElement[]
-} | null {
-  const rowEls = Array.from(grid.querySelectorAll<HTMLElement>('.virtual-meme-row'))
-  if (!rowEls.length) return null
-  const width = Math.max(1, cols.value)
-  const total = state.total
-  const totalRows = Math.ceil(total / width)
-  const sorted: Array<{ index: number; el: HTMLElement }> = []
-  for (const el of rowEls) {
-    const start = Number(el.dataset.rowStart)
-    if (!Number.isFinite(start) || start % width !== 0) return null
-    const index = start / width
-    if (index < 0 || index >= totalRows) return null
-    sorted.push({ index, el })
-  }
-  sorted.sort((a, b) => a.index - b.index)
-  for (let i = 0; i < sorted.length; i++) {
-    const entry = sorted[i]
-    const previous = sorted[i - 1]
-    if (!entry) return null
-    if (previous && entry.index !== previous.index + 1) return null
-    const rowStart = entry.index * width
-    const rowEnd = Math.min(rowStart + width, total)
-    const cards = Array.from(entry.el.querySelectorAll<HTMLElement>('.meme-card[data-meme-id]'))
-    if (cards.length !== rowEnd - rowStart) return null
-    if (entry.el.querySelector('.meme-card.skeleton')) return null
-    for (let k = 0; k < cards.length; k++) {
-      const card = cards[k]
-      const record = slot(rowStart + k)
-      if (!card || !record || !card.isConnected || card.dataset.memeId !== String(record.id)) return null
-    }
-  }
-  const firstEntry = sorted[0]
-  const lastEntry = sorted[sorted.length - 1]
-  if (!firstEntry || !lastEntry) return null
-  const firstRow = firstEntry.index
-  const lastRow = lastEntry.index
-  const segStart = firstRow * width
-  const segEnd = Math.min((lastRow + 1) * width, total)
-  const items: Meme[] = []
-  for (let i = segStart; i < segEnd; i++) {
-    const record = slot(i)
-    if (!record) return null
-    items.push(record)
-  }
-  return { firstRow, lastRow, segStart, segEnd, items, rows: sorted.map(entry => entry.el) }
-}
-
-// live-card：跨视觉行重挂后仍转发到当前节点，避免在断开节点上写样式/捕获
-const NOOP_CLASS_LIST = { add: () => {}, remove: () => {}, toggle: () => {}, contains: () => false }
-
-// 查找当前真卡节点：跨行置换后可能同时存在退场副本，按模型当前所在行挑当前节点
-function findMemeCardNode(session: VisibleDragSession): HTMLElement | null {
-  const nodes = Array.from(document.querySelectorAll<HTMLElement>('#meme-grid .meme-card[data-meme-id="' + session.memeId + '"]'))
-    .filter(node => node.isConnected)
-  if (nodes.length <= 1) return nodes[0] ?? null
-  const slice = loadedSlice()
-  const offset = slice.items.findIndex(record => record.id === session.memeId)
-  if (offset >= 0) {
-    const width = Math.max(1, cols.value)
-    const rowStart = Math.floor((slice.start + offset) / width) * width
-    const expected = nodes.find(node => node.closest<HTMLElement>('.virtual-meme-row')?.dataset.rowStart === String(rowStart))
-    if (expected) return expected
-  }
-  return nodes[nodes.length - 1] ?? null
-}
-
-function createLiveCard(session: VisibleDragSession): HTMLElement {
-  const findEl = () => findMemeCardNode(session)
-  const current = () => (session.liveNode && session.liveNode.isConnected ? session.liveNode : findEl())
-  const styleProxy = new Proxy({} as CSSStyleDeclaration, {
-    get(_target, prop) {
-      const el = current()
-      if (!el) return undefined
-      const value = (el.style as unknown as Record<string | symbol, unknown>)[prop as string]
-      return typeof value === 'function' ? (value as (...args: unknown[]) => unknown).bind(el.style) : value
-    },
-    set(_target, prop, value) {
-      const el = current()
-      if (el) {
-        ;(el.style as unknown as Record<string, unknown>)[prop as string] = value
-        session.visualNodes.add(el)
-      }
-      if (prop === 'transform') session.visual.transform = String(value)
-      else if (prop === 'zIndex') session.visual.zIndex = String(value)
-      return true
-    },
-  })
-  return new Proxy({ __v_skip: true } as unknown as HTMLElement, {
-    get(_target, prop) {
-      // 阻止 Vue 对代理再次 reactive 包装（包装会破坏 DOMTokenList 等原生方法的 this）
-      if (prop === '__v_skip') return true
-      if (prop === 'style') return styleProxy
-      if (prop === 'classList') {
-        const el = current()
-        return el ? el.classList : NOOP_CLASS_LIST
-      }
-      if (prop === 'getBoundingClientRect') {
-        return () => {
-          const el = current()
-          const rect = el ? el.getBoundingClientRect() : new DOMRect(0, 0, 0, 0)
-          // 归一化坐标下返回同样减 deltaY 的 rect，offY 仍是真实抓取偏移
-          return {
-            left: rect.left,
-            top: rect.top - session.deltaY,
-            right: rect.right,
-            bottom: rect.bottom - session.deltaY,
-            width: rect.width,
-            height: rect.height,
-            x: rect.x,
-            y: rect.y - session.deltaY,
-          } as DOMRect
-        }
-      }
-      const el = current()
-      if (!el) return undefined
-      const value = (el as unknown as Record<string | symbol, unknown>)[prop as string]
-      return typeof value === 'function' ? (value as (...args: unknown[]) => unknown).bind(el) : value
-    },
-    set(_target, prop, value) {
-      const el = current()
-      if (!el) return false
-      ;(el as unknown as Record<string, unknown>)[prop as string] = value
-      return true
-    },
-  })
-}
-
-// 传给引擎的坐标：clientY 归一到挂载段基准（首行=0），其余字段原样保留
-function normalizePointerEvent(e: PointerEvent, deltaY: number): PointerEvent {
+// 指针事件 → 窄样本（引擎不接收 DOM 事件对象）
+function toPointerSample(e: PointerEvent): PointerSample {
   return {
+    pointerId: e.pointerId,
     button: e.button,
     buttons: e.buttons,
-    pointerId: e.pointerId,
     clientX: e.clientX,
-    clientY: e.clientY - deltaY,
-  } as unknown as PointerEvent
+    clientY: e.clientY,
+    isPrimary: e.isPrimary,
+  }
 }
 
-// 真实落点是否在本次可见已加载段内：二维落点须落在网格内容范围，
-// 且按真实坐标解出的槽位属于挂载段（越界拖动不转发，避免引擎 clamp 误判尾部落点）
-function insideVisibleSegment(clientX: number, clientY: number, session: VisibleDragSession): boolean {
+// 客户区几何：唯一滚动容器 + 工具栏覆盖后的有效底边（自动滚动触发区）
+function getScrollFrame(): ScrollFrame | null {
+  const wrap = gridWrapRef.value
+  if (!wrap) return null
+  const rect = wrap.getBoundingClientRect()
+  const top = rect.top + wrap.clientTop
+  let bottom = rect.top + wrap.clientTop + wrap.clientHeight
+  const bar = document.getElementById('organize-bar')
+  if (bar) {
+    const barRect = bar.getBoundingClientRect()
+    // 底部工具栏有覆盖时把有效底边提升到工具栏顶部，避免必须穿过按钮才触发
+    if (barRect.height > 0 && barRect.top < bottom && barRect.bottom > top) bottom = Math.min(bottom, barRect.top)
+  }
+  return {
+    element: wrap,
+    left: rect.left + wrap.clientLeft,
+    right: rect.left + wrap.clientLeft + wrap.clientWidth,
+    top,
+    bottom,
+    scrollTop: wrap.scrollTop,
+    maxScrollTop: Math.max(0, wrap.scrollHeight - wrap.clientHeight),
+  }
+}
+
+// 全局槽位几何：未变换卡宽/步距与滚动后的内容原点（scale/rotate 不进入数学）
+function interactionGeometry(): GridGeometry | null {
+  const wrap = gridWrapRef.value
   const grid = document.getElementById('meme-grid')
-  if (!grid || !(session.rowPitch > 0)) return false
-  const style = getComputedStyle(grid)
-  const gridRect = grid.getBoundingClientRect()
-  const gridTop = gridRect.top + grid.clientTop + finiteNumber(style.paddingTop)
-  const gridLeft = gridRect.left + grid.clientLeft + finiteNumber(style.paddingLeft)
-  const contentRight = gridLeft + grid.clientWidth - finiteNumber(style.paddingRight)
+  if (!wrap || !grid || !(rowPitch.value > 0)) return null
+  const wrapStyle = getComputedStyle(wrap)
+  const paddingX = finiteNumber(wrapStyle.paddingLeft) + finiteNumber(wrapStyle.paddingRight)
   const width = Math.max(1, cols.value)
+  const contentWidth = Math.max(0, wrap.clientWidth - paddingX)
   const sample = grid.querySelector<HTMLElement>('.meme-card[data-meme-id]')
-  const pitchX = sample ? sample.offsetWidth + finiteNumber(style.columnGap) : 0
-  if (!(pitchX > 0)) return false
-  if (clientX < gridLeft || clientX > contentRight) return false
-  const col = Math.min(width - 1, Math.max(0, Math.floor((clientX - gridLeft) / pitchX)))
-  const row = session.firstRow + Math.floor((clientY - session.deltaY - gridTop) / session.rowPitch)
-  if (row < session.firstRow || row > session.lastRow) return false
-  const index = row * width + col
-  return index >= session.segStart && index < session.segEnd
+  const measured = sample ? sample.offsetWidth : 0
+  const cardWidth = measured > 0 ? measured : Math.max(1, (contentWidth - (width - 1) * MEME_GAP) / width)
+  const gridRect = grid.getBoundingClientRect()
+  const wrapRect = wrap.getBoundingClientRect()
+  const gridStyle = getComputedStyle(grid)
+  return {
+    originX: gridRect.left + grid.clientLeft + finiteNumber(gridStyle.paddingLeft),
+    originY: wrapRect.top + wrap.clientTop + startMargin.value - wrap.scrollTop,
+    pitchX: cardWidth + MEME_GAP,
+    pitchY: rowPitch.value,
+    cols: width,
+  }
 }
 
-function sessionStillValid(session: VisibleDragSession): boolean {
-  return state.queryGen === session.gen && state.rangeGen === session.rangeGen && layoutEpoch === session.layout
+// 当前落点：全局槽位 → 必须是有效客户区内当前挂载且与模型一致的已加载真卡
+function getDragTarget(clientX: number, clientY: number): number | null {
+  // 记录最近一次落点查询指针：自动滚动写入前用它校验建议滚动后的指针槽位
+  lastTargetPointer = { x: clientX, y: clientY }
+  const frame = getScrollFrame()
+  if (frame && (clientX < frame.left || clientX > frame.right || clientY < frame.top || clientY > frame.bottom)) return null
+  const geometry = interactionGeometry()
+  if (!geometry) return null
+  // 网格内容右边界之外（最后一列后的 pitch 间隙）不是有效目标
+  if (clientX > geometry.originX + geometry.cols * geometry.pitchX) return null
+  const target = gridSlotIndex(geometry, clientX, clientY, state.total)
+  if (target === null) return null
+  const card = document.querySelector<HTMLElement>('#meme-grid .meme-card[data-slot-index="' + target + '"]')
+  if (!card || !card.isConnected || card.classList.contains('skeleton')) return null
+  const record = slot(target)
+  if (!record || card.dataset.memeId !== String(record.id)) return null
+  return target
 }
 
-// 建立一次可见段拖拽会话：记录原连续 loadedSlice、挂载段绝对起点、布局与冻结行 key
-function beginVisibleDragSession(e: PointerEvent, meme: Meme, card: HTMLElement): VisibleDragSession | null {
+// 最近一次拖拽落点查询的指针位置（自动滚动前的指针槽位校验）
+let lastTargetPointer: { x: number; y: number } | null = null
+
+// 建议滚动增量后指针所在槽位是否已加载（未加载则不写该步 scrollTop，交由单飞扩页推进）
+function pointerSlotLoadedAfter(delta: number): boolean {
+  const pointer = lastTargetPointer
+  const geometry = interactionGeometry()
+  if (!pointer || !geometry) return true
+  const shifted: GridGeometry = { ...geometry, originY: geometry.originY - delta }
+  const index = gridSlotIndex(shifted, pointer.x, pointer.y, state.total)
+  return index !== null && slot(index) !== undefined
+}
+
+// 已加载可推进边界：拖拽自动滚动不得把未加载行推进可见区（加载前沿门禁）
+function loadedScrollFrontier(frame: ScrollFrame): { min: number; max: number } | null {
+  if (!(rowPitch.value > 0) || state.total === 0 || state.hi <= state.lo) return null
+  const width = Math.max(1, cols.value)
+  const firstRow = Math.floor(state.lo / width)
+  const lastRow = Math.ceil(state.hi / width) - 1
+  return {
+    min: startMargin.value + firstRow * rowPitch.value,
+    max: startMargin.value + (lastRow + 1) * rowPitch.value - (frame.bottom - frame.top),
+  }
+}
+
+// 拖拽滚动：只操作 #grid-wrap，clamp 到物理边界与加载前沿，返回实际滚动差值
+function scrollDragBy(delta: number): number {
+  const wrap = gridWrapRef.value
+  if (!wrap) return 0
+  const before = wrap.scrollTop
+  const frame = getScrollFrame()
+  if (!frame) return 0
+  let next = before + delta
+  const frontier = loadedScrollFrontier(frame)
+  // 已越界：只阻止继续向未加载方向推进（不强制回跳）；未越界：按边界收口
+  if (frontier) {
+    if (delta > 0) next = before >= frontier.max ? before : Math.min(next, frontier.max)
+    else if (delta < 0) next = before <= frontier.min ? before : Math.max(next, frontier.min)
+  }
+  next = Math.max(0, Math.min(frame.maxScrollTop, next))
+  if (next === before) return 0
+  // 建议滚动后指针不得落在未加载槽位：不写该步，交由单飞扩页推进
+  if (!pointerSlotLoadedAfter(next - before)) return 0
+  wrap.scrollTop = next
+  return wrap.scrollTop - before
+}
+
+// 可见真卡的未变换槽位原点（按 data-slot-index 与当前几何计算，不读被 scale 影响的矩形）
+function captureVisibleOrigins(): Map<number, { left: number; top: number }> {
+  const origins = new Map<number, { left: number; top: number }>()
   const grid = document.getElementById('meme-grid')
-  if (!grid) return null
-  const segment = collectMountedSegment(grid)
-  if (!segment) return null
-  const slice = loadedSlice()
-  if (segment.segStart < slice.start || segment.segEnd > slice.start + slice.items.length) return null
-  if (!card.isConnected) return null
-  const style = getComputedStyle(grid)
-  const gridTop = grid.getBoundingClientRect().top + grid.clientTop + finiteNumber(style.paddingTop)
-  const firstRowEl = segment.rows[0]
-  if (!firstRowEl) return null
-  const session: VisibleDragSession = {
-    gen: state.queryGen,
-    rangeGen: state.rangeGen,
-    layout: layoutEpoch,
-    memeId: meme.id,
-    firstRow: segment.firstRow,
-    lastRow: segment.lastRow,
-    segStart: segment.segStart,
-    segEnd: segment.segEnd,
-    segItems: [...segment.items],
-    sliceStart: slice.start,
-    sliceItems: [...slice.items],
-    originalSlice: [...slice.items],
-    deltaY: firstRowEl.getBoundingClientRect().top - gridTop,
-    rowPitch: rowPitch.value,
-    pointerId: e.pointerId,
-    liveNode: card,
-    liveCard: null,
-    visual: { transform: '', zIndex: '' },
-    visualNodes: new Set(),
-    releasePin: null,
-    finished: false,
+  const geometry = interactionGeometry()
+  if (!grid || !geometry) return origins
+  for (const card of Array.from(grid.querySelectorAll<HTMLElement>('.meme-card[data-meme-id][data-slot-index]'))) {
+    if (!card.isConnected) continue
+    const id = Number(card.dataset.memeId)
+    const index = Number(card.dataset.slotIndex)
+    if (!Number.isFinite(id) || !Number.isInteger(index)) continue
+    const origin = slotOrigin(geometry, index)
+    if (origin) origins.set(id, origin)
   }
-  session.liveCard = createLiveCard(session)
-  // 钉住既有 row key，避免置换/数据变化主动销毁拖动行
-  for (let index = session.firstRow; index <= session.lastRow; index++) {
-    const key = rows.value[index]?.key
-    if (key) frozenRowKeys.set(index, key)
-  }
-  session.releasePin = pinLoadedRange()
-  return session
+  return origins
 }
 
-// 恢复原 order（仅当前窗口代次仍有效）：新 query 不得被旧快照覆盖
-function restoreSessionSlice(session: VisibleDragSession) {
-  const slice = loadedSlice()
-  if (slice.start !== session.sliceStart || slice.items.length !== session.originalSlice.length) return
-  const current = new Set(slice.items.map(record => record.id))
-  if (current.size !== session.originalSlice.length) return
-  for (const record of session.originalSlice) {
-    if (!current.has(record.id)) return
+let flipTimer: ReturnType<typeof setTimeout> | null = null
+let flippedNodes: HTMLElement[] = []
+
+// 清理上一批 FLIP 动效：清计时器并移除残留的 .drag-flip（保留仍在动画中的同批节点）
+function clearFlipNodes(keep: HTMLElement[] = []) {
+  if (flipTimer) { clearTimeout(flipTimer); flipTimer = null }
+  const previous = flippedNodes
+  flippedNodes = []
+  for (const card of previous) {
+    if (!keep.includes(card) && card.isConnected) card.classList.remove('drag-flip')
   }
-  setLoadedSlice(session.sliceStart, session.originalSlice)
 }
 
-// 引擎 setter：仅置换已挂载密集子段，写回原 loadedSlice 的绝对槽位
-async function applyVisibleSegment(items: Meme[]) {
-  const session = visibleDragSession
-  if (!session || session.finished || !sessionStillValid(session)) return
-  if (items.length !== session.segEnd - session.segStart) return
-  const offset = session.segStart - session.sliceStart
-  const next = [...session.sliceItems]
-  for (let i = 0; i < items.length; i++) next[offset + i] = items[i]
-  if (!setLoadedSlice(session.sliceStart, next)) {
-    cancelVisibleDrag()
+// 可见卡局部 FLIP：仅更新前后均可见的非拖动真卡，终态回到普通卡 scale(0.95)
+function playVisibleFlip(before: Map<number, { left: number; top: number }>, draggedId: number | null) {
+  const grid = document.getElementById('meme-grid')
+  const geometry = interactionGeometry()
+  if (!grid || !geometry) return
+  const flipped: HTMLElement[] = []
+  for (const card of Array.from(grid.querySelectorAll<HTMLElement>('.meme-card[data-meme-id][data-slot-index]'))) {
+    const id = Number(card.dataset.memeId)
+    if (id === draggedId) continue
+    const previous = before.get(id)
+    if (!previous) continue
+    const index = Number(card.dataset.slotIndex)
+    const current = Number.isInteger(index) ? slotOrigin(geometry, index) : null
+    if (!current) continue
+    const dx = previous.left - current.left
+    const dy = previous.top - current.top
+    if (Math.abs(dx) < 0.5 && Math.abs(dy) < 0.5) continue
+    card.style.transform = `translate(${dx}px, ${dy}px) scale(0.95)`
+    card.classList.add('drag-flip')
+    flipped.push(card)
+  }
+  if (!flipped.length) {
+    clearFlipNodes()
     return
   }
-  session.sliceItems = next
-  session.segItems = [...items]
-  await nextTick()
-  reattachLiveCard(session)
+  clearFlipNodes(flipped)
+  // 读取一次布局强制刷新起始位移，再归零触发 transition
+  void flipped[0]?.offsetWidth
+  for (const card of flipped) card.style.transform = ''
+  flippedNodes = flipped
+  flipTimer = setTimeout(() => {
+    flipTimer = null
+    if (flippedNodes === flipped) flippedNodes = []
+    for (const card of flipped) {
+      if (card.isConnected) card.classList.remove('drag-flip')
+    }
+  }, 220)
 }
 
-// Vue 更新后确认拖动卡仍在预定挂载段；节点重建则恢复视觉/捕获，找不到立即取消并回滚
-function reattachLiveCard(session: VisibleDragSession) {
-  if (visibleDragSession !== session || session.finished) return
-  const el = findMemeCardNode(session)
-  if (!el || !el.isConnected) { cancelVisibleDrag(); return }
-  const rowEl = el.closest<HTMLElement>('.virtual-meme-row')
-  const start = rowEl ? Number(rowEl.dataset.rowStart) : NaN
-  if (!Number.isFinite(start)) { cancelVisibleDrag(); return }
-  const rowIndex = start / Math.max(1, cols.value)
-  if (rowIndex < session.firstRow || rowIndex > session.lastRow) { cancelVisibleDrag(); return }
-  if (el === session.liveNode) return
-  // 跨行重挂：清理旧引用节点，转发到新节点并恢复拖拽视觉
-  const previous = session.liveNode
-  if (previous && previous !== el) {
-    previous.classList.remove('dragging')
-    previous.style.transform = ''
-    previous.style.zIndex = ''
-    session.visualNodes.delete(previous)
+// 引擎 setWindow：写入前后做可见 FLIP，并只在挂载期间冻结行 key
+function applyWindowOrder(start: number, items: Meme[]): boolean {
+  refreshFrozenRowKeys()
+  const before = captureVisibleOrigins()
+  const draggedId = drag.dragState.memeId
+  const gen = state.queryGen
+  if (!setLoadedSlice(start, items)) {
+    refreshFrozenRowKeys()
+    return false
   }
-  session.liveNode = el
-  session.visualNodes.add(el)
-  el.classList.add('dragging')
-  el.style.transform = session.visual.transform
-  el.style.zIndex = session.visual.zIndex
-  if (drag.dragState.active) {
-    try { el.setPointerCapture(session.pointerId) } catch (_) {}
-  }
+  void nextTick(() => {
+    // 卸载或查询已换代：不播放旧会话的可见 FLIP
+    if (windowUnmounted || state.queryGen !== gen) return
+    playVisibleFlip(before, draggedId)
+    refreshFrozenRowKeys()
+  })
+  return true
 }
 
-// 清理本会话写过的所有节点（含跨行重挂后的旧节点残留）
-function cleanupVisualNodes(session: VisibleDragSession) {
-  for (const el of session.visualNodes) {
-    if (!el.isConnected) continue
-    el.classList.remove('dragging')
-    el.style.transform = ''
-    el.style.zIndex = ''
-  }
-  session.visualNodes.clear()
-}
-
-// 引擎 persist：忽略可见子段 id，提交当前整个 loadedSlice 的有序 id（S1 位置置换语义）
-async function persistVisibleOrder(): Promise<boolean> {
-  const session = visibleDragSession
-  if (!session) return false
-  const slice = loadedSlice()
-  const ids = slice.items.map(record => record.id)
-  const ok = await reorderMemes(ids)
-  if (!ok && sessionStillValid(session)) restoreSessionSlice(session)
-  return ok
-}
-
-function finishVisibleDragSession(session: VisibleDragSession) {
-  if (session.finished) return
-  session.finished = true
-  cleanupVisualNodes(session)
-  session.releasePin?.()
-  session.releasePin = null
-  frozenRowKeys.clear()
-  if (visibleDragSession === session) visibleDragSession = null
-  flushPendingWork()
-  // 排序结束后指纹（布局/行 key）可能已变化：安排一次受控 registry 清理
-  scheduleSelectionCheck()
-}
-
-// 统一取消：恢复原顺序（代次有效时）→ 取消引擎手势 → 释放钉住，激活过的拖拽吞掉首次 click
-function cancelVisibleDrag() {
-  const session = visibleDragSession
-  if (!session) return
-  if (persistInFlight) {
-    // 保存已发出：推迟到结算后按数据库权威顺序重同步，不在此恢复旧快照
-    cancelDuringPersist = true
+// 活动拖拽只为当前挂载行冻结 key（行离开挂载集合即清）：置换期间保持行节点身份但不无限累积
+function refreshFrozenRowKeys() {
+  if (!drag.dragState.active) {
+    if (frozenRowKeys.size) frozenRowKeys.clear()
     return
   }
-  visibleDragSession = null
-  const wasActive = drag.dragState.active === true
-  if (!session.finished && sessionStillValid(session)) restoreSessionSlice(session)
-  drag.cancel()
-  if (session.pointerId != null) {
-    try { session.liveNode?.releasePointerCapture(session.pointerId) } catch (_) {}
+  const grid = document.getElementById('meme-grid')
+  if (!grid) return
+  const mounted = new Set<number>()
+  for (const row of Array.from(grid.querySelectorAll<HTMLElement>('.virtual-meme-row'))) {
+    const start = Number(row.dataset.rowStart)
+    if (!Number.isFinite(start)) continue
+    const index = Math.floor(start / Math.max(1, cols.value))
+    mounted.add(index)
+    if (!frozenRowKeys.has(index) && row.dataset.rowKey) frozenRowKeys.set(index, row.dataset.rowKey)
   }
-  if (!session.finished) cleanupVisualNodes(session)
-  session.finished = true
-  session.releasePin?.()
-  session.releasePin = null
+  for (const index of Array.from(frozenRowKeys.keys())) {
+    if (!mounted.has(index)) frozenRowKeys.delete(index)
+  }
+}
+
+// 单飞扩页：以已提交 hi/lo 为锚只扩一页；相同前沿不重复请求，失败不每帧重启（交给 useMemes 有限退避）
+let dragRangeKey = ''
+let dragRangePending = false
+let dragRangeGen = 0
+
+function resetDragRange() {
+  dragRangeGen += 1
+  dragRangeKey = ''
+  dragRangePending = false
+}
+
+function ensureDragRange(direction: DragDirection) {
+  if (windowUnmounted || !drag.dragState.active) return
+  if (state.total === 0) return
+  const anchor = direction === 'forward' ? state.hi : state.lo
+  const key = state.queryGen + ':' + direction + ':' + anchor
+  if (dragRangePending || dragRangeKey === key) return
+  const start = direction === 'forward' ? anchor : Math.max(0, anchor - MEME_PAGE)
+  const end = direction === 'forward' ? Math.min(state.total, anchor + MEME_PAGE) : anchor
+  if (end <= start) return
+  dragRangeKey = key
+  dragRangePending = true
+  const gen = dragRangeGen
+  void ensureRange(start, end, direction).finally(() => {
+    if (gen === dragRangeGen) dragRangePending = false
+  })
+}
+
+const drag = useDragSort({
+  getWindow: () => loadedSlice(),
+  setWindow: applyWindowOrder,
+  getContext: () => ({ queryGen: state.queryGen, total: state.total, layoutEpoch, browseKey: browseKey.value }),
+  canReorder,
+  getSortEnabled: () => sortEnabled.value,
+  getTarget: getDragTarget,
+  getScrollFrame,
+  scrollBy: scrollDragBy,
+  ensureDragRange,
+  acquireExtensionPin: () => pinLoadedRange({ allowExtension: true }),
+  freezeForPersist: () => pinLoadedRange(),
+  invalidateRequests: invalidateRangeRequests,
+  persistFn: (ids: number[]) => reorderMemes(ids),
+  onPersistFail: () => {
+    if (windowUnmounted) return
+    showToast('排序保存失败')
+    void search()
+  },
+})
+
+// 手势结束后的预算恢复：发一次普通视口范围请求（数据层缓存命中分支会按视口裁剪超长窗口）
+function restoreViewportBudget() {
+  if (windowUnmounted) return
+  void nextTick(() => {
+    if (windowUnmounted) return
+    requestVisibleRangeNow()
+  })
+}
+
+// 统一取消拖拽：吞掉随后 click 并复位分页/冻结行 key；活动手势结束后补发视口请求恢复预算
+function cancelGridDrag(reason: string): boolean {
+  const active = drag.cancel(reason)
+  if (active) ignoreClick = true
+  resetDragRange()
   frozenRowKeys.clear()
-  if (wasActive) ignoreClick = true
-  flushPendingWork()
-  scheduleSelectionCheck()
+  if (active) restoreViewportBudget()
+  return active
 }
 
 const sidebarCollapsed = ref(false)
@@ -956,9 +1061,10 @@ async function handleCopy(meme: Meme) {
   else showToast('复制失败')
 }
 
-// 卡片点击/回车：整理模式=勾选切换；普通模式=复制（拖拽后的首次点击由 ignoreClick 吞掉）
+// 卡片点击/回车：整理模式=勾选切换；普通模式=复制（拖拽/框选手势后的首次点击由 ignoreClick 吞掉）
 function onCardClick(meme: Meme) {
   if (ignoreClick) { ignoreClick = false; return }
+  if (marqueeSession) return
   if (sortEnabled.value) { toggleSelected(meme.id); return }
   void handleCopy(meme)
 }
@@ -1020,7 +1126,13 @@ function toggleSidebar() { sidebarCollapsed.value = !sidebarCollapsed.value }
 function toggleSort() {
   sortEnabled.value = !sortEnabled.value
   if (sortEnabled.value) drag.enable()
-  else { cancelVisibleDrag(); drag.disable(); clearSelection() }
+  else {
+    cancelGridDrag('sort-off')
+    // 关闭整理以 clearSelection 为最终结果（框选会话不再回滚起手快照）
+    endMarquee(false)
+    drag.disable()
+    clearSelection()
+  }
 }
 
 const importMenu = ref<InstanceType<typeof ImportMenu> | null>(null)
@@ -1401,18 +1513,21 @@ let ignoreClick = false
 
 function onCardPointerDown(e: PointerEvent, meme: Meme, card: HTMLElement) {
   ignoreClick = false
-  // 整理模式接管指针：可排视图走可见段拖拽；挂载段不全为已加载真卡时暂拒绝发起
+  // 整理模式接管指针：只从当前挂载且已加载的真卡发起（源行卸载由独立预览承担）
   if (sortEnabled.value) {
     if (!canReorder()) return
-    // 保存进行中禁止发起新会话：引擎 cleanup 是全局的，旧保存完成回调会清掉新手势
-    if (persistInFlight) return
-    const session = beginVisibleDragSession(e, meme, card)
-    if (!session) return
-    visibleDragSession = session
-    const liveCard = session.liveCard
-    if (!liveCard) { cancelVisibleDrag(); return }
-    drag.onPointerDown(normalizePointerEvent(e, session.deltaY), meme.id, liveCard)
-    if (drag.dragState.memeId !== meme.id) cancelVisibleDrag()
+    if (drag.dragState.saving || marqueeSession) return
+    if (e.button !== 0 || e.isPrimary === false) return
+    const slotIndex = Number(card.dataset.slotIndex)
+    const record = Number.isInteger(slotIndex) ? state.slots[slotIndex] : undefined
+    if (!record || record.id !== meme.id) return
+    const rect = card.getBoundingClientRect()
+    drag.onPointerDown(toPointerSample(e), meme.id, {
+      slot: slotIndex,
+      width: card.offsetWidth || rect.width,
+      height: card.offsetHeight || rect.height,
+      rect: { left: rect.left, top: rect.top, width: rect.width, height: rect.height },
+    })
     return
   }
   if (e.button !== 0) return
@@ -1420,16 +1535,11 @@ function onCardPointerDown(e: PointerEvent, meme: Meme, card: HTMLElement) {
 }
 
 function onDocPointerMove(e: PointerEvent) {
-  if (drag.dragState.memeId) {
-    // 保存挂起：不得再改动旧会话（显示顺序会偏离已提交的 ids）
-    if (persistInFlight) return
-    const session = visibleDragSession
-    if (!session) { drag.cancel(); return }
-    // 按键已释放（例如在窗口外抬起）时取消并回滚，避免会话/钉住悬挂
-    if (e.buttons === 0) { cancelVisibleDrag(); return }
-    // 真实落点越出已加载挂载段时不转发，避免引擎 clamp 误判尾部落点
-    if (!insideVisibleSegment(e.clientX, e.clientY, session)) return
-    drag.onPointerMove(normalizePointerEvent(e, session.deltaY))
+  if (marqueeSession) { onMarqueePointerMove(e); return }
+  if (drag.dragState.memeId != null) {
+    if (drag.dragState.saving) return
+    drag.onPointerMove(toPointerSample(e))
+    if (drag.dragState.active) refreshFrozenRowKeys()
     return
   }
   if (!nativeDragStart || sortEnabled.value) return
@@ -1448,44 +1558,42 @@ function onDocPointerMove(e: PointerEvent) {
 }
 
 async function onDocPointerUp(e: PointerEvent) {
-  // 保存中收到重复抬起：忽略（旧会话的结算由首次 pointerup 负责）
-  if (persistInFlight) return
-  const session = visibleDragSession
-  if (drag.dragState.memeId) {
-    // 越界松手：取消并回滚，不提交（与 move 的越界拒绝一致）
-    if (session && drag.dragState.active === true && !insideVisibleSegment(e.clientX, e.clientY, session)) {
-      cancelVisibleDrag()
-      return
-    }
-    persistInFlight = true
-    cancelDuringPersist = false
-    let wasActive = false
+  if (marqueeSession) { onMarqueePointerUp(e); return }
+  if (drag.dragState.saving) return
+  if (drag.dragState.memeId != null) {
+    let result: DragDropResult = { active: false, cancelled: false, failed: false, contextLive: true }
     try {
-      wasActive = await drag.onPointerUp()
+      result = await drag.onPointerUp(toPointerSample(e))
     } catch (_) {
-      // 引擎结算异常：清理手势状态，保证 persist 标志必然释放（不死锁）
-      drag.cancel()
-    } finally {
-      persistInFlight = false
+      // 引擎结算异常：清掉手势状态，避免会话/门禁悬挂
+      drag.cancel('up-error')
     }
-    const cancelled = cancelDuringPersist
-    cancelDuringPersist = false
-    if (wasActive) ignoreClick = true
-    if (session) {
-      finishVisibleDragSession(session)
-      // 保存期间被取消：以数据库为准重同步，不保留本地快照（卸载后不再触碰模型）
-      if (cancelled && !windowUnmounted) void search()
-    }
+    if (result.active) ignoreClick = true
+    // 保存期间被取消：仅当原会话上下文仍有效时才按数据库重同步（旧代次不 search、不清空新查询）
+    if (result.cancelled && !result.failed && result.contextLive && !windowUnmounted) void search()
+    // 成功/取消结束都补一次视口请求，触发数据层缓存命中裁剪恢复预算
+    restoreViewportBudget()
     return
   }
-  if (session) cancelVisibleDrag()
   nativeDragStart = null
 }
 
 function onDocPointerCancel() {
-  if (visibleDragSession) cancelVisibleDrag()
-  if (drag.dragState.memeId && !persistInFlight) drag.cancel()
+  if (marqueeSession) cancelMarquee('pointer-cancel')
+  if (drag.dragState.memeId != null || drag.dragState.saving) cancelGridDrag('pointer-cancel')
   nativeDragStart = null
+}
+
+function onVisibilityChange() {
+  if (!document.hidden) return
+  if (marqueeSession) cancelMarquee('visibility')
+  if (drag.dragState.memeId != null || drag.dragState.saving) cancelGridDrag('visibility')
+}
+
+// 页面内图片的默认 HTML5 拖拽会与整理/原生文件拖拽竞争：网格内图片的 dragstart 一律阻止
+function onDocDragStart(e: DragEvent) {
+  const target = e.target as HTMLElement | null
+  if (target && typeof target.closest === 'function' && target.closest('#meme-grid img, .meme-card img')) e.preventDefault()
 }
 
 function onDragEnter(e: DragEvent) {
@@ -1586,16 +1694,19 @@ async function onDrop(e: DragEvent) {
   showToast('未识别到可导入的内容')
 }
 
-// ESC：右键菜单 → 整理模式 → 隐藏窗口
+// ESC：LAN 确认 → 右键菜单 → 活动框选/排序手势 → 整理模式 → 隐藏窗口（第一次 ESC 取消手势不退出整理）
 function onDocKeydown(e: KeyboardEvent) {
   if (e.key !== 'Escape') return
   if (lanConfirmVisible.value) { confirmLanDevice(false); return }
   if (ctx.visible.value) { ctx.hide(); return }
+  if (marqueeSession) { cancelMarquee('esc'); return }
+  if (drag.dragState.active || drag.dragState.saving) { cancelGridDrag('esc'); return }
   if (sortEnabled.value) { toggleSort(); return }
   hideWindow()
 }
 
 onMounted(() => {
+  document.addEventListener('dragstart', onDocDragStart)
   document.addEventListener('dragenter', onDragEnter)
   document.addEventListener('dragover', onDragOver)
   document.addEventListener('dragleave', onDragLeave)
@@ -1605,10 +1716,14 @@ onMounted(() => {
   document.addEventListener('pointermove', onDocPointerMove)
   document.addEventListener('pointerup', onDocPointerUp)
   document.addEventListener('pointercancel', onDocPointerCancel)
+  // 旧 WebView 无 PointerEvent 时的框选 mouse 回退（有 PointerEvent 时不会启动）
+  document.addEventListener('mousemove', onMarqueeMouseMove)
+  document.addEventListener('mouseup', onMarqueeMouseUp)
   document.addEventListener('keydown', onDocKeydown)
+  document.addEventListener('visibilitychange', onVisibilityChange)
   window.addEventListener('blur', onDocPointerCancel)
-  // 框选命中坐标适配：指针按下时把已挂载 option 的局部坐标改写为容器坐标
-  gridWrapRef.value?.addEventListener('pointerdown', onGridPointerDownCapture, true)
+  // 框选/拖拽丢失指针捕获即取消（正常释放时状态已复位）
+  gridWrapRef.value?.addEventListener('lostpointercapture', onGridLostPointerCapture)
   // 虚拟化前提：ResizeObserver + 元素滚动方法；缺失时显示不可用提示，不静默挂库
   const wrap = gridWrapRef.value
   const hasScrollMethods = !!wrap && typeof wrap.scrollTo === 'function' && typeof wrap.scrollBy === 'function'
@@ -1637,6 +1752,7 @@ onUnmounted(() => {
   window.refreshMemes = () => {}
   window.refreshTags = () => {}
   window.refreshCollections = () => {}
+  document.removeEventListener('dragstart', onDocDragStart)
   document.removeEventListener('dragenter', onDragEnter)
   document.removeEventListener('dragover', onDragOver)
   document.removeEventListener('dragleave', onDragLeave)
@@ -1646,16 +1762,22 @@ onUnmounted(() => {
   document.removeEventListener('pointermove', onDocPointerMove)
   document.removeEventListener('pointerup', onDocPointerUp)
   document.removeEventListener('pointercancel', onDocPointerCancel)
+  document.removeEventListener('mousemove', onMarqueeMouseMove)
+  document.removeEventListener('mouseup', onMarqueeMouseUp)
   document.removeEventListener('keydown', onDocKeydown)
+  document.removeEventListener('visibilitychange', onVisibilityChange)
   window.removeEventListener('blur', onDocPointerCancel)
-  gridWrapRef.value?.removeEventListener('pointerdown', onGridPointerDownCapture, true)
+  gridWrapRef.value?.removeEventListener('lostpointercapture', onGridLostPointerCapture)
   if (updateInterval) { clearInterval(updateInterval); updateInterval = null }
   hoverTimers.forEach(t => clearTimeout(t))
   hoverTimers.clear()
-  cancelVisibleDrag()
+  drag.cancel('unmount')
+  endMarquee(false)
+  resetDragRange()
+  frozenRowKeys.clear()
+  clearFlipNodes()
   if (layoutRaf) { cancelAnimationFrame(layoutRaf); layoutRaf = 0 }
   if (rangeRaf) { cancelAnimationFrame(rangeRaf); rangeRaf = 0 }
-  if (selectionCheckTimer) { clearTimeout(selectionCheckTimer); selectionCheckTimer = null }
   gridResizeObserver?.disconnect()
   gridResizeObserver = null
   folderResizeObserver?.disconnect()
@@ -1711,33 +1833,35 @@ function logBridgeIssue(method: string, detail = '') {
   updateInterval = setInterval(checkUpdateAndPrompt, 24 * 60 * 60 * 1000)
 })()
 
-// 纯框选手势结束（无卡片拖拽）：补做被推迟的 registry 清理
-watch(() => dragSelectRef.value?.isDragging === true, (now) => {
-  if (now) return
-  flushPendingWork()
-  scheduleSelectionCheck()
-})
-
 // 切换分组/标签/搜索词时滚动复位（窗口/cache 代次变化不触发）
 const browseKey = computed(() => (state.activeCollection ?? 'all') + '|' + state.searchQuery + '|' + [...state.activeTags].sort().join(','))
 watch(browseKey, () => { if (gridWrapRef.value) gridWrapRef.value.scrollTop = 0 })
 
-// 同查询显式 search 刷新：滚动复位、重挂框选 registry；拖拽中先取消手势
+// 同查询显式 search 刷新：滚动复位；拖拽/框选中先取消手势（查询变化不回填旧选择）
 watch(() => state.queryGen, () => {
-  cancelVisibleDrag()
-  scrolling.value = false
+  cancelGridDrag('query')
+  cancelMarquee('query')
   if (gridWrapRef.value) gridWrapRef.value.scrollTop = 0
   hoverTimers.forEach(t => clearTimeout(t))
   hoverTimers.clear()
-  virtualCache.value = null
-  virtualCacheLength.value = 0
-  maybeResetSelectionRegistry(true)
   void nextTick(() => { refreshLayout(); requestVisibleRange() })
 })
 
-// 缓存填充（骨架→真卡）或总数变化后重算窗口与 registry
+// 活动拖拽结束（成功/取消）：复位单飞扩页门禁与冻结行 key
+watch(() => drag.dragState.active, (now, was) => {
+  if (was && !now) {
+    resetDragRange()
+    frozenRowKeys.clear()
+  }
+})
+
+// 缓存填充（骨架→真卡）或总数变化：新头/尾页并入拖拽基准，并重算可见窗口
 watch([() => state.lo, () => state.hi, () => state.total], () => {
-  void nextTick(() => { requestVisibleRange(); scheduleSelectionCheck() })
+  if (drag.dragState.active) drag.syncWindow()
+  void nextTick(() => {
+    requestVisibleRange()
+    refreshFrozenRowKeys()
+  })
 }, { flush: 'post' })
 
 // folder 头块出现/消失/改行数时重测 startMargin
@@ -1844,9 +1968,9 @@ watch(folderCards, () => {
 
         <div v-if="sortEnabled" id="organize-bar" role="toolbar" aria-label="整理模式工具栏">
           <span class="count">已选 {{ state.selectedIds.size }} 项</span>
-          <NButton class="btn btn-sm" size="small" :disabled="state.total === 0" @click="selectAllResults">全选</NButton>
-          <NButton class="btn btn-sm btn-secondary" size="small" :disabled="state.selectedIds.size === 0" @click="clearSelection">取消选择</NButton>
-          <NButton class="btn btn-sm btn-danger" size="small" type="error" :disabled="state.selectedIds.size === 0" @click="batchDelete">批量删除</NButton>
+          <NButton class="btn btn-sm" size="small" :disabled="state.total === 0 || interactionBusy" @click="selectAllResults">全选</NButton>
+          <NButton class="btn btn-sm btn-secondary" size="small" :disabled="state.selectedIds.size === 0 || interactionBusy" @click="clearSelection">取消选择</NButton>
+          <NButton class="btn btn-sm btn-danger" size="small" type="error" :disabled="state.selectedIds.size === 0 || interactionBusy" @click="batchDelete">批量删除</NButton>
           <span v-if="canReorder()" class="hint">拖动卡片调整顺序</span>
           <NButton class="bar-close" quaternary size="tiny" title="退出整理" aria-label="退出整理" @click="toggleSort">
             <template #icon>
@@ -1855,7 +1979,7 @@ watch(folderCards, () => {
           </NButton>
         </div>
 
-        <div id="grid-wrap" ref="gridWrapRef">
+        <div id="grid-wrap" ref="gridWrapRef" @pointerdown="onGridBlankPointerDown" @mousedown="onGridBlankMouseDown">
           <div v-if="folderCards.length" ref="folderGridRef" class="meme-grid folder-grid">
             <div
               v-for="child in folderCards"
@@ -1880,91 +2004,80 @@ watch(folderCards, () => {
           <div
             id="meme-grid"
             class="meme-grid"
-            :class="{ 'sort-enabled': sortEnabled && canReorder(), 'select-enabled': sortEnabled }"
+            :class="{ 'sort-enabled': sortEnabled && canReorder(), 'select-enabled': sortEnabled, 'drag-active': drag.dragState.active }"
             :style="gridStyle"
           >
-            <drag-select
-              ref="dragSelectRef"
-              :key="selectionEpoch"
-              :model-value="state.selectedIds"
-              @update:model-value="onBoxSelection"
-              :disabled="dragSelectDisabled"
-              :multiple="true"
-              :click-option-to-select="false"
-              :draggable-on-option="false"
-              :click-blank-to-clear="false"
+            <Virtualizer
+              v-if="virtualReady && state.total > 0 && gridWrapRef"
+              ref="virtualizerRef"
+              :key="layoutKey"
+              :data="rows"
+              :scroll-ref="gridWrapRef as HTMLElement"
+              :start-margin="startMargin"
+              :item-size="rowPitch"
+              :buffer-size="200"
+              :shift="false"
+              :item-props="rowItemProps"
+              @scroll="onVirtualScroll"
+              @resize="onVirtualResize"
+              @scroll-end="onVirtualScrollEnd"
             >
-              <Virtualizer
-                v-if="virtualReady && state.total > 0 && gridWrapRef"
-                ref="virtualizerRef"
-                :key="layoutKey"
-                :data="rows"
-                :scroll-ref="gridWrapRef as HTMLElement"
-                :start-margin="startMargin"
-                :item-size="rowPitch"
-                :buffer-size="200"
-                :shift="false"
-                :item-props="rowItemProps"
-                :cache="virtualCacheForRender"
-                @scroll="onVirtualScroll"
-                @resize="onVirtualResize"
-                @scroll-end="onVirtualScrollEnd"
-              >
-                <template #default="{ item: row }">
-                  <TransitionGroup
-                    :key="row.key"
-                    tag="div"
-                    name="meme-list"
-                    class="virtual-meme-row"
-                    :data-row-start="row.start"
-                    :data-row-key="row.key"
-                  >
-                    <template v-for="entry in rowSlots(row)" :key="entry.meme ? 'm' + entry.meme.id : 's' + entry.index">
-                      <drag-select-option v-if="entry.meme" :value="entry.meme.id" :disabled="!sortEnabled">
-                        <div
-                          class="meme-card"
-                          :class="{ 'dragging': drag.dragState.active && drag.dragState.memeId === entry.meme.id, selected: state.selectedIds.has(entry.meme.id) }"
-                          :data-meme-id="entry.meme.id"
-                          role="button"
-                          tabindex="0"
-                          :aria-label="entry.meme.name"
-                          @click="onCardClick(entry.meme)"
-                          @contextmenu="onMemeRightClick($event, entry.meme)"
-                          @pointerdown="onCardPointerDown($event, entry.meme, $event.currentTarget as HTMLElement)"
-                          @mouseenter="onCardMouseEnter(entry.meme)"
-                          @mouseleave="onCardMouseLeave(entry.meme)"
-                          @keydown.enter.prevent="onCardClick(entry.meme)"
-                          @keydown.space.prevent="onCardClick(entry.meme)"
-                        >
-                          <img :src="memeSrc(entry.meme)" :alt="entry.meme.name" loading="lazy">
-                          <span v-if="state.selectedIds.has(entry.meme.id)" class="select-badge"><Check :size="12" /></span>
-                          <NButton
-                            v-if="!sortEnabled"
-                            class="fav-btn"
-                            :class="{ active: entry.meme.favorited }"
-                            quaternary
-                            circle
-                            size="tiny"
-                            :aria-label="entry.meme.favorited ? '取消收藏' : '收藏'"
-                            :title="entry.meme.favorited ? '取消收藏' : '收藏'"
-                            @click.stop="quickFavorite(entry.meme)"
-                            @pointerdown.stop
-                          >
-                            <template #icon>
-                              <Heart :size="14" />
-                            </template>
-                          </NButton>
-                          <span v-if="entry.meme.from_stego" class="gif-badge stego-badge">隐写导入</span>
-                          <span v-else-if="entry.meme.is_animated" class="gif-badge">{{ entry.meme.is_gif ? 'GIF' : 'WebP' }}</span>
-                          <span class="meme-name">{{ entry.meme.name }}</span>
-                        </div>
-                      </drag-select-option>
-                      <div v-else class="meme-card skeleton" aria-hidden="true"></div>
-                    </template>
-                  </TransitionGroup>
-                </template>
-              </Virtualizer>
-            </drag-select>
+              <template #default="{ item: row }">
+                <TransitionGroup
+                  :key="row.key"
+                  tag="div"
+                  name="meme-list"
+                  :move-class="drag.dragState.active ? 'meme-list-move-disabled' : 'meme-list-move'"
+                  class="virtual-meme-row"
+                  :data-row-start="row.start"
+                  :data-row-key="row.key"
+                >
+                  <template v-for="entry in rowSlots(row)" :key="entry.meme ? 'm' + entry.meme.id : 's' + entry.index">
+                    <div
+                      v-if="entry.meme"
+                      class="meme-card"
+                      :class="{ 'drag-placeholder': drag.dragState.active && drag.dragState.memeId === entry.meme.id, selected: state.selectedIds.has(entry.meme.id) }"
+                      :data-slot-index="entry.index"
+                      :data-meme-id="entry.meme.id"
+                      role="button"
+                      tabindex="0"
+                      :aria-pressed="sortEnabled ? state.selectedIds.has(entry.meme.id) : undefined"
+                      :aria-label="entry.meme.name"
+                      @click="onCardClick(entry.meme)"
+                      @contextmenu="onMemeRightClick($event, entry.meme)"
+                      @pointerdown="onCardPointerDown($event, entry.meme, $event.currentTarget as HTMLElement)"
+                      @mouseenter="onCardMouseEnter(entry.meme)"
+                      @mouseleave="onCardMouseLeave(entry.meme)"
+                      @keydown.enter.prevent="onCardClick(entry.meme)"
+                      @keydown.space.prevent="onCardClick(entry.meme)"
+                    >
+                      <img :src="memeSrc(entry.meme)" :alt="entry.meme.name" loading="lazy" draggable="false">
+                      <span v-if="state.selectedIds.has(entry.meme.id)" class="select-badge"><Check :size="12" /></span>
+                      <NButton
+                        v-if="!sortEnabled"
+                        class="fav-btn"
+                        :class="{ active: entry.meme.favorited }"
+                        quaternary
+                        circle
+                        size="tiny"
+                        :aria-label="entry.meme.favorited ? '取消收藏' : '收藏'"
+                        :title="entry.meme.favorited ? '取消收藏' : '收藏'"
+                        @click.stop="quickFavorite(entry.meme)"
+                        @pointerdown.stop
+                      >
+                        <template #icon>
+                          <Heart :size="14" />
+                        </template>
+                      </NButton>
+                      <span v-if="entry.meme.from_stego" class="gif-badge stego-badge">隐写导入</span>
+                      <span v-else-if="entry.meme.is_animated" class="gif-badge">{{ entry.meme.is_gif ? 'GIF' : 'WebP' }}</span>
+                      <span class="meme-name">{{ entry.meme.name }}</span>
+                    </div>
+                    <div v-else class="meme-card skeleton" aria-hidden="true"></div>
+                  </template>
+                </TransitionGroup>
+              </template>
+            </Virtualizer>
           </div>
 
           <div v-if="!virtualReady" class="grid-foot">当前环境不支持虚拟滚动（需要 ResizeObserver 与元素滚动方法）</div>
@@ -2025,6 +2138,25 @@ watch(folderCards, () => {
     :items="ctx.items.value" :trigger="ctx.trigger.value"
     @action="onCtxAction" @close="ctx.hide"
   />
+
+  <div
+    v-if="drag.ghost.visible && drag.ghost.meme"
+    class="drag-ghost meme-card dragging"
+    aria-hidden="true"
+    :style="{ width: drag.ghost.width + 'px', height: drag.ghost.height + 'px', transform: drag.ghost.transform }"
+  >
+    <img :src="memeSrc(drag.ghost.meme)" alt="" draggable="false">
+    <span v-if="drag.ghost.meme.from_stego" class="gif-badge stego-badge">隐写导入</span>
+    <span v-else-if="drag.ghost.meme.is_animated" class="gif-badge">{{ drag.ghost.meme.is_gif ? 'GIF' : 'WebP' }}</span>
+    <span class="meme-name">{{ drag.ghost.meme.name }}</span>
+  </div>
+
+  <div
+    v-if="marqueeBox.active"
+    class="marquee-overlay"
+    aria-hidden="true"
+    :style="{ left: marqueeBox.x + 'px', top: marqueeBox.y + 'px', width: marqueeBox.width + 'px', height: marqueeBox.height + 'px' }"
+  ></div>
 
   <div id="drop-overlay" :class="{ 'drag-over': dragOver }">
     <div class="drop-content">

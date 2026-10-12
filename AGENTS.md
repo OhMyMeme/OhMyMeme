@@ -108,8 +108,9 @@ tests/
   test_phash.py   # pytest 风格: 感知哈希(pHash)算法单元测试 (需 PIL)
   test_import_concurrency.py # pytest 风格: _do_import 并发去重 (同图1条/异图都可导)
   frontend/meme_cache.test.ts # vitest: useMemes 连续缓存模型纯逻辑（分页/裁剪/远跳/代次/重试/pin）
-  frontend/main_window_virtual.test.ts # vitest: MainWindow 虚拟网格接线桩（坐标归一化/可见段置换/回滚代次/越界拒绝）
-  fixtures/grid_slot_probe.cjs # Node 网格拖拽槽位回归探针
+  frontend/main_window_virtual.test.ts # vitest: MainWindow 虚拟网格接线桩（全局槽位/自研 marquee/自动滚动与补页/drop/取消代次/saving）
+  frontend/grid_interaction.test.ts # vitest: gridInteraction 纯函数（框选矩形/XOR/槽位/速度曲线/落点顺序）
+  fixtures/grid_slot_probe.cjs # Node 全局槽位同源探针（读 gridInteraction.ts）
 ```
 
 ## js_api 桥接规范
@@ -311,17 +312,18 @@ tests/
 - 远端 manifest 中的 `collections` 以嵌套格式存储（`name`/`filenames`/`children`），version 2 旧格式启动时自动转换
 
 ### 自定义排序
-- `memes.sort_order` 字段存储全局展示顺序；前端可拖拽排序仅在正 ID 分组/子分组内进行，成员顺序存 `meme_collections.sort_order`
+- `memes.sort_order` 字段存储全局展示顺序；前端可拖拽排序在全部/未分类视图走全局 `sort_order`，正 ID 分组（含子分组）内成员顺序存 `meme_collections.sort_order`（与 `canReorder()` 资格一致：未搜索、未按标签筛选）
 - **分页与虚拟化**：后端 `offset`/`limit` 与初始化 200 条保持不变（`frontend/main/features/memes/useMemes.ts`）；`useMemes` 使用每页 200 项、常规最多 2000 项的连续已加载槽位区间 `[lo,hi)`，`slots` 长度为 `total`，区间外为 `undefined`。相邻滚动按页扩展并向视口反方向裁剪，远跳直接接管目标附近窗口；过期响应按查询/窗口代次丢弃，失败保留成功缓存并有限退避重试。MainWindow 使用 `virtua/vue` 的行级 `Virtualizer`，`#grid-wrap` 为唯一滚动容器并关闭 `overflow-anchor`，`#meme-grid` 外层保留；folder-grid 不虚拟化并纳入 `startMargin`，未加载槽位为同尺寸静态骨架。footer 显示共 N 项及加载/失败状态，并带 `aria-live`；无 `.grid-spacer`/顺序追加分支。尺寸硬约束：表情卡等宽等高，列数由 `ResizeObserver` 按容器宽/最小卡宽 112px/间隙 10px 推导并以未变换布局尺寸校准，行距 = 卡高 + 10px；更改卡片/名字/图片尺寸须同步检查虚拟化与槽位数学。
-- **模型驱动**：`slots` 与连续 `loadedSlice` 为唯一数据真源；S2 拖拽接线只置换已挂载且完整已加载的子段，提交当前连续缓存窗口新顺序，不能按 DOM 局部索引直接写 `slots`
-- **Pointer Events + 指针捕获**：`pointerdown/pointermove/pointerup`，拖拽激活（位移 >8px）时才 `setPointerCapture`（避免普通点击被捕获重定向）；无 `PointerEvent` 的旧 WebView 自动回退 mouse 事件（`mousemove/mouseup` 挂 document）；`pointercancel`/`blur` 取消并回滚模型 + 重渲染。S2 在 MainWindow 适配可见段索引/坐标与跨行重挂，滚动/布局/查询变化取消并回滚；跨视口自动滚动与完整框选由 S3 补齐
-- **网格感知插入点**：`gridMetrics()` 按首卡片实测宽/高 + `columnGap` 推算 `cols`，`gridSlotIndex(x,y)` 先定位绝对格子（含 folder-card 占位）再映射到非 folder 的 meme 卡数组索引并 clamp（分组内 folder 卡混排时插槽不串位）
-- **FLIP 让位动画**：跨槽时对被挤开卡片记录 First/Last rect，invert 后靠 `#meme-grid.drag-active .meme-card` 的 `transition: transform 200ms` 归位，实时显示空位跟随指针
-- 落点持久化：前端可拖拽排序仅在正 ID 分组/子分组内调用 `reorder_collection_members(collection_id, id[])` 更新 `meme_collections.sort_order`；`reorder_memes(id[])` 仍用于维护全局 `sort_order`；API 失败回滚 `originalOrder` 并重渲染 + toast
-- `canReorderMemes()`: 搜索或标签筛选时禁用；**全局开关 `dragSortEnabled`（标题栏「整理」纯图标按钮，激活态蓝色底 + `aria-pressed`）关闭时禁用排序**；仅正 ID 分组（含子分组）、全部（null）与未分类（-4）视图可排序，收藏夹/最近使用等特殊集合（-2/-3）不可排
+- **模型驱动**：`slots` 与连续 `loadedSlice` 为唯一数据真源；整理拖拽使用全局槽位数学，只从已挂载真卡发起并落到已挂载真卡。边缘自动滚动按需扩展连续窗口，drop 提交扩展后完整窗口顺序给后端位置保持置换；不得把 DOM 局部索引写入 `slots`
+- **整理缓存预算**：普通缓存预算 2000 项；活动拖拽扩展 pin 临时保护开始窗口与连续移动路径，可能超过预算；结束后恢复视口预算。不得声称自动滚动手势内缓存恒定 2000 项
+- **Pointer Events + 指针捕获**：`pointerdown/pointermove/pointerup`，拖拽/框选激活（位移 >8px）时才 `setPointerCapture`（避免普通点击被捕获重定向）；无 `PointerEvent` 的旧 WebView 由框选回退 mouse 事件（`mousemove`/`mouseup` 挂 document，两套起手不会同时启动），拖拽引擎按窄 `PointerSample` 驱动；`pointercancel`/`blur` 取消并回滚模型 + 重渲染。活动整理拖拽在稳定 `#grid-wrap` 捕获指针，以独立预览保护离屏源卡；rAF 边缘滚动在指针静止时继续运行。相邻加载不取消，查询/布局/`total` 变化、远跳、ESC、blur/`pointercancel` 取消；保存中冻结事件与分页，旧回调不得覆盖新查询
+- **网格感知插入点**：MainWindow 采集未变换卡宽/步距与滚动后的内容原点（`originY = wrapTop + clientTop + startMargin - scrollTop`），`frontend/main/features/sorting/gridInteraction.ts` 的纯函数 `gridSlotIndex(geometry,x,y,total)` 直接给出全局绝对槽位；越界、末行空列与非法几何一律 `null`，不做 DOM 卡数钳制（旧 `gridMetrics()`/clamp 已删除）
+- **FLIP 让位动画**：写入预览前记录可见真卡的未变换槽位原点，`nextTick` 后仅对更新前后均可见的非拖动真卡做位移归零（`.drag-flip`）；活动拖拽期间动态 `move-class` 禁用行级 `TransitionGroup` 自身 move 动画，避免双 FLIP 叠加，终态回到普通卡 `scale(0.95)` 且不覆盖独立 `rotate`
+- 落点持久化：正 ID 分组内调用 `reorder_collection_members(collection_id, id[])` 更新 `meme_collections.sort_order`，全部/未分类走 `reorder_memes(id[])` 维护全局 `sort_order`；API 失败且原会话上下文仍有效时恢复基准顺序、toast 并按数据库重同步（旧代次只清会话，不 search、不 toast）
+- `canReorder()`: 搜索或标签筛选时禁用；**全局开关（标题栏「整理」纯图标按钮，激活态蓝色底 + `aria-pressed`）关闭时禁用排序与框选**；仅正 ID 分组（含子分组）、全部（null）与未分类（-4）视图可排序，收藏夹/最近使用等特殊集合（-2/-3）不可排
 - **标题栏动作布局**：标题栏可见按钮一律纯图标（整理开关、导入、⋯ 更多、关闭），含义靠 `title`/`aria-label` 与激活态；上传到远端/从远端下载/重新扫描/设置收进「⋯」菜单（菜单项为图标+文字，同步｜维护｜应用三类之间以分割线分隔）
-- **整理模式（点选 + 拖拽换位合并）**：标题栏单一开关 `sortEnabled`（`toggleSort` 用 `drag.enable()/drag.disable()`，关闭时清空选择）。开启后：单击/回车=勾选切换（`onCardClick` 接管，drag-select 的 `:click-option-to-select=false`，避免拖拽换位后的 click 误勾选）、空白拖拽=框选（drag-select 仅提供框选）、卡片拖拽 >8px=换位（仅 `canReorderMemes()` 视图：正 ID 分组/全部/未分类且未搜索/未按标签筛选；其余视图退化为纯点选）、点击不复制、不显示快捷收藏、禁用原生文件拖拽；底部悬浮工具栏 `#organize-bar`（`role="toolbar"`，absolute 吸附网格区底部居中、不参与布局）：已选 N 项 / 全选（按当前查询全量取 id，不受已加载范围限制）/ 取消选择 / 批量删除 /（可排时）「拖动卡片调整顺序」提示 / 退出整理；ESC 顺序：右键菜单 → 整理模式 → 隐藏窗口；`handleCopy`/`onCardPointerDown`/`onDocPointerMove` 均以 `sortEnabled` 守卫，拖拽换位后由 `ignoreClick` 吞掉首次点击（不误触复制/勾选）。S2 补充：点选/全选/批量删除仍按 id Set 工作，不因页淘汰取消选择；当前拖拽和框选仅保证已挂载区域，框选仍暂用既有 drag-select 并受控清理（停滚后按挂载指纹重挂），S3 完善跨视口手势。注：批量加入分组/打标签/移动到分组当前无前端入口（后端亦无 `batch_*` 接口），如需恢复属独立功能
-- **整理模式视觉反馈**：`renderGrid()` 按 `canReorderMemes()` 切换 `sort-enabled`；启用时仅普通 meme 卡（排除 `.folder-card` 和 `.dragging`）最终显示 `scale(0.95)`、3px `var(--gray-7)` 描边及 3px 偏移。稳定卡使用独立 `rotate` 属性作轻微快速晃动，且必须排除 `.drag-active`、`.sort-enter`、`.folder-card` 和 `.dragging`；`prefers-reduced-motion: reduce` 时禁用晃动。不得用 `transform` 实现晃动，避免覆盖拖拽和 FLIP 的变换。正在拖拽的卡内联变换固定为最终 `translate(...) scale(0.90)`，与现有透明度、阴影和 FLIP 效果并存，CSS 与内联变换不得叠加。整理模式选中态：`#meme-grid.select-enabled .meme-card.selected` 为 `2px solid var(--blue-9)` outline（`select-enabled` 随整理模式开启；`sort-enabled` 的可拖视觉规则独立并存）。开启工具栏整理开关时沿用现有入场反馈，只有明确关闭该开关才保留当前卡片播放退场动画。搜索、标签、分组或虚拟分组导致的资格变化均按普通刷新处理，不播放退场动画；文件夹卡不显示排序反馈
+- **整理模式（点选 + 拖拽换位 + 自研框选）**：标题栏单一开关 `sortEnabled`（`toggleSort` 用 `drag.enable()/drag.disable()`，关闭时清空选择）。开启后：单击/回车=勾选切换（`onCardClick` 接管，已激活手势抑制随后 click，避免拖拽换位/框选抬起后的 click 误勾选）、空白拖拽为自研可见区框选（仅命中当前挂载且已加载真卡；以起手选择快照 XOR 命中集合，框内重复项反选，框外/离屏选择保留，空白点击不清空，不使用修饰键；框选滚动即取消，不做跨视口连续框选）、卡片拖拽 >8px=换位（仅 `canReorder()` 视图：正 ID 分组/全部/未分类且未搜索/未按标签筛选；其余视图退化为纯点选）、点击不复制、不显示快捷收藏、禁用原生文件拖拽；底部悬浮工具栏 `#organize-bar`（`role="toolbar"`，absolute 吸附网格区底部居中、不参与布局）：已选 N 项 / 全选（按当前查询全量取 id，不受已加载范围限制）/ 取消选择 / 批量删除 /（可排时）「拖动卡片调整顺序」提示 / 退出整理，活动手势期间三者以 `interactionBusy` 禁用；ESC 顺序：LAN 确认 → 右键菜单 → 取消活动框选/排序手势（第一次不退出整理）→ 退出整理 → 隐藏窗口；`handleCopy`/`onCardPointerDown`/`onDocPointerMove` 均以 `sortEnabled` 守卫。点选/全选/批量删除按 id Set 工作，不因页淘汰取消选择。注：批量加入分组/打标签/移动到分组当前无前端入口（后端亦无 `batch_*` 接口），如需恢复属独立功能
+- **整理模式视觉反馈**：MainWindow 按 `canReorder()` 绑定 `#meme-grid` 的 `sort-enabled`；启用时仅普通 meme 卡（排除 `.folder-card` 和 `.dragging`）最终显示 `scale(0.95)`、3px `var(--gray-7)` 描边及 3px 偏移。稳定卡使用独立 `rotate` 属性作轻微快速晃动，且必须排除 `.drag-active`、`.sort-enter`、`.folder-card` 和 `.dragging`；`prefers-reduced-motion: reduce` 时禁用晃动。不得用 `transform` 实现晃动，避免覆盖拖拽和 FLIP 的变换。独立拖动预览使用最终 `translate(...) scale(0.90)`，真实槽位保持等尺寸占位；FLIP 只作用可见真卡。整理模式选中态：`#meme-grid.select-enabled .meme-card.selected` 为 `2px solid var(--blue-9)` outline（`select-enabled` 随整理模式开启；`sort-enabled` 的可拖视觉规则独立并存）。开启工具栏整理开关时沿用现有入场反馈，只有明确关闭该开关才保留当前卡片播放退场动画。搜索、标签、分组或虚拟分组导致的资格变化均按普通刷新处理，不播放退场动画；文件夹卡不显示排序反馈
 - **拖拽到外部应用**：关闭整理模式后 meme 卡**不用 HTML5 拖拽**（WebView2 http 源的 `text/uri-list`/`DownloadURL` 不生成 CF_HDROP，QQ/微信会报"图片拖拽失败"或资源管理器无反应）；改用 **WinForms 原生文件拖拽**（`native_drag.py`）：`pointerdown` 记录起点 → `pointermove` 位移 >8px 时 `JsApi.start_native_drag(id)` → 后端用 `webview.windows[0].native`（主 Form）`Invoke` 在 UI 线程执行 `DoDragDrop`（`DataObject` + `DataFormats.FileDrop` → CF_HDROP）→ 拖到 QQ/微信/桌面是真实本地文件；`DoDragDrop` 返回 `DragDropEffects.None`（拖回取消）时 `start_native_drag` 返回 False，不触发 `schedule_hide`；`native_drag.py` 懒加载 pythonnet/WinForms，非 Windows 或无 .NET 时返回 False，JS 端 toast 提示；**原生拖拽进行中回拖到窗口**用全局 `nativeDragActive` 标志抑制 drop 导入处理器（dragenter/dragover/dragleave/drop 均忽略，视为取消，不弹导入浮层）；`nativeDragActive` 在 `pointermove` 位移 >8px 触发原生拖拽**前**置 true，`start_native_drag` Promise `.then/.catch` 中重置，拖拽期间（后端 `DoDragDrop` 阻塞 UI 线程）保持 true，确保拖回窗口不会误触发导入
 - 排序拖拽与原生拖拽共用 `onCardPointerDown`/`onDocPointerMove` pointer 事件：`onCardPointerDown` 按 `sortEnabled && canReorder()` 决定走 `drag.onPointerDown`（排序）还是记录 `nativeDragStart`（原生拖拽），`onDocPointerMove` 按 `drag.dragState.memeId` 是否存在分支，`onDocPointerUp`/`onDocPointerCancel` 对原生拖拽仅清 `nativeDragStart` 跳过排序回滚
 - `search()` 带 `collection_id` 时按成员 `sort_order ASC, m.updated_at DESC, m.id ASC` 排序（子查询取该 meme 在目标分组内的 sort_order）；成员排序值并列时先按更新时间倒序，再按 id 升序。
@@ -351,7 +353,7 @@ tests/
 - **`collection_id = -4`** 标识「未分类」虚拟分组：展示未加入任何分组的表情包（`meme_collections` 无记录），**不写入 DB/manifest，动态生成**
 - `MemeDB.search()/count()` 新增 `uncategorized_only` 参数（`NOT EXISTS` 于 `meme_collections`），`search_memes` 中 `collection_id == -4` 路由到该参数，同时过滤隐写载体
 - `get_init_data`/`get_collections` 按配置 `show_uncategorized`（默认开）决定是否追加 `-4` 条目（`get_collections` 中放于 `-2`/`-3` 之后）；设置页「分组显示 → 显示未分类分组」开关（`s-show-uncategorized`），保存到 `save_settings` 的 `show_uncategorized`
-- 前端走通用集合渲染路径：计数为 0 时自动隐藏（`MainWindow.vue` 过滤 `count === 0` 的分组）；可拖拽排序（复用全局 `sort_order`，走 `reorder_memes` 持久化，`canReorderMemes` 对 -4 返回 true）；无特殊右键菜单
+- 前端走通用集合渲染路径：计数为 0 时自动隐藏（`MainWindow.vue` 过滤 `count === 0` 的分组）；可拖拽排序（复用全局 `sort_order`，走 `reorder_memes` 持久化，`canReorder()` 对 -4 返回 true）；无特殊右键菜单
 - 未分类集合内的删除/加入分组等操作经 `refreshCollections` 后计数自动刷新，全部归类后 `-4` 从标签栏消失
 
 ### 最近使用

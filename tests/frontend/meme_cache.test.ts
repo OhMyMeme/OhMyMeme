@@ -776,4 +776,346 @@ describe('useMemes 连续缓存模型', () => {
     expect(model.state.hi).toBe(200)
     expect(model.state.slots[8000]).toBeUndefined()
   })
+
+  it('extensionPinCommitsAdjacentPagesWithoutTrim', async () => {
+    const total = () => 9000
+    const { model } = await loadModel({ count_memes: total, search_memes: autoPage(total) })
+    await model.search()
+    await model.ensureRange(400, 2400, 'jump')
+    expect(model.state.lo).toBe(400)
+    expect(model.state.hi).toBe(2400)
+    const release = model.pinLoadedRange({ allowExtension: true })
+    const slice = model.loadedSlice()
+    expect(slice.start).toBe(400)
+    expect(slice.items.length).toBe(2000)
+    // 模拟拖拽预览：窗口首项移到末尾，扩展提交必须保留预览后的旧记录
+    const preview = [...slice.items.slice(1), slice.items[0] as Meme]
+    expect(model.setLoadedSlice(400, preview)).toBe(true)
+    expect(model.state.slots[400]?.id).toBe(402)
+    expect(model.state.slots[2399]?.id).toBe(401)
+    // 向后补一页：扩展 pin 下立即提交且不裁剪
+    await expect(model.ensureRange(2400, 2600, 'forward')).resolves.toBe(true)
+    expect(model.state.lo).toBe(400)
+    expect(model.state.hi).toBe(2600)
+    expect(model.state.slots[2400]?.id).toBe(2401)
+    expect(model.state.slots[2599]?.id).toBe(2600)
+    // 向前补一页：保留拖过路径与预览置换，窗口密集增长到 2400
+    await expect(model.ensureRange(200, 400, 'backward')).resolves.toBe(true)
+    expect(model.state.lo).toBe(200)
+    expect(model.state.hi).toBe(2600)
+    expect(model.state.hi - model.state.lo).toBe(2400)
+    expect(model.state.slots[200]?.id).toBe(201)
+    expect(model.state.slots[399]?.id).toBe(400)
+    expect(model.state.slots[400]?.id).toBe(402)
+    expect(model.state.slots[2398]?.id).toBe(2400)
+    expect(model.state.slots[2399]?.id).toBe(401)
+    expect(model.state.slots[2400]?.id).toBe(2401)
+    expect(model.state.slots[2599]?.id).toBe(2600)
+    expect(model.state.slots[2600]).toBeUndefined()
+    expect(model.state.slots.slice(200, 2600).every(record => record !== undefined)).toBe(true)
+    release()
+    expect(model.state.lo).toBe(200)
+    expect(model.state.hi).toBe(2600)
+  })
+
+  it('extensionPinRejectsRemoteTakeover', async () => {
+    const total = () => 9000
+    const { model, calls } = await loadModel({ count_memes: total, search_memes: autoPage(total) })
+    await model.search()
+    await model.ensureRange(0, 2000)
+    expect(model.state.hi).toBe(2000)
+    const release = model.pinLoadedRange({ allowExtension: true })
+    const source = model.state.slots[100]
+    // 远跳响应不得清原窗口或改源记录
+    await expect(model.ensureRange(8000, 8400, 'jump')).resolves.toBe(false)
+    await flush()
+    expect(model.state.lo).toBe(0)
+    expect(model.state.hi).toBe(2000)
+    expect(model.state.slots[100]).toBe(source)
+    expect(model.state.slots[8000]).toBeUndefined()
+    expect(model.state.loadError).toBe(false)
+    // 被拒的远跳不得进入退避重放
+    await vi.advanceTimersByTimeAsync(5000)
+    await flush()
+    expect(offsetCalls(calls, 8000)).toBe(1)
+    expect(model.state.lo).toBe(0)
+    release()
+    expect(model.state.lo).toBe(0)
+    expect(model.state.hi).toBe(2000)
+    // 释放后普通远跳恢复接管
+    await expect(model.ensureRange(8000, 8400, 'jump')).resolves.toBe(true)
+    expect(model.state.lo).toBe(8000)
+    expect(model.state.hi).toBe(8400)
+    expect(offsetCalls(calls, 8000)).toBe(2)
+  })
+
+  it('freezePinWinsOverExtensionPin', async () => {
+    const total = () => 9000
+    const pages = holdPage()
+    const { model, calls } = await loadModel({
+      count_memes: total,
+      search_memes: args => (args[3] === 2000 ? pages.handler(args) : autoPage(total)(args)),
+    })
+    await model.search()
+    await model.ensureRange(0, 2000)
+    expect(model.state.hi).toBe(2000)
+    const releaseExt = model.pinLoadedRange({ allowExtension: true })
+    const releaseFreeze = model.pinLoadedRange()
+    // 冻结优先：扩展 pin 存在也不提交在途页
+    const pinned = model.ensureRange(2000, 2200, 'forward')
+    pages.resolve(2000, makeRange(2001, 200))
+    await expect(pinned).resolves.toBe(true)
+    await flush()
+    expect(model.state.lo).toBe(0)
+    expect(model.state.hi).toBe(2000)
+    expect(model.state.slots[2000]).toBeUndefined()
+    // 释放扩展 pin 不改变冻结暂缓
+    releaseExt()
+    expect(model.state.hi).toBe(2000)
+    expect(model.state.slots[2000]).toBeUndefined()
+    // 失效在途需求后再释放冻结：暂缓需求已清，不混入旧页
+    model.invalidateRangeRequests()
+    releaseFreeze()
+    await flush()
+    expect(model.state.lo).toBe(0)
+    expect(model.state.hi).toBe(2000)
+    expect(model.state.slots[2000]).toBeUndefined()
+    expect(offsetCalls(calls, 2000)).toBe(1)
+    // 完全释放后普通补页恢复
+    const redo = model.ensureRange(2000, 2200, 'forward')
+    pages.resolve(2000, makeRange(2001, 200))
+    await expect(redo).resolves.toBe(true)
+    expect(model.state.lo).toBe(200)
+    expect(model.state.hi).toBe(2200)
+    expect(model.state.slots[2000]?.id).toBe(2001)
+    expect(offsetCalls(calls, 2000)).toBe(2)
+  })
+
+  it('releasedExtensionTrimsCachedViewport', async () => {
+    const total = () => 9000
+    const { model, calls } = await loadModel({ count_memes: total, search_memes: autoPage(total) })
+    await model.search()
+    const release = model.pinLoadedRange({ allowExtension: true })
+    // 扩展 pin 内补到 2400 项：不裁剪
+    await model.ensureRange(0, 2400)
+    expect(model.state.lo).toBe(0)
+    expect(model.state.hi).toBe(2400)
+    expect(model.state.hi - model.state.lo).toBe(2400)
+    model.state.selectedIds = new Set([1, 2399])
+    // pin 期间缓存命中也不裁剪
+    await expect(model.ensureRange(0, 200)).resolves.toBe(true)
+    expect(model.state.hi - model.state.lo).toBe(2400)
+    const callsBefore = calls.length
+    release()
+    // 释放后缓存命中同样恢复 2000 预算：无网络请求且受保护视口完整
+    await expect(model.ensureRange(1000, 1200)).resolves.toBe(true)
+    expect(calls.length).toBe(callsBefore)
+    expect(model.state.lo).toBe(400)
+    expect(model.state.hi).toBe(2400)
+    expect(model.state.hi - model.state.lo).toBe(2000)
+    expect(model.state.slots[399]).toBeUndefined()
+    expect(model.state.slots[400]?.id).toBe(401)
+    expect(model.state.slots[1000]?.id).toBe(1001)
+    expect(model.state.slots[1199]?.id).toBe(1200)
+    expect(model.state.slots[2399]?.id).toBe(2400)
+    expect(model.state.total).toBe(9000)
+    expect(model.state.slots.length).toBe(9000)
+    expect(model.state.selectedIds.size).toBe(2)
+    expect(model.state.selectedIds.has(1)).toBe(true)
+    expect(model.state.selectedIds.has(2399)).toBe(true)
+  })
+
+  it('stalePinReleaseDoesNotTouchNewPins', async () => {
+    let backendTotal = 9000
+    let shortMode = true
+    const pages = holdPage()
+    const { model, calls } = await loadModel({
+      count_memes: () => backendTotal,
+      search_memes: args => {
+        const offset = args[3] as number
+        const limit = args[4] as number
+        if (offset === 0) return autoPage(() => backendTotal)(args)
+        if (offset === 2000 && shortMode) return makeRange(offset + 1, 10)
+        if (offset === 2200) return pages.handler(args)
+        return makeRange(offset + 1, Math.max(0, Math.min(limit, backendTotal - offset)))
+      },
+    })
+    await model.search()
+    expect(model.state.hi).toBe(200)
+    // 总数漂移换代：漂移失败进入退避重放，重读 count 后旧 pin 失效
+    await expect(model.ensureRange(2000, 2200, 'forward')).resolves.toBe(false)
+    expect(model.state.loadError).toBe(true)
+    expect(offsetCalls(calls, 2000)).toBe(1)
+    const oldPin = model.pinLoadedRange()
+    shortMode = false
+    backendTotal = 5000
+    await vi.advanceTimersByTimeAsync(1000)
+    await flush(6)
+    expect(model.state.total).toBe(5000)
+    expect(model.state.slots.length).toBe(5000)
+    expect(model.state.lo).toBe(2000)
+    expect(model.state.hi).toBe(2200)
+    expect(model.state.slots[2000]?.id).toBe(2001)
+    // 新 pin 的暂缓提交不受旧 release 影响
+    const newPin = model.pinLoadedRange()
+    const held = model.ensureRange(2200, 2400, 'forward')
+    pages.resolve(2200, makeRange(2201, 200))
+    await expect(held).resolves.toBe(true)
+    await flush()
+    expect(model.state.lo).toBe(2000)
+    expect(model.state.hi).toBe(2200)
+    expect(model.state.slots[2200]).toBeUndefined()
+    oldPin()
+    await flush()
+    expect(model.state.hi).toBe(2200)
+    expect(model.state.slots[2200]).toBeUndefined()
+    newPin()
+    expect(model.state.hi).toBe(2400)
+    expect(model.state.slots[2200]?.id).toBe(2201)
+    // 重复释放幂等
+    oldPin()
+    newPin()
+    expect(model.state.hi).toBe(2400)
+    // 查询换代：旧 token 不得触碰新查询下的 pin 与暂缓提交
+    const stalePin = model.pinLoadedRange()
+    model.setSearch('x')
+    await model.search()
+    expect(model.state.total).toBe(5000)
+    expect(model.state.hi).toBe(200)
+    const queryPin = model.pinLoadedRange()
+    await expect(model.ensureRange(200, 400, 'forward')).resolves.toBe(true)
+    await flush()
+    expect(model.state.hi).toBe(200)
+    expect(model.state.slots[200]).toBeUndefined()
+    stalePin()
+    await flush()
+    expect(model.state.hi).toBe(200)
+    expect(model.state.slots[200]).toBeUndefined()
+    queryPin()
+    expect(model.state.hi).toBe(400)
+    expect(model.state.slots[200]?.id).toBe(201)
+    // dispose 换代：旧生命周期 token 释放不影响复活后的新 pin
+    const dyingPin = model.pinLoadedRange()
+    model.dispose()
+    await model.search()
+    expect(model.state.hi).toBe(200)
+    const revivedPin = model.pinLoadedRange()
+    await expect(model.ensureRange(200, 400, 'forward')).resolves.toBe(true)
+    await flush()
+    expect(model.state.hi).toBe(200)
+    expect(model.state.slots[200]).toBeUndefined()
+    dyingPin()
+    await flush()
+    expect(model.state.hi).toBe(200)
+    expect(model.state.slots[200]).toBeUndefined()
+    revivedPin()
+    expect(model.state.hi).toBe(400)
+    dyingPin()
+    revivedPin()
+    expect(model.state.hi).toBe(400)
+    expect(model.state.slots[200]?.id).toBe(201)
+  })
+
+  it('invalidateRangeRequestsRetainsOrderAndSelection', async () => {
+    const total = () => 9000
+    const pages = holdPage()
+    let mode: 'hold' | 'fail' | 'ok' = 'hold'
+    const { model, calls } = await loadModel({
+      count_memes: total,
+      search_memes: args => {
+        const offset = args[3] as number
+        if (offset === 0) return autoPage(total)(args)
+        if (offset === 2000) return mode === 'fail' ? null : pages.handler(args)
+        return autoPage(total)(args)
+      },
+    })
+    await model.search()
+    await model.ensureRange(0, 2000)
+    model.state.selectedIds = new Set([1, 1999])
+    const kept = model.state.slots[500]
+    const genBefore = model.state.rangeGen
+    // A. 活动需求被 supersede：旧响应不得提交
+    const pending = model.ensureRange(2000, 2200, 'forward')
+    model.invalidateRangeRequests()
+    await expect(pending).resolves.toBe(false)
+    pages.resolve(2000, makeRange(2001, 200))
+    await flush()
+    expect(model.state.total).toBe(9000)
+    expect(model.state.slots.length).toBe(9000)
+    expect(model.state.lo).toBe(0)
+    expect(model.state.hi).toBe(2000)
+    expect(model.state.slots[500]).toBe(kept)
+    expect(model.state.slots[2000]).toBeUndefined()
+    expect(model.state.rangeGen).toBeGreaterThan(genBefore)
+    expect(model.state.rangeLoading).toBe(false)
+    expect(model.state.selectedIds.size).toBe(2)
+    expect(model.state.selectedIds.has(1)).toBe(true)
+    expect(model.state.selectedIds.has(1999)).toBe(true)
+    // B. 退避重试与 lastSpec：失效后不得重放，也不能再被 retryRange 复活
+    mode = 'fail'
+    const failedCalls = offsetCalls(calls, 2000)
+    await expect(model.ensureRange(2000, 2200, 'forward')).resolves.toBe(false)
+    expect(model.state.loadError).toBe(true)
+    expect(offsetCalls(calls, 2000)).toBe(failedCalls + 1)
+    model.invalidateRangeRequests()
+    await vi.advanceTimersByTimeAsync(5000)
+    await flush()
+    expect(offsetCalls(calls, 2000)).toBe(failedCalls + 1)
+    await expect(model.retryRange()).resolves.toBe(true)
+    expect(offsetCalls(calls, 2000)).toBe(failedCalls + 1)
+    // C. 正常新需求仍可加载
+    mode = 'ok'
+    const okCalls = offsetCalls(calls, 2000)
+    const redo = model.ensureRange(2000, 2200, 'forward')
+    pages.resolve(2000, makeRange(2001, 200))
+    await expect(redo).resolves.toBe(true)
+    expect(offsetCalls(calls, 2000)).toBe(okCalls + 1)
+    expect(model.state.lo).toBe(200)
+    expect(model.state.hi).toBe(2200)
+    expect(model.state.slots[2000]?.id).toBe(2001)
+    expect(model.state.loadError).toBe(false)
+    expect(model.state.selectedIds.size).toBe(2)
+  })
+
+  it('trimsTailWhenProtectedViewportPinsTheHead', async () => {
+    const total = () => 9000
+    const { model } = await loadModel({ count_memes: total, search_memes: autoPage(total) })
+    await model.search()
+    const release = model.pinLoadedRange({ allowExtension: true })
+    await model.ensureRange(0, 2400)
+    expect(model.state.lo).toBe(0)
+    expect(model.state.hi).toBe(2400)
+    release()
+    // 视口回到窗口头部：头部被保护范围钉住时，必须从另一端（尾部）释放到预算
+    await expect(model.ensureRange(0, 200)).resolves.toBe(true)
+    expect(model.state.lo).toBe(0)
+    expect(model.state.hi).toBe(2000)
+    expect(model.state.hi - model.state.lo).toBe(2000)
+    expect(model.state.slots[199]).toBeDefined()
+    expect(model.state.slots[2000]).toBeUndefined()
+    expect(model.state.slots[2399]).toBeUndefined()
+    expect(model.state.total).toBe(9000)
+    expect(model.state.slots.length).toBe(9000)
+  })
+
+  it('trimsBothEdgesWhenOneSideIsPinnedByProtection', async () => {
+    const total = () => 9000
+    const { model } = await loadModel({ count_memes: total, search_memes: autoPage(total) })
+    await model.search()
+    const release = model.pinLoadedRange({ allowExtension: true })
+    await model.ensureRange(0, 2400)
+    release()
+    // 中间视口：近侧（头部）先按页释放，仍超预算时远侧（尾部）继续释放到预算
+    model.state.selectedIds = new Set([1, 2399])
+    await expect(model.ensureRange(200, 600)).resolves.toBe(true)
+    expect(model.state.lo).toBe(200)
+    expect(model.state.hi).toBe(2200)
+    expect(model.state.hi - model.state.lo).toBe(2000)
+    expect(model.state.slots[199]).toBeUndefined()
+    expect(model.state.slots[200]).toBeDefined()
+    expect(model.state.slots[599]).toBeDefined()
+    expect(model.state.slots[2200]).toBeUndefined()
+    expect(model.state.selectedIds.size).toBe(2)
+    expect(model.state.total).toBe(9000)
+  })
 })

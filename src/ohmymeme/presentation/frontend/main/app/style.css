@@ -424,9 +424,10 @@ body {
   align-content: start;
 }
 
-/* 虚拟槽位：真卡/骨架与选项填满单元格并共用固定卡高 */
+/* 虚拟槽位：真卡/骨架作为行 grid 子项填满单元格、共用固定卡高并允许收缩 */
 #meme-grid .meme-card {
   width: 100%;
+  min-width: 0;
   height: var(--meme-card-height, auto);
   transition: transform 0.2s ease;
 }
@@ -476,6 +477,54 @@ body {
   cursor: grabbing !important;
   box-shadow: 0 8px 24px rgba(0, 0, 0, 0.4);
   border-color: var(--blue-9) !important;
+}
+
+/* ── S3 拖拽：独立固定预览、原位占位与可见卡局部 FLIP ── */
+
+/* 拖动预览：固定层跟随指针（transform 由引擎给出），不参与虚拟行布局也不接收指针 */
+.drag-ghost {
+  position: fixed;
+  left: 0;
+  top: 0;
+  z-index: 16;
+  pointer-events: none;
+  transform-origin: top left;
+  transition: none !important;
+}
+
+/* 源卡原位等尺寸占位：保持槽位与尺寸，仅隐藏图像视觉 */
+#meme-grid .meme-card.drag-placeholder {
+  cursor: grabbing;
+  background: var(--gray-3);
+}
+
+#meme-grid .meme-card.drag-placeholder img {
+  visibility: hidden;
+}
+
+/* 活动拖拽期间禁用 TransitionGroup 自身 move 动画（由可见卡局部 FLIP 统一处理） */
+.meme-list-move-disabled {
+  transition: none !important;
+}
+
+/* 可见卡局部 FLIP：仅更新前后均可见的非拖动真卡（终态回到普通卡 scale(0.95)） */
+#meme-grid.sort-enabled .meme-card.drag-flip {
+  transition: transform 0.2s ease;
+}
+
+/* 自研可见区框选：固定覆盖层（client 坐标），不接收指针也不影响虚拟行布局 */
+.marquee-overlay {
+  position: fixed;
+  z-index: 15;
+  pointer-events: none;
+  border: 1px solid var(--blue-9);
+  background: var(--blue-a3);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  #meme-grid.sort-enabled .meme-card.drag-flip {
+    transition: none;
+  }
 }
 
 /* TransitionGroup FLIP 动画 */
@@ -618,14 +667,6 @@ body {
 }
 
 /* ── 多选批量删除（整理模式） ── */
-
-/* drag-select-option 作为虚拟行单元格，卡片填满单元格 */
-.drag-select-option {
-  display: block;
-  position: relative;
-  min-width: 0;
-  height: var(--meme-card-height, auto);
-}
 
 /* 多选模式选中态：outline 高亮（与拖拽排序模式独立） */
 #meme-grid.select-enabled .meme-card.selected {
