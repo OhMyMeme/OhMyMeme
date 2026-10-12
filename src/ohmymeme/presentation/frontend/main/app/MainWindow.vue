@@ -17,6 +17,7 @@ import UpdateDialog from '../features/updates/UpdateDialog.vue'
 import type { Meme } from '../shared/types'
 import { api } from '../shared/bridge'
 import { NButton, NInput, NTag, NModal, NSpin, useMessage } from 'naive-ui'
+import { ArrowUpDown, ListChecks, Upload, Download, PanelLeft, X, Heart, Folder, ImagePlus, Check } from '@lucide/vue'
 import { lanConfirmVisible, lanConfirmDevice, confirmLanDevice, onLanConfirmShowChange } from '../features/lan/showLanDeviceConfirm'
 
 const { state, setMemes, search, goToPage, setSearch, toggleTag, setActiveCollection, refreshTags, refreshCollections, copyMeme, reorderMemes, canReorder, startNativeDrag, selectAllVisible, clearSelection, loadInitData } = useMemes()
@@ -765,13 +766,28 @@ onUnmounted(() => {
   hoverTimers.clear()
 })
 
+// 桥接调用失败记录：控制台 + 后端日志（生产无 devtools，靠日志导出排查）
+function logBridgeIssue(method: string, detail = '') {
+  const msg = 'bridge ' + method + ' failed' + (detail ? ': ' + detail : '')
+  console.error(msg)
+  void api('log', msg, 'warning')
+}
+
 ;(async () => {
-  await loadInitData()
+  const initOk = await loadInitData()
+  if (!initOk) {
+    logBridgeIssue('get_init_data', '初始化数据重试后仍失败')
+    showToast('数据加载失败，可点击「刷新」重试')
+  }
   // 动画开启时：播放期间即加载后续内容（动画天然覆盖桥接稳定时间），去除 300ms 延时；
   // 动画关闭时：不播放动画，降级为 300ms 延时
   const runBackground = async () => {
-    await api('rescan_cache')
-    await api('run_auto_sync')
+    if ((await api('rescan_cache')) === null) logBridgeIssue('rescan_cache')
+    const autoSync = await api('run_auto_sync')
+    if (autoSync && typeof autoSync === 'object' && !Array.isArray(autoSync)) {
+      const error = (autoSync as Record<string, unknown>).error
+      if (error) logBridgeIssue('run_auto_sync', String(error))
+    }
     await search()
     await refreshTags()
     await refreshCollections()
@@ -803,28 +819,28 @@ onUnmounted(() => {
       <div class="titlebar__actions">
         <NButton class="icon-btn" quaternary :type="sortEnabled ? 'primary' : 'default'" title="拖拽排序" aria-label="拖拽排序" @click="toggleSort">
           <template #icon>
-            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M7 10l5-5 5 5M7 14l5 5 5-5"/></svg>
+            <ArrowUpDown :size="16" />
           </template>
         </NButton>
         <NButton class="icon-btn" quaternary :type="selectMode ? 'primary' : 'default'" title="多选" aria-label="多选" @click="toggleSelect">
           <template #icon>
-            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M9 11l3 3L22 4"/><path d="M21 12v7a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11"/></svg>
+            <ListChecks :size="16" />
           </template>
         </NButton>
         <NButton class="icon-btn" quaternary title="上传到远端" aria-label="上传到远端" @click="syncUpload()">
           <template #icon>
-            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 19V5m-7 7l7-7 7 7"/></svg>
+            <Upload :size="16" />
           </template>
         </NButton>
         <NButton class="icon-btn" quaternary title="从远端下载" aria-label="从远端下载" @click="syncDownload()">
           <template #icon>
-            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 5v14m-7-7l7 7 7-7"/></svg>
+            <Download :size="16" />
           </template>
         </NButton>
         <NButton class="title-btn" quaternary @click="showImportMenu()">导入</NButton>
         <NButton class="title-btn" quaternary @click="rescanCache()">刷新</NButton>
         <NButton class="title-btn" quaternary @click="openSettings()">设置</NButton>
-        <NButton class="title-btn close-btn" quaternary aria-label="隐藏窗口" @click="hideWindow()">×</NButton>
+        <NButton class="title-btn close-btn" quaternary aria-label="隐藏窗口" @click="hideWindow()"><X :size="16" /></NButton>
       </div>
     </header>
 
@@ -849,9 +865,7 @@ onUnmounted(() => {
         <div id="search-wrap">
           <NButton class="sidebar-toggle" :class="{ collapsed: sidebarCollapsed }" quaternary title="折叠/展开侧边栏" aria-label="折叠/展开侧边栏" :aria-expanded="!sidebarCollapsed" @click="toggleSidebar">
             <template #icon>
-              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-                <line x1="3" y1="6" x2="21" y2="6"/><line x1="3" y1="12" x2="21" y2="12"/><line x1="3" y1="18" x2="21" y2="18"/>
-              </svg>
+              <PanelLeft :size="18" />
             </template>
           </NButton>
           <NInput
@@ -862,7 +876,7 @@ onUnmounted(() => {
             autofocus
             @input="onSearchInput"
           />
-          <NButton v-if="state.searchQuery" class="search-clear" quaternary circle size="tiny" title="清除搜索" aria-label="清除搜索" @click="clearSearch">×</NButton>
+          <NButton v-if="state.searchQuery" class="search-clear" quaternary circle size="tiny" title="清除搜索" aria-label="清除搜索" @click="clearSearch"><X :size="14" /></NButton>
         </div>
 
         <div id="tagbar">
@@ -927,7 +941,7 @@ onUnmounted(() => {
               @keydown.space.prevent="onFolderCardClick(child.id)"
             >
               <div class="folder-preview">
-                <svg viewBox="0 0 24 24" width="32" height="32" fill="none" stroke="var(--accent)" stroke-width="1.5"><path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"/></svg>
+                <Folder :size="32" :stroke-width="1.5" />
                 <span class="folder-name">{{ child.name }}</span>
               </div>
             </div>
@@ -969,7 +983,7 @@ onUnmounted(() => {
                   @keydown.space.prevent="handleCopy(meme)"
                 >
                   <img :src="memeSrc(meme)" :alt="meme.name" loading="lazy">
-                  <span v-if="state.selectedIds.has(meme.id)" class="select-badge">✓</span>
+                  <span v-if="state.selectedIds.has(meme.id)" class="select-badge"><Check :size="12" /></span>
                   <NButton
                     v-if="!selectMode && !sortEnabled"
                     class="fav-btn"
@@ -983,7 +997,7 @@ onUnmounted(() => {
                     @pointerdown.stop
                   >
                     <template #icon>
-                      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M20.84 4.61a5.5 5.5 0 0 0-7.78 0L12 5.67l-1.06-1.06a5.5 5.5 0 0 0-7.78 7.78l1.06 1.06L12 21.23l7.78-7.78 1.06-1.06a5.5 5.5 0 0 0 0-7.78z"/></svg>
+                      <Heart :size="14" />
                     </template>
                   </NButton>
                   <span v-if="meme.from_stego" class="gif-badge stego-badge">隐写导入</span>
@@ -1048,7 +1062,7 @@ onUnmounted(() => {
   <div id="drop-overlay" :class="{ 'drag-over': dragOver }">
     <div class="drop-content">
       <div class="drop-icon">
-        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M20 20a2 2 0 0 0 2-2V8a2 2 0 0 0-2-2h-7.9a2 2 0 0 1-1.69-.9L9.6 3.9A2 2 0 0 0 7.93 3H4a2 2 0 0 0-2 2v13a2 2 0 0 0 2 2Z"/></svg>
+        <ImagePlus :size="56" :stroke-width="1.5" />
       </div>
       <div class="drop-text">拖放图片到此处导入</div>
     </div>

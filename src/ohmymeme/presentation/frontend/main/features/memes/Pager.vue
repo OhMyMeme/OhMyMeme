@@ -35,7 +35,7 @@ function onUpdatePage(p: number) {
   justify-content: center;
   gap: 4px;
   padding: 5px 10px;
-  border-bottom: 1px solid var(--border);
+  border-bottom: 1px solid var(--gray-6);
   flex-shrink: 0;
   flex-wrap: wrap;
 }

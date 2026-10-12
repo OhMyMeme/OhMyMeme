@@ -154,20 +154,20 @@ defineExpose({ open })
 
 <template>
   <NModal :show="visible" :mask-closable="false" :closable="false" @update:show="onUpdateShow">
-    <div style="background:var(--surface);border-radius:var(--radius-lg);padding:24px 28px;width:400px;border:1px solid var(--border);box-shadow:var(--shadow-lg);text-align:center">
-      <div style="font-size:14px;font-weight:600;color:var(--fg);margin-bottom:4px">{{ title }}</div>
-      <div style="font-size:12px;color:var(--fg-secondary);margin-bottom:12px;word-break:break-all">{{ message }}</div>
+    <div style="background:var(--gray-2);border-radius:var(--radius-lg);padding:24px 28px;width:400px;border:1px solid var(--gray-6);box-shadow:var(--shadow-lg);text-align:center">
+      <div style="font-size:14px;font-weight:600;color:var(--gray-12);margin-bottom:4px">{{ title }}</div>
+      <div style="font-size:12px;color:var(--gray-11);margin-bottom:12px;word-break:break-all">{{ message }}</div>
       <NProgress v-if="showBar" type="line" :percentage="pct" :show-indicator="false" :height="8" />
-      <div v-if="pctText !== ''" style="font-size:11.5px;color:var(--muted);margin-top:6px;margin-bottom:16px"><span>{{ pctText }}</span></div>
+      <div v-if="pctText !== ''" style="font-size:11.5px;color:var(--gray-11);margin-top:6px;margin-bottom:16px"><span>{{ pctText }}</span></div>
       <div v-else style="margin-bottom:16px"></div>
       <NButton v-if="showSave" type="primary" :loading="saveBusy" @click="saveZip">选择保存位置</NButton>
       <div v-if="showAfterSave" style="margin-top:8px">
-        <p style="font-size:12px;color:var(--fg-secondary);margin-bottom:12px;line-height:1.6">请从 ZIP 中筛选需要的表情包，然后点击下方按钮导入</p>
+        <p style="font-size:12px;color:var(--gray-11);margin-bottom:12px;line-height:1.6">请从 ZIP 中筛选需要的表情包，然后点击下方按钮导入</p>
         <NButton type="primary" style="width:100%" :loading="importBusy" @click="importFromZip">选择文件导入</NButton>
       </div>
       <NButton v-if="showHelp" quaternary size="small" @click="openADBHelp">不知道怎么办？</NButton>
       <NButton size="small" @click="close">关闭</NButton>
-      <div v-if="error" style="font-size:12px;color:var(--danger);margin-top:8px">{{ error }}</div>
+      <div v-if="error" style="font-size:12px;color:var(--red-11);margin-top:8px">{{ error }}</div>
     </div>
   </NModal>
 </template>

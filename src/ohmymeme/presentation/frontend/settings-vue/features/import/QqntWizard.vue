@@ -250,21 +250,21 @@ defineExpose({ open })
 
 <template>
   <NModal :show="visible" :mask-closable="false" :closable="false" @update:show="onUpdateShow">
-    <div style="background:var(--surface);border-radius:var(--radius-lg);padding:24px 28px;width:460px;border:1px solid var(--border);box-shadow:var(--shadow-lg)">
-      <div style="font-size:14px;font-weight:600;color:var(--fg);margin-bottom:14px">从电脑版 QQ 提取</div>
+    <div style="background:var(--gray-2);border-radius:var(--radius-lg);padding:24px 28px;width:460px;border:1px solid var(--gray-6);box-shadow:var(--shadow-lg)">
+      <div style="font-size:14px;font-weight:600;color:var(--gray-12);margin-bottom:14px">从电脑版 QQ 提取</div>
 
       <div v-show="step === 1">
-        <div style="font-size:12px;color:var(--muted);margin-bottom:10px;line-height:1.6">{{ envMsg }}</div>
+        <div style="font-size:12px;color:var(--gray-11);margin-bottom:10px;line-height:1.6">{{ envMsg }}</div>
         <div style="max-height:220px;overflow-y:auto;margin-bottom:12px">
-          <div v-for="a in accounts" :key="a.qq" class="check-row" style="padding:8px 10px;border:1px solid var(--border);border-radius:var(--radius-sm);margin-bottom:6px;background:var(--card)">
+          <div v-for="a in accounts" :key="a.qq" class="check-row" style="padding:8px 10px;border:1px solid var(--gray-6);border-radius:var(--radius-sm);margin-bottom:6px;background:var(--gray-3)">
             <NRadio :checked="selectedQQ === a.qq" :value="a.qq" @update:checked="(v) => selectAccount(a.qq, v)" />
-            <span style="font-size:13px;color:var(--fg)">{{ a.nickname ? a.nickname + '（' + a.qq + '）' : a.qq }}</span>
-            <span style="margin-left:auto;font-size:11px;color:var(--muted)">{{ a.count }} 个</span>
+            <span style="font-size:13px;color:var(--gray-12)">{{ a.nickname ? a.nickname + '（' + a.qq + '）' : a.qq }}</span>
+            <span style="margin-left:auto;font-size:11px;color:var(--gray-11)">{{ a.count }} 个</span>
           </div>
-          <div v-if="showEmptyHint" style="font-size:12px;color:var(--muted);line-height:1.6">请先在电脑版 QQ 中打开「收藏表情」，将表情全部加载（滑到底），再返回此处重试。</div>
+          <div v-if="showEmptyHint" style="font-size:12px;color:var(--gray-11);line-height:1.6">请先在电脑版 QQ 中打开「收藏表情」，将表情全部加载（滑到底），再返回此处重试。</div>
         </div>
         <div v-show="showActions" style="margin-bottom:12px">
-          <div style="font-size:12px;color:var(--muted);margin-bottom:8px">{{ actionsMsg }}</div>
+          <div style="font-size:12px;color:var(--gray-11);margin-bottom:8px">{{ actionsMsg }}</div>
           <div style="display:flex;gap:8px">
             <NButton size="small" @click="pickIni">选择配置文件</NButton>
             <NButton size="small" @click="pickUserdata">选择用户数据目录</NButton>
@@ -273,12 +273,12 @@ defineExpose({ open })
       </div>
 
       <div v-show="step === 2">
-        <div style="font-size:12px;color:var(--muted);margin-bottom:10px;line-height:1.6">选择保存文件夹，将导出到其下「昵称（QQ号）_提取的表情」目录</div>
+        <div style="font-size:12px;color:var(--gray-11);margin-bottom:10px;line-height:1.6">选择保存文件夹，将导出到其下「昵称（QQ号）_提取的表情」目录</div>
         <div style="display:flex;gap:8px;margin-bottom:10px">
           <NInput readonly :value="base" placeholder="选择保存文件夹" style="flex:1" :input-props="{ id: 'qqnt-out-base' }" />
           <NButton size="small" @click="pickBase">选择文件夹</NButton>
         </div>
-        <label style="font-size:11.5px;color:var(--muted);margin-bottom:4px;display:block">输出目录</label>
+        <label style="font-size:11.5px;color:var(--gray-11);margin-bottom:4px;display:block">输出目录</label>
         <NInput readonly :value="outputDir" style="margin-bottom:10px" :input-props="{ id: 'qqnt-out-dir' }" />
         <div class="check-row" style="margin-bottom:8px">
           <NCheckbox :checked="imageOnly" @update:checked="(v) => imageOnly = v">仅提取图片（跳过非图片文件）</NCheckbox>
@@ -289,20 +289,20 @@ defineExpose({ open })
       </div>
 
       <div v-show="step === 3">
-        <div style="font-size:13px;font-weight:500;color:var(--fg);margin-bottom:4px">{{ progressTitle }}</div>
-        <div style="font-size:12px;color:var(--fg-secondary);margin-bottom:12px;word-break:break-all">{{ progressMsg }}</div>
+        <div style="font-size:13px;font-weight:500;color:var(--gray-12);margin-bottom:4px">{{ progressTitle }}</div>
+        <div style="font-size:12px;color:var(--gray-11);margin-bottom:12px;word-break:break-all">{{ progressMsg }}</div>
         <NProgress type="line" :percentage="progressBar" :show-indicator="false" :height="8" />
-        <div style="font-size:11.5px;color:var(--muted);margin-top:6px;margin-bottom:12px"><span>{{ progressPct }}</span></div>
-        <div ref="logEl" style="max-height:160px;overflow-y:auto;font-size:11px;color:var(--muted);text-align:left;line-height:1.6;background:var(--bg);border-radius:var(--radius-sm);padding:8px 10px">{{ progressLog }}</div>
+        <div style="font-size:11.5px;color:var(--gray-11);margin-top:6px;margin-bottom:12px"><span>{{ progressPct }}</span></div>
+        <div ref="logEl" style="max-height:160px;overflow-y:auto;font-size:11px;color:var(--gray-11);text-align:left;line-height:1.6;background:var(--gray-1);border-radius:var(--radius-sm);padding:8px 10px">{{ progressLog }}</div>
       </div>
 
       <div v-show="step === 4">
-        <div style="font-size:13px;font-weight:500;color:var(--fg);margin-bottom:10px">{{ doneTitle }}</div>
-        <div style="font-size:12.5px;color:var(--fg-secondary);line-height:1.8;margin-bottom:14px">{{ doneDetail }}<br>{{ doneDir }}</div>
+        <div style="font-size:13px;font-weight:500;color:var(--gray-12);margin-bottom:10px">{{ doneTitle }}</div>
+        <div style="font-size:12.5px;color:var(--gray-11);line-height:1.8;margin-bottom:14px">{{ doneDetail }}<br>{{ doneDir }}</div>
         <NButton size="small" style="width:100%" @click="openDir">打开输出目录</NButton>
       </div>
 
-      <div v-if="error" style="font-size:12px;color:var(--danger);margin-top:8px">{{ error }}</div>
+      <div v-if="error" style="font-size:12px;color:var(--red-11);margin-top:8px">{{ error }}</div>
 
       <div style="display:flex;gap:8px;justify-content:flex-end;margin-top:16px">
         <NButton v-if="step === 2" size="small" @click="prev">上一步</NButton>

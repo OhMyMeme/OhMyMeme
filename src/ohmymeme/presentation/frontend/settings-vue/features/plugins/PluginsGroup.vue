@@ -400,7 +400,7 @@ function setFieldValue(panel: PanelView, key: string, value: string | number | b
 <template>
   <div class="section">
     <div class="section-title">插件</div>
-    <p style="font-size:11.5px;color:var(--muted);margin-bottom:10px;line-height:1.6">官方插件随应用分发并在后台独立进程运行。禁用或启用后<b>重启应用</b>生效；禁用的插件不会加载，也不会出现在对应导入/同步入口。第三方插件可通过本地 ZIP 包安装（安装前会再次确认），重载后按磁盘版本启动。</p>
+    <p style="font-size:11.5px;color:var(--gray-11);margin-bottom:10px;line-height:1.6">官方插件随应用分发并在后台独立进程运行。禁用或启用后<b>重启应用</b>生效；禁用的插件不会加载，也不会出现在对应导入/同步入口。第三方插件可通过本地 ZIP 包安装（安装前会再次确认），重载后按磁盘版本启动。</p>
     <div style="display:flex;gap:8px;margin-bottom:8px;align-items:center">
       <NUpload
         v-model:file-list="installFiles"
@@ -413,7 +413,7 @@ function setFieldValue(panel: PanelView, key: string, value: string | number | b
       </NUpload>
     </div>
 
-    <div v-if="!plugins.length" style="font-size:12px;color:var(--muted)">暂无插件</div>
+    <div v-if="!plugins.length" style="font-size:12px;color:var(--gray-11)">暂无插件</div>
     <div v-else id="plugin-list" style="display:flex;flex-direction:column;gap:6px">
       <template v-for="plugin in plugins" :key="plugin.id">
         <div class="plugin-row">

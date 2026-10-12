@@ -15,7 +15,7 @@ JsApi / SettingsApi → SQLite (WAL) + 本地缓存 + 远端同步
 ## 技术栈
 - **Python 3.12** + **pywebview** (frameless 窗口) + **Bottle** (静态文件/缩略图路由)
 - **SQLite** (WAL, `threading.local()` 连接, `threading.Lock()` 写锁)
-- **Vue 3 + Naive UI**（两窗口独立 Vite IIFE 入口，共用主题与设计 token）
+- **Vue 3 + Naive UI + Lucide**（两窗口独立 Vite IIFE 入口，共用主题与设计 token；界面图标统一用 `@lucide/vue`）
 - **PIL/Pillow** (缩略图, 剪贴板图像)
 - **pystray** (托盘, 惰性导入避免 headless CI 崩溃)
 - **InnoSetup** (Windows 安装包) / **PyInstaller** (打包)
@@ -235,7 +235,7 @@ tests/
 - **键盘无障碍（设置窗口）**：Naive 组件自带焦点样式，设置窗口布局与 `.nav-item.danger`/`.immediate-hint`/`.status-ok`/`.status-error` 等类在 `frontend/settings-vue/app/style.css`；`SettingsShell.vue` 处理全局按键（Esc 关闭设置窗口、弹窗打开时不触发；Ctrl+Enter 保存），弹窗与覆盖层焦点交由 Naive `NModal`；全局提示走 Naive `NMessage`（设置窗口 `store.ts` 的 `showToast` 由 `SettingsShell` 在 `NMessageProvider` 内注册的 `useMessage` 实例驱动；主窗口各组件直接 `useMessage`，`#toast` DOM 已移除）
 - **设置窗口 UX**：表单控件改动经 `shared/store.ts` 的 `markDirty()` 置脏；`SettingsShell.vue` 在脏时关闭弹 Naive 确认「有未保存的更改」再关（取消/×/Esc 均触发），`save()`/`reset()` 成功后清脏；真正立即生效的控件（LAN 开关、密钥传输、存储位置「应用更改」）带 `.immediate-hint`「立即生效」标注；状态色收敛为 token `--success`/`--danger`，用 `.status-ok`/`.status-error` 类切换；复制处理等下拉走 Naive `NSelect`
 - **关于页**：设置窗口左侧导航末项「关于」由 `frontend/settings-vue/features/about/AboutGroup.vue` 渲染：大号 OhMyMeme logo（`.about-logo`，span 用 `--accent`，复刻主窗口标题栏效果）、版本号+检查更新，更新对话框为 Naive `NModal`（下载进度/重试），及贡献者名单（`.about-contributors` 深色卡片）。贡献者头像不走外部直连：`/api/contributors` 路由（webui.py Bottle）用 urllib 抓取 `contributor.starsfire.top/TNTXZ/OhMyMeme` 的 SVG（该服务忽略 `?bg=` 参数且无 CORS 头，浏览器直接 fetch 会失败），用 `svg.replace` 剥离白色背景 `<rect>` 后以 `image/svg+xml` 返回，使圆形头像直接落在深色页面上；`@error` 时隐藏图片并显示「贡献者名单加载失败」回退文案
-- **对比度（H2）**：`--muted: #8a94a8`（在 bg/surface 上 ≥5:1）；实心主按钮/激活态文字/选中态 outline 用 `--primary-strong: #1d4ed8`（白色文字 6.7:1、`--primary-light` 背景文字 5.49:1）；`--primary #3b82f6` 仅用于 hover 高亮，不作小字/浅底文字色
+- **色彩体系（H2）**：完全采用 Radix Colors（dark）原生色阶与档位语义（vendor 自 `@radix-ui/colors` 3.0.0、值未修改，单处维护于 `frontend/shared/tokens.ts`，运行时注入 `:root`）；CSS/组件直接使用原生变量（`--gray-*`/`--blue-*`/`--red-*`/`--blue-a3` 等），无自定义语义别名；文字 11/12 档、实心控件 9 档（hover 10）、选中底 5 档或 alpha 3 档、边框 6/7 档。已知取舍：Radix 原生实心 blue-9 配白字为 3.26:1，低于 WCAG AA 4.5（Radix 为 APCA 体系），如恢复 AA 需改用 blue-7/blue-8 档
 
 ### 环境检测
 - WSL 检测: `/proc/version` 包含 "microsoft"
@@ -248,7 +248,7 @@ tests/
 - Vue `MainWindow.vue` 挂载后:
   1. 立即: `loadInitData()` → `get_init_data()` 加载数据库数据 → 秒开
   2. `checkUpdateAndPrompt()` 立即执行（与 rescan/同步并行）
-  3. **动画开启**：视频播放期间即并行 `rescan_cache()` → `run_auto_sync()` → 重新搜索/标签/分组（无延时）；**动画关闭**：降级 `setTimeout(..., 300)` 后执行上述步骤
+  3. **动画开启**：视频播放期间即并行 `rescan_cache()` → `run_auto_sync()` → 重新搜索/标签/分组（无延时）；**动画关闭**：降级 `setTimeout(..., 300)` 后执行上述步骤。桥接调用偶发失败不再清空已有数据：`search`/`refreshCollections` 仅接受合法响应（`null` 视为失败，保留旧值并退避重试 ≤3 次），`loadInitData` 校验响应结构、失败重试后才提示，`rescan_cache`/`run_auto_sync` 失败写入后端日志（`api('log')`）
   4. `setInterval` 每 24h 再跑一次更新检测
 - **300ms 延时不可移除** — 给 Bottle + pywebview 桥接稳定时间
 - **必须先 rescan_cache 再 run_auto_sync** — 确保本地文件与 DB 一致后再对比远端，否则同步产生错误 diff

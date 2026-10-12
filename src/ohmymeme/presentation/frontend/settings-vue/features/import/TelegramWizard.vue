@@ -206,10 +206,10 @@ defineExpose({ open })
 
 <template>
   <NModal :show="visible" :mask-closable="false" :closable="false" @update:show="onUpdateShow">
-    <div style="background:var(--surface);border-radius:var(--radius-lg);padding:24px 28px;width:440px;border:1px solid var(--border);box-shadow:var(--shadow-lg)">
+    <div style="background:var(--gray-2);border-radius:var(--radius-lg);padding:24px 28px;width:440px;border:1px solid var(--gray-6);box-shadow:var(--shadow-lg)">
       <div v-show="phase === 'config'">
-        <div style="font-size:14px;font-weight:600;color:var(--fg);margin-bottom:4px">从 Telegram Desktop 导入</div>
-        <div style="font-size:12px;color:var(--muted);margin-bottom:12px;line-height:1.6">从 Telegram Desktop 本地缓存解密提取表情包（WebP 直取，WebM 无损转 WebP 并保留透明通道）</div>
+        <div style="font-size:14px;font-weight:600;color:var(--gray-12);margin-bottom:4px">从 Telegram Desktop 导入</div>
+        <div style="font-size:12px;color:var(--gray-11);margin-bottom:12px;line-height:1.6">从 Telegram Desktop 本地缓存解密提取表情包（WebP 直取，WebM 无损转 WebP 并保留透明通道）</div>
         <div class="form-group">
           <label>tdata 目录</label>
           <NInput readonly placeholder="未设置，将自动检测" :value="tdata" :input-props="{ id: 's-tg-tdata' }" />
@@ -224,23 +224,23 @@ defineExpose({ open })
         <div class="check-row" style="margin-bottom:12px">
           <NCheckbox :checked="convert" @update:checked="(v) => convert = v">WebM 转 WebP（保留透明动画，需 ffmpeg）</NCheckbox>
         </div>
-        <div class="s-net-status" :class="{ 'status-ok': statusMode === 'ok', 'status-error': statusMode === 'error' }" style="font-size:11.5px;color:var(--muted);margin-bottom:10px;word-break:break-all;line-height:1.6">{{ status }}</div>
+        <div class="s-net-status" :class="{ 'status-ok': statusMode === 'ok', 'status-error': statusMode === 'error' }" style="font-size:11.5px;color:var(--gray-11);margin-bottom:10px;word-break:break-all;line-height:1.6">{{ status }}</div>
         <div style="display:flex;gap:8px">
           <NButton size="small" type="primary" style="flex:1" :loading="busy" @click="startImport">开始导入</NButton>
           <NButton size="small" @click="close">取消</NButton>
         </div>
       </div>
       <div v-show="phase === 'progress'" style="text-align:center">
-        <div style="font-size:14px;font-weight:600;color:var(--fg);margin-bottom:4px">{{ progressTitle }}</div>
-        <div style="font-size:12px;color:var(--fg-secondary);margin-bottom:12px;word-break:break-all">{{ progressMsg }}</div>
+        <div style="font-size:14px;font-weight:600;color:var(--gray-12);margin-bottom:4px">{{ progressTitle }}</div>
+        <div style="font-size:12px;color:var(--gray-11);margin-bottom:12px;word-break:break-all">{{ progressMsg }}</div>
         <NProgress type="line" :percentage="pct" :show-indicator="false" :height="8" />
-        <div style="font-size:11.5px;color:var(--muted);margin-top:6px;margin-bottom:16px">
+        <div style="font-size:11.5px;color:var(--gray-11);margin-top:6px;margin-bottom:16px">
           <span>{{ pct }}%</span>
           <span style="margin-left:8px">{{ eta }}</span>
         </div>
         <NButton v-if="showRetry" size="small" @click="retryPick">手动选择 tdata 目录</NButton>
         <NButton size="small" @click="close">关闭</NButton>
-        <div v-if="error" style="font-size:12px;color:var(--danger);margin-top:8px;word-break:break-all">{{ error }}</div>
+        <div v-if="error" style="font-size:12px;color:var(--red-11);margin-top:8px;word-break:break-all">{{ error }}</div>
       </div>
     </div>
   </NModal>

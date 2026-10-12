@@ -149,18 +149,18 @@ defineExpose({ open })
 
 <style scoped>
 .tag-editor-box {
-  background: var(--surface);
+  background: var(--gray-2);
   border-radius: var(--radius-lg);
   padding: 20px 24px;
   width: 420px;
-  border: 1px solid var(--border);
+  border: 1px solid var(--gray-6);
   box-shadow: var(--shadow-lg);
 }
 
 .tag-editor-title {
   font-size: 15px;
   font-weight: 600;
-  color: var(--fg);
+  color: var(--gray-12);
   margin-bottom: 14px;
 }
 
@@ -180,7 +180,7 @@ defineExpose({ open })
 
 .tag-editor-empty {
   font-size: 12px;
-  color: var(--muted);
+  color: var(--gray-11);
   width: 100%;
   text-align: center;
   padding: 8px 0;

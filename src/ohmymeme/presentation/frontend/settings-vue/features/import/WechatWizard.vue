@@ -257,10 +257,10 @@ defineExpose({ open })
 
 <template>
   <NModal :show="visible" :mask-closable="false" :closable="false" @update:show="onUpdateShow">
-    <div style="background:var(--surface);border-radius:var(--radius-lg);padding:24px 28px;width:440px;border:1px solid var(--border);box-shadow:var(--shadow-lg)">
+    <div style="background:var(--gray-2);border-radius:var(--radius-lg);padding:24px 28px;width:440px;border:1px solid var(--gray-6);box-shadow:var(--shadow-lg)">
       <div v-show="phase === 'config'">
-        <div style="font-size:14px;font-weight:600;color:var(--fg);margin-bottom:4px">从微信导入</div>
-        <div style="font-size:12px;color:var(--muted);margin-bottom:12px;line-height:1.6">从微信电脑版本地缓存提取收藏表情（需微信正在运行，仅 Windows 支持）。微信文件目录是存放所有账号数据的根目录（xwechat_files），其下以 wxid_ 开头或含表情库（emoticon.db）的文件夹为各账号目录</div>
+        <div style="font-size:14px;font-weight:600;color:var(--gray-12);margin-bottom:4px">从微信导入</div>
+        <div style="font-size:12px;color:var(--gray-11);margin-bottom:12px;line-height:1.6">从微信电脑版本地缓存提取收藏表情（需微信正在运行，仅 Windows 支持）。微信文件目录是存放所有账号数据的根目录（xwechat_files），其下以 wxid_ 开头或含表情库（emoticon.db）的文件夹为各账号目录</div>
         <div class="form-group">
           <label>微信文件目录（根目录）</label>
           <NInput readonly placeholder="未设置，将自动检测" :value="root" :input-props="{ id: 's-wechat-root' }" />
@@ -274,21 +274,21 @@ defineExpose({ open })
             <NSelect :value="account" :options="accountOptions()" @update:value="(v) => account = String(v ?? '')" />
           </div>
         </div>
-        <div class="s-net-status" :class="{ 'status-ok': statusMode === 'ok', 'status-error': statusMode === 'error' }" style="font-size:11.5px;color:var(--muted);margin-bottom:10px;word-break:break-all;line-height:1.6">{{ status }}</div>
+        <div class="s-net-status" :class="{ 'status-ok': statusMode === 'ok', 'status-error': statusMode === 'error' }" style="font-size:11.5px;color:var(--gray-11);margin-bottom:10px;word-break:break-all;line-height:1.6">{{ status }}</div>
         <div style="display:flex;gap:8px">
           <NButton size="small" style="flex:1" :loading="inspecting" @click="inspect">检测环境</NButton>
           <NButton size="small" type="primary" style="flex:1" :loading="busy" @click="startImport">开始导入</NButton>
         </div>
       </div>
       <div v-show="phase === 'progress'" style="text-align:center">
-        <div style="font-size:14px;font-weight:600;color:var(--fg);margin-bottom:4px">{{ progressTitle }}</div>
-        <div style="font-size:12px;color:var(--fg-secondary);margin-bottom:12px;word-break:break-all">{{ progressMsg }}</div>
+        <div style="font-size:14px;font-weight:600;color:var(--gray-12);margin-bottom:4px">{{ progressTitle }}</div>
+        <div style="font-size:12px;color:var(--gray-11);margin-bottom:12px;word-break:break-all">{{ progressMsg }}</div>
         <NProgress type="line" :percentage="pct" :show-indicator="false" :height="8" />
-        <div style="font-size:11.5px;color:var(--muted);margin-top:6px;margin-bottom:16px">
+        <div style="font-size:11.5px;color:var(--gray-11);margin-top:6px;margin-bottom:16px">
           <span>{{ pct }}%</span>
         </div>
         <NButton size="small" @click="close">{{ closeLabel }}</NButton>
-        <div v-if="error" style="font-size:12px;color:var(--danger);margin-top:8px;word-break:break-all">{{ error }}</div>
+        <div v-if="error" style="font-size:12px;color:var(--red-11);margin-top:8px;word-break:break-all">{{ error }}</div>
       </div>
     </div>
   </NModal>

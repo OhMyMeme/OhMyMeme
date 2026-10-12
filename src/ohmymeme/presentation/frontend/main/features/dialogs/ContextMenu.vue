@@ -34,7 +34,7 @@ const options = computed(() => props.items.map(toOption))
 // 危险项用主题 danger 色渲染（Naive 菜单无内建 danger 色）
 function renderLabel(option: Record<string, unknown>): VNodeChild {
   const label = String(option.label ?? '')
-  if (option.danger === true) return h('span', { style: 'color: var(--danger)' }, label)
+  if (option.danger === true) return h('span', { style: 'color: var(--red-11)' }, label)
   return label
 }
 

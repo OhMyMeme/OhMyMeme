@@ -132,7 +132,7 @@ onUnmounted(() => {
     <div class="about-contributors">
       <img v-if="contributorsOk" id="contributors-img" :src="'/api/contributors'" loading="lazy" alt="项目贡献者" @error="contributorsOk = false">
     </div>
-    <div v-if="!contributorsOk" id="contributors-fallback" style="font-size:11.5px;color:var(--muted)">贡献者名单加载失败</div>
+    <div v-if="!contributorsOk" id="contributors-fallback" style="font-size:11.5px;color:var(--gray-11)">贡献者名单加载失败</div>
 
     <NModal
       v-model:show="showUpdate"
@@ -141,16 +141,16 @@ onUnmounted(() => {
       style="width:440px"
       :mask-closable="false"
     >
-      <p style="font-size:13px;color:var(--fg-secondary);line-height:1.6">当前版本: {{ updateCurrent }}<br>最新版本: {{ latest }}</p>
+      <p style="font-size:13px;color:var(--gray-11);line-height:1.6">当前版本: {{ updateCurrent }}<br>最新版本: {{ latest }}</p>
       <div v-if="notes" style="margin-top:16px">
-        <div style="font-size:13px;font-weight:600;color:var(--fg);margin-bottom:6px">更新内容</div>
-        <div class="upd-notes" style="font-size:12px;color:var(--fg-secondary);line-height:1.7;background:var(--bg-secondary);border:1px solid var(--border);border-radius:var(--radius-sm);padding:10px 12px;max-height:220px;overflow-y:auto;overflow-x:hidden" v-html="renderMarkdown(notes)"></div>
+        <div style="font-size:13px;font-weight:600;color:var(--gray-12);margin-bottom:6px">更新内容</div>
+        <div class="upd-notes" style="font-size:12px;color:var(--gray-11);line-height:1.7;background:var(--gray-2);border:1px solid var(--gray-6);border-radius:var(--radius-sm);padding:10px 12px;max-height:220px;overflow-y:auto;overflow-x:hidden" v-html="renderMarkdown(notes)"></div>
       </div>
       <div style="display:flex;flex-direction:column;gap:8px;margin-top:16px">
         <NButton v-if="phase === 'idle'" type="primary" style="width:100%" @click="startDownload">更新</NButton>
         <NButton v-if="phase === 'preparing'" type="primary" style="width:100%" disabled>准备下载...</NButton>
         <div v-if="phase === 'downloading' || phase === 'error'" style="width:100%">
-          <div style="font-size:12px;color:var(--fg-secondary);margin-bottom:4px;text-align:center">{{ progressText }}</div>
+          <div style="font-size:12px;color:var(--gray-11);margin-bottom:4px;text-align:center">{{ progressText }}</div>
           <NProgress type="line" :percentage="progress" :show-indicator="false" :height="8" />
         </div>
         <NButton v-if="phase === 'error'" type="primary" style="width:100%" @click="retry">重试</NButton>

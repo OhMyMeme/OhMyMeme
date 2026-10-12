@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { onMounted, onUnmounted, ref, watch } from 'vue'
 import { useDialog, useMessage, NButton } from 'naive-ui'
+import { X } from '@lucide/vue'
 import { api } from '../shared/bridge'
 import { activeGroup, dirty, save, reset, resetSignal, registerMessage } from '../shared/store'
 import BaseGroup from '../features/base/BaseGroup.vue'
@@ -102,7 +103,7 @@ defineExpose({ switchGroup, closeSettings })
     <div id="titlebar" @mousedown="onTitlebarMouseDown">
       <div class="logo">OhMy<span>Meme</span> 设置</div>
       <span class="spacer"></span>
-      <NButton quaternary class="title-btn" aria-label="关闭设置" @click="closeSettings">×</NButton>
+      <NButton quaternary class="title-btn" aria-label="关闭设置" @click="closeSettings"><X :size="14" /></NButton>
     </div>
 
     <div id="body">

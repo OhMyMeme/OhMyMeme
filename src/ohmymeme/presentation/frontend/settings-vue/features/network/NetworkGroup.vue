@@ -355,7 +355,7 @@ onUnmounted(() => {
 <template>
   <div class="section">
     <div class="section-title">{{ screenLabel('lan') || '局域网互联' }}</div>
-    <p style="font-size:11.5px;color:var(--muted);margin-bottom:10px;line-height:1.6">与手机版 OhMyMeme 在同一局域网内配对，互相同步表情包与配置</p>
+    <p style="font-size:11.5px;color:var(--gray-11);margin-bottom:10px;line-height:1.6">与手机版 OhMyMeme 在同一局域网内配对，互相同步表情包与配置</p>
     <div class="form-group">
       <label>端口</label>
       <NInputNumber
@@ -476,18 +476,18 @@ onUnmounted(() => {
       </div>
       <div id="s-sync-status">{{ syncStatus }}</div>
       <div style="display:flex;gap:8px;margin-top:12px;align-items:center;flex-wrap:wrap">
-        <span style="font-size:12px;color:var(--muted)">云端孤儿文件</span>
+        <span style="font-size:12px;color:var(--gray-11)">云端孤儿文件</span>
         <NButton size="small" @click="scanOrphans">扫描</NButton>
         <NButton size="small" type="error" tertiary :disabled="orphanDeleteDisabled" @click="deleteOrphans">删除孤儿</NButton>
-        <span style="font-size:11.5px;color:var(--muted)">{{ orphanStatus }}</span>
+        <span style="font-size:11.5px;color:var(--gray-11)">{{ orphanStatus }}</span>
       </div>
     </div>
   </div>
 
   <NModal :show="warningShow" :mask-closable="false" @update:show="(v) => { if (!v && warningResolve) cancelUploadWarning() }">
-    <div style="background:var(--surface);border-radius:var(--radius-lg);padding:24px 28px;width:380px;border:1px solid var(--border);box-shadow:var(--shadow-lg)">
-      <div style="font-size:15px;font-weight:600;color:var(--fg);margin-bottom:8px">上传确认</div>
-      <p style="font-size:13px;color:var(--fg-secondary);line-height:1.6;margin-bottom:16px">上传会将本地的完整状态同步到远端，包括新增、更新和删除操作。远程文件将被覆盖，建议先下载备份。</p>
+    <div style="background:var(--gray-2);border-radius:var(--radius-lg);padding:24px 28px;width:380px;border:1px solid var(--gray-6);box-shadow:var(--shadow-lg)">
+      <div style="font-size:15px;font-weight:600;color:var(--gray-12);margin-bottom:8px">上传确认</div>
+      <p style="font-size:13px;color:var(--gray-11);line-height:1.6;margin-bottom:16px">上传会将本地的完整状态同步到远端，包括新增、更新和删除操作。远程文件将被覆盖，建议先下载备份。</p>
       <div class="check-row" style="margin-bottom:16px">
         <NCheckbox :checked="warningHide" @update:checked="(v) => warningHide = v">不再提醒</NCheckbox>
       </div>
@@ -499,19 +499,19 @@ onUnmounted(() => {
   </NModal>
 
   <NModal :show="showProgress" :mask-closable="false" :closable="false" @update:show="(v) => { if (!v) hideSyncProgress() }">
-    <div style="background:var(--surface);border-radius:var(--radius-lg);padding:24px 28px;width:420px;border:1px solid var(--border);box-shadow:var(--shadow-lg);text-align:center">
-      <div style="font-size:14px;font-weight:600;color:var(--fg);margin-bottom:4px">{{ progressTitle }}</div>
-      <div style="font-size:12px;color:var(--fg-secondary);margin-bottom:12px;word-break:break-all">{{ progressFile }}</div>
+    <div style="background:var(--gray-2);border-radius:var(--radius-lg);padding:24px 28px;width:420px;border:1px solid var(--gray-6);box-shadow:var(--shadow-lg);text-align:center">
+      <div style="font-size:14px;font-weight:600;color:var(--gray-12);margin-bottom:4px">{{ progressTitle }}</div>
+      <div style="font-size:12px;color:var(--gray-11);margin-bottom:12px;word-break:break-all">{{ progressFile }}</div>
       <NProgress type="line" :percentage="progress" :show-indicator="false" :height="8" />
-      <div style="font-size:11.5px;color:var(--muted);margin-bottom:16px;margin-top:6px"><span>{{ progress }}%</span><span style="margin-left:12px">{{ progressSpeed }}</span></div>
+      <div style="font-size:11.5px;color:var(--gray-11);margin-bottom:16px;margin-top:6px"><span>{{ progress }}%</span><span style="margin-left:12px">{{ progressSpeed }}</span></div>
       <NButton size="small" @click="hideSyncProgress">后台运行</NButton>
     </div>
   </NModal>
 
   <NModal :show="showDone" :mask-closable="false" :closable="false" @update:show="(v) => { if (!v) showDone = false }">
-    <div style="background:var(--surface);border-radius:var(--radius-lg);padding:24px 28px;width:380px;border:1px solid var(--border);box-shadow:var(--shadow-lg);text-align:center">
-      <div style="font-size:14px;font-weight:600;color:var(--fg);margin-bottom:8px">{{ doneTitle }}</div>
-      <div style="font-size:13px;color:var(--fg-secondary);line-height:1.6;margin-bottom:18px">{{ doneDetail }}</div>
+    <div style="background:var(--gray-2);border-radius:var(--radius-lg);padding:24px 28px;width:380px;border:1px solid var(--gray-6);box-shadow:var(--shadow-lg);text-align:center">
+      <div style="font-size:14px;font-weight:600;color:var(--gray-12);margin-bottom:8px">{{ doneTitle }}</div>
+      <div style="font-size:13px;color:var(--gray-11);line-height:1.6;margin-bottom:18px">{{ doneDetail }}</div>
       <NButton type="primary" @click="hideSyncDone">关闭</NButton>
     </div>
   </NModal>

@@ -419,7 +419,7 @@ Windows 上 GIF 复制同时写入三个剪贴板格式：`CF_DIB`（首帧 BMP�
 
 | 模块 | 技术 | 理由 |
 |------|------|------|
-| UI | PyWebView (v6) + Bottle + Vue 3 + Naive UI | 原生 WebView 渲染，Vue 3 + Naive UI 组件化前端（Vite 构建） |
+| UI | PyWebView (v6) + Bottle + Vue 3 + Naive UI + Lucide | 原生 WebView 渲染，Vue 3 + Naive UI 组件化前端（Vite 构建，图标用 Lucide） |
 | 托盘 | pystray | 最轻跨平台托盘库 |
 | 热键 | keyboard → pynput → 轮询回退 | 三级降级保障 |
 | 图片 | Pillow | 业界标准 |

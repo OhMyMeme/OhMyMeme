@@ -23,10 +23,10 @@ async function exportLogs() {
 <template>
   <div class="section">
     <div class="section-title">日志</div>
-    <p style="font-size:11.5px;color:var(--muted);margin-bottom:10px;line-height:1.6">导出本次运行至今的 Debug 级日志，便于排查问题</p>
+    <p style="font-size:11.5px;color:var(--gray-11);margin-bottom:10px;line-height:1.6">导出本次运行至今的 Debug 级日志，便于排查问题</p>
     <div style="display:flex;gap:8px">
       <NButton size="small" style="flex:1" @click="exportLogs">导出日志</NButton>
     </div>
-    <div id="log-export-status" style="font-size:11.5px;color:var(--muted);margin-top:6px">{{ status }}</div>
+    <div id="log-export-status" style="font-size:11.5px;color:var(--gray-11);margin-top:6px">{{ status }}</div>
   </div>
 </template>

@@ -166,7 +166,7 @@ onMounted(initImportSources)
 <template>
   <div class="section">
     <div class="section-title">导入表情包</div>
-    <p style="font-size:11.5px;color:var(--muted);margin-bottom:10px;line-height:1.6">从其他软件导入表情包，点击对应来源开始</p>
+    <p style="font-size:11.5px;color:var(--gray-11);margin-bottom:10px;line-height:1.6">从其他软件导入表情包，点击对应来源开始</p>
 
     <NButton class="import-row" @click="qqRef?.open()">
       <span class="import-ico">

@@ -136,8 +136,8 @@ onUnmounted(() => {
 <template>
   <div class="section">
     <div class="section-title">备份</div>
-    <p style="font-size:11.5px;color:var(--muted);margin-bottom:10px;line-height:1.6">备份包含全部表情原图与数据库（标签、收藏、分组、排序随库保留），用于 PC 间迁移。不包含缩略图（恢复后自动重建）与应用设置。</p>
-    <div style="font-size:11.5px;color:var(--muted);margin-bottom:8px;word-break:break-all">备份目录：<span id="backup-dir">{{ directory }}</span><span v-if="custom" class="immediate-hint" style="margin-left:6px">自定义</span></div>
+    <p style="font-size:11.5px;color:var(--gray-11);margin-bottom:10px;line-height:1.6">备份包含全部表情原图与数据库（标签、收藏、分组、排序随库保留），用于 PC 间迁移。不包含缩略图（恢复后自动重建）与应用设置。</p>
+    <div style="font-size:11.5px;color:var(--gray-11);margin-bottom:8px;word-break:break-all">备份目录：<span id="backup-dir">{{ directory }}</span><span v-if="custom" class="immediate-hint" style="margin-left:6px">自定义</span></div>
     <div style="display:flex;gap:8px;margin-bottom:8px">
       <NButton size="small" style="flex:1" @click="pickBackupDir">选择备份目录</NButton>
       <NButton size="small" type="primary" style="flex:1" @click="startBackupCreate">立即备份</NButton>
@@ -153,9 +153,9 @@ onUnmounted(() => {
   </div>
   <div class="section">
     <div class="section-title">恢复</div>
-    <p style="font-size:11.5px;color:var(--muted);margin-bottom:10px;line-height:1.6">从备份 ZIP 恢复到本机。<b style="color:var(--danger)">仅允许在数据库为空时进行</b>（例如新设备首次使用），已有数据的库会被拒绝、不会覆盖。恢复完成后请重启应用。</p>
+    <p style="font-size:11.5px;color:var(--gray-11);margin-bottom:10px;line-height:1.6">从备份 ZIP 恢复到本机。<b style="color:var(--red-11)">仅允许在数据库为空时进行</b>（例如新设备首次使用），已有数据的库会被拒绝、不会覆盖。恢复完成后请重启应用。</p>
     <NButton size="small" style="flex:1" @click="startBackupRestore">从备份 ZIP 恢复…</NButton>
-    <div id="backup-restore-status" style="font-size:11.5px;color:var(--muted);margin-top:6px">{{ restoreStatus }}</div>
+    <div id="backup-restore-status" style="font-size:11.5px;color:var(--gray-11);margin-top:6px">{{ restoreStatus }}</div>
   </div>
 
   <NModal
@@ -168,9 +168,9 @@ onUnmounted(() => {
     :close-on-esc="!backupRunning"
   >
     <div style="text-align:center">
-      <div style="font-size:12px;color:var(--fg-secondary);margin-bottom:12px;word-break:break-all">{{ progressText }}</div>
+      <div style="font-size:12px;color:var(--gray-11);margin-bottom:12px;word-break:break-all">{{ progressText }}</div>
       <NProgress type="line" :percentage="progress" :show-indicator="false" :height="8" />
-      <div style="font-size:11.5px;color:var(--muted);margin-top:6px;margin-bottom:16px">{{ progress + '%' }}</div>
+      <div style="font-size:11.5px;color:var(--gray-11);margin-top:6px;margin-bottom:16px">{{ progress + '%' }}</div>
     </div>
     <template #footer>
       <div v-if="!backupRunning" style="text-align:center">

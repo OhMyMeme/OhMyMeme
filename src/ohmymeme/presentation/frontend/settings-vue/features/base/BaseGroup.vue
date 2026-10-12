@@ -229,12 +229,12 @@ defineExpose({ loadStorageInfo, checkConnectivity })
         @update:value="(v) => { settings.copy_resize_mode = typeof v === 'number' ? v : 1; markDirty() }"
       />
     </div>
-    <p style="font-size:11.5px;color:var(--muted);margin-top:4px;line-height:1.6">复制超过尺寸上限的静态图时按此处模式处理；动图不受影响。隐写模式会把原图信息随 GIF 隐藏，接收方可运行解码工具还原，但会显著增大文件体积。</p>
+    <p style="font-size:11.5px;color:var(--gray-11);margin-top:4px;line-height:1.6">复制超过尺寸上限的静态图时按此处模式处理；动图不受影响。隐写模式会把原图信息随 GIF 隐藏，接收方可运行解码工具还原，但会显著增大文件体积。</p>
   </div>
 
   <div class="section">
     <div class="section-title">存储位置</div>
-    <p style="font-size:11.5px;color:var(--muted);margin-bottom:10px;line-height:1.6">表情包图片文件存放目录；数据库与缩略图仍保留在系统数据目录</p>
+    <p style="font-size:11.5px;color:var(--gray-11);margin-bottom:10px;line-height:1.6">表情包图片文件存放目录；数据库与缩略图仍保留在系统数据目录</p>
     <div class="form-group">
       <label>当前存储目录</label>
       <NInput readonly placeholder="加载中..." :value="cacheDir" :input-props="{ id: 's-cache-dir' }" />
@@ -253,11 +253,11 @@ defineExpose({ loadStorageInfo, checkConnectivity })
         <NButton type="primary" size="small" :disabled="applying" @click="applyStorageDir">应用更改</NButton>
         <NButton size="small" quaternary @click="cancelStoragePick">取消</NButton>
       </div>
-      <div style="font-size:11px;color:var(--muted);margin-top:6px">点击「应用更改」立即生效，无需保存</div>
+      <div style="font-size:11px;color:var(--gray-11);margin-top:6px">点击「应用更改」立即生效，无需保存</div>
     </div>
     <div style="display:flex;gap:8px">
       <NButton size="small" @click="pickStorageDir">更改位置</NButton>
     </div>
-    <div v-if="storageStatus" style="font-size:11.5px;color:var(--muted);margin-top:6px;line-height:1.6">{{ storageStatus }}</div>
+    <div v-if="storageStatus" style="font-size:11.5px;color:var(--gray-11);margin-top:6px;line-height:1.6">{{ storageStatus }}</div>
   </div>
 </template>

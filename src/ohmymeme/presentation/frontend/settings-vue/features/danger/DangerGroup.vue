@@ -53,9 +53,9 @@ async function exec() {
 </script>
 
 <template>
-  <div class="section" style="border-color:var(--accent-muted)">
-    <div class="section-title" style="color:var(--danger)">危险操作</div>
-    <p style="font-size:11.5px;color:var(--muted);margin-bottom:12px;line-height:1.6">以下操作不可撤销，请谨慎使用</p>
+  <div class="section" style="border-color:var(--blue-a3)">
+    <div class="section-title" style="color:var(--red-11)">危险操作</div>
+    <p style="font-size:11.5px;color:var(--gray-11);margin-bottom:12px;line-height:1.6">以下操作不可撤销，请谨慎使用</p>
     <div style="display:flex;gap:8px">
       <NButton type="error" tertiary style="flex:1" @click="showConfirm('local')">删除本地所有表情包</NButton>
       <NButton type="error" tertiary style="flex:1" @click="showConfirm('cloud')">删除云端所有表情包</NButton>
@@ -68,8 +68,8 @@ async function exec() {
       style="width:420px"
       :mask-closable="false"
     >
-      <p style="font-size:13px;color:var(--fg-secondary);line-height:1.6;margin-bottom:12px">{{ desc }}</p>
-      <p style="font-size:11.5px;color:var(--muted);margin-bottom:8px;line-height:1.6">请在下方两个输入框中输入 confirm 以确认</p>
+      <p style="font-size:13px;color:var(--gray-11);line-height:1.6;margin-bottom:12px">{{ desc }}</p>
+      <p style="font-size:11.5px;color:var(--gray-11);margin-bottom:8px;line-height:1.6">请在下方两个输入框中输入 confirm 以确认</p>
       <div style="display:flex;flex-direction:column;gap:8px">
         <NInput :value="input1" :input-props="{ id: 'danger-input-1' }" placeholder="输入 confirm" @update:value="(v) => input1 = v" />
         <NInput :value="input2" :input-props="{ id: 'danger-input-2' }" placeholder="再次输入 confirm" @update:value="(v) => input2 = v" />

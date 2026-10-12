@@ -133,11 +133,11 @@ defineExpose({ open, close })
 
 <style scoped>
 .import-box {
-  background: var(--surface);
+  background: var(--gray-2);
   border-radius: var(--radius-lg);
   padding: 20px 24px;
   width: 280px;
-  border: 1px solid var(--border);
+  border: 1px solid var(--gray-6);
   box-shadow: var(--shadow-lg);
   display: flex;
   flex-direction: column;
@@ -147,7 +147,7 @@ defineExpose({ open, close })
 .import-title {
   font-size: 14px;
   font-weight: 600;
-  color: var(--fg);
+  color: var(--gray-12);
   margin-bottom: 6px;
 }
 
@@ -157,7 +157,7 @@ defineExpose({ open, close })
   justify-content: center;
   margin-top: 4px;
   font-size: 12px;
-  color: var(--fg-secondary);
+  color: var(--gray-11);
   user-select: none;
 }
 </style>

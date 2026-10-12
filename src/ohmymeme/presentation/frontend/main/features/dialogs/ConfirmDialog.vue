@@ -73,8 +73,8 @@ defineExpose({ open })
 
 <style scoped>
 .confirm-dialog-box {
-  background: var(--surface);
-  border: 1px solid var(--border);
+  background: var(--gray-2);
+  border: 1px solid var(--gray-6);
   border-radius: var(--radius-lg);
   padding: 20px 24px;
   width: 360px;
@@ -84,13 +84,13 @@ defineExpose({ open })
 .confirm-dialog-title {
   font-size: 15px;
   font-weight: 600;
-  color: var(--fg);
+  color: var(--gray-12);
   margin-bottom: 8px;
 }
 
 .confirm-dialog-message {
   font-size: 13px;
-  color: var(--fg-secondary);
+  color: var(--gray-11);
   line-height: 1.6;
   margin-bottom: 16px;
 }

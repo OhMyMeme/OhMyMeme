@@ -1,27 +1,5 @@
-/* 主窗口与设置窗口共用的设计 token（两处 :root 的并集） */
+/* 主窗口与设置窗口共用的非颜色设计变量（颜色为 Radix Colors 原生色阶，由 tokens.ts 注入 :root） */
 :root {
-  --bg: #0d0d0f;
-  --bg-elevated: #141417;
-  --bg-secondary: #141417;
-  --surface: #1a1a1f;
-  --surface-2: #222228;
-  --card: #222228;
-  --card-hover: #2a2a32;
-  --fg: #e2e8f0;
-  --fg-secondary: #94a3b8;
-  --muted: #8a94a8;
-  --border: #2a2a32;
-  --border-light: #33333d;
-  --border-hair: rgba(255,255,255,0.06);
-  --primary: #3b82f6;
-  --primary-light: #dbeafe;
-  --primary-strong: #1d4ed8;
-  --accent: #3b82f6;
-  --accent-hover: #60a5fa;
-  --accent-strong: #1d4ed8;
-  --accent-muted: rgba(59,130,246,.1);
-  --success: #22c55e;
-  --danger: #ef4444;
   --radius-sm: 4px;
   --radius: 8px;
   --radius-lg: 12px;

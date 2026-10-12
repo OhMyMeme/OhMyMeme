@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { computed, h, ref } from 'vue'
 import { NAutoComplete, NButton, NInput, NModal, NSpin } from 'naive-ui'
+import { Check } from '@lucide/vue'
 import { useCollectionBuilder } from './useCollectionBuilder'
 import type { CollectionOption } from './useCollectionBuilder'
 
@@ -36,8 +37,8 @@ function showNameOptions() {
 function renderNameLabel(option: NameOption) {
   if (!option.create) return option.label
   return h('span', { style: 'display:flex;align-items:center;justify-content:space-between;width:100%' }, [
-    h('span', { style: 'color:var(--primary)' }, '「' + option.label + '」'),
-    h('span', { style: 'font-size:11px;color:var(--muted);margin-left:8px' }, '创建新分组'),
+    h('span', { style: 'color:var(--blue-9)' }, '「' + option.label + '」'),
+    h('span', { style: 'font-size:11px;color:var(--gray-11);margin-left:8px' }, '创建新分组'),
   ])
 }
 
@@ -126,7 +127,7 @@ function onShowChange(show: boolean) {
               @keydown.space.prevent="cb.toggleMeme(meme.id)"
             >
               <img :src="`/api/thumb/${meme.id}/${encodeURIComponent(meme.filename)}`" :alt="meme.name || meme.original_name || meme.filename" loading="lazy">
-              <div v-if="cb.selectedIds.value.has(meme.id)" class="cb-check">✓</div>
+              <div v-if="cb.selectedIds.value.has(meme.id)" class="cb-check"><Check :size="10" /></div>
             </div>
             <div v-if="cb.filteredMemes.value.length === 0" class="cb-empty">没有表情包</div>
           </div>
@@ -147,7 +148,7 @@ function onShowChange(show: boolean) {
               @keydown.space.prevent="cb.toggleMeme(meme.id)"
             >
               <img :src="`/api/thumb/${meme.id}/${encodeURIComponent(meme.filename)}`" :alt="meme.name || meme.original_name || meme.filename" loading="lazy">
-              <div class="cb-check">✓</div>
+              <div class="cb-check"><Check :size="10" /></div>
             </div>
             <div v-if="cb.selectedIds.value.size === 0" class="cb-empty">点击左侧表情添加到分组</div>
           </div>
@@ -169,8 +170,8 @@ function onShowChange(show: boolean) {
 
 <style scoped>
 #cb-box {
-  background: var(--surface);
-  border: 1px solid var(--border);
+  background: var(--gray-2);
+  border: 1px solid var(--gray-6);
   border-radius: var(--radius-lg);
   width: 640px;
   max-height: 80vh;
@@ -182,7 +183,7 @@ function onShowChange(show: boolean) {
 
 .cb-header {
   padding: 16px 20px;
-  border-bottom: 1px solid var(--border);
+  border-bottom: 1px solid var(--gray-6);
 }
 
 .cb-header h2 {
@@ -193,13 +194,13 @@ function onShowChange(show: boolean) {
 
 .cb-search {
   padding: 12px 20px;
-  border-bottom: 1px solid var(--border);
+  border-bottom: 1px solid var(--gray-6);
 }
 
 .cb-loading {
   padding: 40px;
   text-align: center;
-  color: var(--muted);
+  color: var(--gray-11);
 }
 
 #cb-cols {
@@ -214,7 +215,7 @@ function onShowChange(show: boolean) {
   display: flex;
   flex-direction: column;
   overflow: hidden;
-  border-right: 1px solid var(--border);
+  border-right: 1px solid var(--gray-6);
 }
 
 .cb-col:last-child {
@@ -225,10 +226,10 @@ function onShowChange(show: boolean) {
   padding: 8px 14px;
   font-size: 11px;
   font-weight: 600;
-  color: var(--muted);
+  color: var(--gray-11);
   text-transform: uppercase;
   letter-spacing: 0.3px;
-  border-bottom: 1px solid var(--border);
+  border-bottom: 1px solid var(--gray-6);
   flex-shrink: 0;
 }
 
@@ -247,17 +248,17 @@ function onShowChange(show: boolean) {
   position: relative;
   border-radius: var(--radius-sm);
   overflow: hidden;
-  border: 2px solid var(--border);
+  border: 2px solid var(--gray-6);
   cursor: pointer;
   transition: border-color 0.15s;
 }
 
 .cb-meme:hover {
-  border-color: var(--primary);
+  border-color: var(--blue-9);
 }
 
 .cb-meme.selected {
-  border-color: var(--primary);
+  border-color: var(--blue-9);
   box-shadow: 0 0 0 2px rgba(99, 102, 241, 0.3);
 }
 
@@ -274,7 +275,7 @@ function onShowChange(show: boolean) {
   width: 18px;
   height: 18px;
   border-radius: 50%;
-  background: var(--primary-strong);
+  background: var(--blue-9);
   color: white;
   font-size: 10px;
   display: flex;
@@ -287,7 +288,7 @@ function onShowChange(show: boolean) {
   padding: 20px;
   text-align: center;
   font-size: 12px;
-  color: var(--muted);
+  color: var(--gray-11);
 }
 
 .cb-error {
@@ -297,14 +298,14 @@ function onShowChange(show: boolean) {
   gap: 8px;
   padding: 8px 20px;
   font-size: 12px;
-  color: var(--danger, #dc2626);
+  color: var(--red-11);
   background: rgba(220, 38, 38, 0.08);
-  border-top: 1px solid var(--border);
+  border-top: 1px solid var(--gray-6);
 }
 
 .cb-footer {
   padding: 12px 20px;
-  border-top: 1px solid var(--border);
+  border-top: 1px solid var(--gray-6);
   display: flex;
   justify-content: flex-end;
   gap: 8px;

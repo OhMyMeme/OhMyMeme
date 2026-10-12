@@ -3,6 +3,8 @@ import { api, bridgeReady } from '../../shared/bridge'
 import type { Meme } from '../../shared/types'
 
 const MEME_PAGE = 200
+// 桥接调用失败时的退避重试上限（失败不清空已有数据）
+const RETRY_LIMIT = 3
 
 const state = reactive({
   memes: [] as Meme[],
@@ -21,6 +23,8 @@ const state = reactive({
 })
 
 let searchGen = 0
+let retryTimer: ReturnType<typeof setTimeout> | null = null
+let retryCount = 0
 
 export function useMemes() {
   async function waitForPywebview(): Promise<void> {
@@ -29,45 +33,69 @@ export function useMemes() {
     }
   }
 
-  async function loadInitData() {
-    await waitForPywebview()
-    const data = await api('get_init_data')
-    if (data) {
-      state.memes = data.memes || []
-      state.allTags = data.tags || []
-      state.collections = data.collections || []
-      state.page = 1
-      state.total = await api('count_memes', '', [], state.activeCollection) || state.memes.length
-      state.pageCount = Math.max(1, Math.ceil(state.total / MEME_PAGE))
-      state.showStartupAnimation = data.show_startup_animation !== false
-      state.startupBgColor = data.startup_bg_color || '#000000'
-    }
+  // 桥接失败退避重试：搜索与分组恢复后复位计数，达上限后等待手动刷新
+  function scheduleRetry() {
+    if (retryTimer || retryCount >= RETRY_LIMIT) return
+    retryCount += 1
+    retryTimer = setTimeout(async () => {
+      retryTimer = null
+      const okSearch = await search(false)
+      const okCollections = await refreshCollections()
+      if (okSearch && okCollections) retryCount = 0
+    }, 1000 * retryCount)
   }
 
-  async function search(resetPage = true) {
+  async function loadInitData(): Promise<boolean> {
+    await waitForPywebview()
+    for (let attempt = 0; attempt < RETRY_LIMIT; attempt++) {
+      const data = await api('get_init_data')
+      // 仅接受结构完整的响应：{} 等后端失败哨兵视为失败并重试
+      if (data && Array.isArray(data.memes) && Array.isArray(data.collections)) {
+        state.memes = data.memes
+        state.allTags = Array.isArray(data.tags) ? data.tags : []
+        state.collections = data.collections
+        state.page = 1
+        state.total = (await api('count_memes', '', [], state.activeCollection)) ?? state.memes.length
+        state.pageCount = Math.max(1, Math.ceil(state.total / MEME_PAGE))
+        state.showStartupAnimation = data.show_startup_animation !== false
+        state.startupBgColor = data.startup_bg_color || '#000000'
+        retryCount = 0
+        return true
+      }
+      await new Promise(r => setTimeout(r, 500 * (attempt + 1)))
+    }
+    return false
+  }
+
+  async function search(resetPage = true): Promise<boolean> {
     const gen = ++searchGen
     if (resetPage) state.page = 1
     state.loading = true
     // 换页/筛选/切分组即清空选择（「全选当前页」语义）
     state.selectedIds = new Set()
     const offset = (state.page - 1) * MEME_PAGE
+    let ok = false
     try {
       const [countResult, memesResult] = await Promise.all([
         api('count_memes', state.searchQuery, [...state.activeTags], state.activeCollection),
         api('search_memes', state.searchQuery, [...state.activeTags], state.activeCollection, offset, MEME_PAGE),
       ])
-      if (gen !== searchGen) return
-      state.total = countResult || 0
-      state.pageCount = Math.max(1, Math.ceil(state.total / MEME_PAGE))
-      state.memes = memesResult || []
-    } catch (e) {
-      if (gen !== searchGen) return
-      state.memes = []
-      state.total = 0
-      state.pageCount = 1
+      // 过期响应用生成号丢弃，交给更新的请求
+      if (gen !== searchGen) return true
+      // 任一为 null 视为桥接失败：保留旧数据不覆盖，仅重试
+      if (countResult !== null && memesResult !== null) {
+        state.total = countResult
+        state.pageCount = Math.max(1, Math.ceil(state.total / MEME_PAGE))
+        state.memes = memesResult
+        ok = true
+      }
+    } catch {
+      if (gen !== searchGen) return true
     } finally {
       if (gen === searchGen) state.loading = false
     }
+    if (!ok) scheduleRetry()
+    return ok
   }
 
   async function goToPage(p: number) {
@@ -91,8 +119,19 @@ export function useMemes() {
     else state.activeCollection = id
     search()
   }
-  async function refreshTags() { try { state.allTags = (await api('get_tags')) || [] } catch { state.allTags = [] } }
-  async function refreshCollections() { try { state.collections = (await api('get_collections')) || [] } catch { state.collections = [] } }
+  async function refreshTags() {
+    const tags = await api('get_tags')
+    if (Array.isArray(tags)) state.allTags = tags
+  }
+  async function refreshCollections(): Promise<boolean> {
+    const collections = await api('get_collections')
+    if (!Array.isArray(collections)) {
+      scheduleRetry()
+      return false
+    }
+    state.collections = collections
+    return true
+  }
   async function copyMeme(id: number): Promise<boolean> {
     const result = await api('copy_meme', id)
     return !!result?.ok

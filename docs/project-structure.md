@@ -128,8 +128,9 @@ OhMyMeme/
 │   │   │   │       └── upload.py                    上传和导入路由
 │   │   │   └── frontend/                            前端源码
 │   │   │       ├── shared/                          两窗口共用的主题、设计 token 与文本转义
-│   │   │       │   ├── naive-theme.ts               Naive UI 深色主题覆写
-│   │   │       │   ├── theme.css                    两窗口共用样式变量
+│   │   │       │   ├── tokens.ts                    Radix Colors 原生色阶与 CSS 变量注入
+│   │   │       │   ├── naive-theme.ts               Naive UI 深色主题覆写（读取 tokens.ts）
+│   │   │       │   ├── theme.css                    两窗口共用非颜色变量（圆角/阴影/过渡）
 │   │   │       │   └── markdown.ts                  转义与受控 Markdown 渲染
 │   │   │       ├── main/                            Vue 3 + Naive UI 主窗口
 │   │   │       │   ├── app/

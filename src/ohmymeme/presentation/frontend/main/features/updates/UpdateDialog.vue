@@ -107,8 +107,8 @@ defineExpose({ show })
           :border-radius="4"
           :fill-border-radius="4"
           :show-indicator="false"
-          color="var(--accent)"
-          rail-color="var(--bg-elevated)"
+          color="var(--blue-9)"
+          rail-color="var(--gray-2)"
         />
       </div>
       <div v-if="phase === 'done'" class="upd-progress-text">下载完成，启动安装...</div>
@@ -128,13 +128,13 @@ defineExpose({ show })
 
 <style scoped>
 .upd-box {
-  background: var(--surface);
+  background: var(--gray-2);
   border-radius: var(--radius-lg);
   padding: 24px 28px;
   width: 440px;
   max-height: 80vh;
   overflow-y: auto;
-  border: 1px solid var(--border);
+  border: 1px solid var(--gray-6);
   box-shadow: var(--shadow-lg);
 }
 
@@ -145,13 +145,13 @@ defineExpose({ show })
 .upd-header h2 {
   font-size: 15px;
   font-weight: 600;
-  color: var(--fg);
+  color: var(--gray-12);
   margin-bottom: 8px;
 }
 
 .upd-versions {
   font-size: 13px;
-  color: var(--fg-secondary);
+  color: var(--gray-11);
   line-height: 1.6;
 }
 
@@ -162,16 +162,16 @@ defineExpose({ show })
 .upd-notes-label {
   font-size: 13px;
   font-weight: 600;
-  color: var(--fg);
+  color: var(--gray-12);
   margin-bottom: 6px;
 }
 
 .upd-notes {
   font-size: 12px;
-  color: var(--fg-secondary);
+  color: var(--gray-11);
   line-height: 1.7;
-  background: var(--bg-elevated);
-  border: 1px solid var(--border);
+  background: var(--gray-2);
+  border: 1px solid var(--gray-6);
   border-radius: var(--radius-sm);
   padding: 10px 12px;
   max-height: 220px;
@@ -179,26 +179,26 @@ defineExpose({ show })
   overflow-x: hidden;
 }
 
-.upd-notes :deep(.md-h) { margin: 8px 0 4px; font-size: 12.5px; font-weight: 600; color: var(--fg); }
-.upd-notes :deep(.md-pre) { background: var(--surface-2); border: 1px solid var(--border); border-radius: var(--radius-sm); padding: 8px 10px; margin: 6px 0; overflow-x: auto; }
-.upd-notes :deep(.md-code) { background: var(--surface-2); border-radius: 3px; padding: 0 3px; font-size: 11px; color: var(--primary); }
-.upd-notes :deep(.md-pre .md-code), .upd-notes :deep(.md-pre code) { background: transparent; color: var(--fg-secondary); padding: 0; }
-.upd-notes :deep(.md-quote) { border-left: 3px solid var(--primary); padding-left: 10px; margin: 6px 0; color: var(--muted); }
+.upd-notes :deep(.md-h) { margin: 8px 0 4px; font-size: 12.5px; font-weight: 600; color: var(--gray-12); }
+.upd-notes :deep(.md-pre) { background: var(--gray-3); border: 1px solid var(--gray-6); border-radius: var(--radius-sm); padding: 8px 10px; margin: 6px 0; overflow-x: auto; }
+.upd-notes :deep(.md-code) { background: var(--gray-3); border-radius: 3px; padding: 0 3px; font-size: 11px; color: var(--blue-9); }
+.upd-notes :deep(.md-pre .md-code), .upd-notes :deep(.md-pre code) { background: transparent; color: var(--gray-11); padding: 0; }
+.upd-notes :deep(.md-quote) { border-left: 3px solid var(--blue-9); padding-left: 10px; margin: 6px 0; color: var(--gray-11); }
 .upd-notes :deep(.md-li) { margin-left: 16px; }
-.upd-notes :deep(.md-link) { color: var(--primary); }
-.upd-notes :deep(.md-hr) { border: none; border-top: 1px solid var(--border); margin: 8px 0; }
-.upd-notes :deep(strong) { color: var(--fg); }
+.upd-notes :deep(.md-link) { color: var(--blue-9); }
+.upd-notes :deep(.md-hr) { border: none; border-top: 1px solid var(--gray-6); margin: 8px 0; }
+.upd-notes :deep(strong) { color: var(--gray-12); }
 
 .upd-progress-text {
   font-size: 12px;
-  color: var(--fg-secondary);
+  color: var(--gray-11);
   margin-bottom: 4px;
   text-align: center;
 }
 
 .upd-error {
   font-size: 12px;
-  color: #ef4444;
+  color: var(--red-11);
   text-align: center;
 }
 

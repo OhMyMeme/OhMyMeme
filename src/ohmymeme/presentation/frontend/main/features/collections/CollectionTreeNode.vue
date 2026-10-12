@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { ref, computed } from 'vue'
 import { NButton } from 'naive-ui'
+import { ChevronRight, Ellipsis, Inbox, Folder } from '@lucide/vue'
 import type { Collection } from '../../shared/types'
 
 const props = defineProps<{
@@ -61,14 +62,14 @@ function onMoreClick(e: MouseEvent) {
         @click="toggleExpand"
         @keydown.enter.prevent="toggleExpand"
         @keydown.space.prevent="toggleExpand"
-      >▶</span>
+      ><ChevronRight :size="12" /></span>
       <span v-else-if="!collapsed" class="tree-toggle leaf"></span>
       <span class="tree-icon" :title="collapsed ? node.name : ''">
         <template v-if="collapsed">
           <span class="tree-avatar" :title="node.name">{{ avatarText }}</span>
         </template>
-        <svg v-else-if="node.id === -4" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><polyline points="22 12 16 12 14 15 10 15 8 12 2 12"/><path d="M5.45 5.11 2 12v6a2 2 0 0 0 2 2h16a2 2 0 0 0 2-2v-6l-3.45-6.89A2 2 0 0 0 16.76 4H7.24a2 2 0 0 0-1.79 1.11z"/></svg>
-        <svg v-else viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><path d="M20 20a2 2 0 0 0 2-2V8a2 2 0 0 0-2-2h-7.9a2 2 0 0 1-1.69-.9L9.6 3.9A2 2 0 0 0 7.93 3H4a2 2 0 0 0-2 2v13a2 2 0 0 0 2 2Z"/></svg>
+        <Inbox v-else-if="node.id === -4" :size="16" :stroke-width="1.75" />
+        <Folder v-else :size="16" :stroke-width="1.75" />
       </span>
       <span v-if="!collapsed" class="tree-label">{{ node.name }}</span>
       <span v-if="!collapsed" class="tree-count">{{ node.count || 0 }}</span>
@@ -79,7 +80,7 @@ function onMoreClick(e: MouseEvent) {
         size="tiny"
         aria-label="分组操作"
         @click.stop="onMoreClick"
-      >⋯</NButton>
+      ><Ellipsis :size="14" /></NButton>
     </div>
 
     <div v-if="hasChildren && expanded && !collapsed" class="tree-children">
@@ -114,19 +115,19 @@ function onMoreClick(e: MouseEvent) {
 }
 
 .tree-row:hover {
-  background: var(--surface-2);
+  background: var(--gray-3);
 }
 
 .tree-row.active {
-  background: var(--primary-light);
-  color: var(--primary);
+  background: var(--blue-5);
+  color: var(--blue-11);
 }
 
 .tree-toggle {
   width: 14px;
   height: 14px;
   font-size: 9px;
-  color: var(--muted);
+  color: var(--gray-11);
   cursor: pointer;
   display: flex;
   align-items: center;
@@ -153,8 +154,8 @@ function onMoreClick(e: MouseEvent) {
   width: 26px;
   height: 26px;
   border-radius: 7px;
-  background: var(--surface-2);
-  color: var(--fg-secondary);
+  background: var(--gray-3);
+  color: var(--gray-11);
   font-size: 11px;
   font-weight: 600;
   display: flex;
@@ -165,8 +166,8 @@ function onMoreClick(e: MouseEvent) {
 }
 
 .tree-row.active .tree-avatar {
-  background: var(--primary-light);
-  color: var(--primary-strong);
+  background: var(--blue-5);
+  color: var(--blue-11);
 }
 
 .tree-more {
@@ -194,11 +195,11 @@ function onMoreClick(e: MouseEvent) {
 
 .tree-count {
   font-size: 11px;
-  color: var(--muted);
+  color: var(--gray-11);
   flex-shrink: 0;
 }
 
 .tree-row.active .tree-count {
-  color: var(--primary);
+  color: var(--blue-9);
 }
 </style>

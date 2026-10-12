@@ -158,8 +158,8 @@ defineExpose({ start, hideProgress, hideDone })
         :border-radius="4"
         :fill-border-radius="4"
         :show-indicator="false"
-        color="var(--accent)"
-        rail-color="var(--bg)"
+        color="var(--blue-9)"
+        rail-color="var(--gray-1)"
       />
       <div class="sync-meta">
         <span>{{ progressPct }}</span>
@@ -219,11 +219,11 @@ defineExpose({ start, hideProgress, hideDone })
 
 <style scoped>
 .sync-box {
-  background: var(--surface);
+  background: var(--gray-2);
   border-radius: var(--radius-lg);
   padding: 24px 28px;
   width: 420px;
-  border: 1px solid var(--border);
+  border: 1px solid var(--gray-6);
   box-shadow: var(--shadow-lg);
   text-align: center;
 }
@@ -231,13 +231,13 @@ defineExpose({ start, hideProgress, hideDone })
 .sync-title {
   font-size: 14px;
   font-weight: 600;
-  color: var(--fg);
+  color: var(--gray-12);
   margin-bottom: 4px;
 }
 
 .sync-file {
   font-size: 12px;
-  color: var(--fg-secondary);
+  color: var(--gray-11);
   margin-bottom: 12px;
   word-break: break-all;
 }
@@ -249,20 +249,20 @@ defineExpose({ start, hideProgress, hideDone })
 
 .sync-meta {
   font-size: 11.5px;
-  color: var(--muted);
+  color: var(--gray-11);
   margin-bottom: 16px;
 }
 
 .sync-detail {
   font-size: 13px;
-  color: var(--fg-secondary);
+  color: var(--gray-11);
   line-height: 1.6;
   margin-bottom: 18px;
 }
 
 .sync-warning-text {
   font-size: 13px;
-  color: var(--fg-secondary);
+  color: var(--gray-11);
   line-height: 1.6;
   margin: 8px 0 16px;
 }
@@ -272,7 +272,7 @@ defineExpose({ start, hideProgress, hideDone })
   align-items: center;
   justify-content: center;
   font-size: 12.5px;
-  color: var(--muted);
+  color: var(--gray-11);
   margin-bottom: 16px;
   user-select: none;
 }

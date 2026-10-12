@@ -167,29 +167,29 @@ defineExpose({ open })
 
 <template>
   <NModal :show="visible" :mask-closable="false" :closable="false" @update:show="onUpdateShow">
-    <div style="background:var(--surface);border-radius:var(--radius-lg);padding:24px 28px;width:440px;border:1px solid var(--border);box-shadow:var(--shadow-lg)">
+    <div style="background:var(--gray-2);border-radius:var(--radius-lg);padding:24px 28px;width:440px;border:1px solid var(--gray-6);box-shadow:var(--shadow-lg)">
       <div v-show="phase === 'config'">
-        <div style="font-size:14px;font-weight:600;color:var(--fg);margin-bottom:4px">从抖音导入</div>
-        <div style="font-size:12px;color:var(--muted);margin-bottom:12px;line-height:1.6">通过抖音网页版 API 下载自定义表情包（WebP 原格式保存，需登录 Cookie）</div>
+        <div style="font-size:14px;font-weight:600;color:var(--gray-12);margin-bottom:4px">从抖音导入</div>
+        <div style="font-size:12px;color:var(--gray-11);margin-bottom:12px;line-height:1.6">通过抖音网页版 API 下载自定义表情包（WebP 原格式保存，需登录 Cookie）</div>
         <div class="form-group">
           <label>抖音 Cookie</label>
           <NInput type="password" placeholder="粘贴抖音网页版 Cookie（sessionid=xxx; ...）" :value="cookie" :input-props="{ id: 's-dy-cookie', autocomplete: 'off' }" @update:value="(v) => cookie = v" />
         </div>
-        <div class="s-net-status" :class="{ 'status-ok': statusMode === 'ok', 'status-error': statusMode === 'error' }" style="font-size:11.5px;color:var(--muted);margin-bottom:10px;word-break:break-all;line-height:1.6">{{ status }}</div>
+        <div class="s-net-status" :class="{ 'status-ok': statusMode === 'ok', 'status-error': statusMode === 'error' }" style="font-size:11.5px;color:var(--gray-11);margin-bottom:10px;word-break:break-all;line-height:1.6">{{ status }}</div>
         <div style="display:flex;gap:8px">
           <NButton size="small" type="primary" style="flex:1" :loading="busy" @click="startImport">开始下载</NButton>
           <NButton size="small" @click="close">取消</NButton>
         </div>
       </div>
       <div v-show="phase === 'progress'" style="text-align:center">
-        <div style="font-size:14px;font-weight:600;color:var(--fg);margin-bottom:4px">{{ progressTitle }}</div>
-        <div style="font-size:12px;color:var(--fg-secondary);margin-bottom:12px;word-break:break-all">{{ progressMsg }}</div>
+        <div style="font-size:14px;font-weight:600;color:var(--gray-12);margin-bottom:4px">{{ progressTitle }}</div>
+        <div style="font-size:12px;color:var(--gray-11);margin-bottom:12px;word-break:break-all">{{ progressMsg }}</div>
         <NProgress type="line" :percentage="pct" :show-indicator="false" :height="8" />
-        <div style="font-size:11.5px;color:var(--muted);margin-top:6px;margin-bottom:16px">
+        <div style="font-size:11.5px;color:var(--gray-11);margin-top:6px;margin-bottom:16px">
           <span>{{ pct }}%</span>
         </div>
         <NButton size="small" @click="close">关闭</NButton>
-        <div v-if="error" style="font-size:12px;color:var(--danger);margin-top:8px;word-break:break-all">{{ error }}</div>
+        <div v-if="error" style="font-size:12px;color:var(--red-11);margin-top:8px;word-break:break-all">{{ error }}</div>
       </div>
     </div>
   </NModal>
