@@ -649,7 +649,7 @@ def test_sorting_visual_feedback_static_contract():
     sorting_rule = rule("#meme-grid.sort-enabled .meme-card")
     assert re.search(r"transform\s*:\s*scale\(0\.95\)", sorting_rule)
     assert re.search(
-        r"outline\s*:\s*3px\s+solid\s+var\(--border-light\)", sorting_rule
+        r"outline\s*:\s*3px\s+solid\s+var\(--gray-7\)", sorting_rule
     )
     assert re.search(r"outline-offset\s*:\s*3px", sorting_rule)
 

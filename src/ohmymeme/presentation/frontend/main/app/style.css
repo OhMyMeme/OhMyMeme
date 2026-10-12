@@ -109,6 +109,11 @@ body {
   -webkit-app-region: no-drag;
 }
 
+#titlebar .title-btn.on,
+#titlebar .icon-btn.on {
+  background: var(--blue-a3);
+}
+
 #titlebar .title-btn.close-btn {
   font-size: 16px;
   padding: 4px 8px;

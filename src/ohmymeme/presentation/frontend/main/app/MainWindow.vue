@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { ref, onMounted, onUnmounted, computed } from 'vue'
+import { ref, onMounted, onUnmounted, computed, h } from 'vue'
 import { useMemes } from '../features/memes/useMemes'
 import { useDragSort } from '../features/sorting/useDragSort'
 import { useContextMenu, type MenuItem } from '../features/dialogs/useContextMenu'
@@ -16,8 +16,8 @@ import TagEditor from '../features/tags/TagEditor.vue'
 import UpdateDialog from '../features/updates/UpdateDialog.vue'
 import type { Meme } from '../shared/types'
 import { api } from '../shared/bridge'
-import { NButton, NInput, NTag, NModal, NSpin, useMessage } from 'naive-ui'
-import { ArrowUpDown, ListChecks, Upload, Download, PanelLeft, X, Heart, Folder, ImagePlus, Check } from '@lucide/vue'
+import { NButton, NInput, NTag, NModal, NSpin, NDropdown, useMessage } from 'naive-ui'
+import { ArrowUpDown, ListChecks, PanelLeft, X, Heart, Folder, ImagePlus, Check, Ellipsis, CloudUpload, CloudDownload, RefreshCw, Settings, FilePlus } from '@lucide/vue'
 import { lanConfirmVisible, lanConfirmDevice, confirmLanDevice, onLanConfirmShowChange } from '../features/lan/showLanDeviceConfirm'
 
 const { state, setMemes, search, goToPage, setSearch, toggleTag, setActiveCollection, refreshTags, refreshCollections, copyMeme, reorderMemes, canReorder, startNativeDrag, selectAllVisible, clearSelection, loadInitData } = useMemes()
@@ -270,6 +270,24 @@ function rescanCache() {
   showToast('缓存刷新中...')
   search()
   refreshCollections()
+}
+
+// 标题栏「更多」菜单：同步 / 维护 / 应用三类，非同类之间以分割线分隔
+const titleMenuOptions: Record<string, unknown>[] = [
+  { label: '上传到远端', key: 'sync_upload', icon: () => h(CloudUpload, { size: 16 }) },
+  { label: '从远端下载', key: 'sync_download', icon: () => h(CloudDownload, { size: 16 }) },
+  { type: 'divider', key: 'menu-divider-sync' },
+  { label: '重新扫描', key: 'rescan', icon: () => h(RefreshCw, { size: 16 }) },
+  { type: 'divider', key: 'menu-divider-rescan' },
+  { label: '设置', key: 'settings', icon: () => h(Settings, { size: 16 }) },
+]
+
+function onTitleMenuSelect(key: string | number) {
+  const action = String(key)
+  if (action === 'sync_upload') syncUpload()
+  else if (action === 'sync_download') syncDownload()
+  else if (action === 'rescan') rescanCache()
+  else if (action === 'settings') openSettings()
 }
 
 function hideWindow() {
@@ -817,29 +835,28 @@ function logBridgeIssue(method: string, detail = '') {
       </div>
       <span class="spacer"></span>
       <div class="titlebar__actions">
-        <NButton class="icon-btn" quaternary :type="sortEnabled ? 'primary' : 'default'" title="拖拽排序" aria-label="拖拽排序" @click="toggleSort">
+        <NButton class="icon-btn" :class="{ on: sortEnabled }" quaternary :type="sortEnabled ? 'primary' : 'default'" title="拖拽排序" aria-label="拖拽排序" :aria-pressed="sortEnabled" @click="toggleSort">
           <template #icon>
             <ArrowUpDown :size="16" />
           </template>
         </NButton>
-        <NButton class="icon-btn" quaternary :type="selectMode ? 'primary' : 'default'" title="多选" aria-label="多选" @click="toggleSelect">
+        <NButton class="icon-btn" :class="{ on: selectMode }" quaternary :type="selectMode ? 'primary' : 'default'" title="多选" aria-label="多选" :aria-pressed="selectMode" @click="toggleSelect">
           <template #icon>
             <ListChecks :size="16" />
           </template>
         </NButton>
-        <NButton class="icon-btn" quaternary title="上传到远端" aria-label="上传到远端" @click="syncUpload()">
+        <NButton class="icon-btn" quaternary title="导入表情包" aria-label="导入表情包" @click="showImportMenu()">
           <template #icon>
-            <Upload :size="16" />
+            <FilePlus :size="16" />
           </template>
         </NButton>
-        <NButton class="icon-btn" quaternary title="从远端下载" aria-label="从远端下载" @click="syncDownload()">
-          <template #icon>
-            <Download :size="16" />
-          </template>
-        </NButton>
-        <NButton class="title-btn" quaternary @click="showImportMenu()">导入</NButton>
-        <NButton class="title-btn" quaternary @click="rescanCache()">刷新</NButton>
-        <NButton class="title-btn" quaternary @click="openSettings()">设置</NButton>
+        <NDropdown trigger="click" placement="bottom-end" :options="titleMenuOptions" :theme-overrides="{ boxShadow: 'none' }" @select="onTitleMenuSelect">
+          <NButton class="icon-btn" quaternary title="更多操作" aria-label="更多操作">
+            <template #icon>
+              <Ellipsis :size="16" />
+            </template>
+          </NButton>
+        </NDropdown>
         <NButton class="title-btn close-btn" quaternary aria-label="隐藏窗口" @click="hideWindow()"><X :size="16" /></NButton>
       </div>
     </header>
