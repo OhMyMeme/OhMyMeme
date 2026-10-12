@@ -738,22 +738,20 @@ def test_sorting_visual_feedback_static_contract():
         use_memes,
     )
 
-    # MainWindow 绑定：sort-enabled 仅在可排序时启用；多选独立；复制被整理/多选守卫
+    # MainWindow 绑定：sort-enabled 仅在可排序时启用；整理模式点选/拖拽合并；复制被整理模式守卫
     assert re.search(
         r"'sort-enabled':\s*sortEnabled\s*&&\s*canReorder\(\)", main_window
     )
-    assert re.search(r"'select-enabled':\s*selectMode", main_window)
+    assert re.search(r"'select-enabled':\s*sortEnabled", main_window)
     assert 'class="meme-card folder-card"' in main_window.split("<drag-select", 1)[0]
     toggle_sort = re.search(
         r"function toggleSort\(\)\s*\{(?P<body>.*?)\n\}", main_window, re.DOTALL
     )
     assert toggle_sort, "toolbar sort toggle must remain locally inspectable"
-    assert re.search(r"selectMode\.value\s*=\s*false", toggle_sort.group("body"))
-    assert re.search(r"drag\.enable\(\)", toggle_sort.group("body"))
-    assert re.search(
-        r"if\s*\(sortEnabled\.value\s*\|\|\s*selectMode\.value\)\s*return",
-        main_window,
-    )
+    assert re.search(r"if\s*\(sortEnabled\.value\)\s*drag\.enable\(\)", toggle_sort.group("body"))
+    assert re.search(r"if\s*\(sortEnabled\.value\)\s*return", main_window)
+    assert re.search(r"function onCardClick\(meme: Meme\)", main_window)
+    assert re.search(r"function toggleSelected\(id: number\)", main_window)
 
 
 def test_grid_slot_hit_testing_stays_aligned_when_layout_moves_and_scrolls():

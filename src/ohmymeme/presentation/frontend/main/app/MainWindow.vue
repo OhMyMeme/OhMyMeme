@@ -16,7 +16,7 @@ import UpdateDialog from '../features/updates/UpdateDialog.vue'
 import type { Meme } from '../shared/types'
 import { api } from '../shared/bridge'
 import { NButton, NInput, NTag, NModal, NSpin, NDropdown, useMessage } from 'naive-ui'
-import { ArrowUpDown, ListChecks, PanelLeft, X, Heart, Folder, ImagePlus, Check, Ellipsis, CloudUpload, CloudDownload, RefreshCw, Settings, FilePlus } from '@lucide/vue'
+import { ArrowUpDown, PanelLeft, X, Heart, Folder, ImagePlus, Check, Ellipsis, CloudUpload, CloudDownload, RefreshCw, Settings } from '@lucide/vue'
 import { lanConfirmVisible, lanConfirmDevice, confirmLanDevice, onLanConfirmShowChange } from '../features/lan/showLanDeviceConfirm'
 
 const { state, setMemes, search, loadMore, setSearch, toggleTag, setActiveCollection, refreshTags, refreshCollections, copyMeme, reorderMemes, canReorder, startNativeDrag, selectAllVisible, clearSelection, loadInitData } = useMemes()
@@ -108,7 +108,6 @@ function maybeShowUpdate(upd) {
 }
 
 const sortEnabled = ref(false)
-const selectMode = ref(false)
 const drag = useDragSort(
   () => state.memes,
   setMemes,
@@ -216,12 +215,24 @@ function onFolderCardContext(e: MouseEvent, childId: number, childName: string) 
 }
 
 async function handleCopy(meme: Meme) {
-  if (ignoreClick) { ignoreClick = false; return }
-  // 整理/多选模式：不复制（勾选由 drag-select 处理）
-  if (sortEnabled.value || selectMode.value) return
   const ok = await copyMeme(meme.id)
   if (ok) showToast(`${meme.name} 已复制`)
   else showToast('复制失败')
+}
+
+// 卡片点击/回车：整理模式=勾选切换；普通模式=复制（拖拽后的首次点击由 ignoreClick 吞掉）
+function onCardClick(meme: Meme) {
+  if (ignoreClick) { ignoreClick = false; return }
+  if (sortEnabled.value) { toggleSelected(meme.id); return }
+  void handleCopy(meme)
+}
+
+// 整理模式勾选：替换 Set 触发响应式（与 search 清空选择同一模式）
+function toggleSelected(id: number) {
+  const next = new Set(state.selectedIds)
+  if (next.has(id)) next.delete(id)
+  else next.add(id)
+  state.selectedIds = next
 }
 
 // 消息提示：走 Naive NMessage，保留原 toast 的 1600ms 时长
@@ -231,7 +242,7 @@ function showToast(msg: string) {
 
 // 卡片悬停快速收藏（右键菜单外的一键入口）
 async function quickFavorite(meme: Meme) {
-  if (sortEnabled.value || selectMode.value) return
+  if (sortEnabled.value) return
   const ok = await api('toggle_favorite', meme.id)
   if (ok === null || ok === undefined) return
   meme.favorited = ok
@@ -272,15 +283,8 @@ function toggleSidebar() { sidebarCollapsed.value = !sidebarCollapsed.value }
 
 function toggleSort() {
   sortEnabled.value = !sortEnabled.value
-  if (sortEnabled.value) { selectMode.value = false; drag.enable() }
-  else drag.disable()
-  if (!sortEnabled.value) clearSelection()
-}
-
-function toggleSelect() {
-  selectMode.value = !selectMode.value
-  if (selectMode.value) { sortEnabled.value = false; drag.disable() }
-  else clearSelection()
+  if (sortEnabled.value) drag.enable()
+  else { drag.disable(); clearSelection() }
 }
 
 const importMenu = ref<InstanceType<typeof ImportMenu> | null>(null)
@@ -648,11 +652,12 @@ let ignoreClick = false
 
 function onCardPointerDown(e: PointerEvent, meme: Meme, card: HTMLElement) {
   ignoreClick = false
-  if (sortEnabled.value && canReorder() && !selectMode.value) {
-    drag.onPointerDown(e, meme.id, card)
+  // 整理模式接管指针：可排视图拖拽换位；不可排视图只做点选，不走原生拖拽
+  if (sortEnabled.value) {
+    if (canReorder()) drag.onPointerDown(e, meme.id, card)
     return
   }
-  if (e.button !== 0 || selectMode.value) return
+  if (e.button !== 0) return
   nativeDragStart = { x: e.clientX, y: e.clientY, memeId: meme.id }
 }
 
@@ -661,7 +666,7 @@ function onDocPointerMove(e: PointerEvent) {
     drag.onPointerMove(e)
     return
   }
-  if (!nativeDragStart || sortEnabled.value || selectMode.value) return
+  if (!nativeDragStart || sortEnabled.value) return
   const dist = Math.hypot(e.clientX - nativeDragStart.x, e.clientY - nativeDragStart.y)
   if (dist > 8) {
     const id = nativeDragStart.memeId
@@ -783,12 +788,11 @@ async function onDrop(e: DragEvent) {
   showToast('未识别到可导入的内容')
 }
 
-// ESC：右键菜单 → 多选 → 整理模式 → 隐藏窗口
+// ESC：右键菜单 → 整理模式 → 隐藏窗口
 function onDocKeydown(e: KeyboardEvent) {
   if (e.key !== 'Escape') return
   if (lanConfirmVisible.value) { confirmLanDevice(false); return }
   if (ctx.visible.value) { ctx.hide(); return }
-  if (selectMode.value) { toggleSelect(); return }
   if (sortEnabled.value) { toggleSort(); return }
   hideWindow()
 }
@@ -892,14 +896,9 @@ function logBridgeIssue(method: string, detail = '') {
             <ArrowUpDown :size="16" />
           </template>
         </NButton>
-        <NButton class="icon-btn" :class="{ on: selectMode }" quaternary :type="selectMode ? 'primary' : 'default'" title="多选" aria-label="多选" :aria-pressed="selectMode" @click="toggleSelect">
-          <template #icon>
-            <ListChecks :size="16" />
-          </template>
-        </NButton>
         <NButton class="icon-btn" quaternary title="导入表情包" aria-label="导入表情包" @click="showImportMenu()">
           <template #icon>
-            <FilePlus :size="16" />
+            <ImagePlus :size="16" />
           </template>
         </NButton>
         <NDropdown trigger="click" placement="bottom-end" :options="titleMenuOptions" :theme-overrides="{ boxShadow: 'none' }" @select="onTitleMenuSelect">
@@ -980,11 +979,17 @@ function logBridgeIssue(method: string, detail = '') {
           </template>
         </div>
 
-        <div v-if="selectMode" id="batch-bar">
+        <div v-if="sortEnabled" id="organize-bar" role="toolbar" aria-label="整理模式工具栏">
           <span class="count">已选 {{ state.selectedIds.size }} 项</span>
-          <NButton class="btn btn-sm" size="small" :disabled="state.memes.length === 0" @click="selectAllVisible">全选当前页</NButton>
+          <NButton class="btn btn-sm" size="small" :disabled="state.memes.length === 0" @click="selectAllVisible">全选已加载</NButton>
           <NButton class="btn btn-sm btn-secondary" size="small" :disabled="state.selectedIds.size === 0" @click="clearSelection">取消选择</NButton>
           <NButton class="btn btn-sm btn-danger" size="small" type="error" :disabled="state.selectedIds.size === 0" @click="batchDelete">批量删除</NButton>
+          <span v-if="canReorder()" class="hint">拖动卡片调整顺序</span>
+          <NButton class="bar-close" quaternary size="tiny" title="退出整理" aria-label="退出整理" @click="toggleSort">
+            <template #icon>
+              <X :size="14" />
+            </template>
+          </NButton>
         </div>
 
         <div id="grid-wrap" ref="gridWrapRef">
@@ -1011,9 +1016,9 @@ function logBridgeIssue(method: string, detail = '') {
 
           <drag-select
             v-model="state.selectedIds"
-            :disabled="!sortEnabled && !selectMode"
+            :disabled="!sortEnabled"
             :multiple="true"
-            :click-option-to-select="selectMode"
+            :click-option-to-select="false"
             :draggable-on-option="false"
             :click-blank-to-clear="false"
           >
@@ -1022,7 +1027,7 @@ function logBridgeIssue(method: string, detail = '') {
               tag="div"
               name="meme-list"
               class="meme-grid"
-              :class="{ 'sort-enabled': sortEnabled && canReorder(), 'select-enabled': selectMode }"
+              :class="{ 'sort-enabled': sortEnabled && canReorder(), 'select-enabled': sortEnabled }"
             >
               <drag-select-option
                 v-for="meme in state.memes"
@@ -1036,18 +1041,18 @@ function logBridgeIssue(method: string, detail = '') {
                   role="button"
                   tabindex="0"
                   :aria-label="meme.name"
-                  @click="handleCopy(meme)"
+                  @click="onCardClick(meme)"
                   @contextmenu="onMemeRightClick($event, meme)"
                   @pointerdown="onCardPointerDown($event, meme, $event.currentTarget as HTMLElement)"
                   @mouseenter="onCardMouseEnter(meme)"
                   @mouseleave="onCardMouseLeave(meme)"
-                  @keydown.enter.prevent="handleCopy(meme)"
-                  @keydown.space.prevent="handleCopy(meme)"
+                  @keydown.enter.prevent="onCardClick(meme)"
+                  @keydown.space.prevent="onCardClick(meme)"
                 >
                   <img :src="memeSrc(meme)" :alt="meme.name" loading="lazy">
                   <span v-if="state.selectedIds.has(meme.id)" class="select-badge"><Check :size="12" /></span>
                   <NButton
-                    v-if="!selectMode && !sortEnabled"
+                    v-if="!sortEnabled"
                     class="fav-btn"
                     :class="{ active: meme.favorited }"
                     quaternary
