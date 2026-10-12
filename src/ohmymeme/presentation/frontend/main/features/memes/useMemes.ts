@@ -24,6 +24,7 @@ const state = reactive({
 })
 
 let searchGen = 0
+let selectAllBusy = false
 let retryTimer: ReturnType<typeof setTimeout> | null = null
 let retryCount = 0
 let moreRetryTimer: ReturnType<typeof setTimeout> | null = null
@@ -73,7 +74,7 @@ export function useMemes() {
   async function search(): Promise<boolean> {
     const gen = ++searchGen
     state.loading = true
-    // 换分组/筛选/搜索即清空选择（「全选已加载」语义）
+    // 换分组/筛选/搜索即清空选择（全选语义下需重新勾选）
     state.selectedIds = new Set()
     moreRetryCount = 0
     if (moreRetryTimer) { clearTimeout(moreRetryTimer); moreRetryTimer = null }
@@ -166,7 +167,19 @@ export function useMemes() {
   }
   function setMemes(newMemes: Meme[]) { state.memes = newMemes }
 
-  function selectAllVisible() { state.selectedIds = new Set(state.memes.map(m => m.id)) }
+  // 全选：按当前查询取全部结果 id（不受已加载范围限制；失败保留现有选择）
+  async function selectAll(): Promise<boolean> {
+    if (selectAllBusy) return false
+    selectAllBusy = true
+    try {
+      const result = await api('search_memes', state.searchQuery, [...state.activeTags], state.activeCollection, 0, 999999)
+      if (!Array.isArray(result)) return false
+      state.selectedIds = new Set(result.map((m: Meme) => m.id))
+      return true
+    } finally {
+      selectAllBusy = false
+    }
+  }
   function clearSelection() { state.selectedIds = new Set() }
 
   function canReorder(): boolean {
@@ -194,7 +207,7 @@ export function useMemes() {
     reorderMemes,
     canReorder,
     startNativeDrag,
-    selectAllVisible,
+    selectAll,
     clearSelection,
     loadInitData,
     waitForPywebview,

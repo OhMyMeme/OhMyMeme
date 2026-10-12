@@ -19,7 +19,7 @@ import { NButton, NInput, NTag, NModal, NSpin, NDropdown, useMessage } from 'nai
 import { ArrowUpDown, PanelLeft, X, Heart, Folder, ImagePlus, Check, Ellipsis, CloudUpload, CloudDownload, RefreshCw, Settings } from '@lucide/vue'
 import { lanConfirmVisible, lanConfirmDevice, confirmLanDevice, onLanConfirmShowChange } from '../features/lan/showLanDeviceConfirm'
 
-const { state, setMemes, search, loadMore, setSearch, toggleTag, setActiveCollection, refreshTags, refreshCollections, copyMeme, reorderMemes, canReorder, startNativeDrag, selectAllVisible, clearSelection, loadInitData } = useMemes()
+const { state, setMemes, search, loadMore, setSearch, toggleTag, setActiveCollection, refreshTags, refreshCollections, copyMeme, reorderMemes, canReorder, startNativeDrag, selectAll, clearSelection, loadInitData } = useMemes()
 const ctx = useContextMenu()
 const cb = useCollectionBuilder()
 const message = useMessage()
@@ -577,6 +577,14 @@ async function batchDelete() {
   refreshTags()
 }
 
+// 全选：按当前查询全量选择（仅取 id 集合，失败不改动现有选择）
+async function selectAllResults() {
+  if (state.total === 0) return
+  const ok = await selectAll()
+  if (ok) showToast(`已全选 ${state.selectedIds.size} 项`)
+  else showToast('全选失败，请重试')
+}
+
 // 在 collections 树中查找 target 的父分组
 function findParentCollection(items: any[], target: number): any | null {
   for (const c of items) {
@@ -981,7 +989,7 @@ function logBridgeIssue(method: string, detail = '') {
 
         <div v-if="sortEnabled" id="organize-bar" role="toolbar" aria-label="整理模式工具栏">
           <span class="count">已选 {{ state.selectedIds.size }} 项</span>
-          <NButton class="btn btn-sm" size="small" :disabled="state.memes.length === 0" @click="selectAllVisible">全选已加载</NButton>
+          <NButton class="btn btn-sm" size="small" :disabled="state.total === 0" @click="selectAllResults">全选</NButton>
           <NButton class="btn btn-sm btn-secondary" size="small" :disabled="state.selectedIds.size === 0" @click="clearSelection">取消选择</NButton>
           <NButton class="btn btn-sm btn-danger" size="small" type="error" :disabled="state.selectedIds.size === 0" @click="batchDelete">批量删除</NButton>
           <span v-if="canReorder()" class="hint">拖动卡片调整顺序</span>
