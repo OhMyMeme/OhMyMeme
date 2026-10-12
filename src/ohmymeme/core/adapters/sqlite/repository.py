@@ -123,13 +123,14 @@ class SqliteMemeRepository:
         if query.collection_ids:
             statement += (
                 " ORDER BY (SELECT mc.sort_order FROM meme_collections mc "
-                "WHERE mc.meme_id = m.id AND mc.collection_id = ?), m.id "
-                "LIMIT ? OFFSET ?"
+                "WHERE mc.meme_id = m.id AND mc.collection_id = ?) ASC, "
+                "m.updated_at DESC, m.id ASC LIMIT ? OFFSET ?"
             )
             parameters.extend((query.collection_ids[0], query.limit, query.offset))
         else:
             statement += (
-                " ORDER BY m.sort_order ASC, m.updated_at DESC LIMIT ? OFFSET ?"
+                " ORDER BY m.sort_order ASC, m.updated_at DESC, m.id ASC "
+                "LIMIT ? OFFSET ?"
             )
             parameters.extend((query.limit, query.offset))
         rows = self.connection().execute(statement, parameters)

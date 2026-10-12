@@ -751,7 +751,7 @@ class MemeDB:
     def get_all(self, offset: int = 0, limit: int = 100) -> List[dict]:
         conn = self._get_conn()
         rows = conn.execute(
-            "SELECT * FROM memes ORDER BY sort_order ASC, updated_at DESC "
+            "SELECT * FROM memes ORDER BY sort_order ASC, updated_at DESC, id ASC "
             "LIMIT ? OFFSET ?",
             (limit, offset),
         ).fetchall()
@@ -784,11 +784,36 @@ class MemeDB:
             conn.commit()
 
     def reorder_memes(self, meme_ids: List[int]):
+        # 部分 id 置换：保留有效 id 在原全序中的槽位，按请求顺序回填并整域规范编号
+        requested = list(dict.fromkeys(meme_ids))
+        if not requested:
+            return
         with self._lock:
             conn = self._get_conn()
-            for i, mid in enumerate(meme_ids):
-                conn.execute("UPDATE memes SET sort_order=? WHERE id=?", (i, mid))
-            conn.commit()
+            try:
+                conn.execute("BEGIN IMMEDIATE")
+                rows = conn.execute(
+                    "SELECT id FROM memes "
+                    "ORDER BY sort_order ASC, updated_at DESC, id ASC"
+                ).fetchall()
+                current = [row[0] for row in rows]
+                existing = set(current)
+                requested = [mid for mid in requested if mid in existing]
+                if not requested:
+                    conn.commit()
+                    return
+                selected = set(requested)
+                slots = [i for i, mid in enumerate(current) if mid in selected]
+                for i, mid in zip(slots, requested):
+                    current[i] = mid
+                conn.executemany(
+                    "UPDATE memes SET sort_order=? WHERE id=?",
+                    ((i, mid) for i, mid in enumerate(current)),
+                )
+                conn.commit()
+            except Exception:
+                conn.rollback()
+                raise
 
     def reorder_collections(self, collection_ids: List[int]):
         with self._lock:
@@ -798,15 +823,40 @@ class MemeDB:
             conn.commit()
 
     def reorder_collection_members(self, collection_id: int, meme_ids: List[int]):
+        # 分组直接成员的部分 id 置换：槽位回填后整域规范编号，不影响其他分组
+        requested = list(dict.fromkeys(meme_ids))
+        if not requested:
+            return
         with self._lock:
             conn = self._get_conn()
-            for i, mid in enumerate(meme_ids):
-                conn.execute(
+            try:
+                conn.execute("BEGIN IMMEDIATE")
+                rows = conn.execute(
+                    "SELECT mc.meme_id FROM meme_collections AS mc "
+                    "JOIN memes AS m ON m.id = mc.meme_id "
+                    "WHERE mc.collection_id = ? "
+                    "ORDER BY mc.sort_order ASC, m.updated_at DESC, m.id ASC",
+                    (collection_id,),
+                ).fetchall()
+                current = [row[0] for row in rows]
+                existing = set(current)
+                requested = [mid for mid in requested if mid in existing]
+                if not requested:
+                    conn.commit()
+                    return
+                selected = set(requested)
+                slots = [i for i, mid in enumerate(current) if mid in selected]
+                for i, mid in zip(slots, requested):
+                    current[i] = mid
+                conn.executemany(
                     "UPDATE meme_collections SET sort_order=? "
                     "WHERE meme_id=? AND collection_id=?",
-                    (i, mid, collection_id),
+                    ((i, mid, collection_id) for i, mid in enumerate(current)),
                 )
-            conn.commit()
+                conn.commit()
+            except Exception:
+                conn.rollback()
+                raise
 
     def apply_remote_metadata(self, remote_data: dict, register_memes: bool = False):
         """原子应用远端分组与全局排序"""

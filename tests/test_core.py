@@ -514,6 +514,722 @@ class TestDatabase(unittest.TestCase):
         self.assertEqual(len(results), 0)
         self.assertEqual(self.db.count(), 0)
 
+    def _make_memes(self, orders, times=None):
+        # 创建与 orders 等量的独立表情并直接设置排序值与更新时间，返回 id 列表
+        conn = self.db._get_conn()
+        ids = [
+            self.db.add_meme(f"{chr(ord('A') + i)}.png") for i in range(len(orders))
+        ]
+        if times is None:
+            times = [
+                f"2026-01-{len(orders) - i:02d} 00:00:00" for i in range(len(orders))
+            ]
+        for mid, order, ts in zip(ids, orders, times):
+            conn.execute(
+                "UPDATE memes SET sort_order=?, updated_at=? WHERE id=?",
+                (order, ts, mid),
+            )
+        conn.commit()
+        return ids
+
+    def _set_member_orders(self, cid, ids, orders):
+        # 直接写入分组成员的排序值（测试基线，不经过待测方法）
+        conn = self.db._get_conn()
+        conn.executemany(
+            "UPDATE meme_collections SET sort_order=? "
+            "WHERE meme_id=? AND collection_id=?",
+            ((order, mid, cid) for mid, order in zip(ids, orders)),
+        )
+        conn.commit()
+
+    def _member_orders(self, cid):
+        # 读取分组成员的 meme_id → sort_order 映射
+        rows = self.db._get_conn().execute(
+            "SELECT meme_id, sort_order FROM meme_collections WHERE collection_id=?",
+            (cid,),
+        ).fetchall()
+        return {r[0]: r[1] for r in rows}
+
+    def _global_orders(self):
+        # 读取 memes 表的 id → sort_order 映射
+        rows = self.db._get_conn().execute(
+            "SELECT id, sort_order FROM memes"
+        ).fetchall()
+        return {r[0]: r[1] for r in rows}
+
+    def test_reorder_memes_partial_permutation_preserves_slots(self):
+        ids = self._make_memes([10, 20, 30, 40, 50, 60])
+        a, b, c, d, e, f = ids
+
+        self.assertIsNone(self.db.reorder_memes([e, b, d]))
+
+        order = [r["id"] for r in self.db.search(limit=6)]
+        self.assertEqual(order, [a, e, c, b, d, f])
+        self.assertEqual([r["id"] for r in self.db.get_all(limit=6)], order)
+        self.assertEqual(order.index(a), 0)
+        self.assertEqual(order.index(c), 2)
+        self.assertEqual(order.index(f), 5)
+        self.assertEqual(sorted(order.index(mid) for mid in (e, b, d)), [1, 3, 4])
+        self.assertEqual(
+            [r["sort_order"] for r in self.db.get_all(limit=6)], list(range(6))
+        )
+
+    def test_reorder_collection_members_partial_permutation_preserves_slots(self):
+        ids = self._make_memes([0, 0, 0, 0, 0, 0])
+        a, b, c, d, e, f = ids
+        cid = self.db.create_collection("group")
+        for mid in ids:
+            self.db.add_to_collection(mid, cid)
+        self._set_member_orders(cid, ids, [10, 20, 30, 40, 50, 60])
+
+        self.assertIsNone(self.db.reorder_collection_members(cid, [e, b, d]))
+
+        order = [r["id"] for r in self.db.search(collection_id=cid, limit=6)]
+        self.assertEqual(order, [a, e, c, b, d, f])
+        self.assertEqual(order.index(a), 0)
+        self.assertEqual(order.index(c), 2)
+        self.assertEqual(order.index(f), 5)
+        self.assertEqual(sorted(order.index(mid) for mid in (e, b, d)), [1, 3, 4])
+        member_orders = self._member_orders(cid)
+        self.assertEqual(set(member_orders), set(ids))
+        self.assertEqual([member_orders[mid] for mid in order], list(range(6)))
+
+    def test_reorder_memes_default_zero_orders_preserve_unrequested_items(self):
+        ids = self._make_memes([0, 0, 0, 0, 0, 0])
+        a, b, c, d, e, f = ids
+
+        # 排序值全为 0：固定时间倒序使读取顺序为 [A..F]
+        self.assertEqual([r["id"] for r in self.db.search(limit=6)], [a, b, c, d, e, f])
+
+        self.db.reorder_memes([c, a, b])
+
+        order = [r["id"] for r in self.db.search(limit=6)]
+        self.assertEqual(order, [c, a, b, d, e, f])
+        self.assertEqual(order[3:], [d, e, f])
+        self.assertEqual(
+            [r["sort_order"] for r in self.db.get_all(limit=6)], list(range(6))
+        )
+
+    def test_reorder_collection_members_default_zero_orders_preserve_unrequested_items(
+        self,
+    ):
+        ids = self._make_memes([0, 0, 0, 0, 0, 0])
+        a, b, c, d, e, f = ids
+        cid = self.db.create_collection("group")
+        for mid in ids:
+            self.db.add_to_collection(mid, cid)
+
+        # 分组成员排序值全为 0：固定时间倒序使读取顺序为 [A..F]
+        self.assertEqual(
+            [r["id"] for r in self.db.search(collection_id=cid, limit=6)],
+            [a, b, c, d, e, f],
+        )
+
+        self.db.reorder_collection_members(cid, [c, a, b])
+
+        order = [r["id"] for r in self.db.search(collection_id=cid, limit=6)]
+        self.assertEqual(order, [c, a, b, d, e, f])
+        self.assertEqual(order[3:], [d, e, f])
+        member_orders = self._member_orders(cid)
+        self.assertEqual([member_orders[mid] for mid in order], list(range(6)))
+
+    def test_reorder_memes_page_two_preserves_page_one(self):
+        conn = self.db._get_conn()
+        ids = [self.db.add_meme(f"{i}.png") for i in range(205)]
+        conn.executemany(
+            "UPDATE memes SET sort_order=? WHERE id=?",
+            ((i, mid) for i, mid in enumerate(ids)),
+        )
+        conn.commit()
+
+        self.db.reorder_memes(list(reversed(ids[200:])))
+
+        results = self.db.search(limit=205)
+        order = [r["id"] for r in results]
+        self.assertEqual(order[:200], ids[:200])
+        self.assertEqual(order[200:], list(reversed(ids[200:])))
+        # 按最终排序顺序核验连续编号：末五项反转后沿该顺序编号恰为 0..204
+        self.assertEqual([r["sort_order"] for r in results], list(range(205)))
+
+    def test_reorder_collection_members_page_two_preserves_page_one(self):
+        conn = self.db._get_conn()
+        ids = [self.db.add_meme(f"{i}.png") for i in range(205)]
+        cid = self.db.create_collection("group")
+        conn.executemany(
+            "INSERT INTO meme_collections (meme_id, collection_id, sort_order) "
+            "VALUES (?, ?, ?)",
+            ((mid, cid, i) for i, mid in enumerate(ids)),
+        )
+        conn.commit()
+
+        self.db.reorder_collection_members(cid, list(reversed(ids[200:])))
+
+        order = [r["id"] for r in self.db.search(collection_id=cid, limit=205)]
+        self.assertEqual(order[:200], ids[:200])
+        self.assertEqual(order[200:], list(reversed(ids[200:])))
+        member_orders = self._member_orders(cid)
+        self.assertEqual(len(member_orders), 205)
+        self.assertEqual(sorted(member_orders.values()), list(range(205)))
+
+    def test_reorder_memes_full_list_is_backward_compatible(self):
+        ids = self._make_memes([10, 20, 30, 40, 50, 60])
+        a, b, c, d, e, f = ids
+        requested = [f, a, e, b, d, c]
+
+        self.db.reorder_memes(requested)
+
+        self.assertEqual([r["id"] for r in self.db.search(limit=6)], requested)
+        self.assertEqual(
+            [r["sort_order"] for r in self.db.get_all(limit=6)], list(range(6))
+        )
+
+    def test_reorder_collection_members_full_list_is_backward_compatible(self):
+        ids = self._make_memes([0, 0, 0, 0, 0, 0])
+        a, b, c, d, e, f = ids
+        cid = self.db.create_collection("group")
+        for mid in ids:
+            self.db.add_to_collection(mid, cid)
+        self._set_member_orders(cid, ids, [10, 20, 30, 40, 50, 60])
+        requested = [f, a, e, b, d, c]
+
+        self.db.reorder_collection_members(cid, requested)
+
+        order = [r["id"] for r in self.db.search(collection_id=cid, limit=6)]
+        self.assertEqual(order, requested)
+        member_orders = self._member_orders(cid)
+        self.assertEqual([member_orders[mid] for mid in order], list(range(6)))
+
+    def test_reorder_empty_and_invalid_ids_are_noop(self):
+        ids = self._make_memes([5, 5, 40, 40, 40, 900])
+        cid = self.db.create_collection("group")
+        for mid in ids:
+            self.db.add_to_collection(mid, cid)
+        self._set_member_orders(cid, ids, [3, 3, 7, 7, 900, 900])
+        conn = self.db._get_conn()
+        global_rows = [
+            tuple(r)
+            for r in conn.execute(
+                "SELECT id, sort_order FROM memes ORDER BY id"
+            ).fetchall()
+        ]
+        member_rows = [
+            tuple(r)
+            for r in conn.execute(
+                "SELECT meme_id, sort_order FROM meme_collections "
+                "WHERE collection_id=? ORDER BY meme_id",
+                (cid,),
+            ).fetchall()
+        ]
+        global_order = [r["id"] for r in self.db.search(limit=6)]
+        member_order = [r["id"] for r in self.db.search(collection_id=cid, limit=6)]
+
+        self.assertIsNone(self.db.reorder_memes([]))
+        self.assertIsNone(self.db.reorder_memes([999999]))
+        self.assertIsNone(self.db.reorder_collection_members(cid, []))
+        self.assertIsNone(self.db.reorder_collection_members(cid, [999999]))
+
+        self.assertEqual(
+            [
+                tuple(r)
+                for r in conn.execute(
+                    "SELECT id, sort_order FROM memes ORDER BY id"
+                ).fetchall()
+            ],
+            global_rows,
+        )
+        self.assertEqual(
+            [
+                tuple(r)
+                for r in conn.execute(
+                    "SELECT meme_id, sort_order FROM meme_collections "
+                    "WHERE collection_id=? ORDER BY meme_id",
+                    (cid,),
+                ).fetchall()
+            ],
+            member_rows,
+        )
+        self.assertEqual([r["id"] for r in self.db.search(limit=6)], global_order)
+        self.assertEqual(
+            [r["id"] for r in self.db.search(collection_id=cid, limit=6)],
+            member_order,
+        )
+        self.assertFalse(conn.in_transaction)
+
+    def test_reorder_duplicate_and_missing_ids_use_first_occurrence(self):
+        ids = self._make_memes([10, 20, 30, 40, 50, 60])
+        a, b, c, d, e, f = ids
+        cid = self.db.create_collection("group")
+        for mid in ids:
+            self.db.add_to_collection(mid, cid)
+        self._set_member_orders(cid, ids, [10, 20, 30, 40, 50, 60])
+        expected = [a, e, c, b, d, f]
+
+        with self.subTest(scope="global"):
+            self.db.reorder_memes([e, 999999, b, e, d, b])
+            self.assertEqual([r["id"] for r in self.db.search(limit=6)], expected)
+            self.assertEqual(
+                [r["sort_order"] for r in self.db.get_all(limit=6)], list(range(6))
+            )
+
+        with self.subTest(scope="collection"):
+            self.db.reorder_collection_members(cid, [e, 999999, b, e, d, b])
+            order = [r["id"] for r in self.db.search(collection_id=cid, limit=6)]
+            self.assertEqual(order, expected)
+            member_orders = self._member_orders(cid)
+            self.assertEqual([member_orders[mid] for mid in order], list(range(6)))
+
+    def test_reorder_single_id_normalizes_entire_scope(self):
+        ids = self._make_memes([5, 5, 40, 40, 40, 900])
+        c = ids[2]
+        cid = self.db.create_collection("group")
+        for mid in ids:
+            self.db.add_to_collection(mid, cid)
+        self._set_member_orders(cid, ids, [3, 3, 7, 7, 900, 900])
+
+        with self.subTest(scope="global"):
+            before = [r["id"] for r in self.db.search(limit=6)]
+            self.assertIsNone(self.db.reorder_memes([c]))
+            self.assertEqual([r["id"] for r in self.db.search(limit=6)], before)
+            self.assertEqual(
+                [r["sort_order"] for r in self.db.get_all(limit=6)], list(range(6))
+            )
+
+        with self.subTest(scope="collection"):
+            before = [r["id"] for r in self.db.search(collection_id=cid, limit=6)]
+            self.assertIsNone(self.db.reorder_collection_members(cid, [c]))
+            order = [r["id"] for r in self.db.search(collection_id=cid, limit=6)]
+            self.assertEqual(order, before)
+            member_orders = self._member_orders(cid)
+            self.assertEqual([member_orders[mid] for mid in order], list(range(6)))
+
+    def test_reorder_missing_or_empty_collection_is_noop(self):
+        ids = self._make_memes([10, 20, 30, 40, 50, 60])
+        empty = self.db.create_collection("empty")
+        conn = self.db._get_conn()
+        global_before = self._global_orders()
+        associations_before = [
+            tuple(r)
+            for r in conn.execute(
+                "SELECT meme_id, collection_id, sort_order FROM meme_collections"
+            ).fetchall()
+        ]
+
+        self.assertIsNone(self.db.reorder_collection_members(empty, ids[:2]))
+        self.assertIsNone(self.db.reorder_collection_members(424242, ids[2:]))
+
+        self.assertEqual(self._member_orders(empty), {})
+        self.assertEqual(self._global_orders(), global_before)
+        self.assertEqual(
+            [
+                tuple(r)
+                for r in conn.execute(
+                    "SELECT meme_id, collection_id, sort_order FROM meme_collections"
+                ).fetchall()
+            ],
+            associations_before,
+        )
+        self.assertFalse(conn.in_transaction)
+
+    def test_reorder_collection_members_ignores_nonmembers_and_child_members(self):
+        ids = self._make_memes([0, 0, 0, 0, 0, 0])
+        a, b, c, d, e, _ = ids
+        target = self.db.create_collection("target")
+        child = self.db.create_collection("child", parent_id=target)
+        other = self.db.create_collection("other")
+        self.db.add_to_collection(a, target)
+        self.db.add_to_collection(b, target)
+        self.db.add_to_collection(d, target)
+        self.db.add_to_collection(c, child)
+        self.db.add_to_collection(e, other)
+        self._set_member_orders(child, [c], [7])
+        self._set_member_orders(other, [e], [9])
+
+        self.db.reorder_collection_members(target, [d, c, e, a])
+
+        self.assertEqual(
+            [r["id"] for r in self.db.search(collection_id=target, limit=3)],
+            [d, b, a],
+        )
+        self.assertEqual(self._member_orders(target), {d: 0, b: 1, a: 2})
+        self.assertEqual(self._member_orders(child), {c: 7})
+        self.assertEqual(self._member_orders(other), {e: 9})
+
+    def test_reorder_scopes_do_not_modify_each_other(self):
+        ids = self._make_memes([10, 20, 30, 40, 50, 60])
+        a, b, c, d, e, f = ids
+        parent = self.db.create_collection("parent")
+        child = self.db.create_collection("child", parent_id=parent)
+        for mid in ids:
+            self.db.add_to_collection(mid, parent)
+            self.db.add_to_collection(mid, child)
+        self._set_member_orders(parent, ids, [10, 20, 30, 40, 50, 60])
+        self._set_member_orders(child, ids, [60, 50, 40, 30, 20, 10])
+        parent_before = self._member_orders(parent)
+        child_before = self._member_orders(child)
+
+        self.db.reorder_memes([f, a])
+
+        # 全局置换不改任何成员编号
+        self.assertEqual(self._member_orders(parent), parent_before)
+        self.assertEqual(self._member_orders(child), child_before)
+        self.assertEqual([r["id"] for r in self.db.search(limit=6)], [f, b, c, d, e, a])
+
+        global_before = self._global_orders()
+        self.db.reorder_collection_members(parent, [f, a])
+
+        # 目标分组置换不改全局或其他分组编号
+        self.assertEqual(self._global_orders(), global_before)
+        self.assertEqual(self._member_orders(child), child_before)
+        self.assertEqual(
+            [r["id"] for r in self.db.search(collection_id=parent, limit=6)],
+            [f, b, c, d, e, a],
+        )
+
+    def test_reorder_queries_use_timestamp_then_id_tiebreakers(self):
+        ids = self._make_memes(
+            [0, 0, 0, 0],
+            times=[
+                "2026-01-01 00:00:00",
+                "2026-01-01 00:00:00",
+                "2026-01-02 00:00:00",
+                "2026-01-02 00:00:00",
+            ],
+        )
+        a, b, c, d = ids
+        cid = self.db.create_collection("group")
+        for mid in ids:
+            self.db.add_to_collection(mid, cid)
+        expected = [c, d, a, b]
+
+        self.assertEqual([r["id"] for r in self.db.search(limit=4)], expected)
+        self.assertEqual([r["id"] for r in self.db.get_all(limit=4)], expected)
+        self.assertEqual(
+            [r["id"] for r in self.db.search(collection_id=cid, limit=4)], expected
+        )
+
+        self.db.reorder_memes([b, d])
+
+        result = [r["id"] for r in self.db.search(limit=4)]
+        self.assertEqual(result, [c, b, a, d])
+        self.assertEqual(result.index(c), 0)
+        self.assertEqual(result.index(a), 2)
+
+        # 分组路径同样以更新时间倒序、再按 id 升序作为回退键
+        self.db.reorder_collection_members(cid, [b, d])
+
+        member_result = [r["id"] for r in self.db.search(collection_id=cid, limit=4)]
+        self.assertEqual(member_result, [c, b, a, d])
+        self.assertEqual(member_result.index(c), 0)
+        self.assertEqual(member_result.index(a), 2)
+
+    def test_reorder_identical_sort_keys_use_id_ascending(self):
+        ids = self._make_memes([0, 0, 0, 0, 0, 0], times=["2026-01-01 00:00:00"] * 6)
+        a, b, c, d, e, f = ids
+        cid = self.db.create_collection("group")
+        for mid in ids:
+            self.db.add_to_collection(mid, cid)
+
+        # 排序值与更新时间完全相同：按 id 升序形成基线
+        self.assertEqual([r["id"] for r in self.db.search(limit=6)], ids)
+        self.assertEqual([r["id"] for r in self.db.get_all(limit=6)], ids)
+        self.assertEqual(
+            [r["id"] for r in self.db.search(collection_id=cid, limit=6)], ids
+        )
+
+        expected = [a, e, c, b, d, f]
+        self.db.reorder_memes([e, b, d])
+        self.assertEqual([r["id"] for r in self.db.search(limit=6)], expected)
+        self.db.reorder_collection_members(cid, [e, b, d])
+        self.assertEqual(
+            [r["id"] for r in self.db.search(collection_id=cid, limit=6)], expected
+        )
+
+    def test_reorder_is_idempotent_and_preserves_timestamps(self):
+        conn = self.db._get_conn()
+        ids = [self.db.add_meme(f"{chr(ord('A') + i)}.png") for i in range(6)]
+        for mid, order in zip(ids, (5, 5, 40, 40, 40, 900)):
+            conn.execute(
+                "UPDATE memes SET sort_order=?, created_at=?, updated_at=? WHERE id=?",
+                (order, "2026-01-01 00:00:00", "2026-01-02 00:00:00", mid),
+            )
+        cid = self.db.create_collection("group")
+        for mid in ids:
+            self.db.add_to_collection(mid, cid)
+        self._set_member_orders(cid, ids, [5, 5, 40, 40, 40, 900])
+        timestamps = [
+            tuple(r)
+            for r in conn.execute(
+                "SELECT id, created_at, updated_at FROM memes ORDER BY id"
+            ).fetchall()
+        ]
+        request = [ids[4], ids[1], ids[3]]  # [E, B, D]
+
+        self.db.reorder_memes(request)
+        first = self._global_orders()
+        self.db.reorder_memes(request)
+        self.assertEqual(self._global_orders(), first)
+
+        self.db.reorder_collection_members(cid, request)
+        first_members = self._member_orders(cid)
+        self.db.reorder_collection_members(cid, request)
+        self.assertEqual(self._member_orders(cid), first_members)
+
+        self.assertEqual(
+            [
+                tuple(r)
+                for r in conn.execute(
+                    "SELECT id, created_at, updated_at FROM memes ORDER BY id"
+                ).fetchall()
+            ],
+            timestamps,
+        )
+
+    def test_reorder_memes_includes_hidden_carrier_rows(self):
+        conn = self.db._get_conn()
+        a = self.db.add_meme("A.png")
+        h = self.db.add_meme("H.png", stego_of_hash="carrier-hash")
+        b = self.db.add_meme("B.png")
+        c = self.db.add_meme("C.png")
+        for mid, order in zip((a, h, b, c), (10, 20, 30, 40)):
+            conn.execute(
+                "UPDATE memes SET sort_order=?, updated_at=? WHERE id=?",
+                (order, "2026-01-01 00:00:00", mid),
+            )
+        conn.commit()
+
+        self.assertEqual([r["id"] for r in self.db.get_all(limit=4)], [a, h, b, c])
+
+        self.db.reorder_memes([c, a])
+
+        order = [r["id"] for r in self.db.get_all(limit=4)]
+        self.assertEqual(order, [c, h, b, a])
+        self.assertEqual(order.index(h), 1)
+        self.assertEqual(
+            [r["sort_order"] for r in self.db.get_all(limit=4)], list(range(4))
+        )
+        self.assertEqual([r["id"] for r in self.db.search(limit=4)], [c, b, a])
+
+    def test_reorder_update_failure_rolls_back_entire_scope(self):
+        class FailingConnection:
+            def __init__(self, connection):
+                self.connection = connection
+
+            def executemany(self, sql, parameters):
+                params = iter(parameters)
+                self.connection.execute(sql, next(params))
+                raise sqlite3.OperationalError("simulated update failure")
+
+            def __getattr__(self, name):
+                return getattr(self.connection, name)
+
+        ids = self._make_memes([5, 5, 40, 40, 40, 900])
+        cid = self.db.create_collection("group")
+        for mid in ids:
+            self.db.add_to_collection(mid, cid)
+        self._set_member_orders(cid, ids, [3, 3, 7, 7, 900, 900])
+        conn = self.db._get_conn()
+        global_before = [
+            tuple(r)
+            for r in conn.execute(
+                "SELECT id, sort_order FROM memes ORDER BY id"
+            ).fetchall()
+        ]
+        member_before = [
+            tuple(r)
+            for r in conn.execute(
+                "SELECT meme_id, sort_order FROM meme_collections "
+                "WHERE collection_id=? ORDER BY meme_id",
+                (cid,),
+            ).fetchall()
+        ]
+
+        with self.subTest(scope="global"):
+            proxy = FailingConnection(conn)
+            with patch.object(self.db, "_get_conn", return_value=proxy):
+                with self.assertRaisesRegex(
+                    sqlite3.OperationalError, "simulated update failure"
+                ):
+                    self.db.reorder_memes([ids[2], ids[0], ids[1]])
+
+            self.assertFalse(conn.in_transaction)
+            self.assertEqual(
+                [
+                    tuple(r)
+                    for r in conn.execute(
+                        "SELECT id, sort_order FROM memes ORDER BY id"
+                    ).fetchall()
+                ],
+                global_before,
+            )
+            other = sqlite3.connect(self.db_path)
+            try:
+                other_rows = other.execute(
+                    "SELECT id, sort_order FROM memes ORDER BY id"
+                ).fetchall()
+            finally:
+                other.close()
+            self.assertEqual(other_rows, global_before)
+
+            self.db.reorder_memes([ids[2], ids[0], ids[1]])
+            self.assertEqual(
+                [r["id"] for r in self.db.search(limit=6)],
+                [ids[2], ids[0], ids[1], ids[3], ids[4], ids[5]],
+            )
+
+        with self.subTest(scope="collection"):
+            proxy = FailingConnection(conn)
+            with patch.object(self.db, "_get_conn", return_value=proxy):
+                with self.assertRaisesRegex(
+                    sqlite3.OperationalError, "simulated update failure"
+                ):
+                    self.db.reorder_collection_members(cid, [ids[2], ids[0], ids[1]])
+
+            self.assertFalse(conn.in_transaction)
+            self.assertEqual(
+                [
+                    tuple(r)
+                    for r in conn.execute(
+                        "SELECT meme_id, sort_order FROM meme_collections "
+                        "WHERE collection_id=? ORDER BY meme_id",
+                        (cid,),
+                    ).fetchall()
+                ],
+                member_before,
+            )
+            other = sqlite3.connect(self.db_path)
+            try:
+                other_rows = other.execute(
+                    "SELECT meme_id, sort_order FROM meme_collections "
+                    "WHERE collection_id=? ORDER BY meme_id",
+                    (cid,),
+                ).fetchall()
+            finally:
+                other.close()
+            self.assertEqual(other_rows, member_before)
+
+            self.db.reorder_collection_members(cid, [ids[2], ids[0], ids[1]])
+            self.assertEqual(
+                [r["id"] for r in self.db.search(collection_id=cid, limit=6)],
+                [ids[2], ids[0], ids[1], ids[3], ids[4], ids[5]],
+            )
+
+    def test_reorder_reads_and_writes_inside_lock_and_transaction(self):
+        class RecordingConnection:
+            def __init__(self, connection, lock, events):
+                self.connection = connection
+                self.lock = lock
+                self.events = events
+
+            def execute(self, sql, *args):
+                self.events.append(
+                    (sql.split()[0], self.lock.locked(), self.connection.in_transaction)
+                )
+                return self.connection.execute(sql, *args)
+
+            def executemany(self, sql, parameters):
+                self.events.append(
+                    (
+                        "executemany",
+                        self.lock.locked(),
+                        self.connection.in_transaction,
+                    )
+                )
+                return self.connection.executemany(sql, parameters)
+
+            def commit(self):
+                self.events.append(
+                    ("commit", self.lock.locked(), self.connection.in_transaction)
+                )
+                return self.connection.commit()
+
+            def __getattr__(self, name):
+                return getattr(self.connection, name)
+
+        def assert_locked_transaction(events):
+            self.assertEqual(
+                [kind for kind, _, _ in events],
+                ["BEGIN", "SELECT", "executemany", "commit"],
+            )
+            for kind, locked, in_transaction in events:
+                self.assertTrue(locked)
+                if kind != "BEGIN":
+                    self.assertTrue(in_transaction)
+
+        ids = self._make_memes([10, 20, 30, 40, 50, 60])
+        cid = self.db.create_collection("group")
+        for mid in ids:
+            self.db.add_to_collection(mid, cid)
+        self._set_member_orders(cid, ids, [10, 20, 30, 40, 50, 60])
+        conn = self.db._get_conn()
+        lock = self.db._lock
+
+        global_events = []
+        proxy = RecordingConnection(conn, lock, global_events)
+        with patch.object(self.db, "_get_conn", return_value=proxy):
+            self.db.reorder_memes([ids[2], ids[0], ids[1]])
+        assert_locked_transaction(global_events)
+        self.assertFalse(conn.in_transaction)
+        self.assertFalse(lock.locked())
+
+        member_events = []
+        proxy = RecordingConnection(conn, lock, member_events)
+        with patch.object(self.db, "_get_conn", return_value=proxy):
+            self.db.reorder_collection_members(cid, [ids[2], ids[0], ids[1]])
+        assert_locked_transaction(member_events)
+        self.assertFalse(conn.in_transaction)
+        self.assertFalse(lock.locked())
+
+    def test_reorder_concurrent_disjoint_subsets_are_serialized(self):
+        ids = self._make_memes([10, 20, 30, 40, 50, 60])
+        a, b, c, d, e, f = ids
+        cid = self.db.create_collection("group")
+        for mid in ids:
+            self.db.add_to_collection(mid, cid)
+        self._set_member_orders(cid, ids, [10, 20, 30, 40, 50, 60])
+
+        def run_concurrent(call):
+            barrier = threading.Barrier(2)
+            errors = []
+
+            def worker(mid_list):
+                try:
+                    barrier.wait(timeout=5)
+                    call(mid_list)
+                except Exception as exc:
+                    errors.append(exc)
+                finally:
+                    self.db.close()
+
+            threads = [
+                threading.Thread(target=worker, args=([c, a],)),
+                threading.Thread(target=worker, args=([f, d],)),
+            ]
+            for thread in threads:
+                thread.start()
+            for thread in threads:
+                thread.join(10)
+            self.assertTrue(all(not thread.is_alive() for thread in threads))
+            return errors
+
+        with self.subTest(scope="global"):
+            self.assertEqual(run_concurrent(self.db.reorder_memes), [])
+            order = [r["id"] for r in self.db.search(limit=6)]
+            self.assertEqual(order, [c, b, a, f, e, d])
+            self.assertEqual(len(set(order)), 6)
+            self.assertEqual(
+                [r["sort_order"] for r in self.db.get_all(limit=6)], list(range(6))
+            )
+
+        with self.subTest(scope="collection"):
+            self.assertEqual(
+                run_concurrent(lambda m: self.db.reorder_collection_members(cid, m)),
+                [],
+            )
+            order = [r["id"] for r in self.db.search(collection_id=cid, limit=6)]
+            self.assertEqual(order, [c, b, a, f, e, d])
+            member_orders = self._member_orders(cid)
+            self.assertEqual([member_orders[mid] for mid in order], list(range(6)))
+
 
 class TestHotkeyWatchdog(unittest.TestCase):
     """GlobalHotkey 键盘监听线程守护：自动重注册逻辑（mock keyboard 模块）"""
