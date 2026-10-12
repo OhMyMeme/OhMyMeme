@@ -331,6 +331,28 @@ body {
   flex: 1;
   overflow-y: auto;
   padding: 10px;
+  /* 预留滚动条槽位：内容从不满一屏到出滚动条时网格不跳列 */
+  scrollbar-gutter: stable;
+}
+
+/* 无限滚动底部状态：已加载计数 / 加载中 / 没有更多了 */
+.grid-foot {
+  padding: 12px 0 6px;
+  text-align: center;
+  font-size: 11.5px;
+  color: var(--gray-11);
+  user-select: none;
+}
+
+/* 未加载部分的占位块：撑起全库高度，使滚动条按全库比例呈现 */
+.grid-spacer {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 11.5px;
+  color: var(--gray-11);
+  user-select: none;
+  pointer-events: none;
 }
 
 .meme-card {

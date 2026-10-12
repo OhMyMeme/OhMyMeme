@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { ref, onMounted, onUnmounted, computed, h } from 'vue'
+import { ref, onMounted, onUnmounted, computed, h, watch } from 'vue'
 import { useMemes } from '../features/memes/useMemes'
 import { useDragSort } from '../features/sorting/useDragSort'
 import { useContextMenu, type MenuItem } from '../features/dialogs/useContextMenu'
@@ -10,7 +10,6 @@ import CollectionTreeNode from '../features/collections/CollectionTreeNode.vue'
 import ConfirmDialog from '../features/dialogs/ConfirmDialog.vue'
 import ImportMenu from '../features/imports/ImportMenu.vue'
 import InputDialog from '../features/dialogs/InputDialog.vue'
-import Pager from '../features/memes/Pager.vue'
 import SyncOverlay from '../features/sync/SyncOverlay.vue'
 import TagEditor from '../features/tags/TagEditor.vue'
 import UpdateDialog from '../features/updates/UpdateDialog.vue'
@@ -20,10 +19,56 @@ import { NButton, NInput, NTag, NModal, NSpin, NDropdown, useMessage } from 'nai
 import { ArrowUpDown, ListChecks, PanelLeft, X, Heart, Folder, ImagePlus, Check, Ellipsis, CloudUpload, CloudDownload, RefreshCw, Settings, FilePlus } from '@lucide/vue'
 import { lanConfirmVisible, lanConfirmDevice, confirmLanDevice, onLanConfirmShowChange } from '../features/lan/showLanDeviceConfirm'
 
-const { state, setMemes, search, goToPage, setSearch, toggleTag, setActiveCollection, refreshTags, refreshCollections, copyMeme, reorderMemes, canReorder, startNativeDrag, selectAllVisible, clearSelection, loadInitData } = useMemes()
+const { state, setMemes, search, loadMore, setSearch, toggleTag, setActiveCollection, refreshTags, refreshCollections, copyMeme, reorderMemes, canReorder, startNativeDrag, selectAllVisible, clearSelection, loadInitData } = useMemes()
 const ctx = useContextMenu()
 const cb = useCollectionBuilder()
 const message = useMessage()
+
+// 无限滚动：滚动条按「全库高度」呈现（等宽等高卡片 → 占位高度精确），未加载部分由占位块撑起；
+// 视口接近已加载末端（<600px，含进入占位区）时连续补载，拖到远处会顺序补齐（本地库每块毫秒级）
+const gridWrapRef = ref<HTMLElement | null>(null)
+const gridFootRef = ref<HTMLElement | null>(null)
+const spacerHeight = ref(0)
+let gridResizeObserver: ResizeObserver | null = null
+let fillRaf = 0
+// 占位高度 =（全库行数 − 已加载行数）× 卡片实测行距；加载一块后行数差等量减少，总高度恒定不跳动
+function measureGrid() {
+  const grid = document.getElementById('meme-grid')
+  const remaining = state.total - state.memes.length
+  if (!grid || remaining <= 0) { spacerHeight.value = 0; return }
+  const card = grid.querySelector('.meme-card') as HTMLElement | null
+  if (!card) { spacerHeight.value = 0; return }
+  const finite = (v: string) => { const p = parseFloat(v); return Number.isFinite(p) ? p : 0 }
+  const style = getComputedStyle(grid)
+  const gapX = finite(style.columnGap)
+  const gapY = finite(style.rowGap)
+  const contentWidth = grid.clientWidth - finite(style.paddingLeft) - finite(style.paddingRight)
+  const cols = Math.max(1, Math.round((contentWidth + gapX) / (card.offsetWidth + gapX)))
+  const totalRows = Math.ceil(state.total / cols)
+  const loadedRows = Math.ceil(state.memes.length / cols)
+  spacerHeight.value = Math.max(0, (totalRows - loadedRows) * (card.offsetHeight + gapY))
+}
+// 补载：视口底部距已加载末端不足 600px 时继续追加；失败/无更多即停（loadMore 内部自带退避重试）
+async function ensureFilled(): Promise<void> {
+  const wrap = gridWrapRef.value
+  const foot = gridFootRef.value
+  if (!wrap || !foot) return
+  if (state.loading || state.loadingMore || !state.hasMore) return
+  const distance = foot.getBoundingClientRect().bottom - wrap.getBoundingClientRect().bottom
+  if (distance > 600) return
+  const before = state.memes.length
+  await loadMore()
+  if (state.memes.length > before) void ensureFilled()
+}
+function onGridScroll() {
+  if (fillRaf) return
+  fillRaf = requestAnimationFrame(() => { fillRaf = 0; void ensureFilled() })
+}
+// 列表变化（加载/清空/筛选）后重算占位并检查是否继续补载
+watch([() => state.memes.length, () => state.total], () => { measureGrid(); void ensureFilled() }, { flush: 'post' })
+// 切换分组/标签/搜索词时滚动复位（追加加载不触发）
+const browseKey = computed(() => (state.activeCollection ?? 'all') + '|' + state.searchQuery + '|' + [...state.activeTags].sort().join(','))
+watch(browseKey, () => { if (gridWrapRef.value) gridWrapRef.value.scrollTop = 0 })
 const tagEditor = ref<InstanceType<typeof TagEditor> | null>(null)
 const updateDialog = ref<InstanceType<typeof UpdateDialog> | null>(null)
 const inputDialog = ref<InstanceType<typeof InputDialog> | null>(null)
@@ -517,18 +562,13 @@ async function batchDelete() {
   if (result.deleted === 0) {
     // 后端一个都没删掉（所选 id 在库中已不存在），刷新以对齐 UI
     showToast('没有删除任何表情包')
-    await search(false)
+    await search()
     refreshCollections()
     refreshTags()
     return
   }
   showToast(`已删除 ${result.deleted ?? ids.length} 个表情包`)
-  await search(false) // search() 内已清空选择
-  // 当前页删空时钳回新末页，避免空页
-  if (state.memes.length === 0 && state.page > 1) {
-    state.page = Math.max(1, Math.min(state.page, state.pageCount))
-    await search(false)
-  }
+  await search() // search() 内已清空选择
   refreshCollections()
   refreshTags()
 }
@@ -765,6 +805,14 @@ onMounted(() => {
   document.addEventListener('pointercancel', onDocPointerCancel)
   document.addEventListener('keydown', onDocKeydown)
   window.addEventListener('blur', onDocPointerCancel)
+  // 无限滚动：滚动/尺寸变化驱动补载（占位块保证滚动条按全库比例呈现）
+  const wrap = gridWrapRef.value
+  wrap?.addEventListener('scroll', onGridScroll, { passive: true })
+  if (wrap && typeof ResizeObserver !== 'undefined') {
+    gridResizeObserver = new ResizeObserver(() => measureGrid())
+    gridResizeObserver.observe(wrap)
+  }
+  measureGrid()
 })
 
 onUnmounted(() => {
@@ -782,6 +830,10 @@ onUnmounted(() => {
   if (updateInterval) { clearInterval(updateInterval); updateInterval = null }
   hoverTimers.forEach(t => clearTimeout(t))
   hoverTimers.clear()
+  gridWrapRef.value?.removeEventListener('scroll', onGridScroll)
+  gridResizeObserver?.disconnect()
+  gridResizeObserver = null
+  if (fillRaf) { cancelAnimationFrame(fillRaf); fillRaf = 0 }
 })
 
 // 桥接调用失败记录：控制台 + 后端日志（生产无 devtools，靠日志导出排查）
@@ -835,7 +887,7 @@ function logBridgeIssue(method: string, detail = '') {
       </div>
       <span class="spacer"></span>
       <div class="titlebar__actions">
-        <NButton class="icon-btn" :class="{ on: sortEnabled }" quaternary :type="sortEnabled ? 'primary' : 'default'" title="拖拽排序" aria-label="拖拽排序" :aria-pressed="sortEnabled" @click="toggleSort">
+        <NButton class="icon-btn" :class="{ on: sortEnabled }" quaternary :type="sortEnabled ? 'primary' : 'default'" title="整理模式" aria-label="整理模式" :aria-pressed="sortEnabled" @click="toggleSort">
           <template #icon>
             <ArrowUpDown :size="16" />
           </template>
@@ -928,13 +980,6 @@ function logBridgeIssue(method: string, detail = '') {
           </template>
         </div>
 
-        <Pager
-          v-if="state.pageCount > 1"
-          :page="state.page"
-          :page-count="state.pageCount"
-          @go="goToPage"
-        />
-
         <div v-if="selectMode" id="batch-bar">
           <span class="count">已选 {{ state.selectedIds.size }} 项</span>
           <NButton class="btn btn-sm" size="small" :disabled="state.memes.length === 0" @click="selectAllVisible">全选当前页</NButton>
@@ -942,7 +987,7 @@ function logBridgeIssue(method: string, detail = '') {
           <NButton class="btn btn-sm btn-danger" size="small" type="error" :disabled="state.selectedIds.size === 0" @click="batchDelete">批量删除</NButton>
         </div>
 
-        <div id="grid-wrap">
+        <div id="grid-wrap" ref="gridWrapRef">
           <div v-if="folderCards.length" class="meme-grid folder-grid">
             <div
               v-for="child in folderCards"
@@ -1032,6 +1077,14 @@ function logBridgeIssue(method: string, detail = '') {
             </svg>
             <div class="text">还没有表情包</div>
             <NButton class="btn btn-primary" type="primary" @click="showImportMenu()">导入表情包</NButton>
+          </div>
+
+          <div v-if="state.memes.length > 0" ref="gridFootRef" class="grid-foot">
+            {{ state.loadingMore ? '加载中…' : `已加载 ${state.memes.length} / 共 ${state.total}` + (state.hasMore ? '' : ' · 没有更多了') }}
+          </div>
+
+          <div v-if="spacerHeight > 0" class="grid-spacer" :style="{ height: spacerHeight + 'px' }">
+            <span>正在加载…</span>
           </div>
         </div>
       </div>

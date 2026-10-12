@@ -2,6 +2,7 @@ import { reactive, ref, readonly } from 'vue'
 import { api, bridgeReady } from '../../shared/bridge'
 import type { Meme } from '../../shared/types'
 
+// 无限滚动单块追加数量（后端接口默认 limit=200、get_init_data 初始化 200 条保持不变）
 const MEME_PAGE = 200
 // 桥接调用失败时的退避重试上限（失败不清空已有数据）
 const RETRY_LIMIT = 3
@@ -15,9 +16,9 @@ const state = reactive({
   allTags: [] as string[],
   searchQuery: '',
   total: 0,
-  page: 1,
-  pageCount: 1,
   loading: false,
+  loadingMore: false,
+  hasMore: false,
   showStartupAnimation: true,
   startupBgColor: '#000000',
 })
@@ -25,6 +26,8 @@ const state = reactive({
 let searchGen = 0
 let retryTimer: ReturnType<typeof setTimeout> | null = null
 let retryCount = 0
+let moreRetryTimer: ReturnType<typeof setTimeout> | null = null
+let moreRetryCount = 0
 
 export function useMemes() {
   async function waitForPywebview(): Promise<void> {
@@ -39,7 +42,7 @@ export function useMemes() {
     retryCount += 1
     retryTimer = setTimeout(async () => {
       retryTimer = null
-      const okSearch = await search(false)
+      const okSearch = await search()
       const okCollections = await refreshCollections()
       if (okSearch && okCollections) retryCount = 0
     }, 1000 * retryCount)
@@ -54,9 +57,8 @@ export function useMemes() {
         state.memes = data.memes
         state.allTags = Array.isArray(data.tags) ? data.tags : []
         state.collections = data.collections
-        state.page = 1
         state.total = (await api('count_memes', '', [], state.activeCollection)) ?? state.memes.length
-        state.pageCount = Math.max(1, Math.ceil(state.total / MEME_PAGE))
+        state.hasMore = state.memes.length < state.total
         state.showStartupAnimation = data.show_startup_animation !== false
         state.startupBgColor = data.startup_bg_color || '#000000'
         retryCount = 0
@@ -67,26 +69,27 @@ export function useMemes() {
     return false
   }
 
-  async function search(resetPage = true): Promise<boolean> {
+  // 首块加载：整体替换列表；桥接失败保留旧数据不覆盖
+  async function search(): Promise<boolean> {
     const gen = ++searchGen
-    if (resetPage) state.page = 1
     state.loading = true
-    // 换页/筛选/切分组即清空选择（「全选当前页」语义）
+    // 换分组/筛选/搜索即清空选择（「全选已加载」语义）
     state.selectedIds = new Set()
-    const offset = (state.page - 1) * MEME_PAGE
+    moreRetryCount = 0
+    if (moreRetryTimer) { clearTimeout(moreRetryTimer); moreRetryTimer = null }
     let ok = false
     try {
       const [countResult, memesResult] = await Promise.all([
         api('count_memes', state.searchQuery, [...state.activeTags], state.activeCollection),
-        api('search_memes', state.searchQuery, [...state.activeTags], state.activeCollection, offset, MEME_PAGE),
+        api('search_memes', state.searchQuery, [...state.activeTags], state.activeCollection, 0, MEME_PAGE),
       ])
       // 过期响应用生成号丢弃，交给更新的请求
       if (gen !== searchGen) return true
       // 任一为 null 视为桥接失败：保留旧数据不覆盖，仅重试
       if (countResult !== null && memesResult !== null) {
         state.total = countResult
-        state.pageCount = Math.max(1, Math.ceil(state.total / MEME_PAGE))
         state.memes = memesResult
+        state.hasMore = memesResult.length < countResult
         ok = true
       }
     } catch {
@@ -98,13 +101,31 @@ export function useMemes() {
     return ok
   }
 
-  async function goToPage(p: number) {
-    if (p < 1 || p > state.pageCount || p === state.page) return
-    state.page = p
-    await search(false)
-    if (state.memes.length === 0 && state.page > 1) {
-      state.page = Math.max(1, Math.min(state.page, state.pageCount))
-      await search(false)
+  // 无限滚动：底部哨兵触发时以已加载数量为 offset 追加下一块
+  async function loadMore(): Promise<void> {
+    if (state.loading || state.loadingMore || !state.hasMore) return
+    const gen = searchGen
+    state.loadingMore = true
+    try {
+      const offset = state.memes.length
+      const chunk = await api('search_memes', state.searchQuery, [...state.activeTags], state.activeCollection, offset, MEME_PAGE)
+      if (gen !== searchGen) return
+      // 失败保留已加载内容，按退避节奏有限重试
+      if (chunk === null) {
+        if (moreRetryCount < RETRY_LIMIT) {
+          moreRetryCount += 1
+          if (moreRetryTimer) clearTimeout(moreRetryTimer)
+          moreRetryTimer = setTimeout(() => { moreRetryTimer = null; void loadMore() }, 1000 * moreRetryCount)
+        }
+        return
+      }
+      moreRetryCount = 0
+      const seen = new Set(state.memes.map(m => m.id))
+      const fresh = chunk.filter(m => !seen.has(m.id))
+      if (fresh.length) state.memes = [...state.memes, ...fresh]
+      state.hasMore = chunk.length > 0 && state.memes.length < state.total
+    } finally {
+      state.loadingMore = false
     }
   }
 
@@ -163,7 +184,7 @@ export function useMemes() {
     state,
     setMemes,
     search,
-    goToPage,
+    loadMore,
     setSearch,
     toggleTag,
     setActiveCollection,

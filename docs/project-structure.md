@@ -155,7 +155,7 @@ OhMyMeme/
 │   │   │       │   │   ├── memes/                    表情数据和分页
 │   │   │       │   │   │   ├── Pager.vue
 │   │   │       │   │   │   └── useMemes.ts
-│   │   │       │   │   ├── sorting/                  拖拽排序
+│   │   │       │   │   ├── sorting/                  整理模式
 │   │   │       │   │   │   └── useDragSort.ts
 │   │   │       │   │   ├── sync/                     同步进度
 │   │   │       │   │   │   └── SyncOverlay.vue
