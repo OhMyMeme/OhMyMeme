@@ -327,33 +327,24 @@ body {
   font-size: 11px;
 }
 
-/* Grid */
+/* Grid：唯一滚动容器；overflow-anchor 关闭浏览器滚动锚定，避免与 virtua 争抢 */
 #grid-wrap {
   flex: 1;
   overflow-y: auto;
   padding: 10px;
+  overflow-anchor: none;
+  min-height: 0;
   /* 预留滚动条槽位：内容从不满一屏到出滚动条时网格不跳列 */
   scrollbar-gutter: stable;
 }
 
-/* 无限滚动底部状态：已加载计数 / 加载中 / 没有更多了 */
+/* 底部状态：查询总数 / 加载中 / 加载失败（aria-live 在模板） */
 .grid-foot {
   padding: 12px 0 6px;
   text-align: center;
   font-size: 11.5px;
   color: var(--gray-11);
   user-select: none;
-}
-
-/* 未加载部分的占位块：撑起全库高度，使滚动条按全库比例呈现 */
-.grid-spacer {
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  font-size: 11.5px;
-  color: var(--gray-11);
-  user-select: none;
-  pointer-events: none;
 }
 
 .meme-card {
@@ -364,18 +355,34 @@ body {
   background: var(--gray-2);
   cursor: pointer;
   transition: border-color 0.2s, transform 0.1s;
-  /* 性能：离屏卡跳过渲染/布局，卡片内部布局独立，图片缩放走合成器 */
-  content-visibility: auto;
-  contain-intrinsic-size: auto 140px;
+  /* 性能：卡片内部布局独立，图片缩放走合成器 */
   contain: layout paint;
 }
 
-/* 拖拽中/排序时取消 contain，避免影响拖拽测量与 FLIP 动画 */
+/* 未加载槽位骨架：与真卡同尺寸的静态灰块，无动效/交互 */
+.meme-card.skeleton {
+  background: var(--gray-3);
+  border-color: var(--gray-6);
+  cursor: default;
+  pointer-events: none;
+  animation: none;
+  transform: none;
+  rotate: 0deg;
+  outline: none;
+}
+
+/* 拖拽中取消过渡（transition 规则在前，静态契约按选择器就近读取） */
+#meme-grid.sort-enabled .meme-card.dragging {
+  transition: none;
+  outline: 0 solid transparent;
+}
+
+/* 拖拽中取消 contain，避免影响拖拽测量与 FLIP 动画 */
 #meme-grid.drag-active .meme-card.dragging,
 #meme-grid.sort-enabled .meme-card.dragging {
-  content-visibility: visible;
   contain: none;
 }
+
 
 .meme-card:hover {
   border-color: var(--blue-9);
@@ -393,7 +400,7 @@ body {
   cursor: grabbing;
 }
 
-#meme-grid,
+/* folder 网格不虚拟化：仍按自适应列排版 */
 .meme-grid {
   display: grid;
   gap: 10px;
@@ -401,7 +408,26 @@ body {
   grid-template-columns: repeat(auto-fill, minmax(112px, 1fr));
 }
 
+/* 外层网格容器：真实排版在虚拟行内，这里保留几何 gap 供拖拽引擎读取 */
+#meme-grid {
+  display: block;
+  column-gap: 10px;
+  row-gap: 10px;
+}
+
+/* 虚拟行：按脚本提供的 --meme-cols 切列，行距由 Virtualizer item 外壳承担 */
+.virtual-meme-row {
+  display: grid;
+  grid-template-columns: repeat(var(--meme-cols), minmax(0, 1fr));
+  column-gap: 10px;
+  height: var(--meme-card-height, auto);
+  align-content: start;
+}
+
+/* 虚拟槽位：真卡/骨架与选项填满单元格并共用固定卡高 */
 #meme-grid .meme-card {
+  width: 100%;
+  height: var(--meme-card-height, auto);
   transition: transform 0.2s ease;
 }
 
@@ -421,11 +447,6 @@ body {
 #meme-grid.sort-enabled .meme-card:active {
   cursor: grabbing;
   transform: scale(0.93);
-}
-
-#meme-grid.sort-enabled .meme-card.dragging {
-  transition: none;
-  outline: 0 solid transparent;
 }
 
 #meme-grid.sort-enabled .meme-card:focus-visible {
@@ -572,16 +593,19 @@ body {
   fill: currentColor;
 }
 
+/* 图片固定方形内容空间、名称固定单行高度：加载前后行高不变（虚拟化尺寸前提） */
 .meme-card img {
   width: 100%;
   aspect-ratio: 1;
   object-fit: cover;
   display: block;
+  background: var(--gray-3);
 }
 
 .meme-name {
   display: block;
   padding: 6px 8px;
+  line-height: 16px;
   font-size: 11px;
   color: var(--gray-11);
   white-space: nowrap;
@@ -595,11 +619,12 @@ body {
 
 /* ── 多选批量删除（整理模式） ── */
 
-/* drag-select-option 作为网格单元格，卡片填满单元格 */
+/* drag-select-option 作为虚拟行单元格，卡片填满单元格 */
 .drag-select-option {
   display: block;
   position: relative;
   min-width: 0;
+  height: var(--meme-card-height, auto);
 }
 
 /* 多选模式选中态：outline 高亮（与拖拽排序模式独立） */
@@ -623,6 +648,22 @@ body {
 
 #meme-grid.sort-enabled .meme-card.selected:hover {
   transform: translateY(-1px) scale(0.95);
+}
+
+/* 骨架后置覆盖：不参与 hover/active/排序 scale 与晃动（同级或更高特异性、后置生效） */
+#meme-grid.sort-enabled .meme-card.skeleton:not(.dragging):not(.sort-enter) {
+  transform: none;
+  outline: none;
+  animation: none;
+  rotate: 0deg;
+}
+
+#meme-grid.sort-enabled .meme-card.skeleton:hover,
+#meme-grid.sort-enabled .meme-card.skeleton:active {
+  transform: none;
+  outline: none;
+  border-color: var(--gray-6);
+  cursor: default;
 }
 
 /* 勾选角标（左上，点击透传不拦截） */

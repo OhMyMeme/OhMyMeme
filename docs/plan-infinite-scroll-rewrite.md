@@ -59,6 +59,7 @@
 - footer 失败态「加载失败，点击重试」；footer `aria-live="polite"`。
 - 「回到顶部」浮动按钮（滚过两屏显示，`scrollToIndex(0)`）。
 - AGENTS.md / README.md 无限滚动段落整体重写 + 卡片尺寸约束入档。
+- 跟进：将 main/app 与 main/features 整体纳入 `vue-tsc` 类型检查范围，修复依赖图（useDragSort/useCollectionBuilder/TagEditor/ImportMenu/SyncOverlay/ContextMenu 等）的严格类型问题，并移除 tsconfig 中对 main_window_virtual 测试的临时排除。
 
 ## 验收策略
 

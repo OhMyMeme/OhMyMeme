@@ -30,6 +30,9 @@
     // pywebview's runtime-injected API has no static declaration yet.
     "src/ohmymeme/presentation/frontend/main/shared/bridge.ts",
     // pywebview evaluates these globals directly in the host WebView.
-    "src/ohmymeme/presentation/frontend/main/app/main.ts"
+    "src/ohmymeme/presentation/frontend/main/app/main.ts",
+    // 该测试经 vitest 运行；其 import 图属 main/app 范围，尚未纳入类型检查。
+    // 待将 main/app 整体纳入类型检查时移除该排除并修复依赖图类型问题。
+    "tests/frontend/main_window_virtual.test.ts"
   ]
 }

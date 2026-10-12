@@ -1,5 +1,6 @@
 <script setup lang="ts">
-import { ref, onMounted, onUnmounted, computed, h, watch } from 'vue'
+import { ref, onMounted, onUnmounted, computed, h, watch, nextTick } from 'vue'
+import { Virtualizer } from 'virtua/vue'
 import { useMemes } from '../features/memes/useMemes'
 import { useDragSort } from '../features/sorting/useDragSort'
 import { useContextMenu, type MenuItem } from '../features/dialogs/useContextMenu'
@@ -15,60 +16,409 @@ import TagEditor from '../features/tags/TagEditor.vue'
 import UpdateDialog from '../features/updates/UpdateDialog.vue'
 import type { Meme } from '../shared/types'
 import { api } from '../shared/bridge'
-import { NButton, NInput, NTag, NModal, NSpin, NDropdown, useMessage } from 'naive-ui'
+import { NButton, NInput, NTag, NModal, NSpin, NDropdown, useMessage, type DropdownMixedOption } from 'naive-ui'
 import { ArrowUpDown, PanelLeft, X, Heart, Folder, ImagePlus, Check, Ellipsis, CloudUpload, CloudDownload, RefreshCw, Settings } from '@lucide/vue'
 import { lanConfirmVisible, lanConfirmDevice, confirmLanDevice, onLanConfirmShowChange } from '../features/lan/showLanDeviceConfirm'
 
-const { state, setMemes, search, loadMore, setSearch, toggleTag, setActiveCollection, refreshTags, refreshCollections, copyMeme, reorderMemes, canReorder, startNativeDrag, selectAll, clearSelection, loadInitData } = useMemes()
+// 后端 evaluate_js 刷新入口（与 main.ts 声明一致；main.ts 不在类型检查范围）
+declare global {
+  interface Window {
+    refreshMemes: () => void
+    refreshTags: () => void
+    refreshCollections: () => void
+  }
+}
+
+const { state, search, ensureRange, slot, loadedSlice, setLoadedSlice, pinLoadedRange, dispose, setSearch, toggleTag, setActiveCollection, refreshTags, refreshCollections, copyMeme, reorderMemes, canReorder, startNativeDrag, selectAll, clearSelection, loadInitData } = useMemes()
 const ctx = useContextMenu()
 const cb = useCollectionBuilder()
 const message = useMessage()
 
-// 无限滚动：滚动条按「全库高度」呈现（等宽等高卡片 → 占位高度精确），未加载部分由占位块撑起；
-// 视口接近已加载末端（<600px，含进入占位区）时连续补载，拖到远处会顺序补齐（本地库每块毫秒级）
+// ── 虚拟网格：固定卡片尺寸 + 行级 Virtualizer（folder-grid 不虚拟化，作为头块计入 startMargin） ──
+// 卡片等宽等高：列数由容器宽按最小卡宽 112px / 间隙 10px 推导，卡高先用几何推导再由真实卡尺寸校准
+const MEME_GAP = 10
+const MEME_MIN_WIDTH = 112
+const CARD_FRAME = 28 // 边框 2px×2 + 单行名称（16px 行高 + 上下 padding 12px）
+const RANGE_BUFFER = 200 // 与 Virtualizer bufferSize 一致的视口外缓冲像素
+const SCROLL_END_CLEANUP_DELAY = 120
+
 const gridWrapRef = ref<HTMLElement | null>(null)
-const gridFootRef = ref<HTMLElement | null>(null)
-const spacerHeight = ref(0)
+const folderGridRef = ref<HTMLElement | null>(null)
+const virtualizerRef = ref<any>(null)
+const dragSelectRef = ref<any>(null)
+const virtualReady = ref(true)
+const cols = ref(4)
+const cardHeight = ref(0)
+const startMargin = ref(0)
+const layoutKey = ref(0)
+const scrolling = ref(false)
+let layoutEpoch = 0
+let layoutRaf = 0
+let rangeRaf = 0
+// 组件级卸载门禁：卸载后的异步续体不得再调用 search/ensureRange 等模型操作
+let windowUnmounted = false
 let gridResizeObserver: ResizeObserver | null = null
-let fillRaf = 0
-// 占位高度 =（全库行数 − 已加载行数）× 卡片实测行距；加载一块后行数差等量减少，总高度恒定不跳动
-function measureGrid() {
-  const grid = document.getElementById('meme-grid')
-  const remaining = state.total - state.memes.length
-  if (!grid || remaining <= 0) { spacerHeight.value = 0; return }
-  const card = grid.querySelector('.meme-card') as HTMLElement | null
-  if (!card) { spacerHeight.value = 0; return }
-  const finite = (v: string) => { const p = parseFloat(v); return Number.isFinite(p) ? p : 0 }
-  const style = getComputedStyle(grid)
-  const gapX = finite(style.columnGap)
-  const gapY = finite(style.rowGap)
-  const contentWidth = grid.clientWidth - finite(style.paddingLeft) - finite(style.paddingRight)
-  const cols = Math.max(1, Math.round((contentWidth + gapX) / (card.offsetWidth + gapX)))
-  const totalRows = Math.ceil(state.total / cols)
-  const loadedRows = Math.ceil(state.memes.length / cols)
-  spacerHeight.value = Math.max(0, (totalRows - loadedRows) * (card.offsetHeight + gapY))
+let folderResizeObserver: ResizeObserver | null = null
+
+interface VirtualRow {
+  start: number
+  end: number
+  key: string
 }
-// 补载：视口底部距已加载末端不足 600px 时继续追加；失败/无更多即停（loadMore 内部自带退避重试）
-async function ensureFilled(): Promise<void> {
+interface RowSlot {
+  index: number
+  meme: Meme | undefined
+}
+
+const rowPitch = computed(() => cardHeight.value + MEME_GAP)
+const rowCount = computed(() => (state.total > 0 ? Math.ceil(state.total / Math.max(1, cols.value)) : 0))
+
+// 行 key：有数据用稳定锚（该行首个已加载记录 id），全占位行用查询/布局内复用的 opaque token
+let tokenSeq = 0
+let tokenEpoch = ''
+const placeholderTokens = new Map<number, string>()
+const frozenRowKeys = new Map<number, string>()
+
+function placeholderToken(index: number): string {
+  const epoch = state.queryGen + ':' + layoutEpoch
+  if (epoch !== tokenEpoch) {
+    tokenEpoch = epoch
+    placeholderTokens.clear()
+  }
+  let token = placeholderTokens.get(index)
+  if (!token) {
+    token = 'p' + (++tokenSeq)
+    placeholderTokens.set(index, token)
+  }
+  return token
+}
+
+function rowKey(index: number, start: number, end: number): string {
+  const frozen = frozenRowKeys.get(index)
+  if (frozen) return frozen
+  let anchor: number | null = null
+  for (let i = start; i < end; i++) {
+    const record = slot(i)
+    if (record) { anchor = record.id; break }
+  }
+  const base = 'r' + layoutEpoch + '-' + cols.value + '-q' + state.queryGen
+  // key 字面不使用裸行号：锚 id 或查询/布局内分配的 opaque token
+  return anchor !== null ? base + '-m' + anchor : base + '-' + placeholderToken(index)
+}
+
+const rows = computed<VirtualRow[]>(() => {
+  const width = Math.max(1, cols.value)
+  const count = rowCount.value
+  const out: VirtualRow[] = []
+  for (let index = 0; index < count; index++) {
+    const start = index * width
+    const end = Math.min(start + width, state.total)
+    out.push({ start, end, key: rowKey(index, start, end) })
+  }
+  return out
+})
+
+// 单行槽位描述：只在本行渲染时构建，不为 total 复制记录
+function rowSlots(row: VirtualRow): RowSlot[] {
+  const list: RowSlot[] = []
+  for (let i = row.start; i < row.end; i++) list.push({ index: i, meme: slot(i) })
+  return list
+}
+
+// 行外壳高度 = 卡高 + 行距间隙（库只允许补充 style 属性，不能覆盖其 top/position）
+function rowItemProps(): { style: { height: string } } {
+  return { style: { height: rowPitch.value + 'px' } }
+}
+
+const gridStyle = computed(() => ({
+  '--meme-cols': String(Math.max(1, cols.value)),
+  ...(cardHeight.value > 0 ? { '--meme-card-height': cardHeight.value + 'px' } : {}),
+}))
+
+// 虚拟化前提：ResizeObserver 与元素滚动方法（缺失时显示不可用提示，不静默挂库）
+const virtualCache = ref<any>(null)
+const virtualCacheLength = ref(0)
+const virtualCacheForRender = computed(() => {
+  if (!virtualCache.value) return undefined
+  return virtualCacheLength.value === rows.value.length ? virtualCache.value : undefined
+})
+
+function finiteNumber(value: string): number {
+  const parsed = parseFloat(value)
+  return Number.isFinite(parsed) ? parsed : 0
+}
+
+// startMargin：虚拟列表起点相对滚动容器的内容坐标（含顶部 padding、folder 头块与祖先布局）
+function measureStartMargin(wrap: HTMLElement, grid: HTMLElement): number {
+  return Math.max(0, grid.getBoundingClientRect().top - wrap.getBoundingClientRect().top - wrap.clientTop + wrap.scrollTop)
+}
+
+// 卡高校准：优先用已挂载真卡的图片 + 名称实际高度加边框推导；否则退回几何估算
+function measureCardHeight(container: HTMLElement, fallback: number): number {
+  for (const card of Array.from(container.querySelectorAll<HTMLElement>('.meme-card:not(.dragging)'))) {
+    const img = card.querySelector('img')
+    const name = card.querySelector('.meme-name')
+    if (!img || !name) continue
+    const style = getComputedStyle(card)
+    const borderY = finiteNumber(style.borderTopWidth) + finiteNumber(style.borderBottomWidth)
+    const content = img.offsetHeight + name.offsetHeight
+    if (content > 0) return Math.round(content + borderY)
+  }
+  return fallback
+}
+
+// 记录首个可见槽位与行内像素偏移（布局重建后恢复位置）
+function captureScrollAnchor(): { slot: number; offset: number } | null {
   const wrap = gridWrapRef.value
-  const foot = gridFootRef.value
-  if (!wrap || !foot) return
-  if (state.loading || state.loadingMore || !state.hasMore) return
-  const distance = foot.getBoundingClientRect().bottom - wrap.getBoundingClientRect().bottom
-  if (distance > 600) return
-  const before = state.memes.length
-  await loadMore()
-  if (state.memes.length > before) void ensureFilled()
+  const handle = virtualizerRef.value
+  if (!wrap || !handle || !(rowPitch.value > 0)) return null
+  const firstRow = Math.max(0, handle.findItemIndex(wrap.scrollTop))
+  const rowOffset = handle.getItemOffset(firstRow)
+  return { slot: firstRow * cols.value, offset: wrap.scrollTop - startMargin.value - rowOffset }
 }
-function onGridScroll() {
-  if (fillRaf) return
-  fillRaf = requestAnimationFrame(() => { fillRaf = 0; void ensureFilled() })
+
+function restoreScrollAnchor(anchor: { slot: number; offset: number } | null) {
+  const wrap = gridWrapRef.value
+  if (!wrap || !anchor || !(rowPitch.value > 0)) return
+  const row = Math.floor(anchor.slot / Math.max(1, cols.value))
+  wrap.scrollTop = startMargin.value + row * rowPitch.value + anchor.offset
 }
-// 列表变化（加载/清空/筛选）后重算占位并检查是否继续补载
-watch([() => state.memes.length, () => state.total], () => { measureGrid(); void ensureFilled() }, { flush: 'post' })
-// 切换分组/标签/搜索词时滚动复位（追加加载不触发）
-const browseKey = computed(() => (state.activeCollection ?? 'all') + '|' + state.searchQuery + '|' + [...state.activeTags].sort().join(','))
-watch(browseKey, () => { if (gridWrapRef.value) gridWrapRef.value.scrollTop = 0 })
+
+// 测量并更新列数/卡高/startMargin；布局变化时重建 Virtualizer 并恢复可见位置
+function refreshLayout() {
+  const wrap = gridWrapRef.value
+  const grid = document.getElementById('meme-grid')
+  if (!wrap || !grid) return
+  const style = getComputedStyle(wrap)
+  const paddingX = finiteNumber(style.paddingLeft) + finiteNumber(style.paddingRight)
+  const contentWidth = Math.max(0, wrap.clientWidth - paddingX)
+  const nextCols = Math.max(1, Math.floor((contentWidth + MEME_GAP) / (MEME_MIN_WIDTH + MEME_GAP)))
+  const cellWidth = (contentWidth - (nextCols - 1) * MEME_GAP) / nextCols
+  const estimate = Math.max(1, Math.round(cellWidth + CARD_FRAME))
+  // 未切换列数时才信任实测卡高：旧列数下的卡高不能用于新布局
+  const nextCardHeight = nextCols === cols.value ? measureCardHeight(grid, estimate) : estimate
+  const nextStartMargin = measureStartMargin(wrap, grid)
+  const layoutChanged = nextCols !== cols.value || nextCardHeight !== cardHeight.value
+  const marginChanged = nextStartMargin !== startMargin.value
+  if (!layoutChanged && !marginChanged) return
+  // 拖拽期间几何变化：统一取消并回滚（旧坐标/索引全部失效），再按新几何重建
+  if (visibleDragSession) cancelVisibleDrag()
+  if (layoutChanged && state.total > 0) {
+    // 先记录可见位置，再改变列数/卡高重建虚拟izer，nextTick 后恢复
+    const anchor = captureScrollAnchor()
+    cols.value = nextCols
+    cardHeight.value = nextCardHeight
+    startMargin.value = nextStartMargin
+    layoutEpoch += 1
+    virtualCache.value = null
+    virtualCacheLength.value = 0
+    layoutKey.value += 1
+    void nextTick(() => {
+      restoreScrollAnchor(anchor)
+      requestVisibleRange()
+      scheduleSelectionCheck()
+      // 新列数/卡高落盘后按新布局校准一次
+      scheduleLayoutRefresh()
+    })
+    return
+  }
+  cols.value = nextCols
+  cardHeight.value = nextCardHeight
+  startMargin.value = nextStartMargin
+  requestVisibleRange()
+}
+
+function scheduleLayoutRefresh() {
+  if (layoutRaf) return
+  layoutRaf = requestAnimationFrame(() => {
+    layoutRaf = 0
+    refreshLayout()
+  })
+}
+
+function clampRow(value: number, total: number): number {
+  if (!Number.isFinite(value)) return 0
+  return Math.max(0, Math.min(total - 1, Math.floor(value)))
+}
+
+// 视口 + 200px buffer 覆盖的槽位范围驱动 ensureRange；0 视口/空库/拖拽期间不请求
+function requestVisibleRange() {
+  if (windowUnmounted) return
+  if (rangeRaf) return
+  rangeRaf = requestAnimationFrame(() => {
+    rangeRaf = 0
+    requestVisibleRangeNow()
+  })
+}
+
+function requestVisibleRangeNow() {
+  if (visibleDragSession) return
+  if (state.total === 0) return
+  const wrap = gridWrapRef.value
+  if (!wrap) return
+  const pitch = rowPitch.value
+  const width = Math.max(1, cols.value)
+  const totalRows = rowCount.value
+  if (!(pitch > 0) || totalRows <= 0) return
+  const viewport = wrap.clientHeight
+  // ResizeObserver 首帧可能为 0：不据 0 视口错误裁剪
+  if (!(viewport > 0)) return
+  const scrollTop = wrap.scrollTop
+  const handle = virtualizerRef.value
+  let firstRow = 0
+  let lastRow = totalRows - 1
+  if (handle) {
+    // findItemIndex 内部已扣 startMargin：传滚动容器偏移即可
+    firstRow = clampRow(handle.findItemIndex(scrollTop - RANGE_BUFFER), totalRows)
+    lastRow = clampRow(handle.findItemIndex(scrollTop + viewport + RANGE_BUFFER), totalRows)
+  } else {
+    // 固定行距回退公式：容器内坐标 = 滚动偏移 − startMargin
+    const start = scrollTop - startMargin.value - RANGE_BUFFER
+    const end = scrollTop + viewport + RANGE_BUFFER - startMargin.value
+    if (end <= 0) return
+    firstRow = clampRow(Math.floor(start / pitch), totalRows)
+    lastRow = clampRow(Math.floor(end / pitch), totalRows)
+  }
+  if (lastRow < firstRow) return
+  const slotStart = firstRow * width
+  const slotEnd = Math.min(state.total, (lastRow + 1) * width)
+  if (slotEnd <= slotStart) return
+  void ensureRange(slotStart, slotEnd)
+}
+
+function onVirtualScroll() {
+  scrolling.value = true
+  if (visibleDragSession) cancelVisibleDrag()
+  requestVisibleRange()
+}
+
+function onVirtualScrollEnd() {
+  scrolling.value = false
+  requestVisibleRange()
+  scheduleSelectionCheck()
+}
+
+function onVirtualResize() {
+  requestVisibleRange()
+}
+
+// ── 框选 registry 受控清理（依赖未修改：卸载 option 不会自动出栈，停滚后重挂清理） ──
+const selectionEpoch = ref(0)
+let selectionCheckTimer: ReturnType<typeof setTimeout> | null = null
+let mountedFingerprint = ''
+let pendingSelectionReset = false
+
+// 已挂载真卡指纹（布局代次 + 行 key + 行内真卡 id）；断开节点不计入
+function mountedRealCardFingerprint(): string {
+  const grid = document.getElementById('meme-grid')
+  if (!grid) return ''
+  const parts: string[] = ['l' + layoutEpoch]
+  for (const row of Array.from(grid.querySelectorAll<HTMLElement>('.virtual-meme-row'))) {
+    const ids: string[] = []
+    for (const card of Array.from(row.querySelectorAll<HTMLElement>('.meme-card[data-meme-id]'))) {
+      if (card.isConnected) ids.push(card.dataset.memeId || '')
+    }
+    parts.push((row.dataset.rowKey || row.dataset.rowStart || '') + ':' + ids.join(','))
+  }
+  return parts.join('|')
+}
+
+// drag-select 的命中用 option 的 offsetTop/offsetLeft 与框矩形比较；
+// 虚拟化后 option 的 offsetParent 是绝对定位的行外壳（局部 top≈0），坐标不可比。
+// 这里把每个已挂载 option 的 offsetTop/offsetLeft 改写为「相对 .drag-select 内容的坐标」，
+// 即与库内部 areaRect 同一坐标系（不改依赖库源码，指针按下时安装以保证框选前生效）
+const optionMetricsInstalled = new WeakSet<HTMLElement>()
+
+function installOptionMetrics() {
+  const grid = document.getElementById('meme-grid')
+  if (!grid) return
+  const content = grid.querySelector<HTMLElement>('.drag-select')
+  if (!content) return
+  for (const option of Array.from(grid.querySelectorAll<HTMLElement>('.drag-select-option'))) {
+    if (optionMetricsInstalled.has(option)) continue
+    optionMetricsInstalled.add(option)
+    Object.defineProperty(option, 'offsetTop', {
+      configurable: true,
+      get() {
+        return option.getBoundingClientRect().top - content.getBoundingClientRect().top + content.scrollTop
+      },
+    })
+    Object.defineProperty(option, 'offsetLeft', {
+      configurable: true,
+      get() {
+        return option.getBoundingClientRect().left - content.getBoundingClientRect().left + content.scrollLeft
+      },
+    })
+  }
+}
+
+function onGridPointerDownCapture() {
+  installOptionMetrics()
+}
+
+function boxSelecting(): boolean {
+  return dragSelectRef.value?.isDragging === true
+}
+
+function scheduleSelectionCheck() {
+  if (windowUnmounted) return
+  if (selectionCheckTimer) return
+  selectionCheckTimer = setTimeout(() => {
+    selectionCheckTimer = null
+    maybeResetSelectionRegistry(false)
+  }, SCROLL_END_CLEANUP_DELAY)
+}
+
+// 重挂前保存指纹，新挂载相同指纹不再次触发；活跃排序/框选手势推迟清理
+function maybeResetSelectionRegistry(force: boolean) {
+  if (visibleDragSession || drag.dragState.active === true || boxSelecting()) {
+    pendingSelectionReset = true
+    return
+  }
+  const fingerprint = mountedRealCardFingerprint()
+  if (!force && (fingerprint === mountedFingerprint || mountedFingerprint === '')) {
+    mountedFingerprint = fingerprint
+    return
+  }
+  const handle = virtualizerRef.value
+  if (handle?.cache) {
+    virtualCache.value = handle.cache
+    virtualCacheLength.value = rows.value.length
+  }
+  mountedFingerprint = fingerprint
+  selectionEpoch.value += 1
+}
+
+// 手势结束/拖拽释放后补做被推迟的 registry 清理
+function flushPendingWork() {
+  if (pendingSelectionReset) {
+    pendingSelectionReset = false
+    maybeResetSelectionRegistry(false)
+  }
+}
+
+const dragSelectDisabled = computed(() => !sortEnabled.value || scrolling.value || drag.dragState.active === true)
+
+// 框选回传的是 drag-select 计算出的全量选择：只应用当前已挂载且已连接的真卡 id，保留离屏 id
+function onBoxSelection(next: unknown) {
+  const incoming: Set<unknown> = next instanceof Set ? next : new Set(Array.isArray(next) ? next : [])
+  const mounted = new Set<number>()
+  const grid = document.getElementById('meme-grid')
+  if (grid) {
+    for (const card of Array.from(grid.querySelectorAll<HTMLElement>('.meme-card[data-meme-id]'))) {
+      if (!card.isConnected) continue
+      const id = Number(card.dataset.memeId)
+      if (Number.isFinite(id)) mounted.add(id)
+    }
+  }
+  const result = new Set(state.selectedIds)
+  for (const id of mounted) {
+    if (incoming.has(id)) result.add(id)
+    else result.delete(id)
+  }
+  state.selectedIds = result
+}
+
 const tagEditor = ref<InstanceType<typeof TagEditor> | null>(null)
 const updateDialog = ref<InstanceType<typeof UpdateDialog> | null>(null)
 const inputDialog = ref<InstanceType<typeof InputDialog> | null>(null)
@@ -79,10 +429,26 @@ async function confirmAsk(title: string, message: string): Promise<boolean> {
   return !!(await confirmDialog.value?.open(title, message))
 }
 
+// check_update 结果形状（桥接对象按运行时字段读取；卸载后不再弹窗）
+interface UpdateInfo {
+  pending?: boolean
+  has_update?: boolean
+  current?: string
+  latest?: string
+  download_url?: string
+  notes?: string
+}
+
+function asUpdateInfo(value: unknown): UpdateInfo | null {
+  if (value === null || typeof value !== 'object' || Array.isArray(value)) return null
+  return value as UpdateInfo
+}
+
 // 检查更新并弹窗：首次 force 发起后台检查；pending 时以非 force 轮询取结果
 async function checkUpdateAndPrompt() {
-  const upd = await api('check_update', false, true)
-  if (upd && upd.pending) {
+  const upd = asUpdateInfo(await api('check_update', false, true))
+  if (windowUnmounted) return
+  if (upd?.pending) {
     setTimeout(checkUpdateResult, 2000)
   } else {
     maybeShowUpdate(upd)
@@ -91,31 +457,402 @@ async function checkUpdateAndPrompt() {
 
 // 轮询最近一次后台检查结果（非 force，避免重复触发新检查造成永久 pending）
 async function checkUpdateResult() {
-  const upd = await api('check_update', false, false)
-  if (upd && upd.pending) {
+  if (windowUnmounted) return
+  const upd = asUpdateInfo(await api('check_update', false, false))
+  if (windowUnmounted) return
+  if (upd?.pending) {
     setTimeout(checkUpdateResult, 2000)
   } else {
     maybeShowUpdate(upd)
   }
 }
 
-function maybeShowUpdate(upd) {
+function maybeShowUpdate(upd: UpdateInfo | null) {
   try {
     if (upd && upd.has_update) {
-      updateDialog.value?.show(upd.current, upd.latest, upd.download_url, upd.notes)
+      updateDialog.value?.show(upd.current ?? '', upd.latest ?? '', upd.download_url ?? '', upd.notes ?? '')
     }
   } catch (_) {}
 }
 
 const sortEnabled = ref(false)
 const drag = useDragSort(
-  () => state.memes,
-  setMemes,
+  () => (visibleDragSession ? visibleDragSession.segItems : []),
+  applyVisibleSegment,
   canReorder,
   () => sortEnabled.value,
-  reorderMemes,
+  persistVisibleOrder,
   () => { showToast('排序保存失败'); search() },
 )
+
+// ── 整理模式：可见已加载段拖拽（引擎不改，坐标/索引/跨行重挂在 MainWindow 适配） ──
+interface VisibleDragSession {
+  gen: number
+  rangeGen: number
+  layout: number
+  memeId: number
+  firstRow: number
+  lastRow: number
+  segStart: number
+  segEnd: number
+  segItems: Meme[]
+  sliceStart: number
+  sliceItems: Meme[]
+  originalSlice: Meme[]
+  deltaY: number
+  rowPitch: number
+  pointerId: number
+  liveNode: HTMLElement | null
+  liveCard: HTMLElement | null
+  visual: { transform: string; zIndex: string }
+  visualNodes: Set<HTMLElement>
+  releasePin: (() => void) | null
+  finished: boolean
+}
+
+let visibleDragSession: VisibleDragSession | null = null
+// persist 进行中禁止发起新会话（引擎 cleanup 是全局的，重入会清掉新手势）
+let persistInFlight = false
+// 保存已发出后收到的取消：结算后按数据库权威顺序重同步，不回滚旧快照
+let cancelDuringPersist = false
+
+// 收集当前已挂载行：必须连续、全部槽位已加载、DOM 真卡顺序与槽位一致（含骨架一律拒绝）
+function collectMountedSegment(grid: HTMLElement): {
+  firstRow: number
+  lastRow: number
+  segStart: number
+  segEnd: number
+  items: Meme[]
+  rows: HTMLElement[]
+} | null {
+  const rowEls = Array.from(grid.querySelectorAll<HTMLElement>('.virtual-meme-row'))
+  if (!rowEls.length) return null
+  const width = Math.max(1, cols.value)
+  const total = state.total
+  const totalRows = Math.ceil(total / width)
+  const sorted: Array<{ index: number; el: HTMLElement }> = []
+  for (const el of rowEls) {
+    const start = Number(el.dataset.rowStart)
+    if (!Number.isFinite(start) || start % width !== 0) return null
+    const index = start / width
+    if (index < 0 || index >= totalRows) return null
+    sorted.push({ index, el })
+  }
+  sorted.sort((a, b) => a.index - b.index)
+  for (let i = 0; i < sorted.length; i++) {
+    const entry = sorted[i]
+    const previous = sorted[i - 1]
+    if (!entry) return null
+    if (previous && entry.index !== previous.index + 1) return null
+    const rowStart = entry.index * width
+    const rowEnd = Math.min(rowStart + width, total)
+    const cards = Array.from(entry.el.querySelectorAll<HTMLElement>('.meme-card[data-meme-id]'))
+    if (cards.length !== rowEnd - rowStart) return null
+    if (entry.el.querySelector('.meme-card.skeleton')) return null
+    for (let k = 0; k < cards.length; k++) {
+      const card = cards[k]
+      const record = slot(rowStart + k)
+      if (!card || !record || !card.isConnected || card.dataset.memeId !== String(record.id)) return null
+    }
+  }
+  const firstEntry = sorted[0]
+  const lastEntry = sorted[sorted.length - 1]
+  if (!firstEntry || !lastEntry) return null
+  const firstRow = firstEntry.index
+  const lastRow = lastEntry.index
+  const segStart = firstRow * width
+  const segEnd = Math.min((lastRow + 1) * width, total)
+  const items: Meme[] = []
+  for (let i = segStart; i < segEnd; i++) {
+    const record = slot(i)
+    if (!record) return null
+    items.push(record)
+  }
+  return { firstRow, lastRow, segStart, segEnd, items, rows: sorted.map(entry => entry.el) }
+}
+
+// live-card：跨视觉行重挂后仍转发到当前节点，避免在断开节点上写样式/捕获
+const NOOP_CLASS_LIST = { add: () => {}, remove: () => {}, toggle: () => {}, contains: () => false }
+
+// 查找当前真卡节点：跨行置换后可能同时存在退场副本，按模型当前所在行挑当前节点
+function findMemeCardNode(session: VisibleDragSession): HTMLElement | null {
+  const nodes = Array.from(document.querySelectorAll<HTMLElement>('#meme-grid .meme-card[data-meme-id="' + session.memeId + '"]'))
+    .filter(node => node.isConnected)
+  if (nodes.length <= 1) return nodes[0] ?? null
+  const slice = loadedSlice()
+  const offset = slice.items.findIndex(record => record.id === session.memeId)
+  if (offset >= 0) {
+    const width = Math.max(1, cols.value)
+    const rowStart = Math.floor((slice.start + offset) / width) * width
+    const expected = nodes.find(node => node.closest<HTMLElement>('.virtual-meme-row')?.dataset.rowStart === String(rowStart))
+    if (expected) return expected
+  }
+  return nodes[nodes.length - 1] ?? null
+}
+
+function createLiveCard(session: VisibleDragSession): HTMLElement {
+  const findEl = () => findMemeCardNode(session)
+  const current = () => (session.liveNode && session.liveNode.isConnected ? session.liveNode : findEl())
+  const styleProxy = new Proxy({} as CSSStyleDeclaration, {
+    get(_target, prop) {
+      const el = current()
+      if (!el) return undefined
+      const value = (el.style as unknown as Record<string | symbol, unknown>)[prop as string]
+      return typeof value === 'function' ? (value as (...args: unknown[]) => unknown).bind(el.style) : value
+    },
+    set(_target, prop, value) {
+      const el = current()
+      if (el) {
+        ;(el.style as unknown as Record<string, unknown>)[prop as string] = value
+        session.visualNodes.add(el)
+      }
+      if (prop === 'transform') session.visual.transform = String(value)
+      else if (prop === 'zIndex') session.visual.zIndex = String(value)
+      return true
+    },
+  })
+  return new Proxy({ __v_skip: true } as unknown as HTMLElement, {
+    get(_target, prop) {
+      // 阻止 Vue 对代理再次 reactive 包装（包装会破坏 DOMTokenList 等原生方法的 this）
+      if (prop === '__v_skip') return true
+      if (prop === 'style') return styleProxy
+      if (prop === 'classList') {
+        const el = current()
+        return el ? el.classList : NOOP_CLASS_LIST
+      }
+      if (prop === 'getBoundingClientRect') {
+        return () => {
+          const el = current()
+          const rect = el ? el.getBoundingClientRect() : new DOMRect(0, 0, 0, 0)
+          // 归一化坐标下返回同样减 deltaY 的 rect，offY 仍是真实抓取偏移
+          return {
+            left: rect.left,
+            top: rect.top - session.deltaY,
+            right: rect.right,
+            bottom: rect.bottom - session.deltaY,
+            width: rect.width,
+            height: rect.height,
+            x: rect.x,
+            y: rect.y - session.deltaY,
+          } as DOMRect
+        }
+      }
+      const el = current()
+      if (!el) return undefined
+      const value = (el as unknown as Record<string | symbol, unknown>)[prop as string]
+      return typeof value === 'function' ? (value as (...args: unknown[]) => unknown).bind(el) : value
+    },
+    set(_target, prop, value) {
+      const el = current()
+      if (!el) return false
+      ;(el as unknown as Record<string, unknown>)[prop as string] = value
+      return true
+    },
+  })
+}
+
+// 传给引擎的坐标：clientY 归一到挂载段基准（首行=0），其余字段原样保留
+function normalizePointerEvent(e: PointerEvent, deltaY: number): PointerEvent {
+  return {
+    button: e.button,
+    buttons: e.buttons,
+    pointerId: e.pointerId,
+    clientX: e.clientX,
+    clientY: e.clientY - deltaY,
+  } as unknown as PointerEvent
+}
+
+// 真实落点是否在本次可见已加载段内：二维落点须落在网格内容范围，
+// 且按真实坐标解出的槽位属于挂载段（越界拖动不转发，避免引擎 clamp 误判尾部落点）
+function insideVisibleSegment(clientX: number, clientY: number, session: VisibleDragSession): boolean {
+  const grid = document.getElementById('meme-grid')
+  if (!grid || !(session.rowPitch > 0)) return false
+  const style = getComputedStyle(grid)
+  const gridRect = grid.getBoundingClientRect()
+  const gridTop = gridRect.top + grid.clientTop + finiteNumber(style.paddingTop)
+  const gridLeft = gridRect.left + grid.clientLeft + finiteNumber(style.paddingLeft)
+  const contentRight = gridLeft + grid.clientWidth - finiteNumber(style.paddingRight)
+  const width = Math.max(1, cols.value)
+  const sample = grid.querySelector<HTMLElement>('.meme-card[data-meme-id]')
+  const pitchX = sample ? sample.offsetWidth + finiteNumber(style.columnGap) : 0
+  if (!(pitchX > 0)) return false
+  if (clientX < gridLeft || clientX > contentRight) return false
+  const col = Math.min(width - 1, Math.max(0, Math.floor((clientX - gridLeft) / pitchX)))
+  const row = session.firstRow + Math.floor((clientY - session.deltaY - gridTop) / session.rowPitch)
+  if (row < session.firstRow || row > session.lastRow) return false
+  const index = row * width + col
+  return index >= session.segStart && index < session.segEnd
+}
+
+function sessionStillValid(session: VisibleDragSession): boolean {
+  return state.queryGen === session.gen && state.rangeGen === session.rangeGen && layoutEpoch === session.layout
+}
+
+// 建立一次可见段拖拽会话：记录原连续 loadedSlice、挂载段绝对起点、布局与冻结行 key
+function beginVisibleDragSession(e: PointerEvent, meme: Meme, card: HTMLElement): VisibleDragSession | null {
+  const grid = document.getElementById('meme-grid')
+  if (!grid) return null
+  const segment = collectMountedSegment(grid)
+  if (!segment) return null
+  const slice = loadedSlice()
+  if (segment.segStart < slice.start || segment.segEnd > slice.start + slice.items.length) return null
+  if (!card.isConnected) return null
+  const style = getComputedStyle(grid)
+  const gridTop = grid.getBoundingClientRect().top + grid.clientTop + finiteNumber(style.paddingTop)
+  const firstRowEl = segment.rows[0]
+  if (!firstRowEl) return null
+  const session: VisibleDragSession = {
+    gen: state.queryGen,
+    rangeGen: state.rangeGen,
+    layout: layoutEpoch,
+    memeId: meme.id,
+    firstRow: segment.firstRow,
+    lastRow: segment.lastRow,
+    segStart: segment.segStart,
+    segEnd: segment.segEnd,
+    segItems: [...segment.items],
+    sliceStart: slice.start,
+    sliceItems: [...slice.items],
+    originalSlice: [...slice.items],
+    deltaY: firstRowEl.getBoundingClientRect().top - gridTop,
+    rowPitch: rowPitch.value,
+    pointerId: e.pointerId,
+    liveNode: card,
+    liveCard: null,
+    visual: { transform: '', zIndex: '' },
+    visualNodes: new Set(),
+    releasePin: null,
+    finished: false,
+  }
+  session.liveCard = createLiveCard(session)
+  // 钉住既有 row key，避免置换/数据变化主动销毁拖动行
+  for (let index = session.firstRow; index <= session.lastRow; index++) {
+    const key = rows.value[index]?.key
+    if (key) frozenRowKeys.set(index, key)
+  }
+  session.releasePin = pinLoadedRange()
+  return session
+}
+
+// 恢复原 order（仅当前窗口代次仍有效）：新 query 不得被旧快照覆盖
+function restoreSessionSlice(session: VisibleDragSession) {
+  const slice = loadedSlice()
+  if (slice.start !== session.sliceStart || slice.items.length !== session.originalSlice.length) return
+  const current = new Set(slice.items.map(record => record.id))
+  if (current.size !== session.originalSlice.length) return
+  for (const record of session.originalSlice) {
+    if (!current.has(record.id)) return
+  }
+  setLoadedSlice(session.sliceStart, session.originalSlice)
+}
+
+// 引擎 setter：仅置换已挂载密集子段，写回原 loadedSlice 的绝对槽位
+async function applyVisibleSegment(items: Meme[]) {
+  const session = visibleDragSession
+  if (!session || session.finished || !sessionStillValid(session)) return
+  if (items.length !== session.segEnd - session.segStart) return
+  const offset = session.segStart - session.sliceStart
+  const next = [...session.sliceItems]
+  for (let i = 0; i < items.length; i++) next[offset + i] = items[i]
+  if (!setLoadedSlice(session.sliceStart, next)) {
+    cancelVisibleDrag()
+    return
+  }
+  session.sliceItems = next
+  session.segItems = [...items]
+  await nextTick()
+  reattachLiveCard(session)
+}
+
+// Vue 更新后确认拖动卡仍在预定挂载段；节点重建则恢复视觉/捕获，找不到立即取消并回滚
+function reattachLiveCard(session: VisibleDragSession) {
+  if (visibleDragSession !== session || session.finished) return
+  const el = findMemeCardNode(session)
+  if (!el || !el.isConnected) { cancelVisibleDrag(); return }
+  const rowEl = el.closest<HTMLElement>('.virtual-meme-row')
+  const start = rowEl ? Number(rowEl.dataset.rowStart) : NaN
+  if (!Number.isFinite(start)) { cancelVisibleDrag(); return }
+  const rowIndex = start / Math.max(1, cols.value)
+  if (rowIndex < session.firstRow || rowIndex > session.lastRow) { cancelVisibleDrag(); return }
+  if (el === session.liveNode) return
+  // 跨行重挂：清理旧引用节点，转发到新节点并恢复拖拽视觉
+  const previous = session.liveNode
+  if (previous && previous !== el) {
+    previous.classList.remove('dragging')
+    previous.style.transform = ''
+    previous.style.zIndex = ''
+    session.visualNodes.delete(previous)
+  }
+  session.liveNode = el
+  session.visualNodes.add(el)
+  el.classList.add('dragging')
+  el.style.transform = session.visual.transform
+  el.style.zIndex = session.visual.zIndex
+  if (drag.dragState.active) {
+    try { el.setPointerCapture(session.pointerId) } catch (_) {}
+  }
+}
+
+// 清理本会话写过的所有节点（含跨行重挂后的旧节点残留）
+function cleanupVisualNodes(session: VisibleDragSession) {
+  for (const el of session.visualNodes) {
+    if (!el.isConnected) continue
+    el.classList.remove('dragging')
+    el.style.transform = ''
+    el.style.zIndex = ''
+  }
+  session.visualNodes.clear()
+}
+
+// 引擎 persist：忽略可见子段 id，提交当前整个 loadedSlice 的有序 id（S1 位置置换语义）
+async function persistVisibleOrder(): Promise<boolean> {
+  const session = visibleDragSession
+  if (!session) return false
+  const slice = loadedSlice()
+  const ids = slice.items.map(record => record.id)
+  const ok = await reorderMemes(ids)
+  if (!ok && sessionStillValid(session)) restoreSessionSlice(session)
+  return ok
+}
+
+function finishVisibleDragSession(session: VisibleDragSession) {
+  if (session.finished) return
+  session.finished = true
+  cleanupVisualNodes(session)
+  session.releasePin?.()
+  session.releasePin = null
+  frozenRowKeys.clear()
+  if (visibleDragSession === session) visibleDragSession = null
+  flushPendingWork()
+  // 排序结束后指纹（布局/行 key）可能已变化：安排一次受控 registry 清理
+  scheduleSelectionCheck()
+}
+
+// 统一取消：恢复原顺序（代次有效时）→ 取消引擎手势 → 释放钉住，激活过的拖拽吞掉首次 click
+function cancelVisibleDrag() {
+  const session = visibleDragSession
+  if (!session) return
+  if (persistInFlight) {
+    // 保存已发出：推迟到结算后按数据库权威顺序重同步，不在此恢复旧快照
+    cancelDuringPersist = true
+    return
+  }
+  visibleDragSession = null
+  const wasActive = drag.dragState.active === true
+  if (!session.finished && sessionStillValid(session)) restoreSessionSlice(session)
+  drag.cancel()
+  if (session.pointerId != null) {
+    try { session.liveNode?.releasePointerCapture(session.pointerId) } catch (_) {}
+  }
+  if (!session.finished) cleanupVisualNodes(session)
+  session.finished = true
+  session.releasePin?.()
+  session.releasePin = null
+  frozenRowKeys.clear()
+  if (wasActive) ignoreClick = true
+  flushPendingWork()
+  scheduleSelectionCheck()
+}
 
 const sidebarCollapsed = ref(false)
 // 未分类没有成员时隐藏条目，保留其他集合的显示规则。
@@ -143,7 +880,6 @@ onMounted(() => {
   window.refreshTags = refreshTags
   window.refreshCollections = refreshCollections
 })
-// 网格列数由 CSS repeat(auto-fill, minmax(112px, 1fr)) 随容器宽度自适应
 
 // 当前分组（正 ID）下的子分组列表，用于网格顶部显示文件夹卡片
 const folderCards = computed(() => {
@@ -243,7 +979,7 @@ function showToast(msg: string) {
 // 卡片悬停快速收藏（右键菜单外的一键入口）
 async function quickFavorite(meme: Meme) {
   if (sortEnabled.value) return
-  const ok = await api('toggle_favorite', meme.id)
+  const ok = (await api('toggle_favorite', meme.id)) as boolean | null
   if (ok === null || ok === undefined) return
   meme.favorited = ok
   await refreshCollections()
@@ -284,7 +1020,7 @@ function toggleSidebar() { sidebarCollapsed.value = !sidebarCollapsed.value }
 function toggleSort() {
   sortEnabled.value = !sortEnabled.value
   if (sortEnabled.value) drag.enable()
-  else { drag.disable(); clearSelection() }
+  else { cancelVisibleDrag(); drag.disable(); clearSelection() }
 }
 
 const importMenu = ref<InstanceType<typeof ImportMenu> | null>(null)
@@ -322,7 +1058,7 @@ function rescanCache() {
 }
 
 // 标题栏「更多」菜单：同步 / 维护 / 应用三类，非同类之间以分割线分隔
-const titleMenuOptions: Record<string, unknown>[] = [
+const titleMenuOptions: DropdownMixedOption[] = [
   { label: '上传到远端', key: 'sync_upload', icon: () => h(CloudUpload, { size: 16 }) },
   { label: '从远端下载', key: 'sync_download', icon: () => h(CloudDownload, { size: 16 }) },
   { type: 'divider', key: 'menu-divider-sync' },
@@ -423,14 +1159,19 @@ async function onFolderRightClick(e: MouseEvent, folderId: number, folderName: s
 async function onCtxAction(action: string) {
   ctx.hide()
   const t = ctx.trigger.value
+  // 触发上下文可选字段统一窄化，避免把 undefined 传入桥接参数
+  const memeId = t.memeId ?? 0
+  const memeName = t.memeName ?? ''
+  const folderId = t.folderId ?? 0
+  const folderName = t.folderName ?? ''
   switch (action) {
     case 'rename': {
-      const name = await inputDialog.value?.open('重命名', t.memeName || '')
-      if (name && name !== t.memeName) { await api('rename_meme', t.memeId, name); search() }
+      const name = await inputDialog.value?.open('重命名', memeName)
+      if (name && name !== memeName) { await api('rename_meme', memeId, name); search() }
       break
     }
     case 'favorite': {
-      const ok = await api('toggle_favorite', t.memeId)
+      const ok = await api('toggle_favorite', memeId)
       if (ok !== null) {
         await refreshCollections()
         if (!ok && state.activeCollection === -2) {
@@ -442,15 +1183,15 @@ async function onCtxAction(action: string) {
       break
     }
     case 'tag': {
-      const tags = await tagEditor.value?.open(t.memeId)
+      const tags = await tagEditor.value?.open(memeId)
       if (tags === null) break
-      await api('set_meme_tags', t.memeId, tags)
+      await api('set_meme_tags', memeId, tags)
       // 同步已激活标签筛选，避免已删除标签继续筛
       refreshTags()
       search()
       break
     }
-    case 'collection': { showCollectionBuilder(t.memeId); break }
+    case 'collection': { showCollectionBuilder(memeId); break }
     case 'add-to-subgroup': { /* 子菜单在 hover 时加载，点击走 subgroup-N / __new-subgroup__ */ break }
     case '__new-subgroup__': {
       const isSub = state.activeCollection && state.activeCollection > 0
@@ -459,10 +1200,10 @@ async function onCtxAction(action: string) {
       const targetCol = state.activeCollection && state.activeCollection > 0 ? state.activeCollection : null
       let ok: any
       if (targetCol) {
-        const r = await api('create_subcollection', name, targetCol)
-        if (r && r.ok) ok = await api('add_to_existing_collection', t.memeId, r.id)
+        const r = (await api('create_subcollection', name, targetCol)) as { ok?: boolean; id?: number } | null
+        if (r && r.ok && typeof r.id === 'number') ok = await api('add_to_existing_collection', memeId, r.id)
       } else {
-        ok = await api('add_to_collection', t.memeId, name)
+        ok = await api('add_to_collection', memeId, name)
       }
       if (ok) { showToast('已添加'); refreshCollections(); search() }
       else showToast('添加分组失败')
@@ -470,11 +1211,11 @@ async function onCtxAction(action: string) {
     }
     case 'remove-collection': {
       const removedFrom = state.activeCollection
-      const ok = await api('remove_from_collection', t.memeId, removedFrom)
+      const ok = await api('remove_from_collection', memeId, removedFrom)
       if (ok) {
         // 从子分组移除时加回上层大分组
         const parent = findParentCollection(state.collections, removedFrom)
-        if (parent) await api('add_to_existing_collection', t.memeId, parent.id)
+        if (parent) await api('add_to_existing_collection', memeId, parent.id)
         await refreshCollections()
         // 递归查找分组节点（子分组不在顶层），据此判断是否清空后再删
         const c = findCollectionNode(state.collections, removedFrom)
@@ -487,42 +1228,42 @@ async function onCtxAction(action: string) {
       break
     }
     case 'remove-recent': {
-      await api('remove_from_recent', t.memeId)
+      await api('remove_from_recent', memeId)
       search()
       break
     }
     case 'delete': {
-      if (await confirmAsk('删除表情包', '确定删除这个表情包吗？')) { await api('delete_meme', t.memeId); search(); refreshCollections() }
+      if (await confirmAsk('删除表情包', '确定删除这个表情包吗？')) { await api('delete_meme', memeId); search(); refreshCollections() }
       break
     }
     case 'rename-collection': {
-      const name = await inputDialog.value?.open('重命名分组', t.folderName || '')
-      if (name && name !== t.folderName) { await api('rename_collection', t.folderId, name); refreshCollections() }
+      const name = await inputDialog.value?.open('重命名分组', folderName)
+      if (name && name !== folderName) { await api('rename_collection', folderId, name); refreshCollections() }
       break
     }
     case 'delete-collection': {
       if (await confirmAsk('删除分组', '确定删除这个分组吗？')) {
         // 先移除组内表情到上层，再删组
-        const parent = findParentCollection(state.collections, t.folderId)
-        const members = (await api('search_memes', '', [], t.folderId, 0, 9999)) || []
+        const parent = findParentCollection(state.collections, folderId)
+        const members = (await api('search_memes', '', [], folderId, 0, 9999)) || []
         for (const mm of members) {
           if (parent) await api('add_to_existing_collection', mm.id, parent.id)
         }
-        await api('delete_collection', t.folderId)
-        if (state.activeCollection === t.folderId) setActiveCollection(parent ? parent.id : -4)
+        await api('delete_collection', folderId)
+        if (state.activeCollection === folderId) setActiveCollection(parent ? parent.id : -4)
         refreshCollections(); search()
       }
       break
     }
     case 'delete-folder': {
-      if (await confirmAsk('删除小分组', '确定删除小分组「' + t.folderName + '」？分组内表情包将移回上层分组。')) {
-        const parent = findParentCollection(state.collections, t.folderId)
-        const members = (await api('search_memes', '', [], t.folderId, 0, 9999)) || []
+      if (await confirmAsk('删除小分组', '确定删除小分组「' + folderName + '」？分组内表情包将移回上层分组。')) {
+        const parent = findParentCollection(state.collections, folderId)
+        const members = (await api('search_memes', '', [], folderId, 0, 9999)) || []
         for (const mm of members) {
           if (parent) await api('add_to_existing_collection', mm.id, parent.id)
         }
-        await api('delete_collection', t.folderId)
-        if (state.activeCollection === t.folderId) setActiveCollection(parent ? parent.id : -4)
+        await api('delete_collection', folderId)
+        if (state.activeCollection === folderId) setActiveCollection(parent ? parent.id : -4)
         refreshCollections(); search()
       }
       break
@@ -537,7 +1278,7 @@ async function onCtxAction(action: string) {
     default:
       if (action.startsWith('subgroup-')) {
         const cid = Number(action.slice('subgroup-'.length))
-        const ok = await api('add_to_existing_collection', t.memeId, cid)
+        const ok = await api('add_to_existing_collection', memeId, cid)
         if (ok) { showToast('已添加到分组'); refreshCollections(); search() }
         else showToast('添加失败')
       } else {
@@ -552,9 +1293,9 @@ async function batchDelete() {
   if (ids.length === 0) return
   if (!await confirmAsk('批量删除', `确定删除选中的 ${ids.length} 个表情包吗？此操作不可恢复。`)) return
   // 后端异常或 pywebview 不可用：报错即中止，不刷新以免 UI 与 DB 不一致
-  let result: any
+  let result: { ok?: boolean; deleted?: number } | null = null
   try {
-    result = await api('delete_memes', ids)
+    result = (await api('delete_memes', ids)) as { ok?: boolean; deleted?: number } | null
   } catch {
     showToast('批量删除失败')
     return
@@ -615,9 +1356,9 @@ async function showCollectionBuilder(memeId?: number) {
   cb.open(async (confirm) => {
     const { name, memeIds, existingId } = confirm
     // 已选已有分组 → 更新其成员；否则新建分组
-    const result = existingId
+    const result = (existingId
       ? await api('set_collection_members', existingId, memeIds)
-      : await api('set_collection_members_new', name, memeIds)
+      : await api('set_collection_members_new', name, memeIds)) as { ok?: boolean; error?: string } | true | null
     if (result?.ok || result === true) {
       showToast(existingId ? '已保存到分组：' + name : '分组已创建')
       refreshCollections(); search()
@@ -660,9 +1401,18 @@ let ignoreClick = false
 
 function onCardPointerDown(e: PointerEvent, meme: Meme, card: HTMLElement) {
   ignoreClick = false
-  // 整理模式接管指针：可排视图拖拽换位；不可排视图只做点选，不走原生拖拽
+  // 整理模式接管指针：可排视图走可见段拖拽；挂载段不全为已加载真卡时暂拒绝发起
   if (sortEnabled.value) {
-    if (canReorder()) drag.onPointerDown(e, meme.id, card)
+    if (!canReorder()) return
+    // 保存进行中禁止发起新会话：引擎 cleanup 是全局的，旧保存完成回调会清掉新手势
+    if (persistInFlight) return
+    const session = beginVisibleDragSession(e, meme, card)
+    if (!session) return
+    visibleDragSession = session
+    const liveCard = session.liveCard
+    if (!liveCard) { cancelVisibleDrag(); return }
+    drag.onPointerDown(normalizePointerEvent(e, session.deltaY), meme.id, liveCard)
+    if (drag.dragState.memeId !== meme.id) cancelVisibleDrag()
     return
   }
   if (e.button !== 0) return
@@ -671,7 +1421,15 @@ function onCardPointerDown(e: PointerEvent, meme: Meme, card: HTMLElement) {
 
 function onDocPointerMove(e: PointerEvent) {
   if (drag.dragState.memeId) {
-    drag.onPointerMove(e)
+    // 保存挂起：不得再改动旧会话（显示顺序会偏离已提交的 ids）
+    if (persistInFlight) return
+    const session = visibleDragSession
+    if (!session) { drag.cancel(); return }
+    // 按键已释放（例如在窗口外抬起）时取消并回滚，避免会话/钉住悬挂
+    if (e.buttons === 0) { cancelVisibleDrag(); return }
+    // 真实落点越出已加载挂载段时不转发，避免引擎 clamp 误判尾部落点
+    if (!insideVisibleSegment(e.clientX, e.clientY, session)) return
+    drag.onPointerMove(normalizePointerEvent(e, session.deltaY))
     return
   }
   if (!nativeDragStart || sortEnabled.value) return
@@ -690,16 +1448,43 @@ function onDocPointerMove(e: PointerEvent) {
 }
 
 async function onDocPointerUp(e: PointerEvent) {
+  // 保存中收到重复抬起：忽略（旧会话的结算由首次 pointerup 负责）
+  if (persistInFlight) return
+  const session = visibleDragSession
   if (drag.dragState.memeId) {
-    const wasActive = await drag.onPointerUp()
+    // 越界松手：取消并回滚，不提交（与 move 的越界拒绝一致）
+    if (session && drag.dragState.active === true && !insideVisibleSegment(e.clientX, e.clientY, session)) {
+      cancelVisibleDrag()
+      return
+    }
+    persistInFlight = true
+    cancelDuringPersist = false
+    let wasActive = false
+    try {
+      wasActive = await drag.onPointerUp()
+    } catch (_) {
+      // 引擎结算异常：清理手势状态，保证 persist 标志必然释放（不死锁）
+      drag.cancel()
+    } finally {
+      persistInFlight = false
+    }
+    const cancelled = cancelDuringPersist
+    cancelDuringPersist = false
     if (wasActive) ignoreClick = true
+    if (session) {
+      finishVisibleDragSession(session)
+      // 保存期间被取消：以数据库为准重同步，不保留本地快照（卸载后不再触碰模型）
+      if (cancelled && !windowUnmounted) void search()
+    }
     return
   }
+  if (session) cancelVisibleDrag()
   nativeDragStart = null
 }
 
 function onDocPointerCancel() {
-  if (drag.dragState.memeId) drag.cancel()
+  if (visibleDragSession) cancelVisibleDrag()
+  if (drag.dragState.memeId && !persistInFlight) drag.cancel()
   nativeDragStart = null
 }
 
@@ -739,6 +1524,7 @@ async function onDrop(e: DragEvent) {
       if (dt.items?.length) {
         for (let i = 0; i < dt.items.length; i++) {
           const item = dt.items[i]
+          if (!item) continue
           if (item.kind === 'string' && item.type === 'text/html') {
             const html = await new Promise<string>(res => item.getAsString(res))
             if (!html) continue
@@ -749,12 +1535,13 @@ async function onDrop(e: DragEvent) {
       }
     } catch (_) {}
   }
-  if (!uri) { try { if (dt.files?.length) file = dt.files[0] } catch (_) {} }
+  if (!uri) { try { const picked = dt.files?.[0]; if (picked) file = picked } catch (_) {} }
   if (!uri && !file) {
     try {
       if (dt.items?.length) {
         for (let i = 0; i < dt.items.length; i++) {
           const it = dt.items[i]
+          if (!it) continue
           if (it.kind === 'file') { file = it.getAsFile(); if (file) break }
         }
       }
@@ -762,7 +1549,7 @@ async function onDrop(e: DragEvent) {
   }
   if (uri) {
     try {
-      const r = await api('download_original_image', uri)
+      const r = (await api('download_original_image', uri)) as { ok?: boolean; error?: string } | null
       if (r?.ok) { showToast('导入成功'); search(); refreshCollections(); return }
       showToast(r?.error || '导入失败')
       return
@@ -776,7 +1563,10 @@ async function onDrop(e: DragEvent) {
     try {
       b64 = await new Promise<string>((resolve, reject) => {
         const reader = new FileReader()
-        reader.onload = () => resolve((reader.result as string).split(',')[1])
+        reader.onload = () => {
+          const raw = typeof reader.result === 'string' ? reader.result : ''
+          resolve(raw.split(',')[1] ?? '')
+        }
         reader.onerror = () => reject(reader.error)
         reader.readAsDataURL(file!)
       })
@@ -817,17 +1607,36 @@ onMounted(() => {
   document.addEventListener('pointercancel', onDocPointerCancel)
   document.addEventListener('keydown', onDocKeydown)
   window.addEventListener('blur', onDocPointerCancel)
-  // 无限滚动：滚动/尺寸变化驱动补载（占位块保证滚动条按全库比例呈现）
+  // 框选命中坐标适配：指针按下时把已挂载 option 的局部坐标改写为容器坐标
+  gridWrapRef.value?.addEventListener('pointerdown', onGridPointerDownCapture, true)
+  // 虚拟化前提：ResizeObserver + 元素滚动方法；缺失时显示不可用提示，不静默挂库
   const wrap = gridWrapRef.value
-  wrap?.addEventListener('scroll', onGridScroll, { passive: true })
-  if (wrap && typeof ResizeObserver !== 'undefined') {
-    gridResizeObserver = new ResizeObserver(() => measureGrid())
+  const hasScrollMethods = !!wrap && typeof wrap.scrollTo === 'function' && typeof wrap.scrollBy === 'function'
+  virtualReady.value = typeof ResizeObserver !== 'undefined' && hasScrollMethods
+  if (virtualReady.value && wrap) {
+    gridResizeObserver = new ResizeObserver(() => scheduleLayoutRefresh())
     gridResizeObserver.observe(wrap)
+    observeFolderGrid()
+    refreshLayout()
+    requestVisibleRange()
   }
-  measureGrid()
 })
 
+// folder 头块高度变化（分组切换/子分组增删）时重测 startMargin
+function observeFolderGrid() {
+  folderResizeObserver?.disconnect()
+  const folder = folderGridRef.value
+  if (!virtualReady.value || !folder || typeof ResizeObserver === 'undefined') return
+  if (!folderResizeObserver) folderResizeObserver = new ResizeObserver(() => scheduleLayoutRefresh())
+  folderResizeObserver.observe(folder)
+}
+
 onUnmounted(() => {
+  // 先置卸载门禁：阻止进行中的异步续体再触碰模型（search/ensureRange 会重建生命周期）
+  windowUnmounted = true
+  window.refreshMemes = () => {}
+  window.refreshTags = () => {}
+  window.refreshCollections = () => {}
   document.removeEventListener('dragenter', onDragEnter)
   document.removeEventListener('dragover', onDragOver)
   document.removeEventListener('dragleave', onDragLeave)
@@ -839,13 +1648,19 @@ onUnmounted(() => {
   document.removeEventListener('pointercancel', onDocPointerCancel)
   document.removeEventListener('keydown', onDocKeydown)
   window.removeEventListener('blur', onDocPointerCancel)
+  gridWrapRef.value?.removeEventListener('pointerdown', onGridPointerDownCapture, true)
   if (updateInterval) { clearInterval(updateInterval); updateInterval = null }
   hoverTimers.forEach(t => clearTimeout(t))
   hoverTimers.clear()
-  gridWrapRef.value?.removeEventListener('scroll', onGridScroll)
+  cancelVisibleDrag()
+  if (layoutRaf) { cancelAnimationFrame(layoutRaf); layoutRaf = 0 }
+  if (rangeRaf) { cancelAnimationFrame(rangeRaf); rangeRaf = 0 }
+  if (selectionCheckTimer) { clearTimeout(selectionCheckTimer); selectionCheckTimer = null }
   gridResizeObserver?.disconnect()
   gridResizeObserver = null
-  if (fillRaf) { cancelAnimationFrame(fillRaf); fillRaf = 0 }
+  folderResizeObserver?.disconnect()
+  folderResizeObserver = null
+  dispose()
 })
 
 // 桥接调用失败记录：控制台 + 后端日志（生产无 devtools，靠日志导出排查）
@@ -857,6 +1672,7 @@ function logBridgeIssue(method: string, detail = '') {
 
 ;(async () => {
   const initOk = await loadInitData()
+  if (windowUnmounted) return
   if (!initOk) {
     logBridgeIssue('get_init_data', '初始化数据重试后仍失败')
     showToast('数据加载失败，可点击「刷新」重试')
@@ -864,14 +1680,18 @@ function logBridgeIssue(method: string, detail = '') {
   // 动画开启时：播放期间即加载后续内容（动画天然覆盖桥接稳定时间），去除 300ms 延时；
   // 动画关闭时：不播放动画，降级为 300ms 延时
   const runBackground = async () => {
+    if (windowUnmounted) return
     if ((await api('rescan_cache')) === null) logBridgeIssue('rescan_cache')
     const autoSync = await api('run_auto_sync')
+    if (windowUnmounted) return
     if (autoSync && typeof autoSync === 'object' && !Array.isArray(autoSync)) {
-      const error = (autoSync as Record<string, unknown>).error
+      const error = (autoSync as Record<string, unknown>)['error']
       if (error) logBridgeIssue('run_auto_sync', String(error))
     }
     await search()
+    if (windowUnmounted) return
     await refreshTags()
+    if (windowUnmounted) return
     await refreshCollections()
   }
   const prefersReducedMotion = !!(window.matchMedia && window.matchMedia('(prefers-reduced-motion: reduce)').matches)
@@ -887,8 +1707,43 @@ function logBridgeIssue(method: string, detail = '') {
   }
   // 每日更新检测（完整弹窗 + 下载安装，与原始实现一致）
   await checkUpdateAndPrompt()
+  if (windowUnmounted) return
   updateInterval = setInterval(checkUpdateAndPrompt, 24 * 60 * 60 * 1000)
 })()
+
+// 纯框选手势结束（无卡片拖拽）：补做被推迟的 registry 清理
+watch(() => dragSelectRef.value?.isDragging === true, (now) => {
+  if (now) return
+  flushPendingWork()
+  scheduleSelectionCheck()
+})
+
+// 切换分组/标签/搜索词时滚动复位（窗口/cache 代次变化不触发）
+const browseKey = computed(() => (state.activeCollection ?? 'all') + '|' + state.searchQuery + '|' + [...state.activeTags].sort().join(','))
+watch(browseKey, () => { if (gridWrapRef.value) gridWrapRef.value.scrollTop = 0 })
+
+// 同查询显式 search 刷新：滚动复位、重挂框选 registry；拖拽中先取消手势
+watch(() => state.queryGen, () => {
+  cancelVisibleDrag()
+  scrolling.value = false
+  if (gridWrapRef.value) gridWrapRef.value.scrollTop = 0
+  hoverTimers.forEach(t => clearTimeout(t))
+  hoverTimers.clear()
+  virtualCache.value = null
+  virtualCacheLength.value = 0
+  maybeResetSelectionRegistry(true)
+  void nextTick(() => { refreshLayout(); requestVisibleRange() })
+})
+
+// 缓存填充（骨架→真卡）或总数变化后重算窗口与 registry
+watch([() => state.lo, () => state.hi, () => state.total], () => {
+  void nextTick(() => { requestVisibleRange(); scheduleSelectionCheck() })
+}, { flush: 'post' })
+
+// folder 头块出现/消失/改行数时重测 startMargin
+watch(folderCards, () => {
+  void nextTick(() => { observeFolderGrid(); refreshLayout() })
+})
 </script>
 
 <template>
@@ -909,7 +1764,7 @@ function logBridgeIssue(method: string, detail = '') {
             <ImagePlus :size="16" />
           </template>
         </NButton>
-        <NDropdown trigger="click" placement="bottom-end" :options="titleMenuOptions" :theme-overrides="{ boxShadow: 'none' }" @select="onTitleMenuSelect">
+        <NDropdown trigger="click" placement="bottom-end" :options="titleMenuOptions" @select="onTitleMenuSelect">
           <NButton class="icon-btn" quaternary title="更多操作" aria-label="更多操作">
             <template #icon>
               <Ellipsis :size="16" />
@@ -1001,7 +1856,7 @@ function logBridgeIssue(method: string, detail = '') {
         </div>
 
         <div id="grid-wrap" ref="gridWrapRef">
-          <div v-if="folderCards.length" class="meme-grid folder-grid">
+          <div v-if="folderCards.length" ref="folderGridRef" class="meme-grid folder-grid">
             <div
               v-for="child in folderCards"
               :key="'folder-' + child.id"
@@ -1022,68 +1877,99 @@ function logBridgeIssue(method: string, detail = '') {
             </div>
           </div>
 
-          <drag-select
-            v-model="state.selectedIds"
-            :disabled="!sortEnabled"
-            :multiple="true"
-            :click-option-to-select="false"
-            :draggable-on-option="false"
-            :click-blank-to-clear="false"
+          <div
+            id="meme-grid"
+            class="meme-grid"
+            :class="{ 'sort-enabled': sortEnabled && canReorder(), 'select-enabled': sortEnabled }"
+            :style="gridStyle"
           >
-            <TransitionGroup
-              id="meme-grid"
-              tag="div"
-              name="meme-list"
-              class="meme-grid"
-              :class="{ 'sort-enabled': sortEnabled && canReorder(), 'select-enabled': sortEnabled }"
+            <drag-select
+              ref="dragSelectRef"
+              :key="selectionEpoch"
+              :model-value="state.selectedIds"
+              @update:model-value="onBoxSelection"
+              :disabled="dragSelectDisabled"
+              :multiple="true"
+              :click-option-to-select="false"
+              :draggable-on-option="false"
+              :click-blank-to-clear="false"
             >
-              <drag-select-option
-                v-for="meme in state.memes"
-                :key="meme.id"
-                :value="meme.id"
+              <Virtualizer
+                v-if="virtualReady && state.total > 0 && gridWrapRef"
+                ref="virtualizerRef"
+                :key="layoutKey"
+                :data="rows"
+                :scroll-ref="gridWrapRef as HTMLElement"
+                :start-margin="startMargin"
+                :item-size="rowPitch"
+                :buffer-size="200"
+                :shift="false"
+                :item-props="rowItemProps"
+                :cache="virtualCacheForRender"
+                @scroll="onVirtualScroll"
+                @resize="onVirtualResize"
+                @scroll-end="onVirtualScrollEnd"
               >
-                <div
-                  class="meme-card"
-                  :class="{ 'dragging': drag.dragState.active && drag.dragState.memeId === meme.id, selected: state.selectedIds.has(meme.id) }"
-                  :data-meme-id="meme.id"
-                  role="button"
-                  tabindex="0"
-                  :aria-label="meme.name"
-                  @click="onCardClick(meme)"
-                  @contextmenu="onMemeRightClick($event, meme)"
-                  @pointerdown="onCardPointerDown($event, meme, $event.currentTarget as HTMLElement)"
-                  @mouseenter="onCardMouseEnter(meme)"
-                  @mouseleave="onCardMouseLeave(meme)"
-                  @keydown.enter.prevent="onCardClick(meme)"
-                  @keydown.space.prevent="onCardClick(meme)"
-                >
-                  <img :src="memeSrc(meme)" :alt="meme.name" loading="lazy">
-                  <span v-if="state.selectedIds.has(meme.id)" class="select-badge"><Check :size="12" /></span>
-                  <NButton
-                    v-if="!sortEnabled"
-                    class="fav-btn"
-                    :class="{ active: meme.favorited }"
-                    quaternary
-                    circle
-                    size="tiny"
-                    :aria-label="meme.favorited ? '取消收藏' : '收藏'"
-                    :title="meme.favorited ? '取消收藏' : '收藏'"
-                    @click.stop="quickFavorite(meme)"
-                    @pointerdown.stop
+                <template #default="{ item: row }">
+                  <TransitionGroup
+                    :key="row.key"
+                    tag="div"
+                    name="meme-list"
+                    class="virtual-meme-row"
+                    :data-row-start="row.start"
+                    :data-row-key="row.key"
                   >
-                    <template #icon>
-                      <Heart :size="14" />
+                    <template v-for="entry in rowSlots(row)" :key="entry.meme ? 'm' + entry.meme.id : 's' + entry.index">
+                      <drag-select-option v-if="entry.meme" :value="entry.meme.id" :disabled="!sortEnabled">
+                        <div
+                          class="meme-card"
+                          :class="{ 'dragging': drag.dragState.active && drag.dragState.memeId === entry.meme.id, selected: state.selectedIds.has(entry.meme.id) }"
+                          :data-meme-id="entry.meme.id"
+                          role="button"
+                          tabindex="0"
+                          :aria-label="entry.meme.name"
+                          @click="onCardClick(entry.meme)"
+                          @contextmenu="onMemeRightClick($event, entry.meme)"
+                          @pointerdown="onCardPointerDown($event, entry.meme, $event.currentTarget as HTMLElement)"
+                          @mouseenter="onCardMouseEnter(entry.meme)"
+                          @mouseleave="onCardMouseLeave(entry.meme)"
+                          @keydown.enter.prevent="onCardClick(entry.meme)"
+                          @keydown.space.prevent="onCardClick(entry.meme)"
+                        >
+                          <img :src="memeSrc(entry.meme)" :alt="entry.meme.name" loading="lazy">
+                          <span v-if="state.selectedIds.has(entry.meme.id)" class="select-badge"><Check :size="12" /></span>
+                          <NButton
+                            v-if="!sortEnabled"
+                            class="fav-btn"
+                            :class="{ active: entry.meme.favorited }"
+                            quaternary
+                            circle
+                            size="tiny"
+                            :aria-label="entry.meme.favorited ? '取消收藏' : '收藏'"
+                            :title="entry.meme.favorited ? '取消收藏' : '收藏'"
+                            @click.stop="quickFavorite(entry.meme)"
+                            @pointerdown.stop
+                          >
+                            <template #icon>
+                              <Heart :size="14" />
+                            </template>
+                          </NButton>
+                          <span v-if="entry.meme.from_stego" class="gif-badge stego-badge">隐写导入</span>
+                          <span v-else-if="entry.meme.is_animated" class="gif-badge">{{ entry.meme.is_gif ? 'GIF' : 'WebP' }}</span>
+                          <span class="meme-name">{{ entry.meme.name }}</span>
+                        </div>
+                      </drag-select-option>
+                      <div v-else class="meme-card skeleton" aria-hidden="true"></div>
                     </template>
-                  </NButton>
-                  <span v-if="meme.from_stego" class="gif-badge stego-badge">隐写导入</span>
-                  <span v-else-if="meme.is_animated" class="gif-badge">{{ meme.is_gif ? 'GIF' : 'WebP' }}</span>
-                  <span class="meme-name">{{ meme.name }}</span>
-                </div>
-              </drag-select-option>
-            </TransitionGroup>
-          </drag-select>
+                  </TransitionGroup>
+                </template>
+              </Virtualizer>
+            </drag-select>
+          </div>
 
-          <div v-if="state.memes.length === 0 && !state.loading" id="empty">
+          <div v-if="!virtualReady" class="grid-foot">当前环境不支持虚拟滚动（需要 ResizeObserver 与元素滚动方法）</div>
+
+          <div v-if="virtualReady && state.total === 0 && state.ready && !state.loading && !state.loadError" id="empty">
             <svg class="empty-svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
               <path d="M3 7a2 2 0 0 1 2-2h4l2 3h8a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V7z"/>
               <path d="M8.5 13.5h7M8.5 16.5h4.5"/>
@@ -1092,12 +1978,10 @@ function logBridgeIssue(method: string, detail = '') {
             <NButton class="btn btn-primary" type="primary" @click="showImportMenu()">导入表情包</NButton>
           </div>
 
-          <div v-if="state.memes.length > 0" ref="gridFootRef" class="grid-foot">
-            {{ state.loadingMore ? '加载中…' : `已加载 ${state.memes.length} / 共 ${state.total}` + (state.hasMore ? '' : ' · 没有更多了') }}
-          </div>
-
-          <div v-if="spacerHeight > 0" class="grid-spacer" :style="{ height: spacerHeight + 'px' }">
-            <span>正在加载…</span>
+          <div v-if="virtualReady && (state.total > 0 || state.loadError)" class="grid-foot" aria-live="polite">
+            <template v-if="state.loadError">加载失败</template>
+            <template v-else-if="state.loading || state.rangeLoading">加载中…</template>
+            <template v-else>共 {{ state.total }} 项</template>
           </div>
         </div>
       </div>

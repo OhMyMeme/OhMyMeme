@@ -634,16 +634,33 @@ def test_sorting_visual_feedback_static_contract():
     assert re.search(r"\bcollections:\s*\[\]", use_memes)
     assert re.search(r"\bactiveCollection:\s*null\b", use_memes)
 
-    # 网格容器：纵向滚动 + 预留排序描边空间
+    # 网格容器：唯一滚动容器 + 关闭浏览器滚动锚定（virtua 前置要求）
     grid_wrap = rule("#grid-wrap")
     assert re.search(r"overflow-y\s*:\s*auto", grid_wrap)
     assert re.search(r"padding\s*:\s*10px", grid_wrap)
-    meme_grid = rule("#meme-grid,\n.meme-grid")
+    assert re.search(r"overflow-anchor\s*:\s*none", grid_wrap)
+
+    # folder 网格不虚拟化：保留最小卡宽 112px 与 10px 间隙契约
+    folder_grid = rule(".meme-grid")
     assert re.search(
         r"grid-template-columns\s*:\s*repeat\(auto-fill, minmax\(112px, 1fr\)\)",
-        meme_grid,
+        folder_grid,
     )
-    assert re.search(r"gap\s*:\s*10px", meme_grid)
+    assert re.search(r"gap\s*:\s*10px", folder_grid)
+
+    # 外层网格容器改为 block（真实排版在虚拟行内），保留几何 gap 供拖拽引擎读取
+    outer_grid = rule("#meme-grid")
+    assert re.search(r"display\s*:\s*block", outer_grid)
+    assert re.search(r"column-gap\s*:\s*10px", outer_grid)
+    assert re.search(r"row-gap\s*:\s*10px", outer_grid)
+
+    # 虚拟行：按脚本列数切分并保留 10px 列间隙
+    virtual_row = rule(".virtual-meme-row")
+    assert re.search(
+        r"grid-template-columns\s*:\s*repeat\(var\(--meme-cols\), minmax\(0, 1fr\)\)",
+        virtual_row,
+    )
+    assert re.search(r"column-gap\s*:\s*10px", virtual_row)
 
     # 排序模式卡片：缩放 + 描边
     sorting_rule = rule("#meme-grid.sort-enabled .meme-card")
@@ -688,10 +705,14 @@ def test_sorting_visual_feedback_static_contract():
     dragging = rule("#meme-grid.sort-enabled .meme-card.dragging")
     assert re.search(r"transition\s*:\s*none", dragging)
 
-    # FLIP 让位：TransitionGroup name="meme-list" + .meme-list-move 过渡
+    # FLIP 让位：行级 TransitionGroup name="meme-list" + .meme-list-move 过渡
     assert re.search(r'name="meme-list"', main_window)
     flip = rule(".meme-list-move")
     assert re.search(r"transition\s*:\s*transform\s+0\.2s\s+ease", flip)
+    # 行级 TransitionGroup 位于 Virtualizer 默认插槽内；#meme-grid 仍是唯一外层节点
+    assert "<Virtualizer" in main_window
+    assert main_window.index("<Virtualizer") < main_window.index('name="meme-list"')
+    assert re.search(r'<TransitionGroup\s+:key="row\.key"', main_window)
 
     # 拖拽原位缩放 0.90；不得叠加 scale
     assert re.search(r"scale\(0\.90\)", use_drag)
@@ -744,6 +765,8 @@ def test_sorting_visual_feedback_static_contract():
     )
     assert re.search(r"'select-enabled':\s*sortEnabled", main_window)
     assert 'class="meme-card folder-card"' in main_window.split("<drag-select", 1)[0]
+    # folder 头块先于虚拟列表起点，且不包含 Virtualizer
+    assert main_window.index("folder-grid") < main_window.index("<Virtualizer")
     toggle_sort = re.search(
         r"function toggleSort\(\)\s*\{(?P<body>.*?)\n\}", main_window, re.DOTALL
     )
@@ -752,6 +775,92 @@ def test_sorting_visual_feedback_static_contract():
     assert re.search(r"if\s*\(sortEnabled\.value\)\s*return", main_window)
     assert re.search(r"function onCardClick\(meme: Meme\)", main_window)
     assert re.search(r"function toggleSelected\(id: number\)", main_window)
+
+
+def test_virtual_meme_grid_static_contract():
+    root = Path(__file__).resolve().parent.parent
+    main = root / "src" / "ohmymeme" / "presentation" / "frontend" / "main"
+    main_window = (main / "app" / "MainWindow.vue").read_text(encoding="utf-8")
+    style_css = (main / "app" / "style.css").read_text(encoding="utf-8")
+    use_memes = (main / "features" / "memes" / "useMemes.ts").read_text(
+        encoding="utf-8"
+    )
+
+    # 行级 Virtualizer：virtua/vue + 外部滚动容器 + 固定行距/缓冲/不 shift
+    assert "from 'virtua/vue'" in main_window
+    virtualizer = main_window[
+        main_window.index("<Virtualizer") : main_window.index("</Virtualizer>")
+    ]
+    assert ':data="rows"' in virtualizer
+    assert ':scroll-ref="gridWrapRef' in virtualizer
+    assert ':start-margin="startMargin"' in virtualizer
+    assert ':item-size="rowPitch"' in virtualizer
+    assert ':buffer-size="200"' in virtualizer
+    assert ':shift="false"' in virtualizer
+    assert ':item-props="rowItemProps"' in virtualizer
+
+    # 行外壳：单根行级 TransitionGroup，key 非行号，行起点可定位
+    assert re.search(r'<TransitionGroup\s+:key="row\.key"', virtualizer)
+    assert ':data-row-start="row.start"' in virtualizer
+
+    # 未加载槽位生成同尺寸静态骨架：行内 template v-for 按「真卡 Meme.id / 骨架槽位」分键，无 img/事件/真实 id/option
+    assert re.search(
+        r'<template v-for="entry in rowSlots\(row\)" :key="entry\.meme \? \'m\' \+ entry\.meme\.id : \'s\' \+ entry\.index">',
+        virtualizer,
+    )
+    assert '<drag-select-option v-if="entry.meme" :value="entry.meme.id"' in virtualizer
+    assert '<div v-else class="meme-card skeleton" aria-hidden="true"></div>' in virtualizer
+    assert re.search(r"\.meme-card\.skeleton\s*\{", style_css)
+
+    # 真卡仍是原 drag-select-option + 原事件/图片/名称/徽标
+    assert '<drag-select-option v-if="entry.meme"' in virtualizer
+    for token in (
+        "onCardClick",
+        "onMemeRightClick",
+        "onCardPointerDown",
+        "onCardMouseEnter",
+        "memeSrc",
+        "gif-badge",
+        "meme-name",
+    ):
+        assert token in virtualizer
+
+    # footer：共 N 项 + 加载/失败状态位 + aria-live
+    assert 'class="grid-foot" aria-live="polite"' in main_window
+    assert "共 {{ state.total }} 项" in main_window
+    assert "加载中…" in main_window
+    assert "加载失败" in main_window
+
+    # 旧顺序加载驱动彻底移除，两套加载逻辑不得并存
+    for removed in (
+        "loadMore",
+        "spacerHeight",
+        "measureGrid",
+        "ensureFilled",
+        "onGridScroll",
+        "gridFootRef",
+        "hasMore",
+        "loadingMore",
+    ):
+        assert removed not in main_window
+        assert removed not in use_memes
+    assert "grid-spacer" not in main_window
+    assert ".grid-spacer" not in style_css
+
+    # 连续区间模型与查询/窗口代次接线
+    assert re.search(r"lo:\s*0", use_memes)
+    assert re.search(r"hi:\s*0", use_memes)
+    assert "slots:" in use_memes
+    assert "queryGen:" in use_memes
+    assert "rangeGen:" in use_memes
+    for token in ("ensureRange", "setLoadedSlice", "pinLoadedRange", "loadedSlice"):
+        assert token in use_memes
+    assert "loadedSlice()" in main_window
+    assert "setLoadedSlice(" in main_window
+    assert "ensureRange(" in main_window
+    assert "pinLoadedRange()" in main_window
+    assert "state.queryGen" in main_window
+    assert "state.rangeGen" in main_window
 
 
 def test_grid_slot_hit_testing_stays_aligned_when_layout_moves_and_scrolls():
