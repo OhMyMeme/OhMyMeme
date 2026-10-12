@@ -24,7 +24,7 @@ const avatarText = computed(() => {
   return name ? Array.from(name).slice(0, 2).join('') : '?'
 })
 
-function toggleExpand(e: MouseEvent) {
+function toggleExpand(e: Event) {
   e.stopPropagation()
   expanded.value = !expanded.value
 }

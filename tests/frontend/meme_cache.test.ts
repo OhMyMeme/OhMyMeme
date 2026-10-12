@@ -1118,4 +1118,288 @@ describe('useMemes 连续缓存模型', () => {
     expect(model.state.selectedIds.size).toBe(2)
     expect(model.state.total).toBe(9000)
   })
+
+  it('retryRangeReplaysFailedSeedWithoutQueryChange', async () => {
+    const total = () => 530
+    let mode: 'fail' | 'ok' = 'fail'
+    const { model, calls } = await loadModel({
+      count_memes: total,
+      search_memes: args => {
+        const offset = args[3] as number
+        if (offset === 0) return mode === 'fail' ? null : autoPage(total)(args)
+        return autoPage(total)(args)
+      },
+    })
+    await expect(model.search()).resolves.toBe(false)
+    expect(model.state.loadError).toBe(true)
+    expect(offsetCalls(calls, 0)).toBe(1)
+    const gen = model.state.queryGen
+    model.state.selectedIds = new Set([7])
+    mode = 'ok'
+    await expect(model.retryRange()).resolves.toBe(true)
+    expect(offsetCalls(calls, 0)).toBe(2)
+    expect(calls.filter(call => call.name === 'count_memes').length).toBe(2)
+    expect(model.state.queryGen).toBe(gen)
+    expect(model.state.total).toBe(530)
+    expect(model.state.lo).toBe(0)
+    expect(model.state.hi).toBe(200)
+    expect(model.state.slots[0]?.id).toBe(1)
+    expect(model.state.slots[199]?.id).toBe(200)
+    expect(model.state.loadError).toBe(false)
+    expect(model.state.selectedIds.size).toBe(1)
+    expect(model.state.selectedIds.has(7)).toBe(true)
+    // 手动重试已清退避计时器：不会再有自动重放
+    await vi.advanceTimersByTimeAsync(10000)
+    await flush()
+    expect(offsetCalls(calls, 0)).toBe(2)
+  })
+
+  it('retryRangeReplaysFailedInitAndRestoresInitData', async () => {
+    let mode: 'fail' | 'ok' = 'fail'
+    const { model, calls } = await loadModel({
+      get_init_data: () => (mode === 'fail'
+        ? null
+        : {
+            memes: makeRange(1, 200),
+            collections: [{ id: 3, name: '分组', count: 2 }],
+            tags: ['已有标签'],
+            show_startup_animation: false,
+            startup_bg_color: '#101010',
+          }),
+      count_memes: () => 200,
+    })
+    const init = model.loadInitData()
+    await flush()
+    await vi.advanceTimersByTimeAsync(500)
+    await flush()
+    await vi.advanceTimersByTimeAsync(1000)
+    await flush()
+    await vi.advanceTimersByTimeAsync(1500)
+    await flush()
+    await expect(init).resolves.toBe(false)
+    expect(model.state.loadError).toBe(true)
+    expect(model.state.ready).toBe(false)
+    expect(calls.filter(call => call.name === 'get_init_data').length).toBe(3)
+    mode = 'ok'
+    await expect(model.retryRange()).resolves.toBe(true)
+    expect(calls.filter(call => call.name === 'get_init_data').length).toBe(4)
+    expect(model.state.allTags).toEqual(['已有标签'])
+    expect(model.state.collections.length).toBe(1)
+    expect(model.state.showStartupAnimation).toBe(false)
+    expect(model.state.total).toBe(200)
+    expect(model.state.lo).toBe(0)
+    expect(model.state.hi).toBe(200)
+    expect(model.state.slots[0]?.id).toBe(1)
+    expect(model.state.loadError).toBe(false)
+    expect(model.state.ready).toBe(true)
+  })
+
+  it('retryRangeClearsExhaustedInitCountError', async () => {
+    let mode: 'fail' | 'ok' = 'fail'
+    const { model, calls } = await loadModel({
+      get_init_data: () => ({
+        memes: makeRange(1, 200),
+        collections: [],
+        tags: [],
+        show_startup_animation: true,
+        startup_bg_color: '#000000',
+      }),
+      count_memes: () => (mode === 'fail' ? null : 200),
+    })
+    await expect(model.loadInitData()).resolves.toBe(true)
+    expect(model.state.total).toBe(200)
+    expect(model.state.loadError).toBe(false)
+    // 静默退避读 count 耗尽：loadError 置位，但 count 失败描述仍保留
+    await vi.advanceTimersByTimeAsync(1000)
+    await flush()
+    await vi.advanceTimersByTimeAsync(2000)
+    await flush()
+    await vi.advanceTimersByTimeAsync(3000)
+    await flush()
+    expect(calls.filter(call => call.name === 'count_memes').length).toBe(4)
+    expect(model.state.loadError).toBe(true)
+    // 手动重试读到相同 count：总数不变也必须清错误并消费描述
+    mode = 'ok'
+    await expect(model.retryRange()).resolves.toBe(true)
+    expect(calls.filter(call => call.name === 'count_memes').length).toBe(5)
+    expect(model.state.total).toBe(200)
+    expect(model.state.loadError).toBe(false)
+    await expect(model.retryRange()).resolves.toBe(true)
+    expect(calls.filter(call => call.name === 'count_memes').length).toBe(5)
+  })
+
+  it('staleCountRefreshStopsWithoutRaisingLoadErrorAfterQueryChange', async () => {
+    let countCalls = 0
+    const held = deferred<number | null>()
+    const { model, calls } = await loadModel({
+      get_init_data: () => ({
+        memes: makeRange(1, 200),
+        collections: [],
+        tags: [],
+        show_startup_animation: true,
+        startup_bg_color: '#000000',
+      }),
+      count_memes: () => {
+        countCalls += 1
+        if (countCalls === 1) return null
+        if (countCalls === 2) return held.promise
+        return 200
+      },
+      search_memes: args => autoPage(() => 200)(args),
+    })
+    await expect(model.loadInitData()).resolves.toBe(true)
+    expect(model.state.loadError).toBe(false)
+    // 首个退避刷新在途时发起新查询：旧 count 链不得续排、不得置位 loadError
+    await vi.advanceTimersByTimeAsync(1000)
+    await flush()
+    await expect(model.search()).resolves.toBe(true)
+    expect(model.state.total).toBe(200)
+    held.resolve(null)
+    await flush()
+    await vi.advanceTimersByTimeAsync(10000)
+    await flush()
+    expect(calls.filter(call => call.name === 'count_memes').length).toBe(3)
+    expect(model.state.loadError).toBe(false)
+  })
+
+  it('staleSeedFailureNeverRevivesAfterInvalidateSearchOrDispose', async () => {
+    const total = () => 530
+    let mode: 'fail' | 'ok' = 'fail'
+    const { model, calls } = await loadModel({
+      count_memes: total,
+      search_memes: args => {
+        const offset = args[3] as number
+        if (offset === 0) return mode === 'fail' ? null : autoPage(total)(args)
+        return autoPage(total)(args)
+      },
+    })
+    // A. 失效清描述：retryRange 为既有 no-op，不重放旧 seed、不新 search
+    await expect(model.search()).resolves.toBe(false)
+    expect(model.state.loadError).toBe(true)
+    const failedPageCalls = offsetCalls(calls, 0)
+    const failedCountCalls = calls.filter(call => call.name === 'count_memes').length
+    model.invalidateRangeRequests()
+    await expect(model.retryRange()).resolves.toBe(true)
+    expect(offsetCalls(calls, 0)).toBe(failedPageCalls)
+    expect(calls.filter(call => call.name === 'count_memes').length).toBe(failedCountCalls)
+    expect(model.state.loadError).toBe(true)
+    // B. 新一代查询成功后：旧 seed 描述不得复活
+    mode = 'fail'
+    await expect(model.search()).resolves.toBe(false)
+    mode = 'ok'
+    await expect(model.search()).resolves.toBe(true)
+    const okPageCalls = offsetCalls(calls, 0)
+    const okCountCalls = calls.filter(call => call.name === 'count_memes').length
+    await expect(model.retryRange()).resolves.toBe(true)
+    expect(offsetCalls(calls, 0)).toBe(okPageCalls)
+    expect(calls.filter(call => call.name === 'count_memes').length).toBe(okCountCalls)
+    expect(model.state.loadError).toBe(false)
+    // C. dispose 清描述：卸载时与复活前都不得重放旧 seed
+    mode = 'fail'
+    await expect(model.search()).resolves.toBe(false)
+    model.dispose()
+    const disposedPageCalls = offsetCalls(calls, 0)
+    await expect(model.retryRange()).resolves.toBe(false)
+    expect(offsetCalls(calls, 0)).toBe(disposedPageCalls)
+    mode = 'ok'
+    await expect(model.search()).resolves.toBe(true)
+    const revivedPageCalls = offsetCalls(calls, 0)
+    expect(revivedPageCalls).toBe(disposedPageCalls + 1)
+    await expect(model.retryRange()).resolves.toBe(true)
+    expect(offsetCalls(calls, 0)).toBe(revivedPageCalls)
+    expect(model.state.loadError).toBe(false)
+  })
+
+  it('cacheHitKeepsPendingNonRangeFailureError', async () => {
+    // 同查询刷新种子失败（旧窗口保留）后，缓存命中与分页提交都不得清掉错误入口
+    const total = () => 530
+    let seedMode: 'ok' | 'fail' = 'ok'
+    const { model, calls } = await loadModel({
+      count_memes: total,
+      search_memes: args => {
+        const offset = args[3] as number
+        if (offset === 0) return seedMode === 'fail' ? null : makeRange(1, 200)
+        return makeRange(offset + 1, 200)
+      },
+    })
+    await expect(model.search()).resolves.toBe(true)
+    expect(model.state.hi).toBe(200)
+    expect(model.state.loadError).toBe(false)
+    // 同查询再刷新：种子失败但旧窗口保留 → 错误入口 + seed 描述
+    seedMode = 'fail'
+    await expect(model.search()).resolves.toBe(false)
+    expect(model.state.loadError).toBe(true)
+    expect(model.state.hi).toBe(200)
+    expect(model.state.total).toBe(530)
+    expect(offsetCalls(calls, 0)).toBe(2)
+    // 缓存命中的分页请求只清分页类状态（lastFailed/退避），不清未解决的 seed 失败
+    await expect(model.ensureRange(0, 200)).resolves.toBe(true)
+    expect(model.state.loadError).toBe(true)
+    expect(offsetCalls(calls, 0)).toBe(2)
+    // 分页提交成功同样只清分页类失败
+    await expect(model.ensureRange(200, 400)).resolves.toBe(true)
+    expect(model.state.hi).toBe(400)
+    expect(model.state.loadError).toBe(true)
+    // 描述仍可重放：修复种子后手动重试成功并清错误
+    seedMode = 'ok'
+    await expect(model.retryRange()).resolves.toBe(true)
+    expect(offsetCalls(calls, 0)).toBe(3)
+    expect(model.state.loadError).toBe(false)
+    expect(model.state.total).toBe(530)
+    expect(model.state.hi).toBe(200)
+  })
+
+  it('invalidationDiscardsInFlightSeedAndCountFailures', async () => {
+    // A. 种子在途时失效（拖拽保存前）：失败结果不登记、不续排
+    const seedHold = deferred<Meme[] | null>()
+    const seedRun = await loadModel({
+      count_memes: () => 530,
+      search_memes: args => ((args[3] as number) === 0 ? seedHold.promise : makeRange(201, 200)),
+    })
+    const searchPromise = seedRun.model.search()
+    await flush()
+    expect(offsetCalls(seedRun.calls, 0)).toBe(1)
+    seedRun.model.invalidateRangeRequests()
+    seedHold.resolve(null)
+    await flush()
+    await expect(searchPromise).resolves.toBe(true)
+    expect(seedRun.model.state.loadError).toBe(false)
+    expect(seedRun.model.state.loading).toBe(false)
+    expect(seedRun.model.state.total).toBe(0)
+    await vi.advanceTimersByTimeAsync(10000)
+    await flush()
+    expect(offsetCalls(seedRun.calls, 0)).toBe(1)
+    expect(seedRun.model.state.loadError).toBe(false)
+    await expect(seedRun.model.retryRange()).resolves.toBe(true)
+    expect(offsetCalls(seedRun.calls, 0)).toBe(1)
+    // B. count 退避刷新在途时失效：失败不重新登记、链不续排、错误态不复活
+    let countMode: 'fail' | 'hold' = 'fail'
+    const countHold = deferred<number | null>()
+    const countRun = await loadModel({
+      get_init_data: () => ({
+        memes: makeRange(1, 200),
+        collections: [],
+        tags: [],
+        show_startup_animation: true,
+        startup_bg_color: '#000000',
+      }),
+      count_memes: () => (countMode === 'fail' ? null : countMode === 'hold' ? countHold.promise : 200),
+    })
+    await expect(countRun.model.loadInitData()).resolves.toBe(true)
+    expect(countRun.model.state.loadError).toBe(false)
+    countMode = 'hold'
+    await vi.advanceTimersByTimeAsync(1000)
+    await flush()
+    expect(countRun.calls.filter(call => call.name === 'count_memes').length).toBe(2)
+    countRun.model.invalidateRangeRequests()
+    countHold.resolve(null)
+    await flush(8)
+    await vi.advanceTimersByTimeAsync(10000)
+    await flush()
+    expect(countRun.calls.filter(call => call.name === 'count_memes').length).toBe(2)
+    expect(countRun.model.state.loadError).toBe(false)
+    expect(countRun.model.state.total).toBe(200)
+    await expect(countRun.model.retryRange()).resolves.toBe(true)
+    expect(countRun.calls.filter(call => call.name === 'count_memes').length).toBe(2)
+  })
 })

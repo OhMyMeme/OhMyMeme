@@ -28,8 +28,8 @@ async function open(id: number): Promise<string[] | null> {
       api('get_tags'),
       api('get_meme_tags', id),
     ])
-    allTags.value = all || []
-    selected.value = cur || []
+    allTags.value = [...(all || [])]
+    selected.value = [...(cur || [])]
   } catch (_) {
     allTags.value = []
     selected.value = []

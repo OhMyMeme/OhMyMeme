@@ -135,7 +135,7 @@ OhMyMeme/
 │   │   │       ├── main/                            Vue 3 + Naive UI 主窗口
 │   │   │       │   ├── app/
 │   │   │       │   │   ├── App.vue                  NConfigProvider/provider 壳
-│   │   │       │   │   ├── MainWindow.vue           主窗口布局、启动动画与生命周期
+│   │   │       │   │   ├── MainWindow.vue           主窗口布局、虚拟网格与重试/回顶接线、启动动画与生命周期
 │   │   │       │   │   ├── main.ts                  Vite 入口
 │   │   │       │   │   └── style.css                主窗口样式（引入 shared/theme.css）
 │   │   │       │   ├── features/                    按功能拆分的 Vue 模块
@@ -241,7 +241,7 @@ OhMyMeme/
 │   │   └── test_lan_v1_protocol.py                   LAN v1 协议 oracle
 │   ├── frontend/                                     Vitest 前端契约（jsdom）
 │   │   ├── grid_interaction.test.ts                  gridInteraction 纯函数（框选/槽位/速度/落点顺序）
-│   │   ├── main_window_virtual.test.ts               MainWindow 虚拟网格拖拽与框选接线桩
+│   │   ├── main_window_virtual.test.ts               MainWindow 虚拟网格拖拽、框选与 footer 重试/回顶/手势禁用/卸载接线桩（mock 手动挂载区间）
 │   │   └── meme_cache.test.ts                        useMemes 连续缓存模型（分页/裁剪/代次/pin）
 │   ├── fixtures/
 │   │   ├── grid_slot_probe.cjs                       全局槽位同源探针（读 gridInteraction.ts）
@@ -282,7 +282,7 @@ OhMyMeme/
 ├── mise.lock                                       工具链锁定信息
 ├── package.json                                    前端依赖和 npm scripts
 ├── package-lock.json                               npm 依赖锁定信息
-├── tsconfig.json                                   前端严格类型配置（设置窗口与既有主窗口迁移范围）
+├── tsconfig.json                                   前端严格类型根范围（主窗口 app/features/shared、设置窗口与 TS 测试）
 ├── vite.config.ts                                  主窗口 Vite 配置（IIFE → ohmymeme.js）
 ├── vite.settings.config.ts                         设置窗口 Vite 配置（IIFE → settings-vue.js）
 ├── pyproject.toml                                  Ruff 配置

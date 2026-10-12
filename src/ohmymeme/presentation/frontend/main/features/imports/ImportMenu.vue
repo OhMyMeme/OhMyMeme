@@ -2,6 +2,7 @@
 import { ref } from 'vue'
 import { NModal, NButton, NCheckbox, useMessage } from 'naive-ui'
 import { api } from '../../shared/bridge'
+import type { ImportResult } from '../../shared/generated/bridge'
 
 const emit = defineEmits<{
   imported: []
@@ -36,10 +37,10 @@ async function importLocal() {
   if (pending.value) return
   pending.value = true
   try {
-    const result = await api('import_memes')
+    const result = await api('import_memes') as unknown as ImportResult | null
     if (result?.ok) {
       emit('imported')
-      showToast(appendRejected(result.imported > 0 ? '导入完成' : '未导入文件', result.rejected))
+      showToast(appendRejected((result.imported ?? 0) > 0 ? '导入完成' : '未导入文件', result.rejected ?? undefined))
     } else if (!result?.cancelled) {
       showToast('导入失败')
     }
@@ -54,14 +55,14 @@ async function importFolder() {
   const makeGroupValue = makeGroup.value
   pending.value = true
   try {
-    const r = await api('import_folder', makeGroupValue)
+    const r = await api('import_folder', makeGroupValue) as unknown as (ImportResult & { collection_name?: string | null }) | null
     if (!r) return
     if (!r.ok) {
       if (r.cancelled) return
       showToast(r.error || '导入失败')
       return
     }
-    let msg = appendRejected(r.imported > 0 ? '导入完成，共 ' + r.imported + ' 个表情' : '未导入文件', r.rejected)
+    let msg = appendRejected((r.imported ?? 0) > 0 ? '导入完成，共 ' + r.imported + ' 个表情' : '未导入文件', r.rejected ?? undefined)
     if (r.collection_name) msg += '，已加入分组「' + r.collection_name + '」'
     emit('imported')
     showToast(msg)
@@ -75,14 +76,14 @@ async function importClipboard() {
   if (pending.value) return
   pending.value = true
   try {
-    const result = await api('import_from_clipboard')
+    const result = await api('import_from_clipboard') as unknown as (ImportResult & { id?: number }) | null
     if (!result) { showToast('导入失败'); return }
     if (!result.ok) { showToast(result.error || '导入失败'); return }
-    if (result.id > 0) {
+    if ((result.id ?? 0) > 0) {
       emit('imported')
-      showToast(appendRejected('导入完成', result.rejected))
+      showToast(appendRejected('导入完成', result.rejected ?? undefined))
     } else {
-      showToast(appendRejected('未导入文件', result.rejected))
+      showToast(appendRejected('未导入文件', result.rejected ?? undefined))
     }
   } finally {
     pending.value = false

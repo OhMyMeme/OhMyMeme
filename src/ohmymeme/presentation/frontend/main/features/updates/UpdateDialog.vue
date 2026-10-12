@@ -47,19 +47,21 @@ async function startDownload() {
   if (!ok) { phase.value = 'error'; errorMsg.value = '启动下载失败'; return }
 
   pollTimer = setInterval(async () => {
-    const s = await api('get_download_progress')
+    const s = await api('get_download_progress') as unknown as { progress?: number; status?: string; error?: string } | null
     if (!s) return
     progress.value = s.progress || 0
     if (s.status === 'downloading') {
       phase.value = 'downloading'
     } else if (s.status === 'done') {
-      clearInterval(pollTimer); pollTimer = null
+      if (pollTimer !== null) clearInterval(pollTimer)
+      pollTimer = null
       phase.value = 'done'
       const r = await api('run_downloaded_installer')
       visible.value = false
       showToast(r ? '安装程序已启动，安装完成后将自动更新' : '启动安装程序失败')
     } else if (s.status === 'error') {
-      clearInterval(pollTimer); pollTimer = null
+      if (pollTimer !== null) clearInterval(pollTimer)
+      pollTimer = null
       phase.value = 'error'
       errorMsg.value = s.error || '未知错误'
     }

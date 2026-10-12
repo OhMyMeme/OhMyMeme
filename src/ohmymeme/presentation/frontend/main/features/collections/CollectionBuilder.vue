@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { computed, h, ref } from 'vue'
 import { NAutoComplete, NButton, NInput, NModal, NSpin } from 'naive-ui'
+import type { AutoCompleteOption, AutoCompleteProps } from 'naive-ui'
 import { Check } from '@lucide/vue'
 import { useCollectionBuilder } from './useCollectionBuilder'
 import type { CollectionOption } from './useCollectionBuilder'
@@ -12,7 +13,7 @@ const CREATE_VALUE_PREFIX = '\u0000create:'
 // 名称输入是否聚焦：聚焦且存在候选时展开候选列表
 const nameFocused = ref(false)
 
-interface NameOption {
+interface NameOption extends AutoCompleteOption {
   label: string
   value: string
   create?: boolean
@@ -34,7 +35,9 @@ function showNameOptions() {
 }
 
 // 候选渲染：创建项加「创建新分组」提示，已有分组仅显示名称
-function renderNameLabel(option: NameOption) {
+function renderNameLabel(raw: Parameters<NonNullable<AutoCompleteProps['renderLabel']>>[0]) {
+  // 本组件的候选均由 nameOptions 生成，按 NameOption 渲染
+  const option = raw as unknown as NameOption
   if (!option.create) return option.label
   return h('span', { style: 'display:flex;align-items:center;justify-content:space-between;width:100%' }, [
     h('span', { style: 'color:var(--blue-9)' }, '「' + option.label + '」'),

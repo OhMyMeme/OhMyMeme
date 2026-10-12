@@ -7,8 +7,9 @@ import type {
 
 export { esc, renderMarkdown } from '../../shared/markdown'
 
+// 已知方法 → 返回类型映射：只列有静态契约的方法，动态回退由 `api(method: string, ...)`
+// 重载承担，因此不设字符串索引签名（其值域无法同时容纳 readonly 数组与 JsonValue）。
 export type MainBridgeResults = {
-  readonly [method: string]: JsonValue
   readonly search_memes: readonly Meme[]
   readonly count_memes: number
   readonly get_tags: readonly string[]
@@ -61,6 +62,8 @@ function decodeMainResult(method: string, value: JsonValue | undefined): JsonVal
   return value
 }
 
+// 已知方法取映射中的精确类型；未列出的方法（含 string 变量）落到第二条重载，
+// 其返回注解与 decodeMainResult 的 `JsonValue | null` 保持一致
 export async function api<M extends keyof MainBridgeResults>(
   method: M,
   ...args: JsonValue[]

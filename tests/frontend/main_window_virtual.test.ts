@@ -13,7 +13,13 @@ import type { Meme } from '../../src/ohmymeme/presentation/frontend/main/shared/
 // 覆盖边界：mock 的挂载行区间由每个用例显式给定（不随滚动动态挂载；真实 virtua 的
 // 行卸载/重挂与 overscan 行为不在此桩覆盖），滚动通过设置 scrollTop 与选择匹配的区间模拟。
 
-const mockVirtua = vi.hoisted(() => ({ range: [0, 0] as [number, number] }))
+const mockVirtua = vi.hoisted(() => ({
+  range: [0, 0] as [number, number],
+  // 桩开关：false 时不 expose 滚动方法（模拟暂时重挂/暂未就绪的 handle）
+  hasHandle: true,
+  scrollToCalls: [] as number[],
+  scrollToIndexCalls: [] as number[],
+}))
 const scrollState = vi.hoisted(() => ({ value: 0 }))
 const rafQueue = vi.hoisted(() => ({
   callbacks: new Map<number, FrameRequestCallback>(),
@@ -55,7 +61,9 @@ vi.mock('virtua/vue', async () => {
         }
         onMounted(() => { scrollElement()?.addEventListener('scroll', forwardScroll) })
         onBeforeUnmount(() => { scrollElement()?.removeEventListener('scroll', forwardScroll) })
-        expose({
+        // 与真实 handle 同形的读数方法始终提供；滚动方法由 hasHandle 控制，
+        // scrollTo(number) 写 scrollRef 元素并发送 scroll（不做真实的行卸载/测量伪装）
+        const exposed: Record<string, unknown> = {
           cache: null,
           scrollOffset: 0,
           scrollSize: 0,
@@ -73,10 +81,20 @@ vi.mock('virtua/vue', async () => {
           getItemSize() {
             return Number(props.itemSize) || 0
           },
-          scrollToIndex() {},
-          scrollTo() {},
-          scrollBy() {},
-        })
+        }
+        if (mockVirtua.hasHandle) {
+          exposed['scrollTo'] = (offset: number) => {
+            mockVirtua.scrollToCalls.push(offset)
+            const element = scrollElement()
+            if (element) {
+              element.scrollTop = offset
+              element.dispatchEvent(new Event('scroll'))
+            }
+          }
+          exposed['scrollToIndex'] = (index: number) => { mockVirtua.scrollToIndexCalls.push(index) }
+          exposed['scrollBy'] = () => {}
+        }
+        expose(exposed)
         return () => {
           const data = props.data as unknown[]
           const [from, to] = mockVirtua.range
@@ -205,11 +223,11 @@ function installGeometry(): Geometry {
   const rowRect = (index: number) => fakeRect(0, GEOM_TOP + index * rowPitch - scrollState.value, GEOM_WRAP_WIDTH, rowPitch)
   const cardRect = (index: number, col: number) => fakeRect(col * colPitch, GEOM_TOP + index * rowPitch - scrollState.value, cardWidth, cardHeight)
   for (const row of Array.from(grid.querySelectorAll<HTMLElement>('.virtual-meme-row'))) {
-    row.getBoundingClientRect = () => rowRect(Math.max(0, Math.floor(Number(row.dataset.rowStart) / cols)))
+    row.getBoundingClientRect = () => rowRect(Math.max(0, Math.floor(Number(row.dataset['rowStart']) / cols)))
     for (const card of Array.from(row.querySelectorAll<HTMLElement>('.meme-card'))) {
       card.getBoundingClientRect = () => {
-        const slot = Number(card.dataset.slotIndex)
-        if (!Number.isInteger(slot)) return cardRect(Math.floor(Number(row.dataset.rowStart) / cols), 0)
+        const slot = Number(card.dataset['slotIndex'])
+        if (!Number.isInteger(slot)) return cardRect(Math.floor(Number(row.dataset['rowStart']) / cols), 0)
         return cardRect(Math.floor(slot / cols), slot % cols)
       }
     }
@@ -321,6 +339,9 @@ describe('MainWindow 虚拟网格拖拽接线', () => {
     vi.useFakeTimers()
     document.body.innerHTML = ''
     mockVirtua.range = [0, 0]
+    mockVirtua.hasHandle = true
+    mockVirtua.scrollToCalls.length = 0
+    mockVirtua.scrollToIndexCalls.length = 0
     scrollState.value = 0
     rafQueue.callbacks.clear()
     rafQueue.nextId = 1
@@ -362,7 +383,7 @@ describe('MainWindow 虚拟网格拖拽接线', () => {
         if (this.id === 'meme-grid') return fakeRect(0, GEOM_TOP - scrollState.value, GEOM_WRAP_WIDTH, 100000)
         // 重渲染后新建的卡：按 data-slot-index 与固定几何回放矩形（与 installGeometry 同一数学）
         if (this.classList && this.classList.contains('meme-card')) {
-          const slot = Number(this.dataset.slotIndex)
+          const slot = Number(this.dataset['slotIndex'])
           const grid = document.getElementById('meme-grid')
           const cols = Math.max(1, Number(grid?.style.getPropertyValue('--meme-cols')) || 4)
           if (Number.isInteger(slot)) {
@@ -428,7 +449,7 @@ describe('MainWindow 虚拟网格拖拽接线', () => {
     await enableSortMode(wrapper)
     const geometry = installGeometry()
     const dragged = cardOf(5)
-    expect(dragged.dataset.slotIndex).toBe('4')
+    expect(dragged.dataset['slotIndex']).toBe('4')
     dragged.dispatchEvent(pointerEvent('pointerdown', { clientX: 56, clientY: geometry.rowTop(1) + 30, buttons: 1 }))
     // 目标 = 行 2 列 3 = 全局槽位 11（非局部偏移）
     document.dispatchEvent(pointerEvent('pointermove', {
@@ -443,7 +464,7 @@ describe('MainWindow 虚拟网格拖拽接线', () => {
     expect(state.slots[11]?.id).toBe(5)
     expect(state.slots[12]?.id).toBe(13)
     // 源卡原位占位；预览 ghost 是独立固定层且不带 id/按钮/tabindex
-    expect(document.querySelector<HTMLElement>('#meme-grid .meme-card.drag-placeholder')?.dataset.memeId).toBe('5')
+    expect(document.querySelector<HTMLElement>('#meme-grid .meme-card.drag-placeholder')?.dataset['memeId']).toBe('5')
     expect(document.querySelectorAll('#meme-grid .meme-card.dragging').length).toBe(0)
     const ghost = document.querySelector<HTMLElement>('.drag-ghost')
     expect(ghost?.getAttribute('aria-hidden')).toBe('true')
@@ -702,7 +723,7 @@ describe('MainWindow 虚拟网格拖拽接线', () => {
   async function startTailDrag(harness: TailHarness) {
     const { geometry } = harness
     const card = slotCard(1001)
-    expect(card?.dataset.memeId).toBe('1002')
+    expect(card?.dataset['memeId']).toBe('1002')
     card.dispatchEvent(pointerEvent('pointerdown', { clientX: geometry.colLeft(1) + 20, clientY: geometry.rowTop(250) + 30, buttons: 1 }))
     document.dispatchEvent(pointerEvent('pointermove', { clientX: 56, clientY: 10, buttons: 1 }))
     await flush()
@@ -1216,5 +1237,566 @@ describe('MainWindow 虚拟网格拖拽接线', () => {
     expect(wrap.scrollTop).toBe(scrollAfterUnmount)
     expect(calls.length).toBe(callsAfterUnmount)
     expect(rafQueue.callbacks.size).toBe(0)
+  })
+
+  // ── S4 体验收尾：footer 重试 / 回到顶部 ──
+
+  // 分页失败/挂起夹具：offset 200/400 由 mode 控制（fail → null；hold → 手动 resolve；ok → 正常返回）
+  function failingPageHandlers(
+    total: number,
+    pages: ReturnType<typeof holdPage>,
+    mode: () => 'fail' | 'hold' | 'ok',
+  ): Record<string, BridgeHandler> {
+    return {
+      ...baseHandlers(() => makeRange(1, 200)),
+      count_memes: () => total,
+      search_memes: (args) => {
+        const offset = args[3] as number
+        const limit = args[4] as number
+        if (offset === 0) return makeRange(1, 200)
+        if (offset === 200 || offset === 400) {
+          const now = mode()
+          if (now === 'fail') return null
+          if (now === 'hold') return pages.handler(args)
+          return makeRange(offset + 1, 200)
+        }
+        return makeRange(offset + 1, Math.max(0, Math.min(limit, total - offset)))
+      },
+    }
+  }
+
+  it('footerRetriesFailedRange', async () => {
+    const total = 530
+    const pages = holdPage()
+    let mode: 'fail' | 'hold' | 'ok' = 'fail'
+    const { wrapper, state, model, calls } = await setupMainWindow(failingPageHandlers(total, pages, () => mode), [0, 9])
+    wrappers.push(wrapper)
+    installGeometry()
+    expect(state.hi).toBe(200)
+    await expect(model.ensureRange(200, 400)).resolves.toBe(false)
+    expect(state.loadError).toBe(true)
+    expect(offsetCalls(calls, 200)).toBe(1)
+    const wrap = document.getElementById('grid-wrap') as HTMLElement
+    scrollState.value = 120
+    const queryGen = state.queryGen
+    const countCalls = calls.filter(call => call.method === 'count_memes').length
+    // 非空选择在重试期间保持（重放不做 search、不漂白选择）
+    state.selectedIds = new Set([1, 2])
+    // 失败入口可见且带可访问名称与精确文案
+    const retry = wrapper.find('.grid-retry')
+    expect(retry.exists()).toBe(true)
+    expect(retry.text()).toContain('加载失败，点击重试')
+    expect(retry.attributes('aria-label')).toBe('重新加载表情包')
+    expect(retry.attributes('disabled')).toBeUndefined()
+    // 点击：仅重放该 offset；挂起期间单飞并显示加载中
+    mode = 'hold'
+    await retry.trigger('click')
+    await flush()
+    expect(offsetCalls(calls, 200)).toBe(2)
+    expect(wrapper.find('.grid-foot').text()).toContain('加载中')
+    expect(wrapper.find('.grid-retry').exists()).toBe(false)
+    expect(state.selectedIds.size).toBe(2)
+    // 在途不重复请求；旧退避计时器已被提前清除
+    await vi.advanceTimersByTimeAsync(3000)
+    await flush()
+    expect(offsetCalls(calls, 200)).toBe(2)
+    // 成功：恢复总数、不新增 count、不换代、不重排滚动、不动选择
+    pages.resolve(200, makeRange(201, 200))
+    await flush(8)
+    expect(state.hi).toBe(400)
+    expect(state.loadError).toBe(false)
+    expect(state.queryGen).toBe(queryGen)
+    expect(calls.filter(call => call.method === 'count_memes').length).toBe(countCalls)
+    expect(wrapper.find('.grid-foot').text()).toContain('共 530 项')
+    expect(wrapper.find('.grid-retry').exists()).toBe(false)
+    expect(wrap.scrollTop).toBe(120)
+    expect(state.selectedIds.size).toBe(2)
+    expect(state.selectedIds.has(1)).toBe(true)
+    expect(state.selectedIds.has(2)).toBe(true)
+  })
+
+  it('footerKeepsFailureAfterRetryFails', async () => {
+    const total = 530
+    const pages = holdPage()
+    let mode: 'fail' | 'hold' | 'ok' = 'fail'
+    const { wrapper, state, model, calls } = await setupMainWindow(failingPageHandlers(total, pages, () => mode), [0, 9])
+    wrappers.push(wrapper)
+    await expect(model.ensureRange(200, 400)).resolves.toBe(false)
+    expect(state.loadError).toBe(true)
+    expect(offsetCalls(calls, 200)).toBe(1)
+    // 提前点击：先清掉 1s 退避计时器，再重放一次
+    mode = 'hold'
+    await wrapper.find('.grid-retry').trigger('click')
+    await flush()
+    expect(offsetCalls(calls, 200)).toBe(2)
+    await vi.advanceTimersByTimeAsync(999)
+    await flush()
+    expect(offsetCalls(calls, 200)).toBe(2)
+    // 再次失败：错误入口保留、已有缓存保留
+    mode = 'fail'
+    pages.resolve(200, null)
+    await flush(8)
+    expect(state.loadError).toBe(true)
+    expect(state.hi).toBe(200)
+    expect(state.slots[0]?.id).toBe(1)
+    expect(wrapper.find('.grid-retry').exists()).toBe(true)
+    // 自动退避仍按原预算收敛（1s/2s/3s 各一次后停止，不无限 pump）
+    await vi.advanceTimersByTimeAsync(1000)
+    await flush()
+    expect(offsetCalls(calls, 200)).toBe(3)
+    await vi.advanceTimersByTimeAsync(2000)
+    await flush()
+    expect(offsetCalls(calls, 200)).toBe(4)
+    await vi.advanceTimersByTimeAsync(3000)
+    await flush()
+    expect(offsetCalls(calls, 200)).toBe(5)
+    await vi.advanceTimersByTimeAsync(10000)
+    await flush()
+    expect(offsetCalls(calls, 200)).toBe(5)
+    expect(wrapper.find('.grid-retry').exists()).toBe(true)
+  })
+
+  it('gridActionsAreBlockedDuringGesturesAndSaving', async () => {
+    const total = 530
+    const pages = holdPage()
+    let mode: 'fail' | 'hold' | 'ok' = 'fail'
+    const persist = deferred<boolean>()
+    const reorderCalls: number[][] = []
+    const handlers: Record<string, BridgeHandler> = {
+      ...failingPageHandlers(total, pages, () => mode),
+      reorder_memes: (args) => {
+        reorderCalls.push((args[0] as number[]).slice())
+        return persist.promise
+      },
+    }
+    const { wrapper, state, model, calls } = await setupMainWindow(handlers, [0, 9])
+    wrappers.push(wrapper)
+    await enableSortMode(wrapper)
+    const geometry = installGeometry()
+    const wrap = document.getElementById('grid-wrap') as HTMLElement
+    await expect(model.ensureRange(200, 400)).resolves.toBe(false)
+    expect(state.loadError).toBe(true)
+    // 滚动超过两屏 → 回顶按钮可见（后续手势阶段不推进计时器，避免触发原退避）
+    scrollState.value = 1300
+    wrap.dispatchEvent(new Event('scroll'))
+    await nextTick()
+    expect(wrapper.find('#back-to-top').exists()).toBe(true)
+    const pageCalls = () => calls.filter(call => call.method === 'search_memes').length
+    // 手势期间：重试/回顶都显示禁用态，且 handler 守卫让点击无任何副作用
+    const clickBothBlocked = async (expectedScroll: number) => {
+      const pageCallsBefore = pageCalls()
+      const retry = wrapper.find('.grid-retry')
+      expect(retry.exists()).toBe(true)
+      expect((retry.element as HTMLButtonElement).disabled).toBe(true)
+      await retry.trigger('click')
+      const top = wrapper.find('#back-to-top')
+      expect(top.exists()).toBe(true)
+      expect((top.element as HTMLButtonElement).disabled).toBe(true)
+      await top.trigger('click')
+      await nextTick()
+      expect(pageCalls()).toBe(pageCallsBefore)
+      expect(offsetCalls(calls, 200)).toBe(1)
+      expect(wrap.scrollTop).toBe(expectedScroll)
+    }
+    const slotsAt = (from: number) => state.slots.slice(from, from + 4).map((record: Meme | undefined) => record?.id)
+    // A. 框选 armed→selecting：不取消会话、不改选择
+    const selectedBefore = sorted(state.selectedIds)
+    wrap.dispatchEvent(pointerEvent('pointerdown', { clientX: 360, clientY: 155, buttons: 1 }))
+    document.dispatchEvent(pointerEvent('pointermove', { clientX: 430, clientY: 250, buttons: 1 }))
+    await nextTick()
+    expect(document.querySelector('.marquee-overlay')).not.toBeNull()
+    await clickBothBlocked(1300)
+    expect(document.querySelector('.marquee-overlay')).not.toBeNull()
+    expect(sorted(state.selectedIds)).toEqual(selectedBefore)
+    document.dispatchEvent(pointerEvent('pointerup', { clientX: 430, clientY: 250, buttons: 0 }))
+    await nextTick()
+    expect(document.querySelector('.marquee-overlay')).toBeNull()
+    // B. 排序 armed（未过门槛）：不取消会话、不改数组
+    cardOf(33).dispatchEvent(pointerEvent('pointerdown', { clientX: 56, clientY: geometry.rowTop(8) + 30, buttons: 1 }))
+    await nextTick()
+    const armedSlots = slotsAt(32)
+    await clickBothBlocked(1300)
+    expect(slotsAt(32)).toEqual(armedSlots)
+    document.dispatchEvent(pointerEvent('pointercancel', { buttons: 0 }))
+    await nextTick()
+    // C. 排序 active（已过门槛、预览已生成）：不取消手势、不改预览
+    cardOf(33).dispatchEvent(pointerEvent('pointerdown', { clientX: 56, clientY: geometry.rowTop(8) + 30, buttons: 1 }))
+    document.dispatchEvent(pointerEvent('pointermove', { clientX: geometry.colLeft(3) + 20, clientY: geometry.rowTop(8) + 30, buttons: 1 }))
+    await nextTick()
+    expect(document.querySelector('.drag-ghost')).not.toBeNull()
+    const previewSlots = slotsAt(32)
+    await clickBothBlocked(1300)
+    expect(document.querySelector('.drag-ghost')).not.toBeNull()
+    expect(slotsAt(32)).toEqual(previewSlots)
+    document.dispatchEvent(pointerEvent('pointercancel', { buttons: 0 }))
+    await nextTick()
+    expect(document.querySelector('.drag-ghost')).toBeNull()
+    // D. saving（RPC 挂起）：不取消保存、不重复提交
+    cardOf(33).dispatchEvent(pointerEvent('pointerdown', { clientX: 56, clientY: geometry.rowTop(8) + 30, buttons: 1 }))
+    document.dispatchEvent(pointerEvent('pointermove', { clientX: geometry.colLeft(3) + 20, clientY: geometry.rowTop(8) + 30, buttons: 1 }))
+    await nextTick()
+    document.dispatchEvent(pointerEvent('pointerup', { clientX: geometry.colLeft(3) + 20, clientY: geometry.rowTop(8) + 30, buttons: 0 }))
+    await nextTick()
+    expect(reorderCalls.length).toBe(1)
+    expect((reorderCalls[0] ?? [])[35]).toBe(33)
+    await clickBothBlocked(1300)
+    persist.resolve(true)
+    await flush(8)
+    expect(reorderCalls.length).toBe(1)
+    expect(state.slots[35]?.id).toBe(33)
+  })
+
+  it('backToTopUsesTwoViewportThreshold', async () => {
+    const items = () => makeRange(1, 200)
+    const { wrapper, state } = await setupMainWindow(baseHandlers(items), [0, 9])
+    wrappers.push(wrapper)
+    installGeometry()
+    const wrap = document.getElementById('grid-wrap') as HTMLElement
+    const scrollTo = async (value: number) => {
+      scrollState.value = value
+      wrap.dispatchEvent(new Event('scroll'))
+      await nextTick()
+    }
+    await scrollTo(1199)
+    expect(wrapper.find('#back-to-top').exists()).toBe(false)
+    await scrollTo(1200)
+    expect(wrapper.find('#back-to-top').exists()).toBe(false)
+    await scrollTo(1201)
+    expect(wrapper.find('#back-to-top').exists()).toBe(true)
+    await scrollTo(1200)
+    expect(wrapper.find('#back-to-top').exists()).toBe(false)
+    // 视口高度变化后按新阈值重算（resize 触发）
+    await scrollTo(700)
+    expect(wrapper.find('#back-to-top').exists()).toBe(false)
+    Object.defineProperty(wrap, 'clientHeight', { configurable: true, get: () => 300 })
+    wrapper.findComponent({ name: 'Virtualizer' }).vm.$emit('resize')
+    await nextTick()
+    expect(wrapper.find('#back-to-top').exists()).toBe(true)
+    // 0 视口不显示
+    Object.defineProperty(wrap, 'clientHeight', { configurable: true, get: () => 0 })
+    wrapper.findComponent({ name: 'Virtualizer' }).vm.$emit('resize')
+    await nextTick()
+    expect(wrapper.find('#back-to-top').exists()).toBe(false)
+    // 空库不显示
+    state.total = 0
+    await nextTick()
+    expect(wrapper.find('#back-to-top').exists()).toBe(false)
+    // 虚拟化不可用不显示（ResizeObserver 缺失 → 不挂库）
+    vi.stubGlobal('ResizeObserver', undefined)
+    const noVirtual = await setupMainWindow(baseHandlers(items), [0, 9])
+    wrappers.push(noVirtual.wrapper)
+    scrollState.value = 5000
+    document.getElementById('grid-wrap')?.dispatchEvent(new Event('scroll'))
+    await nextTick()
+    expect(noVirtual.wrapper.find('#back-to-top').exists()).toBe(false)
+    expect(noVirtual.wrapper.find('.grid-foot').text()).toContain('当前环境不支持虚拟滚动')
+  })
+
+  it('backToTopIncludesFolderHeader', async () => {
+    const items = () => makeRange(1, 200)
+    const { wrapper, state, calls } = await setupMainWindow(baseHandlers(items), [0, 9])
+    wrappers.push(wrapper)
+    installGeometry()
+    const wrap = document.getElementById('grid-wrap') as HTMLElement
+    // 当前分组为正 ID：网格顶部渲染 folder 头块，startMargin 含头块
+    state.collections = [{ id: 1, name: '大分组', count: 2, children: [{ id: 2, name: '小分组', count: 1 }] }]
+    state.activeCollection = 1
+    await nextTick()
+    await flush()
+    expect(document.querySelector('.folder-grid')).not.toBeNull()
+    await enableSortMode(wrapper)
+    scrollState.value = 1300
+    wrap.dispatchEvent(new Event('scroll'))
+    await flush()
+    const button = wrapper.find('#back-to-top')
+    expect(button.exists()).toBe(true)
+    expect(button.element.tagName).toBe('BUTTON')
+    expect(button.attributes('title')).toBe('回到顶部')
+    expect(button.attributes('aria-label')).toBe('回到顶部')
+    expect(button.classes()).toContain('with-organize-bar')
+    expect((button.element as HTMLButtonElement).disabled).toBe(false)
+    state.selectedIds = new Set([1, 2])
+    const pageCalls = calls.filter(call => call.method === 'search_memes').length
+    await button.trigger('click')
+    await flush()
+    for (let i = 0; i < 3; i++) await stepAnimationFrame(16)
+    // scrollTo(0) 而不是 scrollToIndex(0)：命中容器最顶部（含 folder 头块）
+    expect(mockVirtua.scrollToCalls).toEqual([0])
+    expect(mockVirtua.scrollToIndexCalls).toEqual([])
+    expect(wrap.scrollTop).toBe(0)
+    expect(state.selectedIds.size).toBe(2)
+    expect(state.hi).toBe(200)
+    expect(calls.filter(call => call.method === 'search_memes').length).toBe(pageCalls)
+  })
+
+  it('backToTopFallsBackWithoutHandle', async () => {
+    const items = () => makeRange(1, 200)
+    mockVirtua.hasHandle = false
+    const { wrapper, state, calls } = await setupMainWindow(baseHandlers(items), [0, 9])
+    wrappers.push(wrapper)
+    installGeometry()
+    const wrap = document.getElementById('grid-wrap') as HTMLElement
+    scrollState.value = 1300
+    wrap.dispatchEvent(new Event('scroll'))
+    await flush()
+    expect(wrapper.find('#back-to-top').exists()).toBe(true)
+    const pageCalls = calls.filter(call => call.method === 'search_memes').length
+    // 滚动方法缺失/调用异常：只归零仍连接的 wrap，不发 search
+    await wrapper.find('#back-to-top').trigger('click')
+    await flush()
+    expect(mockVirtua.scrollToCalls).toEqual([])
+    expect(mockVirtua.scrollToIndexCalls).toEqual([])
+    expect(wrap.scrollTop).toBe(0)
+    expect(wrapper.find('#back-to-top').exists()).toBe(false)
+    expect(calls.filter(call => call.method === 'search_memes').length).toBe(pageCalls)
+    // 刷新复位滚动：按钮不残留
+    scrollState.value = 1300
+    wrap.dispatchEvent(new Event('scroll'))
+    await flush()
+    expect(wrapper.find('#back-to-top').exists()).toBe(true)
+    ;(globalThis as unknown as { refreshMemes: () => void }).refreshMemes()
+    await flush(8)
+    expect(wrap.scrollTop).toBe(0)
+    expect(wrapper.find('#back-to-top').exists()).toBe(false)
+    expect(state.loadError).toBe(false)
+  })
+
+  it('gridActionsIgnoreLateSettlementAfterUnmountOrQuery', async () => {
+    const total = 530
+    let mode: 'fail' | 'hold' | 'ok' = 'fail'
+    // 逐请求持有的队列：旧请求与新请求各自独立 resolve，模拟迟到结算
+    const held: Array<Deferred<Meme[] | null>> = []
+    const handlers: Record<string, BridgeHandler> = {
+      ...baseHandlers(() => makeRange(1, 200)),
+      count_memes: () => total,
+      search_memes: (args) => {
+        const offset = args[3] as number
+        const limit = args[4] as number
+        if (offset === 0) return makeRange(1, 200)
+        if (offset === 200 || offset === 400) {
+          if (mode === 'fail') return null
+          if (mode === 'hold') {
+            const wait = deferred<Meme[] | null>()
+            held.push(wait)
+            return wait.promise
+          }
+          return makeRange(offset + 1, 200)
+        }
+        return makeRange(offset + 1, Math.max(0, Math.min(limit, total - offset)))
+      },
+    }
+    const { wrapper, state, model, calls } = await setupMainWindow(handlers, [0, 9])
+    wrappers.push(wrapper)
+    await expect(model.ensureRange(200, 400)).resolves.toBe(false)
+    mode = 'hold'
+    await wrapper.find('.grid-retry').trigger('click')
+    await flush()
+    expect(offsetCalls(calls, 200)).toBe(2)
+    expect(held.length).toBe(1)
+    // 新查询换代：本地 pending 复位，旧重放结算不得复活错误/按钮/需求
+    ;(globalThis as unknown as { refreshMemes: () => void }).refreshMemes()
+    await flush(8)
+    expect(state.loadError).toBe(false)
+    expect(wrapper.find('.grid-retry').exists()).toBe(false)
+    // 新查询下再次失败并开始新一轮重试（挂起）：旧结算不得改动新重试的 pending/错误态
+    mode = 'fail'
+    await expect(model.ensureRange(200, 400)).resolves.toBe(false)
+    expect(state.loadError).toBe(true)
+    expect(offsetCalls(calls, 200)).toBe(3)
+    mode = 'hold'
+    await wrapper.find('.grid-retry').trigger('click')
+    await flush()
+    expect(offsetCalls(calls, 200)).toBe(4)
+    expect(held.length).toBe(2)
+    expect(wrapper.find('.grid-foot').text()).toContain('加载中')
+    const settledCalls = calls.length
+    held[0]?.resolve(null)
+    await flush(8)
+    await vi.advanceTimersByTimeAsync(10000)
+    await flush()
+    expect(calls.length).toBe(settledCalls)
+    expect(state.loadError).toBe(true)
+    expect(state.hi).toBe(200)
+    expect(wrapper.find('.grid-foot').text()).toContain('加载中')
+    // 新重试 resolve 后正常提交（旧结算未打断它）
+    held[1]?.resolve(makeRange(201, 200))
+    await flush(8)
+    expect(state.hi).toBe(400)
+    expect(state.loadError).toBe(false)
+    expect(state.selectedIds.size).toBe(0)
+    // 卸载时挂起的重试：结算不得新增请求
+    mode = 'fail'
+    await expect(model.ensureRange(400, 600)).resolves.toBe(false)
+    expect(state.loadError).toBe(true)
+    mode = 'hold'
+    await wrapper.find('.grid-retry').trigger('click')
+    await flush()
+    expect(held.length).toBe(3)
+    const beforeUnmount = calls.length
+    wrapper.unmount()
+    held[2]?.resolve(null)
+    await flush(8)
+    await vi.advanceTimersByTimeAsync(10000)
+    await flush()
+    expect(calls.length).toBe(beforeUnmount)
+  })
+
+  it('backToTopSupportsKeyboardFocus', async () => {
+    const items = () => makeRange(1, 200)
+    const { wrapper } = await setupMainWindow(baseHandlers(items), [0, 9])
+    wrappers.push(wrapper)
+    installGeometry()
+    const wrap = document.getElementById('grid-wrap') as HTMLElement
+    const showButtonAt = async (top: number) => {
+      scrollState.value = top
+      wrap.dispatchEvent(new Event('scroll'))
+      await nextTick()
+    }
+    await showButtonAt(1300)
+    const button = wrapper.find('#back-to-top')
+    expect(button.exists()).toBe(true)
+    const el = button.element as HTMLButtonElement
+    expect(el.tagName).toBe('BUTTON')
+    expect(el.getAttribute('aria-label')).toBe('回到顶部')
+    expect(el.disabled).toBe(false)
+    expect(el.tabIndex).toBeGreaterThanOrEqual(0)
+    // 原生 button 不重复绑键：keydown 本身不触发操作（浏览器 Enter 默认行为留人工）
+    el.focus()
+    expect(document.activeElement).toBe(el)
+    el.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true }))
+    await nextTick()
+    expect(mockVirtua.scrollToCalls).toEqual([])
+    // 点击后按钮消失：焦点从按钮交还网格
+    await button.trigger('click')
+    await nextTick()
+    expect(wrapper.find('#back-to-top').exists()).toBe(false)
+    expect((document.activeElement as HTMLElement | null)?.id).toBe('grid-wrap')
+    // 其他控件焦点不被抢
+    await showButtonAt(1300)
+    const input = document.getElementById('search') as HTMLInputElement
+    input.focus()
+    expect(document.activeElement).toBe(input)
+    await wrapper.find('#back-to-top').trigger('click')
+    await nextTick()
+    expect(wrapper.find('#back-to-top').exists()).toBe(false)
+    expect(document.activeElement).toBe(input)
+  })
+
+  it('keepsTheMarqueeArmedWithoutBoxOrSelectionUntilThreshold', async () => {
+    const items = () => makeRange(1, 40)
+    const { wrapper, state } = await setupMainWindow(baseHandlers(items), [0, 9])
+    wrappers.push(wrapper)
+    await enableSortMode(wrapper)
+    installGeometry()
+    const wrap = document.getElementById('grid-wrap') as HTMLElement
+    state.selectedIds = new Set([7])
+    // 起手仅 armed：不画框、不改选择
+    wrap.dispatchEvent(pointerEvent('pointerdown', { clientX: 2, clientY: 96, buttons: 1 }))
+    await nextTick()
+    expect(document.querySelector('.marquee-overlay')).toBeNull()
+    expect(sorted(state.selectedIds)).toEqual([7])
+    // 8px 门槛内移动仍为 armed
+    document.dispatchEvent(pointerEvent('pointermove', { clientX: 6, clientY: 100, buttons: 1 }))
+    await nextTick()
+    expect(document.querySelector('.marquee-overlay')).toBeNull()
+    expect(sorted(state.selectedIds)).toEqual([7])
+    // 抬起：结束会话但未激活，不吞掉随后 click
+    document.dispatchEvent(pointerEvent('pointerup', { clientX: 6, clientY: 100, buttons: 0 }))
+    await flush()
+    expect(document.querySelector('.marquee-overlay')).toBeNull()
+    expect(sorted(state.selectedIds)).toEqual([7])
+    cardOf(1).dispatchEvent(new MouseEvent('click', { bubbles: true }))
+    expect(sorted(state.selectedIds)).toEqual([1, 7])
+  })
+
+  it('footerRetryDoesNotStealFocusMovedDuringRequest', async () => {
+    const total = 530
+    const pages = holdPage()
+    let mode: 'fail' | 'hold' | 'ok' = 'fail'
+    const { wrapper, state, model } = await setupMainWindow(failingPageHandlers(total, pages, () => mode), [0, 9])
+    wrappers.push(wrapper)
+    await expect(model.ensureRange(200, 400)).resolves.toBe(false)
+    expect(state.loadError).toBe(true)
+    const retry = wrapper.find('.grid-retry')
+    const retryEl = retry.element as HTMLButtonElement
+    retryEl.focus()
+    expect(document.activeElement).toBe(retryEl)
+    // 挂起期间用户把焦点移到搜索框：结算不得抢回网格
+    mode = 'hold'
+    await retry.trigger('click')
+    await flush()
+    const input = document.getElementById('search') as HTMLInputElement
+    input.focus()
+    expect(document.activeElement).toBe(input)
+    pages.resolve(200, makeRange(201, 200))
+    await flush(8)
+    expect(state.loadError).toBe(false)
+    expect(wrapper.find('.grid-retry').exists()).toBe(false)
+    expect(document.activeElement).toBe(input)
+    // 焦点未被移走时：成功结算仍把焦点从已消失的按钮交还网格
+    mode = 'fail'
+    await expect(model.ensureRange(400, 600)).resolves.toBe(false)
+    expect(state.loadError).toBe(true)
+    const retry2 = wrapper.find('.grid-retry')
+    const retry2El = retry2.element as HTMLButtonElement
+    retry2El.focus()
+    expect(document.activeElement).toBe(retry2El)
+    mode = 'hold'
+    await retry2.trigger('click')
+    await flush()
+    pages.resolve(400, makeRange(401, 200))
+    await flush(8)
+    expect(wrapper.find('.grid-retry').exists()).toBe(false)
+    expect((document.activeElement as HTMLElement | null)?.id).toBe('grid-wrap')
+  })
+
+  it('initFailureKeepsRetryEntryAndRecoversViaLoadInitData', async () => {
+    const gate = deferred<unknown>()
+    let mode: 'fail' | 'hold' = 'fail'
+    const initPayload = () => ({
+      memes: makeRange(1, 200),
+      tags: ['标签A'],
+      collections: [{ id: 1, name: '分组A', count: 3 }],
+      show_startup_animation: false,
+      startup_bg_color: '#101010',
+    })
+    const handlers: Record<string, BridgeHandler> = {
+      ...baseHandlers(() => makeRange(1, 200)),
+      get_init_data: () => (mode === 'fail' ? null : gate.promise),
+    }
+    const { wrapper, state, calls } = await setupMainWindow(handlers, [0, 9])
+    wrappers.push(wrapper)
+    // 三次初始化尝试全部失败
+    await flush()
+    await vi.advanceTimersByTimeAsync(500)
+    await flush()
+    await vi.advanceTimersByTimeAsync(1000)
+    await flush()
+    await vi.advanceTimersByTimeAsync(1500)
+    await flush()
+    expect(calls.filter(call => call.method === 'get_init_data').length).toBe(3)
+    expect(state.loadError).toBe(true)
+    // 后台流程完成但跳过 search：保留 init 重试入口（否则描述被清、入口消失）
+    await flush(8)
+    expect(calls.filter(call => call.method === 'search_memes').length).toBe(0)
+    expect(calls.filter(call => call.method === 'count_memes').length).toBe(0)
+    const retry = wrapper.find('.grid-retry')
+    expect(retry.exists()).toBe(true)
+    // 点击重试：走 loadInitData（而不是 seed 重放）；空库挂起期间也显示加载中
+    mode = 'hold'
+    await retry.trigger('click')
+    await nextTick()
+    expect(state.loadError).toBe(false)
+    expect(wrapper.find('.grid-foot').text()).toContain('加载中')
+    gate.resolve(initPayload())
+    await flush(8)
+    expect(calls.filter(call => call.method === 'get_init_data').length).toBe(4)
+    expect(state.allTags).toEqual(['标签A'])
+    expect(state.collections.length).toBe(1)
+    expect(state.total).toBe(200)
+    expect(state.hi).toBe(200)
+    expect(state.loadError).toBe(false)
+    expect(wrapper.find('.grid-foot').text()).toContain('共 200 项')
+    expect(wrapper.find('.grid-retry').exists()).toBe(false)
   })
 })

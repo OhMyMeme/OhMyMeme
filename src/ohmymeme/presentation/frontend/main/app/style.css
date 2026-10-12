@@ -347,6 +347,12 @@ body {
   user-select: none;
 }
 
+/* 底部错误重试：文本按钮，与 footer 状态行同字号 */
+.grid-retry {
+  font-size: 11.5px;
+  padding: 0;
+}
+
 .meme-card {
   position: relative;
   border-radius: var(--radius);
@@ -752,6 +758,30 @@ body {
 #organize-bar .hint {
   font-size: 11.5px;
   color: var(--gray-11);
+}
+
+/* 回顶浮动按钮：滚动超过两屏后显示；绝对定位于 #main，不参与虚拟布局 */
+#back-to-top {
+  position: absolute;
+  right: 14px;
+  bottom: 14px;
+  width: 36px;
+  height: 36px;
+  padding: 0;
+  z-index: 20;
+  color: var(--blue-11);
+  background: var(--gray-2);
+  border: 1px solid var(--gray-6);
+  box-shadow: var(--shadow-lg);
+}
+
+/* 整理模式：避开底部居中的整理工具栏 */
+#back-to-top.with-organize-bar {
+  bottom: 80px;
+}
+
+#back-to-top .n-button__icon {
+  margin: 0;
 }
 
 /* Empty State */

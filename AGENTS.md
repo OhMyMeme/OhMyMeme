@@ -25,6 +25,7 @@ JsApi / SettingsApi → SQLite (WAL) + 本地缓存 + 远端同步
 - `mise.toml` 与 `mise.lock` 是共享工具链版本的来源；使用 `mise install python node npm --locked` 安装锁定版本
 - 使用 `mise run <task>` 执行项目工作流；运行 `mise tasks ls` 查看可用任务
 - `mise.local.toml`、`mise.local.lock` 及其他本地 mise 状态不得提交
+- 前端类型门禁采用 `tsconfig.json` 的严格配置：主窗口 `app/`/`features/` 的 TS/Vue、`main/shared` TS、设置窗口与 `tests/frontend` TS 纳入根文件；`main/app/main.ts` 与 `main/shared/bridge.ts` 暂不作为根文件，被 import 的 bridge 仍进入依赖检查；`main_window_virtual` 接线测试不再临时排除，类型检查不等于运行时 Bridge 数据验证
 
 ## 核心原则
 - **不得重构该项目** — 仅做最小必要修改，不改变现有架构、设计模式、代码组织
@@ -108,7 +109,7 @@ tests/
   test_phash.py   # pytest 风格: 感知哈希(pHash)算法单元测试 (需 PIL)
   test_import_concurrency.py # pytest 风格: _do_import 并发去重 (同图1条/异图都可导)
   frontend/meme_cache.test.ts # vitest: useMemes 连续缓存模型纯逻辑（分页/裁剪/远跳/代次/重试/pin）
-  frontend/main_window_virtual.test.ts # vitest: MainWindow 虚拟网格接线桩（全局槽位/自研 marquee/自动滚动与补页/drop/取消代次/saving）
+  frontend/main_window_virtual.test.ts # vitest: MainWindow 虚拟网格接线桩（全局槽位/自研 marquee/自动滚动与补页/drop/取消代次/saving/footer 重试/回顶/手势禁用/卸载；mock 手动挂载区间）
   frontend/grid_interaction.test.ts # vitest: gridInteraction 纯函数（框选矩形/XOR/槽位/速度曲线/落点顺序）
   fixtures/grid_slot_probe.cjs # Node 全局槽位同源探针（读 gridInteraction.ts）
 ```
@@ -313,7 +314,7 @@ tests/
 
 ### 自定义排序
 - `memes.sort_order` 字段存储全局展示顺序；前端可拖拽排序在全部/未分类视图走全局 `sort_order`，正 ID 分组（含子分组）内成员顺序存 `meme_collections.sort_order`（与 `canReorder()` 资格一致：未搜索、未按标签筛选）
-- **分页与虚拟化**：后端 `offset`/`limit` 与初始化 200 条保持不变（`frontend/main/features/memes/useMemes.ts`）；`useMemes` 使用每页 200 项、常规最多 2000 项的连续已加载槽位区间 `[lo,hi)`，`slots` 长度为 `total`，区间外为 `undefined`。相邻滚动按页扩展并向视口反方向裁剪，远跳直接接管目标附近窗口；过期响应按查询/窗口代次丢弃，失败保留成功缓存并有限退避重试。MainWindow 使用 `virtua/vue` 的行级 `Virtualizer`，`#grid-wrap` 为唯一滚动容器并关闭 `overflow-anchor`，`#meme-grid` 外层保留；folder-grid 不虚拟化并纳入 `startMargin`，未加载槽位为同尺寸静态骨架。footer 显示共 N 项及加载/失败状态，并带 `aria-live`；无 `.grid-spacer`/顺序追加分支。尺寸硬约束：表情卡等宽等高，列数由 `ResizeObserver` 按容器宽/最小卡宽 112px/间隙 10px 推导并以未变换布局尺寸校准，行距 = 卡高 + 10px；更改卡片/名字/图片尺寸须同步检查虚拟化与槽位数学。
+- **分页与虚拟化**：后端 `offset`/`limit` 与初始化 200 条保持不变（`frontend/main/features/memes/useMemes.ts`）；`useMemes` 使用每页 200 项、常规最多 2000 项的连续已加载槽位区间 `[lo,hi)`，`slots` 长度为 `total`，区间外为 `undefined`。相邻滚动按页扩展并向视口反方向裁剪，远跳直接接管目标附近窗口；过期响应按查询/窗口代次丢弃，失败保留成功缓存并有限退避重试。MainWindow 使用 `virtua/vue` 的行级 `Virtualizer`，`#grid-wrap` 为唯一滚动容器并关闭 `overflow-anchor`，`#meme-grid` 外层保留；folder-grid 不虚拟化并纳入 `startMargin`，未加载槽位为同尺寸静态骨架。footer 显示共 N 项及加载/失败状态，保留 `aria-live="polite"`；失败按钮经 `retryRange` 在当前查询代次重放分页、首屏、初始化或计数失败，不清选择、不额外 search。`#grid-wrap` 的 `scrollTop` 超过两倍 `clientHeight` 时显示可键盘聚焦的回顶按钮：使用 `VirtualizerHandle.scrollTo(0)` 包含 folder 头块，handle 暂缺或滚动调用异常时仅归零仍挂载的滚动容器；框选/排序 armed/active 与保存期间禁用重试与回顶，按钮避开底部整理工具栏且不参与虚拟布局；无 `.grid-spacer`/顺序追加分支。尺寸硬约束：表情卡等宽等高，列数由 `ResizeObserver` 按容器宽/最小卡宽 112px/间隙 10px 推导并以未变换布局尺寸校准，行距 = 卡高 + 10px；更改卡片/名字/图片尺寸须同步检查虚拟化与槽位数学。
 - **模型驱动**：`slots` 与连续 `loadedSlice` 为唯一数据真源；整理拖拽使用全局槽位数学，只从已挂载真卡发起并落到已挂载真卡。边缘自动滚动按需扩展连续窗口，drop 提交扩展后完整窗口顺序给后端位置保持置换；不得把 DOM 局部索引写入 `slots`
 - **整理缓存预算**：普通缓存预算 2000 项；活动拖拽扩展 pin 临时保护开始窗口与连续移动路径，可能超过预算；结束后恢复视口预算。不得声称自动滚动手势内缓存恒定 2000 项
 - **Pointer Events + 指针捕获**：`pointerdown/pointermove/pointerup`，拖拽/框选激活（位移 >8px）时才 `setPointerCapture`（避免普通点击被捕获重定向）；无 `PointerEvent` 的旧 WebView 由框选回退 mouse 事件（`mousemove`/`mouseup` 挂 document，两套起手不会同时启动），拖拽引擎按窄 `PointerSample` 驱动；`pointercancel`/`blur` 取消并回滚模型 + 重渲染。活动整理拖拽在稳定 `#grid-wrap` 捕获指针，以独立预览保护离屏源卡；rAF 边缘滚动在指针静止时继续运行。相邻加载不取消，查询/布局/`total` 变化、远跳、ESC、blur/`pointercancel` 取消；保存中冻结事件与分页，旧回调不得覆盖新查询

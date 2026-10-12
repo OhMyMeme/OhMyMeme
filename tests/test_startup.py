@@ -863,11 +863,42 @@ def test_virtual_meme_grid_static_contract():
     assert ":cache=" not in virtualizer
     assert "selectionEpoch" not in main_window
 
-    # footer：共 N 项 + 加载/失败状态位 + aria-live
+    # footer：共 N 项 + 加载/失败状态位 + aria-live（S4：失败态为可重试按钮）
     assert 'class="grid-foot" aria-live="polite"' in main_window
     assert "共 {{ state.total }} 项" in main_window
     assert "加载中…" in main_window
     assert "加载失败" in main_window
+    assert 'role="status" aria-atomic="true"' in main_window
+    footer_start = main_window.index('class="grid-foot" aria-live="polite"')
+    footer = main_window[footer_start : main_window.index("</div>", footer_start)]
+    # 加载分支优先，错误分支互斥且为精确文案的实际按钮（不是整块可点击 div）
+    assert re.search(
+        r'<template v-if="state\.loading \|\| state\.rangeLoading">加载中…</template>',
+        footer,
+    )
+    assert '<NButton v-else-if="state.loadError"' in footer
+    assert "加载失败，点击重试" in footer
+    assert 'aria-label="重新加载表情包"' in footer
+    assert '@click="retryFailedRange"' in footer
+    assert ':disabled="retryDisabled"' in footer
+    # handler 只重放当前失败目标（分页/首屏/初始化/计数），由本地单飞与票号门禁包裹
+    retry_handler = re.search(
+        r"async function retryFailedRange\(\)\s*\{(?P<body>.*?)\n\}",
+        main_window,
+        re.DOTALL,
+    )
+    assert retry_handler, "footer retry handler must remain locally inspectable"
+    retry_body = retry_handler.group("body")
+    assert "await retryRange()" in retry_body
+    assert "retryDisabled.value" in retry_body
+    assert "retryPending" in retry_body
+    assert "retryTicket" in retry_body
+    assert "windowUnmounted" in retry_body
+    assert re.search(
+        r"const retryDisabled = computed\(\(\) => retryPending\.value "
+        r"\|\| gridActionBusy\.value \|\| state\.loading \|\| state\.rangeLoading\)",
+        main_window,
+    )
 
     # 旧顺序加载驱动彻底移除，两套加载逻辑不得并存
     for removed in (
@@ -903,6 +934,152 @@ def test_virtual_meme_grid_static_contract():
     assert "browseKey" in main_window
     # 拖拽失效判据不依赖普通补页推进的 rangeGen：扩展 pin 生命周期只由查询/布局/浏览键/总数约束
     assert "state.rangeGen" not in main_window
+
+
+def test_virtual_grid_experience_static_contract():
+    # S4 体验收尾静态契约：footer 重试与回顶按钮的接线、位置与样式；
+    # 只读源码断言，不执行前端，也不声称证明不同 DPI 下的实际排版结果
+    root = Path(__file__).resolve().parent.parent
+    main = root / "src" / "ohmymeme" / "presentation" / "frontend" / "main"
+    main_window = (main / "app" / "MainWindow.vue").read_text(encoding="utf-8")
+    style_css = (main / "app" / "style.css").read_text(encoding="utf-8")
+
+    def block(pattern):
+        match = re.search(pattern, main_window, re.DOTALL)
+        assert match, f"S4 experience block must remain locally inspectable: {pattern}"
+        return match.group("body")
+
+    def rule(selector):
+        match = re.search(
+            re.escape(selector) + r"\s*\{(?:(?!\}).)*?\}", style_css, re.DOTALL
+        )
+        assert match, f"experience styles must remain locally inspectable: {selector}"
+        return match.group(0)
+
+    # 显隐只读滚动容器：0 视口不显示，超过两屏（恰两屏不显示）才显示
+    sync_body = block(r"function syncBackToTopVisibility\(\)\s*\{(?P<body>.*?)\n\}")
+    assert re.search(r"wrap\.clientHeight\s*>\s*0", sync_body)
+    assert re.search(r"wrap\.scrollTop\s*>\s*2\s*\*\s*wrap\.clientHeight", sync_body)
+    assert "showBackToTop" in sync_body
+
+    # 回顶：卸载/手势/虚拟化门禁、wrap 判空、优先 handle.scrollTo(0) 且异常回退、
+    # 焦点归宿、普通 requestVisibleRange 收尾（不 search、不重试、不新建定时器）
+    back_body = block(r"function backToTop\(\)\s*\{(?P<body>.*?)\n\}")
+    assert "windowUnmounted" in back_body
+    assert "gridActionBusy" in back_body
+    assert "virtualReady" in back_body
+    assert re.search(r"if\s*\(!wrap\s*\|\|\s*!wrap\.isConnected\)\s*return", back_body)
+    assert "handle.scrollTo(0)" in back_body
+    assert "wrap.scrollTop = 0" in back_body
+    assert "restoreFocusFromRemovedButton" in back_body
+    assert "requestVisibleRange()" in back_body
+    assert "requestVisibleRangeNow" not in back_body
+    assert "search(" not in back_body
+    assert "retryRange" not in back_body
+    assert "setTimeout" not in back_body
+    focus_body = block(
+        r"function restoreFocusFromRemovedButton\([^)]*\)\s*\{(?P<body>.*?)\n\}"
+    )
+    assert re.search(
+        r"gridWrapRef\.value\?\.focus\(\{\s*preventScroll:\s*true\s*\}\)", focus_body
+    )
+    # 结算时复核焦点归属：仅当焦点确实随按钮丢失（未被用户移走）才交还网格
+    assert "document.activeElement" in focus_body
+    assert "document.body" in focus_body
+    assert 'tabindex="-1"' in main_window
+
+    # 初始化失败时跳过后台 search（否则会清掉 init 重试入口），点击重试走 loadInitData
+    assert "if (initOk) await search()" in main_window
+    # 空库/加载中也显示 footer 状态：seed/init 重试期间保留“加载中…”与可重试入口
+    assert (
+        'v-if="virtualReady && (state.total > 0 || state.loadError '
+        '|| state.loading || state.rangeLoading)"' in main_window
+    )
+
+    # 按钮为 #grid-wrap 之后的兄弟：footer（grid-wrap 内最后块）结束后、#main 收尾前
+    back_index = main_window.index('id="back-to-top"')
+    footer_close = main_window.index("</div>", main_window.index('class="grid-foot"'))
+    assert footer_close < back_index
+    button = main_window[
+        main_window.rindex("<NButton", 0, back_index) : main_window.index(
+            "</NButton>", back_index
+        )
+    ]
+    assert "virtualReady" in button
+    assert "state.total > 0" in button
+    assert "showBackToTop" in button
+    assert "with-organize-bar" in button
+    assert ':disabled="gridActionBusy"' in button
+    assert 'title="回到顶部"' in button
+    assert 'aria-label="回到顶部"' in button
+    assert '@click="backToTop"' in button
+    assert "<ArrowUp" in button
+    assert re.match(
+        r"</NButton>\s*</div>\s*</div>",
+        main_window[main_window.index("</NButton>", back_index) :],
+    )
+
+    # 样式：#back-to-top 绝对定位右下（z-20），整理模式抬到底部工具栏之上；
+    # 既有布局基线保持：#main 定位上下文、底部居中工具栏不参与布局流
+    back_rule = rule("#back-to-top")
+    assert re.search(r"position\s*:\s*absolute", back_rule)
+    assert re.search(r"right\s*:\s*14px", back_rule)
+    assert re.search(r"bottom\s*:\s*14px", back_rule)
+    assert re.search(r"z-index\s*:\s*20", back_rule)
+    organize_rule = rule("#back-to-top.with-organize-bar")
+    assert re.search(r"bottom\s*:\s*80px", organize_rule)
+    assert re.search(r"\.grid-retry\s*\{", style_css)
+    main_rule = rule("#main")
+    assert re.search(r"position\s*:\s*relative", main_rule)
+    bar_rule = rule("#organize-bar")
+    assert re.search(r"position\s*:\s*absolute", bar_rule)
+    assert re.search(r"bottom\s*:\s*14px", bar_rule)
+    assert re.search(r"transform\s*:\s*translateX\(-50%\)", bar_rule)
+
+
+def test_main_window_typecheck_scope_static_contract():
+    # tsconfig 是带注释的 JSONC：不做整文件 json.loads，改按 include/exclude 局部块精确核对。
+    # 该合同只核对配置文本集合，不等同于运行 vue-tsc 的结论。
+    root = Path(__file__).resolve().parent.parent
+    tsconfig = (root / "tsconfig.json").read_text(encoding="utf-8")
+
+    assert '"strict": true' in tsconfig
+    for flag in (
+        "noUncheckedIndexedAccess",
+        "exactOptionalPropertyTypes",
+        "noFallthroughCasesInSwitch",
+        "noPropertyAccessFromIndexSignature",
+        "forceConsistentCasingInFileNames",
+        "verbatimModuleSyntax",
+    ):
+        assert f'"{flag}": true' in tsconfig
+
+    include_match = re.search(r'"include"\s*:\s*\[(?P<body>.*?)\]', tsconfig, re.DOTALL)
+    exclude_match = re.search(r'"exclude"\s*:\s*\[(?P<body>.*?)\]', tsconfig, re.DOTALL)
+    assert (
+        include_match and exclude_match
+    ), "tsconfig include/exclude must remain locally inspectable"
+    include_items = re.findall(r'"([^"]+)"', include_match.group("body"))
+    exclude_items = re.findall(r'"([^"]+)"', exclude_match.group("body"))
+    assert include_items == [
+        "src/ohmymeme/presentation/frontend/main/app/**/*.vue",
+        "src/ohmymeme/presentation/frontend/main/app/**/*.ts",
+        "src/ohmymeme/presentation/frontend/main/features/**/*.ts",
+        "src/ohmymeme/presentation/frontend/main/features/**/*.vue",
+        "src/ohmymeme/presentation/frontend/main/shared/**/*.ts",
+        "src/ohmymeme/presentation/frontend/settings-vue/**/*.ts",
+        "src/ohmymeme/presentation/frontend/settings-vue/**/*.vue",
+        "tests/frontend/**/*.ts",
+    ]
+    assert exclude_items == [
+        "node_modules",
+        "src/ohmymeme/presentation/frontend/main/shared/bridge.ts",
+        "src/ohmymeme/presentation/frontend/main/app/main.ts",
+    ]
+    # 接线测试临时排除已删除；bridge.ts/main.ts 仅作根文件排除（被 import 时仍进依赖图）
+    assert "main_window_virtual" not in tsconfig
+    assert "被纳管调用方 import 时仍进入依赖检查" in tsconfig
+    assert "pywebview 注入入口暂不作为根文件" in tsconfig
 
 
 def test_visible_marquee_static_contract():

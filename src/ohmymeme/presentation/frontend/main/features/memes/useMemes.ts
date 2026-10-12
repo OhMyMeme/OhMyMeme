@@ -76,6 +76,8 @@ let disposed = false
 let lifeGen = 0
 // 页 offset 代次：查询/总数变更与销毁时推进，旧页响应不得复用
 let pageEpoch = 0
+// 失效代次：invalidateRangeRequests 推进；在途种子/计数结果与退避续排必须校验，失效后一律丢弃
+let rangeInvalidationGen = 0
 // 已提交窗口对应的查询快照（同查询刷新失败时的回退判据）
 let windowSnapshot: QuerySnapshot | null = null
 let selectAllBusy = false
@@ -93,6 +95,15 @@ const freezePins = new Set<PinToken>()
 const extensionPins = new Set<PinToken>()
 let lastFailed: { demand: WindowDemand; refreshCount: boolean } | null = null
 let lastSpec: { targetLo: number; targetHi: number; direction: CacheDirection } | null = null
+// 非分页失败描述：seed/init/count 的失败重放目标；描述捕获发起上下文，重放前按 life/查询代次/快照校验
+type NonRangeFailureKind = 'seed' | 'init' | 'count'
+type NonRangeFailure = {
+  kind: NonRangeFailureKind
+  queryGen: number
+  life: number
+  snapshot: QuerySnapshot
+}
+let nonRangeFailure: NonRangeFailure | null = null
 // 同 offset 代次+查询+页的在途请求：并发需求复用同一 Promise
 const pageWaiters = new Map<string, Promise<Meme[] | null>>()
 
@@ -213,6 +224,16 @@ export function useMemes() {
     }
     retryAction = null
     retryCount = 0
+  }
+
+  // 登记非分页失败描述（失败发生时覆盖为最新目标）
+  function registerNonRangeFailure(kind: NonRangeFailureKind, gen: number, life: number, snapshot: QuerySnapshot) {
+    nonRangeFailure = { kind, queryGen: gen, life, snapshot }
+  }
+
+  // 清理指定 kind 的失败描述（成功路径；kind 不匹配时保留其他目标）
+  function clearNonRangeFailure(kind: NonRangeFailureKind) {
+    if (nonRangeFailure !== null && nonRangeFailure.kind === kind) nonRangeFailure = null
   }
 
   // 有限退避重试：1s/2s/3s，到顶仅保留 loadError 不再发请求（生命周期推进后旧计时器失效）
@@ -548,11 +569,12 @@ export function useMemes() {
     return { ok, drift: jumped, blocked: false }
   }
 
-  // 需求提交：成功清错误与重试；扩展模式下被拒的远跳直接丢弃；失败记录并退避重放
+  // 需求提交：成功清分页类失败；扩展模式下被拒的远跳直接丢弃；失败记录并退避重放
   function commitDemand(demand: WindowDemand, mode: PinMode): boolean {
     const { ok, drift, blocked } = applyDemand(demand, mode)
     if (ok) {
-      state.loadError = false
+      // 只清分页类失败：仍有未解决的非分页失败（seed/init/count）时保留错误入口
+      if (nonRangeFailure === null) state.loadError = false
       lastFailed = null
       clearRetry()
       return true
@@ -614,6 +636,7 @@ export function useMemes() {
     invalidatePins()
     deferredCommit = null
     lastFailed = null
+    nonRangeFailure = null
     syncRangeLoading()
     const spec = lastSpec
     if (spec && state.total > 0) {
@@ -661,13 +684,14 @@ export function useMemes() {
         lastFailed = null
         clearRetry()
         state.rangeGen += 1
-        state.loadError = false
+        // 只清分页类失败：未解决的非分页失败（seed/init/count）保留错误入口
+        if (nonRangeFailure === null) state.loadError = false
       } else if (lastFailed !== null || retryTimer !== null || staleDeferred) {
         if (staleDeferred) deferredCommit = null
         lastFailed = null
         clearRetry()
         state.rangeGen += 1
-        state.loadError = false
+        if (nonRangeFailure === null) state.loadError = false
       }
       // 缓存命中同样恢复预算：无 pin 时按本次视口裁剪超长窗口（扩展 pin 释放后的长拖窗口回收）
       if (!anyPin() && state.hi - state.lo > CACHE_BUDGET) {
@@ -749,11 +773,18 @@ export function useMemes() {
 
   // 执行一次种子加载：并发读取 count 与第 0 页；同查询刷新失败保留旧窗口
   async function runSeed(gen: number, snapshot: QuerySnapshot, life: number): Promise<boolean> {
+    const invalidation = rangeInvalidationGen
     const [countResult, pageResult] = await Promise.all([
       api('count_memes', snapshot.keyword, snapshot.tags, snapshot.collectionId),
       fetchPage(snapshot, 0),
     ])
     if (disposed || life !== lifeGen || gen !== state.queryGen) return true
+    // 失效（拖拽保存前 invalidateRangeRequests）后到达的种子结果整体丢弃：不提交窗口、不登记失败、不续排；
+    // 此刻 loading 由本次种子持有（新查询会先经上一行代次校验），释放以恢复分页
+    if (invalidation !== rangeInvalidationGen) {
+      state.loading = false
+      return true
+    }
     if (!snapshotMatchesCurrent(snapshot)) {
       // 查询已改变但尚未触发新 search：丢弃本次结果，交给新的查询
       state.loading = false
@@ -774,6 +805,7 @@ export function useMemes() {
         state.hi = 0
       }
       state.loadError = true
+      registerNonRangeFailure('seed', gen, life, snapshot)
       scheduleRetry(() => { void runSeed(gen, snapshot, life) })
       return false
     }
@@ -797,6 +829,7 @@ export function useMemes() {
     deferredCommit = null
     lastFailed = null
     clearRetry()
+    clearNonRangeFailure('seed')
     return true
   }
 
@@ -814,6 +847,7 @@ export function useMemes() {
     deferredCommit = null
     lastFailed = null
     lastSpec = null
+    nonRangeFailure = null
     pageEpoch += 1
     pageWaiters.clear()
     state.queryGen += 1
@@ -833,25 +867,32 @@ export function useMemes() {
     return await runSeed(state.queryGen, snapshot, life)
   }
 
-  // 初始化 count 失败的退避重读：成功后按总数变化处理
-  async function refreshCountAfterInit(snapshot: QuerySnapshot, life: number): Promise<boolean> {
-    if (disposed || life !== lifeGen || !snapshotMatchesCurrent(snapshot)) return false
+  // 初始化 count 失败的退避重读：成功后按总数变化处理（登记/清理/续排均须上下文与失效代次仍有效）
+  async function refreshCountAfterInit(gen: number, snapshot: QuerySnapshot, life: number, invalidation: number): Promise<boolean> {
+    if (disposed || life !== lifeGen || gen !== state.queryGen || invalidation !== rangeInvalidationGen || !snapshotMatchesCurrent(snapshot)) return false
     const countResult = await api('count_memes', snapshot.keyword, snapshot.tags, snapshot.collectionId)
-    if (disposed || life !== lifeGen || !snapshotMatchesCurrent(snapshot)) return false
+    if (disposed || life !== lifeGen || gen !== state.queryGen || invalidation !== rangeInvalidationGen || !snapshotMatchesCurrent(snapshot)) return false
     if (typeof countResult === 'number' && Number.isInteger(countResult) && countResult >= 0) {
       clearRetry()
       applyTotalChange(countResult)
+      // count 成功必须退出错误态：即使总数未变化也清错误与失败描述
+      state.loadError = false
+      clearNonRangeFailure('count')
       return true
     }
+    registerNonRangeFailure('count', gen, life, snapshot)
     return false
   }
 
   // 安排 count 重读（与普通重试共用有限退避预算；首屏已有种子数据，不在重试期间报错）
-  function scheduleCountRefresh(snapshot: QuerySnapshot) {
-    const life = lifeGen
+  function scheduleCountRefresh(gen: number, snapshot: QuerySnapshot, life: number) {
+    const invalidation = rangeInvalidationGen
     scheduleRetry(() => {
-      void refreshCountAfterInit(snapshot, life).then(ok => {
-        if (!ok && !disposed && life === lifeGen) scheduleCountRefresh(snapshot)
+      void refreshCountAfterInit(gen, snapshot, life, invalidation).then(ok => {
+        // 上下文与失效代次仍有效才续排：查询换代/失效后的旧链不得继续消耗退避预算并置位 loadError
+        if (!ok && !disposed && life === lifeGen && gen === state.queryGen && invalidation === rangeInvalidationGen) {
+          scheduleCountRefresh(gen, snapshot, life)
+        }
       })
     }, false)
   }
@@ -867,17 +908,20 @@ export function useMemes() {
     for (let attempt = 0; attempt < RETRY_LIMIT; attempt++) {
       const data = await api('get_init_data')
       if (disposed || life !== lifeGen) return false
+      // 查询已换代/筛选已变：本次初始化响应整体丢弃（不读字段、不写状态、不登记失败）
+      if (gen !== state.queryGen || !snapshotMatchesCurrent(snapshot)) return true
       const initMemes = data?.['memes']
       const initCollections = data?.['collections']
       if (data && Array.isArray(initMemes) && Array.isArray(initCollections)) {
+        const seedItems = normalizeItems(initMemes) ?? []
+        const countResult = await api('count_memes', snapshot.keyword, snapshot.tags, snapshot.collectionId)
+        if (disposed || life !== lifeGen) return false
+        // 异步返回后写状态前统一校验上下文：旧初始化不得写入新查询的元数据/窗口
+        if (gen !== state.queryGen || !snapshotMatchesCurrent(snapshot)) return true
         state.allTags = Array.isArray(data['tags']) ? [...data['tags']] : []
         state.collections = [...initCollections]
         state.showStartupAnimation = data['show_startup_animation'] !== false
         state.startupBgColor = (data['startup_bg_color'] as string) || '#000000'
-        const seedItems = normalizeItems(initMemes) ?? []
-        const countResult = await api('count_memes', snapshot.keyword, snapshot.tags, snapshot.collectionId)
-        if (disposed || life !== lifeGen) return false
-        if (gen !== state.queryGen || !snapshotMatchesCurrent(snapshot)) return true
         const countOk = typeof countResult === 'number' && Number.isInteger(countResult) && countResult >= 0
         const total = countOk ? (countResult as number) : seedItems.length
         const slots = new Array<Meme | undefined>(total).fill(undefined)
@@ -899,23 +943,50 @@ export function useMemes() {
         deferredCommit = null
         lastFailed = null
         clearRetry()
-        if (!countOk) scheduleCountRefresh(snapshot)
+        clearNonRangeFailure('init')
+        if (!countOk) {
+          registerNonRangeFailure('count', gen, life, snapshot)
+          scheduleCountRefresh(gen, snapshot, life)
+        }
         return true
       }
       if (disposed || life !== lifeGen) return false
       await new Promise(r => setTimeout(r, 500 * (attempt + 1)))
     }
     if (disposed || life !== lifeGen) return false
+    // 仅当查询上下文仍有效才登记初始化失败：旧初始化的最终失败不得污染新查询的错误态
+    if (gen !== state.queryGen || !snapshotMatchesCurrent(snapshot)) return true
     // 初始化最终失败：进入错误态，空库文案不得出现
     state.loading = false
     state.loadError = true
+    registerNonRangeFailure('init', gen, life, snapshot)
     return false
   }
 
-  // 手动重试入口：优先重放最近失败需求，否则按最近目标重新请求
+  // 手动重试入口：优先按 kind 重放非分页失败（seed/init/count），再重放最近失败需求，最后按最近目标重新请求
   async function retryRange(): Promise<boolean> {
     if (disposed) return false
     clearRetry()
+    const failure = nonRangeFailure
+    if (failure !== null) {
+      nonRangeFailure = null
+      const valid = failure.life === lifeGen
+        && failure.queryGen === state.queryGen
+        && snapshotMatchesCurrent(failure.snapshot)
+      if (valid) {
+        if (failure.kind === 'seed') {
+          state.loading = true
+          state.loadError = false
+          return await runSeed(failure.queryGen, failure.snapshot, failure.life)
+        }
+        if (failure.kind === 'init') {
+          state.loading = true
+          state.loadError = false
+          return await loadInitData()
+        }
+        return await refreshCountAfterInit(failure.queryGen, failure.snapshot, failure.life, rangeInvalidationGen)
+      }
+    }
     const failed = lastFailed
     if (failed) {
       lastFailed = null
@@ -958,13 +1029,15 @@ export function useMemes() {
     }
   }
 
-  // 失效在途页需求（拖拽保存前调用）：推进页/窗口代次并清等待、暂缓、失败与重试，不动数据与选择
+  // 失效在途页需求（拖拽保存前调用）：推进页/窗口/失效代次并清等待、暂缓、失败与重试，不动数据与选择
   function invalidateRangeRequests() {
     clearRetry()
     supersedeDemand()
     deferredCommit = null
     lastFailed = null
     lastSpec = null
+    nonRangeFailure = null
+    rangeInvalidationGen += 1
     pageEpoch += 1
     pageWaiters.clear()
     state.rangeGen += 1
@@ -985,6 +1058,7 @@ export function useMemes() {
     supersedeDemand()
     deferredCommit = null
     lastFailed = null
+    nonRangeFailure = null
     invalidatePins()
     selectAllBusy = false
     state.queryGen += 1

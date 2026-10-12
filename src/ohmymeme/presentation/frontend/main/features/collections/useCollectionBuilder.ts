@@ -61,7 +61,7 @@ export function useCollectionBuilder() {
       api('get_collections'),
     ])
 
-    allMemes.value = memes || []
+    allMemes.value = [...(memes || [])]
     collectionOptions.value = (collections || [])
       .filter((c: any) => c.id > 0)
       .map((c: any) => ({ id: c.id, name: c.name }))
@@ -92,7 +92,7 @@ export function useCollectionBuilder() {
     const gen = ++memberReqGen
     memberLoading.value = true
     memberLoadError.value = false
-    api('get_collection_members', cid).then((members: any) => {
+    api('get_collection_members', cid).then((members) => {
       if (gen !== memberReqGen || cid !== selectedId.value) return
       memberLoading.value = false
       if (members == null) {
@@ -100,7 +100,9 @@ export function useCollectionBuilder() {
         memberLoadError.value = true
         return
       }
-      const ids = new Set((members || []).map((m: any) => m.id))
+      // Bridge 返回 JsonValue[]：按已读成员形状取 id，不改预选合并
+      const rows = members as readonly { id: number }[]
+      const ids = new Set<number>(rows.map(m => m.id))
       preselectIds.value.forEach(id => ids.add(id))
       selectedIds.value = ids
     })

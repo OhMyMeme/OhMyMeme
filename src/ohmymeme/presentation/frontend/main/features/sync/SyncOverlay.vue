@@ -2,6 +2,7 @@
 import { ref, computed } from 'vue'
 import { NModal, NButton, NProgress, NCheckbox, useMessage } from 'naive-ui'
 import { api } from '../../shared/bridge'
+import type { SettingsData } from '../../shared/generated/bridge'
 
 const emit = defineEmits<{
   synced: []
@@ -44,7 +45,7 @@ function showToast(msg: string) {
 }
 
 async function showUploadWarning(): Promise<boolean> {
-  const s = await api('get_settings')
+  const s = await api('get_settings') as unknown as Pick<SettingsData, 'sync_delete_remote' | 'sync_hide_upload_warning'> | null
   if (!s) return true
   if (!s.sync_delete_remote) return true
   if (s.sync_hide_upload_warning) return true
@@ -76,7 +77,8 @@ function onWarningShowChange(show: boolean) {
 }
 
 async function start(method: string, title: string, progressSetting: string, doneSetting: string) {
-  const s = await api('get_settings')
+  // 动态设置键只投影为布尔开关的读取
+  const s = await api('get_settings') as unknown as { [key: string]: boolean | undefined } | null
   const showProgress = s ? s[progressSetting] !== false : true
   const showDone = s ? s[doneSetting] !== false : true
 
@@ -92,7 +94,7 @@ async function start(method: string, title: string, progressSetting: string, don
     progressVisible.value = true
     if (pollTimer) clearInterval(pollTimer)
     pollTimer = setInterval(async () => {
-      const p = await api('get_sync_progress')
+      const p = await api('get_sync_progress') as unknown as { status?: string; current_file?: string; progress?: number; speed?: number } | null
       if (!p || p.status === 'idle') return
       progressFile.value = p.current_file || ''
       progressPct.value = (p.progress || 0) + '%'
@@ -101,7 +103,7 @@ async function start(method: string, title: string, progressSetting: string, don
     }, 300)
   }
 
-  const r = await api(method)
+  const r = await api(method) as unknown as { ok?: boolean; uploaded?: number; downloaded?: number; error?: string } | null
   if (pollTimer) { clearInterval(pollTimer); pollTimer = null }
 
   if (showProgress) progressVisible.value = false

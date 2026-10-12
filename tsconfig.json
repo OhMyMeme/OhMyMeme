@@ -19,7 +19,10 @@
     "types": ["vitest/globals", "vitest/jsdom"]
   },
   "include": [
-    "src/ohmymeme/presentation/frontend/main/features/memes/**/*.vue",
+    "src/ohmymeme/presentation/frontend/main/app/**/*.vue",
+    "src/ohmymeme/presentation/frontend/main/app/**/*.ts",
+    "src/ohmymeme/presentation/frontend/main/features/**/*.ts",
+    "src/ohmymeme/presentation/frontend/main/features/**/*.vue",
     "src/ohmymeme/presentation/frontend/main/shared/**/*.ts",
     "src/ohmymeme/presentation/frontend/settings-vue/**/*.ts",
     "src/ohmymeme/presentation/frontend/settings-vue/**/*.vue",
@@ -27,12 +30,9 @@
   ],
   "exclude": [
     "node_modules",
-    // pywebview's runtime-injected API has no static declaration yet.
+    // 暂不作为根文件；被纳管调用方 import 时仍进入依赖检查。
     "src/ohmymeme/presentation/frontend/main/shared/bridge.ts",
-    // pywebview evaluates these globals directly in the host WebView.
-    "src/ohmymeme/presentation/frontend/main/app/main.ts",
-    // 该测试经 vitest 运行；其 import 图属 main/app 范围，尚未纳入类型检查。
-    // 待将 main/app 整体纳入类型检查时移除该排除并修复依赖图类型问题。
-    "tests/frontend/main_window_virtual.test.ts"
+    // pywebview 注入入口暂不作为根文件。
+    "src/ohmymeme/presentation/frontend/main/app/main.ts"
   ]
 }

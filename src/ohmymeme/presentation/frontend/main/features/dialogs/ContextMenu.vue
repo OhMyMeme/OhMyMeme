@@ -25,7 +25,7 @@ function toOption(item: MenuItem): Record<string, unknown> {
     disabled: item.disabled === true,
     danger: item.danger === true,
   }
-  if (item.children && item.children.length) option.children = item.children.map(toOption)
+  if (item.children && item.children.length) option['children'] = item.children.map(toOption)
   return option
 }
 
@@ -33,8 +33,8 @@ const options = computed(() => props.items.map(toOption))
 
 // 危险项用主题 danger 色渲染（Naive 菜单无内建 danger 色）
 function renderLabel(option: Record<string, unknown>): VNodeChild {
-  const label = String(option.label ?? '')
-  if (option.danger === true) return h('span', { style: 'color: var(--red-11)' }, label)
+  const label = String(option['label'] ?? '')
+  if (option['danger'] === true) return h('span', { style: 'color: var(--red-11)' }, label)
   return label
 }
 

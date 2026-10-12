@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { ref, reactive, onMounted, onUnmounted, computed, h, watch, nextTick } from 'vue'
 import { Virtualizer } from 'virtua/vue'
+import type { VirtualizerHandle } from 'virtua/vue'
 import { useMemes } from '../features/memes/useMemes'
 import { useDragSort, type DragDirection, type DragDropResult, type PointerSample, type ScrollFrame } from '../features/sorting/useDragSort'
 import { applyMarqueeSelection, gridSlotIndex, normalizeMarqueeRect, rectIntersects, slotOrigin, type GridGeometry, type RectLike } from '../features/sorting/gridInteraction'
@@ -18,7 +19,7 @@ import UpdateDialog from '../features/updates/UpdateDialog.vue'
 import type { Meme } from '../shared/types'
 import { api } from '../shared/bridge'
 import { NButton, NInput, NTag, NModal, NSpin, NDropdown, useMessage, type DropdownMixedOption } from 'naive-ui'
-import { ArrowUpDown, PanelLeft, X, Heart, Folder, ImagePlus, Check, Ellipsis, CloudUpload, CloudDownload, RefreshCw, Settings } from '@lucide/vue'
+import { ArrowUpDown, ArrowUp, PanelLeft, X, Heart, Folder, ImagePlus, Check, Ellipsis, CloudUpload, CloudDownload, RefreshCw, Settings } from '@lucide/vue'
 import { lanConfirmVisible, lanConfirmDevice, confirmLanDevice, onLanConfirmShowChange } from '../features/lan/showLanDeviceConfirm'
 
 // 后端 evaluate_js 刷新入口（与 main.ts 声明一致；main.ts 不在类型检查范围）
@@ -30,7 +31,7 @@ declare global {
   }
 }
 
-const { state, search, ensureRange, slot, loadedSlice, setLoadedSlice, pinLoadedRange, invalidateRangeRequests, dispose, setSearch, toggleTag, setActiveCollection, refreshTags, refreshCollections, copyMeme, reorderMemes, canReorder, startNativeDrag, selectAll, clearSelection, loadInitData, MEME_PAGE } = useMemes()
+const { state, search, ensureRange, slot, loadedSlice, setLoadedSlice, pinLoadedRange, invalidateRangeRequests, dispose, setSearch, toggleTag, setActiveCollection, refreshTags, refreshCollections, copyMeme, reorderMemes, canReorder, startNativeDrag, selectAll, clearSelection, loadInitData, retryRange, MEME_PAGE } = useMemes()
 const ctx = useContextMenu()
 const cb = useCollectionBuilder()
 const message = useMessage()
@@ -44,7 +45,7 @@ const RANGE_BUFFER = 200 // 与 Virtualizer bufferSize 一致的视口外缓冲�
 
 const gridWrapRef = ref<HTMLElement | null>(null)
 const folderGridRef = ref<HTMLElement | null>(null)
-const virtualizerRef = ref<any>(null)
+const virtualizerRef = ref<VirtualizerHandle | null>(null)
 const virtualReady = ref(true)
 const cols = ref(4)
 const cardHeight = ref(0)
@@ -57,6 +58,11 @@ let rangeRaf = 0
 let windowUnmounted = false
 let gridResizeObserver: ResizeObserver | null = null
 let folderResizeObserver: ResizeObserver | null = null
+// 「回到顶部」按钮显隐：仅由真实滚动位置驱动（两屏阈值）
+const showBackToTop = ref(false)
+// 底部错误重试：本地单飞与票号（查询换代/卸载后旧 Promise 不得覆盖新的点击状态）
+const retryPending = ref(false)
+let retryTicket = 0
 
 interface VirtualRow {
   start: number
@@ -148,7 +154,7 @@ function measureStartMargin(wrap: HTMLElement, grid: HTMLElement): number {
 function measureCardHeight(container: HTMLElement, fallback: number): number {
   for (const card of Array.from(container.querySelectorAll<HTMLElement>('.meme-card:not(.dragging)'))) {
     const img = card.querySelector('img')
-    const name = card.querySelector('.meme-name')
+    const name = card.querySelector<HTMLElement>('.meme-name')
     if (!img || !name) continue
     const style = getComputedStyle(card)
     const borderY = finiteNumber(style.borderTopWidth) + finiteNumber(style.borderBottomWidth)
@@ -175,6 +181,64 @@ function restoreScrollAnchor(anchor: { slot: number; offset: number } | null) {
   wrap.scrollTop = startMargin.value + row * rowPitch.value + anchor.offset
 }
 
+// 回顶按钮显示：滚动容器真实滚动超过两屏（恰两屏不显示；0 视口不显示）
+function syncBackToTopVisibility() {
+  const wrap = gridWrapRef.value
+  const visible = !!wrap && wrap.clientHeight > 0 && wrap.scrollTop > 2 * wrap.clientHeight
+  if (showBackToTop.value !== visible) showBackToTop.value = visible
+}
+
+// 按钮消失时的焦点归宿：按钮曾持有焦点、且焦点确实随按钮丢失（未被用户移走）才交还网格
+function restoreFocusFromRemovedButton(button: HTMLElement | null, hadFocus: boolean) {
+  if (!hadFocus) return
+  void nextTick(() => {
+    if (windowUnmounted) return
+    if (button && button.isConnected) return
+    // 结算期间用户已把焦点移到别处（按钮移除后 activeElement 不再是 body）：不抢焦点
+    const active = document.activeElement
+    if (active !== null && active !== document.body) return
+    gridWrapRef.value?.focus({ preventScroll: true })
+  })
+}
+
+// 回到顶部：优先 handle.scrollTo(0)（保留 folder 头块）；handle 缺失/异常时只归零仍挂载的滚动容器
+function backToTop() {
+  if (windowUnmounted || gridActionBusy.value || !virtualReady.value) return
+  const wrap = gridWrapRef.value
+  if (!wrap || !wrap.isConnected) return
+  const button = document.getElementById('back-to-top')
+  const handle = virtualizerRef.value
+  if (handle) {
+    try {
+      handle.scrollTo(0)
+    } catch (_) {
+      wrap.scrollTop = 0
+    }
+  } else {
+    wrap.scrollTop = 0
+  }
+  syncBackToTopVisibility()
+  restoreFocusFromRemovedButton(button, button !== null && document.activeElement === button)
+  requestVisibleRange()
+}
+
+// 底部错误重试：只重放当前失败目标（不 search/不改选择/回顶），单飞并由票号拦截迟到结算
+async function retryFailedRange() {
+  if (windowUnmounted || retryDisabled.value) return
+  retryPending.value = true
+  const ticket = retryTicket
+  const button = document.getElementById('grid-retry')
+  const buttonHadFocus = button !== null && document.activeElement === button
+  try {
+    await retryRange()
+  } finally {
+    if (ticket === retryTicket && !windowUnmounted) {
+      retryPending.value = false
+      restoreFocusFromRemovedButton(button, buttonHadFocus)
+    }
+  }
+}
+
 // 测量并更新列数/卡高/startMargin；布局变化时重建 Virtualizer 并恢复可见位置
 function refreshLayout() {
   const wrap = gridWrapRef.value
@@ -191,6 +255,7 @@ function refreshLayout() {
   const nextStartMargin = measureStartMargin(wrap, grid)
   const layoutChanged = nextCols !== cols.value || nextCardHeight !== cardHeight.value
   const marginChanged = nextStartMargin !== startMargin.value
+  syncBackToTopVisibility()
   if (!layoutChanged && !marginChanged) return
   // 拖拽/框选期间几何变化：统一取消并回滚（旧坐标/索引全部失效），再按新几何重建
   if (drag.dragState.memeId != null) cancelGridDrag('layout')
@@ -294,6 +359,7 @@ function scrollWithinLoadedPath(): boolean {
 }
 
 function onVirtualScroll() {
+  syncBackToTopVisibility()
   // 框选期间发生任意滚动立即取消（起手坐标失效，按语义恢复起手快照）
   if (marqueeSession) cancelMarquee('scroll')
   if (drag.dragState.memeId != null && !drag.dragState.saving) {
@@ -309,6 +375,7 @@ function onVirtualScrollEnd() {
 }
 
 function onVirtualResize() {
+  syncBackToTopVisibility()
   requestVisibleRange()
 }
 
@@ -345,6 +412,11 @@ const marqueeBox = reactive({ active: false, x: 0, y: 0, width: 0, height: 0 })
 
 // 工具栏统一忙碌态：活动框选/排序（含保存）期间禁用全选/取消选择/批量删除
 const interactionBusy = computed(() => marqueeBusy.value || drag.dragState.active || drag.dragState.saving)
+
+// 窄手势门禁：框选（含 armed）/排序（含保存）期间禁用重试与回顶
+const gridActionBusy = computed(() => marqueeBusy.value || drag.dragState.memeId !== null || drag.dragState.saving)
+// 重试按钮禁用：本地单飞、请求中与手势期间都不可再次触发
+const retryDisabled = computed(() => retryPending.value || gridActionBusy.value || state.loading || state.rangeLoading)
 
 // 两个选择集合是否同内容（避免每帧重复赋值）
 function sameSelection(a: Set<number>, b: Set<number>): boolean {
@@ -422,7 +494,7 @@ function marqueeHits(rect: RectLike): Set<number> {
     const card = document.querySelector<HTMLElement>('#meme-grid .meme-card[data-slot-index="' + index + '"]')
     if (!card || !card.isConnected) continue
     const record = slot(index)
-    if (!record || card.dataset.memeId !== String(record.id)) continue
+    if (!record || card.dataset['memeId'] !== String(record.id)) continue
     const cardRect = card.getBoundingClientRect()
     const visible = normalizeMarqueeRect(cardRect.left, cardRect.top, cardRect.right, cardRect.bottom, clip)
     if (!rectIntersects(rect, visible)) continue
@@ -731,7 +803,7 @@ function getDragTarget(clientX: number, clientY: number): number | null {
   const card = document.querySelector<HTMLElement>('#meme-grid .meme-card[data-slot-index="' + target + '"]')
   if (!card || !card.isConnected || card.classList.contains('skeleton')) return null
   const record = slot(target)
-  if (!record || card.dataset.memeId !== String(record.id)) return null
+  if (!record || card.dataset['memeId'] !== String(record.id)) return null
   return target
 }
 
@@ -790,8 +862,8 @@ function captureVisibleOrigins(): Map<number, { left: number; top: number }> {
   if (!grid || !geometry) return origins
   for (const card of Array.from(grid.querySelectorAll<HTMLElement>('.meme-card[data-meme-id][data-slot-index]'))) {
     if (!card.isConnected) continue
-    const id = Number(card.dataset.memeId)
-    const index = Number(card.dataset.slotIndex)
+    const id = Number(card.dataset['memeId'])
+    const index = Number(card.dataset['slotIndex'])
     if (!Number.isFinite(id) || !Number.isInteger(index)) continue
     const origin = slotOrigin(geometry, index)
     if (origin) origins.set(id, origin)
@@ -819,11 +891,11 @@ function playVisibleFlip(before: Map<number, { left: number; top: number }>, dra
   if (!grid || !geometry) return
   const flipped: HTMLElement[] = []
   for (const card of Array.from(grid.querySelectorAll<HTMLElement>('.meme-card[data-meme-id][data-slot-index]'))) {
-    const id = Number(card.dataset.memeId)
+    const id = Number(card.dataset['memeId'])
     if (id === draggedId) continue
     const previous = before.get(id)
     if (!previous) continue
-    const index = Number(card.dataset.slotIndex)
+    const index = Number(card.dataset['slotIndex'])
     const current = Number.isInteger(index) ? slotOrigin(geometry, index) : null
     if (!current) continue
     const dx = previous.left - current.left
@@ -880,11 +952,12 @@ function refreshFrozenRowKeys() {
   if (!grid) return
   const mounted = new Set<number>()
   for (const row of Array.from(grid.querySelectorAll<HTMLElement>('.virtual-meme-row'))) {
-    const start = Number(row.dataset.rowStart)
+    const start = Number(row.dataset['rowStart'])
     if (!Number.isFinite(start)) continue
     const index = Math.floor(start / Math.max(1, cols.value))
     mounted.add(index)
-    if (!frozenRowKeys.has(index) && row.dataset.rowKey) frozenRowKeys.set(index, row.dataset.rowKey)
+    const key = row.dataset['rowKey']
+    if (!frozenRowKeys.has(index) && key) frozenRowKeys.set(index, key)
   }
   for (const index of Array.from(frozenRowKeys.keys())) {
     if (!mounted.has(index)) frozenRowKeys.delete(index)
@@ -1296,7 +1369,7 @@ async function onCtxAction(action: string) {
     }
     case 'tag': {
       const tags = await tagEditor.value?.open(memeId)
-      if (tags === null) break
+      if (tags == null) break
       await api('set_meme_tags', memeId, tags)
       // 同步已激活标签筛选，避免已删除标签继续筛
       refreshTags()
@@ -1332,7 +1405,7 @@ async function onCtxAction(action: string) {
         // 递归查找分组节点（子分组不在顶层），据此判断是否清空后再删
         const c = findCollectionNode(state.collections, removedFrom)
         if (!c || c.count === 0) {
-          if (removedFrom > 0) await api('delete_collection', removedFrom)
+          if (removedFrom !== null && removedFrom > 0) await api('delete_collection', removedFrom)
           setActiveCollection(parent ? parent.id : -4)
         }
         search()
@@ -1439,7 +1512,7 @@ async function selectAllResults() {
 }
 
 // 在 collections 树中查找 target 的父分组
-function findParentCollection(items: any[], target: number): any | null {
+function findParentCollection(items: any[], target: number | null): any | null {
   for (const c of items) {
     if (c.children) {
       for (const ch of c.children) {
@@ -1453,7 +1526,7 @@ function findParentCollection(items: any[], target: number): any | null {
 }
 
 // 递归查找分组节点（含子分组）
-function findCollectionNode(items: any[], target: number): any | null {
+function findCollectionNode(items: any[], target: number | null): any | null {
   for (const c of items) {
     if (c.id === target) return c
     if (c.children && c.children.length) {
@@ -1471,11 +1544,13 @@ async function showCollectionBuilder(memeId?: number) {
     const result = (existingId
       ? await api('set_collection_members', existingId, memeIds)
       : await api('set_collection_members_new', name, memeIds)) as { ok?: boolean; error?: string } | true | null
-    if (result?.ok || result === true) {
+    if (result === true || (result !== null && typeof result === 'object' && result.ok)) {
       showToast(existingId ? '已保存到分组：' + name : '分组已创建')
       refreshCollections(); search()
+    } else if (result !== null && typeof result === 'object') {
+      showToast(result.error || '保存失败')
     } else {
-      showToast(result?.error || '保存失败')
+      showToast('保存失败')
     }
   }, memeId ? [memeId] : [])
 }
@@ -1495,7 +1570,7 @@ function onCardMouseEnter(meme: Meme) {
   if (!meme.is_animated || !meme.hover_to_play) return
   const timer = setTimeout(() => {
     const img = document.querySelector(`.meme-card[data-meme-id="${meme.id}"] img`) as HTMLImageElement
-    if (img) { img.dataset.thumb = img.src; img.src = `/api/original/${meme.id}/${encodeURIComponent(meme.filename)}` }
+    if (img) { img.dataset['thumb'] = img.src; img.src = `/api/original/${meme.id}/${encodeURIComponent(meme.filename)}` }
   }, 150)
   hoverTimers.set(meme.id, timer)
 }
@@ -1505,7 +1580,8 @@ function onCardMouseLeave(meme: Meme) {
   if (timer) { clearTimeout(timer); hoverTimers.delete(meme.id) }
   if (!meme.is_animated || !meme.hover_to_play) return
   const img = document.querySelector(`.meme-card[data-meme-id="${meme.id}"] img`) as HTMLImageElement
-  if (img && img.dataset.thumb) img.src = img.dataset.thumb
+  const thumb = img?.dataset['thumb']
+  if (img && thumb) img.src = thumb
 }
 
 let nativeDragStart: { x: number; y: number; memeId: number } | null = null
@@ -1518,7 +1594,7 @@ function onCardPointerDown(e: PointerEvent, meme: Meme, card: HTMLElement) {
     if (!canReorder()) return
     if (drag.dragState.saving || marqueeSession) return
     if (e.button !== 0 || e.isPrimary === false) return
-    const slotIndex = Number(card.dataset.slotIndex)
+    const slotIndex = Number(card.dataset['slotIndex'])
     const record = Number.isInteger(slotIndex) ? state.slots[slotIndex] : undefined
     if (!record || record.id !== meme.id) return
     const rect = card.getBoundingClientRect()
@@ -1734,6 +1810,7 @@ onMounted(() => {
     observeFolderGrid()
     refreshLayout()
     requestVisibleRange()
+    syncBackToTopVisibility()
   }
 })
 
@@ -1749,6 +1826,7 @@ function observeFolderGrid() {
 onUnmounted(() => {
   // 先置卸载门禁：阻止进行中的异步续体再触碰模型（search/ensureRange 会重建生命周期）
   windowUnmounted = true
+  retryTicket += 1
   window.refreshMemes = () => {}
   window.refreshTags = () => {}
   window.refreshCollections = () => {}
@@ -1810,7 +1888,8 @@ function logBridgeIssue(method: string, detail = '') {
       const error = (autoSync as Record<string, unknown>)['error']
       if (error) logBridgeIssue('run_auto_sync', String(error))
     }
-    await search()
+    // 初始化失败时跳过后台 search：它会清掉 init 失败描述与错误入口，改为等待用户点击重试走 loadInitData
+    if (initOk) await search()
     if (windowUnmounted) return
     await refreshTags()
     if (windowUnmounted) return
@@ -1839,9 +1918,13 @@ watch(browseKey, () => { if (gridWrapRef.value) gridWrapRef.value.scrollTop = 0 
 
 // 同查询显式 search 刷新：滚动复位；拖拽/框选中先取消手势（查询变化不回填旧选择）
 watch(() => state.queryGen, () => {
+  // 新查询立即复位重试 UI 状态，并让旧重试 Promise 的结算失效
+  retryTicket += 1
+  retryPending.value = false
   cancelGridDrag('query')
   cancelMarquee('query')
   if (gridWrapRef.value) gridWrapRef.value.scrollTop = 0
+  syncBackToTopVisibility()
   hoverTimers.forEach(t => clearTimeout(t))
   hoverTimers.clear()
   void nextTick(() => { refreshLayout(); requestVisibleRange() })
@@ -1979,7 +2062,7 @@ watch(folderCards, () => {
           </NButton>
         </div>
 
-        <div id="grid-wrap" ref="gridWrapRef" @pointerdown="onGridBlankPointerDown" @mousedown="onGridBlankMouseDown">
+        <div id="grid-wrap" ref="gridWrapRef" tabindex="-1" @pointerdown="onGridBlankPointerDown" @mousedown="onGridBlankMouseDown">
           <div v-if="folderCards.length" ref="folderGridRef" class="meme-grid folder-grid">
             <div
               v-for="child in folderCards"
@@ -2091,12 +2174,26 @@ watch(folderCards, () => {
             <NButton class="btn btn-primary" type="primary" @click="showImportMenu()">导入表情包</NButton>
           </div>
 
-          <div v-if="virtualReady && (state.total > 0 || state.loadError)" class="grid-foot" aria-live="polite">
-            <template v-if="state.loadError">加载失败</template>
-            <template v-else-if="state.loading || state.rangeLoading">加载中…</template>
+          <div v-if="virtualReady && (state.total > 0 || state.loadError || state.loading || state.rangeLoading)" class="grid-foot" aria-live="polite" role="status" aria-atomic="true">
+            <template v-if="state.loading || state.rangeLoading">加载中…</template>
+            <NButton v-else-if="state.loadError" id="grid-retry" class="grid-retry" text size="small" aria-label="重新加载表情包" :disabled="retryDisabled" @click="retryFailedRange">加载失败，点击重试</NButton>
             <template v-else>共 {{ state.total }} 项</template>
           </div>
         </div>
+
+        <NButton
+          v-if="virtualReady && state.total > 0 && showBackToTop"
+          id="back-to-top"
+          :class="{ 'with-organize-bar': sortEnabled }"
+          :disabled="gridActionBusy"
+          title="回到顶部"
+          aria-label="回到顶部"
+          @click="backToTop"
+        >
+          <template #icon>
+            <ArrowUp :size="16" />
+          </template>
+        </NButton>
       </div>
     </div>
   </div>
