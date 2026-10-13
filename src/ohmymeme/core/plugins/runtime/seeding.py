@@ -1,20 +1,21 @@
 # pyright: basic
 
-"""官方插件种子：把随包分发的九个包复制到用户插件目录。"""
+"""插件状态与安装事务：官方与第三方包共用校验、暂存与原子切换。"""
 
 import hashlib
-import importlib.util
 import json
 import logging
 import os
 import shutil
-import sys
 import tempfile
 import zipfile
 from pathlib import Path
 
-from ohmymeme import __version__
-from ohmymeme.core.plugins.manifest import CANONICAL_PROVIDERS
+from ohmymeme.core.plugins.manifest import (
+    CANONICAL_BY_ID,
+    CANONICAL_PROVIDERS,
+    PLUGIN_API_VERSION,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -78,31 +79,6 @@ def write_state(data_dir, state):
     return json.loads(path.read_text(encoding="utf-8"))
 
 
-# 仓库内官方插件源码根（源码运行时）
-def _repo_plugins_root():
-    import ohmymeme
-
-    return Path(ohmymeme.__file__).resolve().parents[2] / "plugins"
-
-
-# 定位官方包目录：源码优先仓库路径，冻结包用已收集模块
-def _locate_package(provider_id, package_root):
-    if not getattr(sys, "frozen", False):
-        candidate = _repo_plugins_root() / provider_id / "src" / package_root
-        if candidate.is_dir():
-            return candidate
-    try:
-        spec = importlib.util.find_spec(package_root)
-    except (ImportError, ValueError):
-        return None
-    locations = getattr(spec, "submodule_search_locations", None)
-    if locations:
-        candidate = Path(next(iter(locations)))
-        if candidate.is_dir():
-            return candidate
-    return None
-
-
 # 计算包目录内容指纹（跳过缓存文件）
 def _tree_fingerprint(root):
     digest = hashlib.sha256()
@@ -116,15 +92,6 @@ def _tree_fingerprint(root):
         digest.update(b"\x00")
         digest.update(file.read_bytes())
     return digest.hexdigest()[:16]
-
-
-# 复制包目录到目标版本目录
-def _copy_tree(source, target):
-    shutil.copytree(
-        source,
-        target,
-        ignore=shutil.ignore_patterns("__pycache__", "*.pyc", "*.pyo"),
-    )
 
 
 # 由 provider ID 前缀得到插件种类
@@ -142,68 +109,84 @@ def _write_plugin_meta(version_dir, meta):
     )
 
 
-# 只保留当前版本与最近一个旧版本
-def _prune_versions(root, active):
-    versions = [path for path in root.iterdir() if path.is_dir()]
-    others = sorted(
-        (path for path in versions if path.name != active),
-        key=lambda path: path.stat().st_mtime,
-        reverse=True,
-    )
-    for stale in others[1:]:
-        shutil.rmtree(stale, ignore_errors=True)
+# 校验并归一化最小 meta：id/version/entry 必填，官方 ID 追加身份契约
+def _validate_meta(meta):
+    plugin_id = meta.get("id")
+    version = meta.get("version")
+    entry = meta.get("entry")
+    if not isinstance(plugin_id, str) or not plugin_id:
+        raise PluginSeedError("invalid_plugin_id", str(plugin_id))
+    if not _valid_version(version):
+        raise PluginSeedError("invalid_version", str(version))
+    if not isinstance(entry, str) or ":" not in entry:
+        raise PluginSeedError("invalid_entry", str(entry))
+    result = {
+        "id": plugin_id,
+        "name": str(meta.get("name") or plugin_id),
+        "version": version,
+        "entry": entry,
+    }
+    if plugin_id in OFFICIAL_IDS:
+        _, package_root, capabilities = CANONICAL_BY_ID[plugin_id]
+        mismatches = []
+        if entry != "%s:create_plugin" % package_root:
+            mismatches.append("entry")
+        if "api_version" in meta and (
+            type(meta.get("api_version")) is not int
+            or meta.get("api_version") != PLUGIN_API_VERSION
+        ):
+            mismatches.append("api_version")
+        if "package_root" in meta and meta.get("package_root") != package_root:
+            mismatches.append("package_root")
+        if "capabilities" in meta and list(meta.get("capabilities") or ()) != list(
+            capabilities
+        ):
+            mismatches.append("capabilities")
+        if mismatches:
+            raise PluginSeedError(
+                "official_identity_mismatch",
+                "%s: %s" % (plugin_id, ", ".join(mismatches)),
+            )
+        result["kind"] = _kind_for(plugin_id)
+        result["package_root"] = package_root
+        result["capabilities"] = list(capabilities)
+    elif "api_version" in meta and meta.get("api_version") != PLUGIN_API_VERSION:
+        raise PluginSeedError("invalid_api_version", str(meta.get("api_version")))
+    return result
 
 
-# 把官方九包种子到用户插件目录，返回最新状态
-def seed_official_plugins(data_dir, locate=None):
-    locate = locate or _locate_package
+# 把暂存目录原子切换为版本目录并写入状态记录
+def _commit_version(data_dir, meta, temp_dir, version_key, source=None):
+    plugin_id = meta["id"]
     state = read_state(data_dir)
     entries = dict(state.get("plugins") or {})
-    for provider_id, package_root, capabilities in CANONICAL_PROVIDERS:
-        source = locate(provider_id, package_root)
-        if source is None:
-            logger.warning("official plugin package missing: %s", provider_id)
-            continue
-        fingerprint = _tree_fingerprint(source)
-        root = plugins_dir(data_dir) / provider_id
-        version_dir = root / fingerprint
-        if not version_dir.is_dir():
-            temp_dir = root / (fingerprint + ".tmp")
-            shutil.rmtree(temp_dir, ignore_errors=True)
-            temp_dir.parent.mkdir(parents=True, exist_ok=True)
-            _copy_tree(source, temp_dir)
-            _write_plugin_meta(
-                temp_dir,
-                {
-                    "id": provider_id,
-                    "origin": "bundled",
-                    "package_root": package_root,
-                    "version": __version__,
-                    "entry": "%s:create_plugin" % package_root,
-                    "kind": _kind_for(provider_id),
-                    "capabilities": list(capabilities),
-                },
-            )
-            shutil.rmtree(version_dir, ignore_errors=True)
-            os.replace(temp_dir, version_dir)
-            _prune_versions(root, fingerprint)
-        record = dict(entries.get(provider_id) or {})
-        versions = dict(record.get("versions") or {})
-        versions[fingerprint] = {
-            "version": __version__,
-            "entry": "%s:create_plugin" % package_root,
-            "kind": _kind_for(provider_id),
-            "package_root": package_root,
-            "capabilities": list(capabilities),
-            "origin": "bundled",
-        }
-        record.update(
-            {"origin": "bundled", "active": fingerprint, "versions": versions}
-        )
-        entries[provider_id] = record
-    return write_state(
-        data_dir, {"schema_version": STATE_SCHEMA_VERSION, "plugins": entries}
-    )
+    record = dict(entries.get(plugin_id) or {})
+    if record.get("origin") == "bundled":
+        raise PluginSeedError("official_plugin", plugin_id)
+    _write_plugin_meta(temp_dir, meta)
+    root = plugins_dir(data_dir) / plugin_id
+    root.mkdir(parents=True, exist_ok=True)
+    target = root / version_key
+    shutil.rmtree(target, ignore_errors=True)
+    os.replace(temp_dir, target)
+    versions = dict(record.get("versions") or {})
+    version_record = {
+        "version": meta["version"],
+        "entry": meta["entry"],
+        "origin": "installed",
+        "name": meta["name"],
+    }
+    if plugin_id in OFFICIAL_IDS:
+        version_record["kind"] = meta["kind"]
+        version_record["package_root"] = meta["package_root"]
+        version_record["capabilities"] = list(meta["capabilities"])
+    if source is not None:
+        version_record["source"] = source
+    versions[version_key] = version_record
+    record.update({"origin": "installed", "active": version_key, "versions": versions})
+    entries[plugin_id] = record
+    write_state(data_dir, {"schema_version": STATE_SCHEMA_VERSION, "plugins": entries})
+    return resolve_plugin(data_dir, plugin_id)
 
 
 # 解析一个插件的活动版本信息
@@ -259,27 +242,7 @@ def _valid_version(version):
     )
 
 
-# 校验并归一化最小 meta：id/version/entry 必填，name 可选
-def _validate_meta(meta):
-    plugin_id = meta.get("id")
-    version = meta.get("version")
-    entry = meta.get("entry")
-    # 官方 ID 是分发身份，第三方不得占用（正确性约束，非安全校验）
-    if not isinstance(plugin_id, str) or not plugin_id or plugin_id in OFFICIAL_IDS:
-        raise PluginSeedError("invalid_plugin_id", str(plugin_id))
-    if not _valid_version(version):
-        raise PluginSeedError("invalid_version", str(version))
-    if not isinstance(entry, str) or ":" not in entry:
-        raise PluginSeedError("invalid_entry", str(entry))
-    return {
-        "id": plugin_id,
-        "name": str(meta.get("name") or plugin_id),
-        "version": version,
-        "entry": entry,
-    }
-
-
-# 安装或更新第三方 ZIP 包，返回解析后的版本信息
+# 安装或更新插件 ZIP 包，返回解析后的版本信息
 def install_plugin(data_dir, archive_path):
     archive = Path(archive_path)
     try:
@@ -288,10 +251,8 @@ def install_plugin(data_dir, archive_path):
         raise PluginSeedError("invalid_package", str(error)) from error
     with zip_file:
         meta = _validate_meta(_read_plugin_meta(zip_file))
-        plugin_id = meta["id"]
         version = meta["version"]
-        root = plugins_dir(data_dir) / plugin_id
-        target = root / version
+        root = plugins_dir(data_dir) / meta["id"]
         temp_dir = root / (version + ".tmp")
         shutil.rmtree(temp_dir, ignore_errors=True)
         temp_dir.mkdir(parents=True, exist_ok=True)
@@ -300,35 +261,54 @@ def install_plugin(data_dir, archive_path):
         except (OSError, zipfile.BadZipFile) as error:
             shutil.rmtree(temp_dir, ignore_errors=True)
             raise PluginSeedError("invalid_package", str(error)) from error
-        (temp_dir / PLUGIN_META_FILENAME).write_text(
-            json.dumps(meta, ensure_ascii=False, sort_keys=True, indent=2) + "\n",
-            encoding="utf-8",
-            newline="\n",
+        try:
+            return _commit_version(data_dir, meta, temp_dir, version)
+        except BaseException:
+            shutil.rmtree(temp_dir, ignore_errors=True)
+            raise
+
+
+# 用 populate 回调填充暂存目录并提交为指定版本
+def install_prepared(data_dir, meta, populate, version_key, source=None):
+    normalized = _validate_meta(meta)
+    if not _valid_version(version_key):
+        raise PluginSeedError("invalid_version", str(version_key))
+    root = plugins_dir(data_dir) / normalized["id"]
+    temp_dir = root / (version_key + ".tmp")
+    shutil.rmtree(temp_dir, ignore_errors=True)
+    temp_dir.parent.mkdir(parents=True, exist_ok=True)
+    temp_dir.mkdir(parents=True, exist_ok=True)
+    try:
+        populate(temp_dir)
+        return _commit_version(
+            data_dir, normalized, temp_dir, version_key, source=source
         )
-        shutil.rmtree(target, ignore_errors=True)
-        os.replace(temp_dir, target)
+    except BaseException:
+        shutil.rmtree(temp_dir, ignore_errors=True)
+        raise
+
+
+# 清理旧版平铺种子记录与其目录，返回被清理的插件 ID
+def purge_legacy_bundled(data_dir):
     state = read_state(data_dir)
     entries = dict(state.get("plugins") or {})
-    record = dict(entries.get(plugin_id) or {})
-    if record.get("origin") == "bundled":
-        raise PluginSeedError("official_plugin", plugin_id)
-    versions = dict(record.get("versions") or {})
-    versions[version] = {
-        "version": version,
-        "entry": meta["entry"],
-        "origin": "installed",
-        "name": meta["name"],
-    }
-    record.update({"origin": "installed", "active": version, "versions": versions})
-    entries[plugin_id] = record
+    purged = [
+        plugin_id
+        for plugin_id, record in entries.items()
+        if isinstance(record, dict) and record.get("origin") == "bundled"
+    ]
+    if not purged:
+        return []
+    for plugin_id in purged:
+        entries.pop(plugin_id, None)
+        shutil.rmtree(plugins_dir(data_dir) / plugin_id, ignore_errors=True)
     write_state(data_dir, {"schema_version": STATE_SCHEMA_VERSION, "plugins": entries})
-    return resolve_plugin(data_dir, plugin_id)
+    logger.info("purged legacy bundled plugins: %s", ", ".join(purged))
+    return purged
 
 
-# 卸载第三方插件并移除其目录
+# 卸载插件并移除其目录
 def uninstall_plugin(data_dir, plugin_id):
-    if plugin_id in OFFICIAL_IDS:
-        raise PluginSeedError("official_plugin", str(plugin_id))
     state = read_state(data_dir)
     entries = dict(state.get("plugins") or {})
     record = entries.pop(plugin_id, None)

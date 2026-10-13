@@ -3,10 +3,13 @@
 """子进程插件 runtime 的协议、种子与端到端测试。"""
 
 import io
+import sys
 import textwrap
 import time
+from pathlib import Path
 
 import pytest
+from plugin_fixtures import install_official
 
 from ohmymeme.core.plugins.runtime import protocol, seeding
 from ohmymeme.core.plugins.runtime.channel import ChannelClosed
@@ -14,6 +17,7 @@ from ohmymeme.core.plugins.runtime.manager import (
     PluginRuntimeError,
     PluginRuntimeManager,
 )
+from ohmymeme.core.plugins.runtime.worker import PluginWorker
 
 FAKE_QUICK = """
 import time
@@ -180,37 +184,26 @@ def test_frame_bad_header():
         protocol.read_frame(io.BytesIO(b"Content-Length: x\r\n\r\n{}"))
 
 
-# 种子复制官方包并保持幂等
-def test_seed_official_plugins(tmp_path):
-    source = tmp_path / "src" / "ohmymeme_plugin_qqnt"
-    source.mkdir(parents=True)
-    (source / "__init__.py").write_text("VALUE = 1\n", encoding="utf-8")
+# 官方包经真实安装事务后可从嵌套版本目录加载
+def test_load_plugin_from_installed_official(tmp_path):
+    sys.modules.pop("ohmymeme_plugin_qqnt", None)
     data = tmp_path / "data"
     data.mkdir()
-
-    def locate(provider_id, package_root):
-        return source if provider_id == "source.qqnt" else None
-
-    first = seeding.seed_official_plugins(data, locate=locate)
-    record = first["plugins"]["source.qqnt"]
-    active = record["active"]
-    assert record["origin"] == "bundled"
-    assert (seeding.plugins_dir(data) / "source.qqnt" / active).is_dir()
-
-    before = sorted(
-        path.relative_to(seeding.plugins_dir(data)).as_posix()
-        for path in seeding.plugins_dir(data).rglob("*")
+    install_official(data, "source.qqnt", version="0.0.0-test")
+    spec = seeding.resolve_plugin(data, "source.qqnt")
+    worker = PluginWorker("source.qqnt", "token")
+    worker._load_plugin(
+        {
+            "id": spec["id"],
+            "entry": spec["entry"],
+            "package_dir": spec["package_dir"],
+            "package_root": spec["package_root"],
+            "capabilities": spec["capabilities"],
+        }
     )
-    seeding.seed_official_plugins(data, locate=locate)
-    after = sorted(
-        path.relative_to(seeding.plugins_dir(data)).as_posix()
-        for path in seeding.plugins_dir(data).rglob("*")
-    )
-    assert before == after
-
-    resolved = seeding.resolve_plugin(data, "source.qqnt")
-    assert resolved["entry"] == "ohmymeme_plugin_qqnt:create_plugin"
-    assert resolved["package_dir"].endswith(active)
+    module = sys.modules["ohmymeme_plugin_qqnt"]
+    module_path = Path(module.__file__).resolve()
+    assert module_path.is_relative_to(Path(spec["package_dir"]).resolve())
 
 
 # 端到端：握手、查询、操作、sink 回调与结果

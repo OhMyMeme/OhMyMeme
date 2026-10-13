@@ -1,0 +1,13 @@
+{
+  "api_version": 1,
+  "capabilities": [
+    "filesystem.read",
+    "import.submit",
+    "network.https",
+    "process.helper"
+  ],
+  "entry": "ohmymeme_plugin_wechat:create_plugin",
+  "id": "source.wechat",
+  "name": "ohmymeme-plugin-wechat",
+  "package_root": "ohmymeme_plugin_wechat"
+}

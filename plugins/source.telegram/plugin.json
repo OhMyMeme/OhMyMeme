@@ -1,0 +1,12 @@
+{
+  "api_version": 1,
+  "capabilities": [
+    "filesystem.read",
+    "import.submit",
+    "process.ffmpeg"
+  ],
+  "entry": "ohmymeme_plugin_telegram:create_plugin",
+  "id": "source.telegram",
+  "name": "ohmymeme-plugin-telegram",
+  "package_root": "ohmymeme_plugin_telegram"
+}

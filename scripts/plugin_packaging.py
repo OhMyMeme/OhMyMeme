@@ -6,11 +6,13 @@ import ast
 import hashlib
 import json
 import os
+import re
 import shutil
 import subprocess
 import sys
 import tempfile
 import tomllib
+import zipfile
 from email.parser import Parser
 from importlib import import_module
 from importlib import metadata as importlib_metadata
@@ -396,6 +398,37 @@ def _probe_factories(infos, roots, location):
     return rows, errors
 
 
+def _validate_repo_plugin_json(provider_id, descriptor):
+    # Repository plugin.json must mirror the canonical identity exactly.
+    path = _package_dir(provider_id) / "plugin.json"
+    if not path.is_file():
+        return [f"{provider_id}.plugin.json: missing repository plugin.json"]
+    try:
+        _, value = _read_json(path, f"{provider_id}.plugin.json")
+    except PackagingError as error:
+        return list(error.errors)
+    if not isinstance(value, dict):
+        return [f"{provider_id}.plugin.json: expected object"]
+    expected = {
+        "id": descriptor.id,
+        "entry": descriptor.value,
+        "api_version": descriptor.api_version,
+        "package_root": descriptor.package_root,
+        "capabilities": list(descriptor.capabilities.names),
+    }
+    errors = []
+    for field, want in expected.items():
+        if value.get(field) != want:
+            errors.append(
+                f"{provider_id}.plugin.json.{field}: expected {want!r}, "
+                f"got {value.get(field)!r}"
+            )
+    allowed = set(expected) | {"name", "version"}
+    for field in sorted(set(value) - allowed):
+        errors.append(f"{provider_id}.plugin.json.{field}: unexpected property")
+    return errors
+
+
 def _source_analysis(descriptors):
     # Inspect source metadata, owned files and import direction without execution.
     infos = []
@@ -414,6 +447,7 @@ def _source_analysis(descriptors):
                     f"{descriptor.id}.factory: expected {descriptor.value}, "
                     f"got {info['factory']}"
                 )
+            errors.extend(_validate_repo_plugin_json(descriptor.id, descriptor))
             _source_files(info)
             errors.extend(_validate_plugin_imports(info))
             infos.append(info)
@@ -1356,6 +1390,107 @@ def _run_editable(paths):
     }
 
 
+def _zip_filename(provider_id, version):
+    # Release attachment name keeps the published plugin identity and version.
+    return "OhMyMeme-plugin-%s-v%s.zip" % (provider_id, version)
+
+
+def _app_version():
+    # Read the single version source without importing the application package.
+    path = SRC / "ohmymeme" / "__init__.py"
+    try:
+        match = re.search(r'__version__\s*=\s*"([^"]+)"', path.read_text("utf-8"))
+    except OSError as error:
+        raise PackagingError([f"app version: cannot read {path}: {error}"])
+    if match is None:
+        raise PackagingError([f"app version: __version__ missing in {path}"])
+    return match.group(1)
+
+
+def build_plugin_zip(provider_id, version, out_path):
+    # Build a deterministic official distribution ZIP from committed source.
+    manifest_module = _manifest_module()
+    canonical = manifest_module.CANONICAL_BY_ID.get(provider_id)
+    if canonical is None:
+        raise PackagingError([f"plugin zip: unknown official provider {provider_id!r}"])
+    _, package_root, capabilities = canonical
+    meta = {
+        "api_version": manifest_module.PLUGIN_API_VERSION,
+        "capabilities": list(capabilities),
+        "entry": f"{package_root}:create_plugin",
+        "id": provider_id,
+        "name": _distribution_name(provider_id),
+        "package_root": package_root,
+        "version": version,
+    }
+    source_root = _package_dir(provider_id) / "src" / package_root
+    if not source_root.is_dir():
+        raise PackagingError(
+            [f"{provider_id}.module: missing package root {source_root}"]
+        )
+    entries = [
+        (
+            "plugin.json",
+            json.dumps(meta, ensure_ascii=False, sort_keys=True, indent=2).encode(
+                "utf-8"
+            )
+            + b"\n",
+        )
+    ]
+    for path in sorted(source_root.rglob("*")):
+        relative = path.relative_to(source_root)
+        if not path.is_file():
+            continue
+        if "__pycache__" in relative.parts or path.suffix in (".pyc", ".pyo"):
+            continue
+        entries.append((f"{package_root}/{relative.as_posix()}", path.read_bytes()))
+    plugin_root = _package_dir(provider_id)
+    for path in sorted(plugin_root.iterdir()):
+        if path.is_file() and path.name.upper().startswith(
+            ("LICENSE", "COPYING", "NOTICE")
+        ):
+            entries.append((path.name, path.read_bytes()))
+    entries.sort(key=lambda item: item[0])
+    out = Path(out_path)
+    out.parent.mkdir(parents=True, exist_ok=True)
+    with zipfile.ZipFile(out, "w", zipfile.ZIP_DEFLATED) as archive:
+        for name, data in entries:
+            info = zipfile.ZipInfo(name, date_time=(1980, 1, 1, 0, 0, 0))
+            info.compress_type = zipfile.ZIP_DEFLATED
+            info.create_system = 0
+            info.external_attr = 0
+            archive.writestr(info, data)
+    return {"path": str(out), "sha256": _sha256_file(out), "bytes": out.stat().st_size}
+
+
+def _run_pack_zips(out_dir, version):
+    # Generate the nine official ZIP attachments and report their content hashes.
+    out = Path(out_dir)
+    packed = []
+    errors = []
+    for provider_id in _canonical_ids():
+        try:
+            result = build_plugin_zip(
+                provider_id, version, out / _zip_filename(provider_id, version)
+            )
+        except PackagingError as error:
+            errors.extend(error.errors)
+            continue
+        except OSError as error:
+            errors.append(f"{provider_id}.zip: {error}")
+            continue
+        packed.append({"id": provider_id, **result})
+    return {
+        "schema_version": SCHEMA_VERSION,
+        "mode": "pack-zips",
+        "status": "PASS" if not errors else "REJECTED",
+        "version": version,
+        "out": str(out),
+        "packages": packed,
+        "errors": errors,
+    }
+
+
 def _write_report(path, report):
     # Write deterministic evidence only after actual validation has completed.
     if path is None:
@@ -1369,18 +1504,21 @@ def _write_report(path, report):
 
 
 def _parse_args(argv):
-    # Keep source, staging and editable installation modes explicit and exclusive.
+    # Keep source, staging, editable and pack-zips modes explicit and exclusive.
     parser = argparse.ArgumentParser(description=__doc__)
     modes = parser.add_mutually_exclusive_group(required=True)
     modes.add_argument("--source", action="store_true")
     modes.add_argument("--stage", action="store_true")
     modes.add_argument("--install-editable-official", nargs="+")
+    modes.add_argument("--pack-zips", action="store_true")
     parser.add_argument("--frozen-staging")
     parser.add_argument("--staging-dir")
     parser.add_argument("--staging-manifest")
     parser.add_argument("--source-manifest", default="config/plugin-manifest.json")
     parser.add_argument("--frozen-manifest", default=_posix_path(MANIFEST_TARGET))
     parser.add_argument("--report")
+    parser.add_argument("--out")
+    parser.add_argument("--version")
     args = parser.parse_args(argv)
     if args.source and not all(
         (
@@ -1404,6 +1542,8 @@ def _parse_args(argv):
         for value in (args.frozen_staging, args.staging_dir, args.staging_manifest)
     ):
         parser.error("editable installation does not accept staging arguments")
+    if args.pack_zips and not args.out:
+        parser.error("--pack-zips requires --out")
     return args
 
 
@@ -1427,6 +1567,9 @@ def main(argv=None):
                 **report,
                 "errors": [],
             }
+        elif args.pack_zips:
+            version = args.version or _app_version()
+            report = _run_pack_zips(args.out, version)
         else:
             report = _run_editable(args.install_editable_official)
     except PackagingError as error:
@@ -1435,7 +1578,11 @@ def main(argv=None):
             "mode": (
                 "source"
                 if args.source
-                else "stage" if args.stage else "install-editable-official"
+                else (
+                    "stage"
+                    if args.stage
+                    else "pack-zips" if args.pack_zips else "install-editable-official"
+                )
             ),
             "status": "REJECTED",
             "errors": list(error.errors),

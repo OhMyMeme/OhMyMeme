@@ -1,0 +1,11 @@
+{
+  "api_version": 1,
+  "capabilities": [
+    "import.submit",
+    "network.https"
+  ],
+  "entry": "ohmymeme_plugin_douyin:create_plugin",
+  "id": "source.douyin",
+  "name": "ohmymeme-plugin-douyin",
+  "package_root": "ohmymeme_plugin_douyin"
+}

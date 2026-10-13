@@ -6,6 +6,7 @@ import json
 import zipfile
 
 import pytest
+from plugin_fixtures import install_official
 
 from ohmymeme.core.plugins.runtime import seeding
 
@@ -86,7 +87,7 @@ def test_activate_version_rolls_back_and_forward(tmp_path):
 @pytest.mark.parametrize(
     "meta,reason",
     [
-        (_meta(id="sync.ftp"), "invalid_plugin_id"),
+        (_meta(id=""), "invalid_plugin_id"),
         (_meta(version="../escape"), "invalid_version"),
         (_meta(entry="demo_plugin"), "invalid_entry"),
     ],
@@ -97,6 +98,103 @@ def test_install_plugin_rejects_invalid_metadata(tmp_path, meta, reason):
     with pytest.raises(seeding.PluginSeedError) as error:
         seeding.install_plugin(data, package)
     assert error.value.reason == reason
+
+
+def _official_meta(**overrides):
+    meta = {
+        "id": "source.qqnt",
+        "name": "ohmymeme-plugin-qqnt",
+        "version": "1.2.3",
+        "entry": "ohmymeme_plugin_qqnt:create_plugin",
+        "api_version": 1,
+        "package_root": "ohmymeme_plugin_qqnt",
+        "capabilities": ["filesystem.read", "import.submit"],
+    }
+    meta.update(overrides)
+    return meta
+
+
+# 官方 ZIP 安装成功并记录 kind/package_root/capabilities
+def test_install_official_zip_records_identity(tmp_path):
+    data = tmp_path / "data"
+    entry = install_official(data, "source.qqnt", version="0.0.0-test")
+    assert entry["kind"] == "source"
+    assert entry["package_root"] == "ohmymeme_plugin_qqnt"
+    assert entry["capabilities"] == ("filesystem.read", "import.submit")
+    version_dir = seeding.plugins_dir(data) / "source.qqnt" / "0.0.0-test"
+    assert (version_dir / "ohmymeme_plugin_qqnt" / "__init__.py").is_file()
+    record = seeding.read_state(data)["plugins"]["source.qqnt"]["versions"][
+        "0.0.0-test"
+    ]
+    assert record["origin"] == "installed"
+    assert record["kind"] == "source"
+    assert record["package_root"] == "ohmymeme_plugin_qqnt"
+    assert record["capabilities"] == ["filesystem.read", "import.submit"]
+
+
+# 官方 ID 入口不符被拒且不留残留
+def test_install_official_rejects_bad_entry(tmp_path):
+    data = tmp_path / "data"
+    package = _write_zip(
+        tmp_path / "bad.zip",
+        {"plugin.json": json.dumps(_official_meta(entry="wrong_pkg:create_plugin"))},
+    )
+    with pytest.raises(seeding.PluginSeedError) as error:
+        seeding.install_plugin(data, package)
+    assert error.value.reason == "official_identity_mismatch"
+    assert not (seeding.plugins_dir(data) / "source.qqnt").exists()
+    assert "source.qqnt" not in seeding.read_state(data)["plugins"]
+
+
+# 官方 ID capabilities 或 api_version 不符被拒
+@pytest.mark.parametrize(
+    "overrides",
+    [
+        {"capabilities": ["filesystem.read"]},
+        {"capabilities": ["import.submit", "filesystem.read"]},
+        {"api_version": 2},
+    ],
+)
+def test_install_official_rejects_identity_fields(tmp_path, overrides):
+    data = tmp_path / "data"
+    package = _write_zip(
+        tmp_path / "bad.zip",
+        {"plugin.json": json.dumps(_official_meta(**overrides))},
+    )
+    with pytest.raises(seeding.PluginSeedError) as error:
+        seeding.install_plugin(data, package)
+    assert error.value.reason == "official_identity_mismatch"
+    assert not (seeding.plugins_dir(data) / "source.qqnt").exists()
+
+
+# 第三方 api_version 不符单独拒绝
+def test_install_third_party_rejects_api_version(tmp_path):
+    data = tmp_path / "data"
+    package = _write_zip(tmp_path / "bad.zip", {"plugin.json": _meta(api_version=2)})
+    with pytest.raises(seeding.PluginSeedError) as error:
+        seeding.install_plugin(data, package)
+    assert error.value.reason == "invalid_api_version"
+
+
+# 清理旧 bundled 记录与目录，保留 installed
+def test_purge_legacy_bundled_clears_only_bundled(tmp_path):
+    data = tmp_path / "data"
+    install_official(data, "source.qqnt", version="0.0.0-test")
+    state = seeding.read_state(data)
+    state["plugins"]["source.telegram"] = {
+        "origin": "bundled",
+        "active": "0.6.3",
+        "versions": {"0.6.3": {"version": "0.6.3"}},
+    }
+    seeding.write_state(data, state)
+    bundled_dir = seeding.plugins_dir(data) / "source.telegram" / "0.6.3"
+    bundled_dir.mkdir(parents=True)
+    (bundled_dir / "legacy.py").write_text("x = 1\n", encoding="utf-8")
+    purged = seeding.purge_legacy_bundled(data)
+    assert purged == ["source.telegram"]
+    assert not (seeding.plugins_dir(data) / "source.telegram").exists()
+    assert "source.qqnt" in seeding.read_state(data)["plugins"]
+    assert seeding.purge_legacy_bundled(data) == []
 
 
 def test_install_plugin_extracts_hardened_zip_without_escaping(tmp_path):
@@ -112,7 +210,7 @@ def test_install_plugin_extracts_hardened_zip_without_escaping(tmp_path):
     assert not (tmp_path / "escape.py").exists()
 
 
-def test_uninstall_plugin_removes_third_party_only(tmp_path):
+def test_uninstall_plugin_removes_third_party_and_official(tmp_path):
     data = tmp_path / "data"
     package = _write_zip(
         tmp_path / "demo.zip", {"plugin.json": _meta(), "demo_plugin.py": "x = 1\n"}
@@ -125,4 +223,7 @@ def test_uninstall_plugin_removes_third_party_only(tmp_path):
     assert error.value.reason == "plugin_missing"
     with pytest.raises(seeding.PluginSeedError) as error:
         seeding.uninstall_plugin(data, "source.qqnt")
-    assert error.value.reason == "official_plugin"
+    assert error.value.reason == "plugin_missing"
+    install_official(data, "source.qqnt", version="0.0.0-test")
+    assert seeding.uninstall_plugin(data, "source.qqnt") is True
+    assert not (seeding.plugins_dir(data) / "source.qqnt").exists()

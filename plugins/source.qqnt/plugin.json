@@ -1,0 +1,11 @@
+{
+  "api_version": 1,
+  "capabilities": [
+    "filesystem.read",
+    "import.submit"
+  ],
+  "entry": "ohmymeme_plugin_qqnt:create_plugin",
+  "id": "source.qqnt",
+  "name": "ohmymeme-plugin-qqnt",
+  "package_root": "ohmymeme_plugin_qqnt"
+}

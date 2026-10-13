@@ -1,0 +1,11 @@
+{
+  "api_version": 1,
+  "capabilities": [
+    "network.remote",
+    "sync.remote"
+  ],
+  "entry": "ohmymeme_plugin_sync_webdav:create_plugin",
+  "id": "sync.webdav",
+  "name": "ohmymeme-plugin-sync-webdav",
+  "package_root": "ohmymeme_plugin_sync_webdav"
+}

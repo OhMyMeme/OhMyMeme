@@ -1,0 +1,15 @@
+{
+  "api_version": 1,
+  "capabilities": [
+    "device.approval",
+    "lan.byte-transport",
+    "lan.commands",
+    "lan.replay-policy",
+    "lan.secure-session",
+    "lan.security"
+  ],
+  "entry": "ohmymeme_plugin_lan:create_plugin",
+  "id": "transport.lan",
+  "name": "ohmymeme-plugin-lan",
+  "package_root": "ohmymeme_plugin_lan"
+}

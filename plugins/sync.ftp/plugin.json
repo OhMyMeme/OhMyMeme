@@ -1,0 +1,11 @@
+{
+  "api_version": 1,
+  "capabilities": [
+    "network.remote",
+    "sync.remote"
+  ],
+  "entry": "ohmymeme_plugin_sync_ftp:create_plugin",
+  "id": "sync.ftp",
+  "name": "ohmymeme-plugin-sync-ftp",
+  "package_root": "ohmymeme_plugin_sync_ftp"
+}

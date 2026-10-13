@@ -1,0 +1,11 @@
+{
+  "api_version": 1,
+  "capabilities": [
+    "network.remote",
+    "sync.remote"
+  ],
+  "entry": "ohmymeme_plugin_sync_r2:create_plugin",
+  "id": "sync.r2",
+  "name": "ohmymeme-plugin-sync-r2",
+  "package_root": "ohmymeme_plugin_sync_r2"
+}

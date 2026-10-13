@@ -3,6 +3,7 @@ import os
 import shutil
 import subprocess
 import sys
+import zipfile
 from email.parser import Parser
 from pathlib import Path
 from types import SimpleNamespace
@@ -11,6 +12,7 @@ import pytest
 from setuptools import build_meta
 
 import scripts.plugin_packaging as packaging
+from ohmymeme.core.plugins.runtime import seeding
 
 ROOT = Path(__file__).resolve().parents[1]
 PACKAGING_SCRIPT = ROOT / "scripts" / "plugin_packaging.py"
@@ -469,3 +471,33 @@ def test_installer_iss_is_reclaimed_on_timeout(monkeypatch, tmp_path, module_nam
 
     assert error.value.code == 124
     assert (dist_root / "ohmy meme.iss").exists() is False
+
+
+def test_build_plugin_zip_round_trips_through_install(tmp_path):
+    # Generated ZIP must install through the real transaction and resolve.
+    package_root = packaging._module_name("source.qqnt")
+    out = tmp_path / "qqnt.zip"
+    result = packaging.build_plugin_zip("source.qqnt", "1.0.0", out)
+    assert result["path"] == str(out)
+    assert result["bytes"] == out.stat().st_size
+    assert result["sha256"] == packaging._sha256_file(out)
+
+    with zipfile.ZipFile(out) as archive:
+        names = archive.namelist()
+    assert "plugin.json" in names
+    assert any(name.startswith(package_root + "/") for name in names)
+    for name in names:
+        assert (
+            name == "plugin.json"
+            or name.startswith(package_root + "/")
+            or name == "LICENSE"
+        )
+    assert "pyproject.toml" not in names
+
+    data = tmp_path / "data"
+    entry = seeding.install_plugin(data, out)
+    assert entry["id"] == "source.qqnt"
+    assert entry["kind"] == "source"
+    assert entry["package_root"] == package_root
+    assert entry["capabilities"] == ("filesystem.read", "import.submit")
+    assert seeding.resolve_plugin(data, "source.qqnt")["version"] == "1.0.0"

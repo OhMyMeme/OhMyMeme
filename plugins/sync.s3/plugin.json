@@ -1,0 +1,11 @@
+{
+  "api_version": 1,
+  "capabilities": [
+    "network.remote",
+    "sync.remote"
+  ],
+  "entry": "ohmymeme_plugin_sync_s3:create_plugin",
+  "id": "sync.s3",
+  "name": "ohmymeme-plugin-sync-s3",
+  "package_root": "ohmymeme_plugin_sync_s3"
+}
