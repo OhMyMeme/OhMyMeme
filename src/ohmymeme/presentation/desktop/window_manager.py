@@ -1795,6 +1795,13 @@ class WebUI:
     def _do_import(self, file_paths, names=None):
         return import_paths(self, file_paths, names)
 
+    # 丢弃宿主导入 worker 缓存，让下次动作按当前磁盘版本重新加载
+    def _drop_worker_cache(self, plugin_id):
+        for name in ("_runtime_import_workers", "_import_workers"):
+            cache = vars(self).get(name)
+            if isinstance(cache, dict):
+                cache.pop(plugin_id, None)
+
     def _on_hotkey_change(self, new_hotkey: str):
         if self._on_hotkey_change_cb:
             self._on_hotkey_change_cb(new_hotkey)
@@ -1985,12 +1992,6 @@ class WebUI:
             self._container.plugin_runtime.stop_plugin(entry["id"], "rollback")
             self._drop_worker_cache(entry["id"])
             return {"ok": True, "version": entry["version"]}
-
-        def _drop_worker_cache(plugin_id):
-            for name in ("_runtime_import_workers", "_import_workers"):
-                cache = getattr(self, name, None)
-                if isinstance(cache, dict):
-                    cache.pop(plugin_id, None)
 
         @app.route("/api/plugins/github/inspect", method="POST")
         def plugin_github_inspect():

@@ -2,6 +2,7 @@
 
 """第三方插件 ZIP 安装/卸载与包安全测试。"""
 
+import io
 import json
 import zipfile
 
@@ -227,3 +228,73 @@ def test_uninstall_plugin_removes_third_party_and_official(tmp_path):
     install_official(data, "source.qqnt", version="0.0.0-test")
     assert seeding.uninstall_plugin(data, "source.qqnt") is True
     assert not (seeding.plugins_dir(data) / "source.qqnt").exists()
+
+
+# 以 WSGI 直调方式 POST 原始字节或 JSON
+def _post_request(app, port, path, body, content_type="application/json"):
+    environ = {
+        "REQUEST_METHOD": "POST",
+        "PATH_INFO": path,
+        "QUERY_STRING": "",
+        "CONTENT_TYPE": content_type,
+        "CONTENT_LENGTH": str(len(body)),
+        "wsgi.input": io.BytesIO(body),
+        "wsgi.errors": io.StringIO(),
+        "wsgi.version": (1, 0),
+        "wsgi.multithread": False,
+        "wsgi.multiprocess": False,
+        "wsgi.run_once": False,
+        "wsgi.url_scheme": "http",
+        "SERVER_NAME": "127.0.0.1",
+        "SERVER_PORT": str(port),
+        "SERVER_PROTOCOL": "HTTP/1.1",
+        "HTTP_HOST": "127.0.0.1:%s" % port,
+    }
+    captured = {}
+
+    def start_response(status, headers, exc_info=None):
+        captured["status"] = status
+
+    chunks = app(environ, start_response)
+    data = b"".join(chunks)
+    return int(captured["status"].split(" ", 1)[0]), json.loads(data.decode("utf-8"))
+
+
+# 真实 WebUI 的 ZIP 安装/卸载路由成功路径：回归 self._drop_worker_cache 缺失导致的 500
+def test_zip_install_route_succeeds_with_real_webui(tmp_path):
+    from pathlib import Path
+
+    from scripts.plugin_packaging import build_plugin_zip
+
+    from ohmymeme.app.container import Container
+    from ohmymeme.presentation.desktop import window_manager as desktop
+
+    container = Container(tmp_path / "host")
+    try:
+        webui = desktop.WebUI(container)
+        app = webui.build_bottle_app()
+        archive = build_plugin_zip("source.qqnt", "0.0.0-route", tmp_path / "qqnt.zip")
+        status, data = _post_request(
+            app,
+            webui._port,
+            "/api/plugins/install",
+            Path(archive["path"]).read_bytes(),
+            "application/octet-stream",
+        )
+        assert status == 200 and data["ok"] is True
+        assert (
+            seeding.resolve_plugin(container.config.data_dir, "source.qqnt")["version"]
+            == "0.0.0-route"
+        )
+        status, data = _post_request(
+            app,
+            webui._port,
+            "/api/plugins/uninstall",
+            json.dumps({"id": "source.qqnt"}).encode("utf-8"),
+        )
+        assert status == 200 and data["ok"] is True
+        with pytest.raises(seeding.PluginSeedError):
+            seeding.resolve_plugin(container.config.data_dir, "source.qqnt")
+    finally:
+        container.close()
+        container.db.close()
