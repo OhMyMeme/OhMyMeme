@@ -2,7 +2,7 @@
 
 日期：2026-10-13。
 
-状态：方案已确认（决策按推荐项落定），尚未开始实施。实施前 `README.md`、`AGENTS.md`、`docs/project-structure.md` 与门禁脚本仍按现行的“官方插件随包分发、首启种子”描述生效；落地完成并验证后再按第 10 节同步文档与门禁。
+状态：已实施（2026-10-13）。P0–P4 已落地：安装事务与 canonical 身份契约、运行期去种子与 bundled 迁移、GitHub/本地 ZIP 导入、构建与发布链解耦、文档与门禁同步。遗留项：许可证矩阵/NOTICE 证据的 frozen 范围重界定（见第 11 节风险表与第 12 节实施记录）、真实 GitHub 仓库联调证据（需真实网络，发布前手工记录）、第三方仓库 GitHub 导入的补充用例。
 
 本规划承接 [完整插件平台规划](plugin-platform-plan.md) 与 [子进程插件体系落地计划](plugin-runtime-plan.md)：只调整官方插件的分发与加载时机，不改变插件平台目标、worker 运行时、九个 canonical 身份/入口 ABI 与宿主编排边界。
 
@@ -95,8 +95,8 @@
 ## 7. 开发与测试
 
 - 显式开发流（不再自动可用）：
-  - `mise run plugins:pack`：调用打包器生成九个 ZIP。
-  - `mise run plugins:install-dev`：把仓库插件按真实安装事务装进当前 `data_dir`。
+  - `mise run plugins-pack`：调用打包器生成九个 ZIP 到 `dist/plugins`。
+  - `mise run plugins-install-dev -- --data-dir <DIR>`：把仓库插件按真实安装事务装进指定 `data_dir`。
 - 测试：
   - conftest 共享 fixture 用真实安装事务安装官方包；替换全部 `seed_official_plugins` 调用点（`test_review_regressions.py`、runtime/sync/lan/qqnt/wechat/ui 等）。
   - GitHub 导入用注入的本地假下载器覆盖：inspect/安装/镜像回退/限额/路径穿越/身份拒绝/缓存；离线 fixture 归档，不依赖真实网络。
@@ -143,3 +143,22 @@
 | 升级体验断裂（旧用户功能消失） | 发布说明写明步骤；首启提示 + 设置页引导导入 |
 | zipball 全仓下载偏大（含应用资源） | 归档上限与缓存缓解；如需可另立"按文件稀疏下载"优化 |
 | 许可证证据范围变化引发 REJECTED | P3 先重界定矩阵输入再跑门禁，保留逐字节哈希边界 |
+
+## 12. 实施记录（2026-10-13）
+
+| 决策 | 落地内容 | 证据入口 |
+| --- | --- | --- |
+| D01 | `scripts/build.py`/`scripts/nuitka/build.py` 不再 stage/收集插件模块与 dist-info；`config/plugin-manifest.json` 仍作为身份表打进产物；`package_smoke` 新增"冻结产物不再捆绑插件"契约断言 | `scripts/package_smoke.py`、`tests/test_package_smoke.py` |
+| D02 | 删除 `seed_official_plugins` 链路；`manager._default_resolver` 只解析 `installed.json` + 版本目录 | `core/plugins/runtime/seeding.py`、`manager.py` |
+| D03 | 官方 ZIP 与 GitHub 导入共用 `install_prepared`/`_commit_version` 暂存安装事务 | `seeding.py`、`github_source.install_plugin` |
+| D04 | `_validate_meta` 官方 ID 走 canonical 身份校验（entry/package_root/api_version/capabilities），不符拒绝且无残留 | `tests/test_plugin_install.py` |
+| D05 | 九个 `plugins/<id>/plugin.json`（不含 version）；`plugin_packaging.py --source` 门禁校验与 canonical 一致 | `plugins/*/plugin.json`、`scripts/plugin_packaging.py` |
+| D06 | GitHub 导入默认 ref：官方仓库先试 `refs/tags/v{当前版本}`，404 回落 `HEAD`；用户可显式指定 | `tests/test_plugin_github.py` |
+| D07 | 直连失败按 `github.dpik.top → gh.dpik.top → gh-proxy.org` 镜像前缀重试；404 不做镜像重试 | 同上 |
+| D08 | 版本目录：tag 导入 `{tag}`；分支/sha 导入 `{version 或 ref_label}-{内容指纹前 7 位}`；state 记录 `source(repo/ref/tree)` | `tests/test_plugin_github.py`、`tests/test_plugin_install.py` |
+| D09 | `--pack-zips` 生成确定性 `OhMyMeme-plugin-<id>-v<version>.zip`；CI（build.yml/nightly.yml）上传并随 nightly prerelease 发布 | `scripts/plugin_packaging.py`、`.github/workflows/` |
+| D10 | `seeding.purge_legacy_bundled` 在 `Container` 初始化时清理 `origin=="bundled"` 记录与目录；不自动重排 | `app/container.py` |
+| D11 | 官方包可卸载；未安装行显示"未安装"且隐藏启停/回滚控件；启用/禁用仍重启生效 | `window_manager.py` `/api/plugins`、设置页插件组 |
+| D12 | 编排、manifest/hash/排序/提交、安全与 UI 仍归宿主；插件只承载自身代码与声明 | 未改动既有边界 |
+
+验证：相关测试 `tests/test_plugin_{install,runtime,github,packaging,ui,ui_injection,enable}`、`tests/test_lan.py`、`tests/integration/test_lan_*.py`、`tests/test_qqnt_runtime.py`、`tests/adapters/importers/test_wechat_runtime.py`、`tests/application/test_plugin_bridge.py`、`tests/test_package_smoke.py` 全部通过；`ruff`/`black`/`basedpyright`/前端 `typecheck`+`vitest`/`package-smoke --contract-only` 通过。真实 GitHub 仓库联调与许可证矩阵 frozen 范围重界定未执行，保留为遗留项。

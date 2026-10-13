@@ -1,6 +1,6 @@
 # OhMyMeme 子进程插件体系落地计划
 
-状态：规划已确认，实施进行中。实施时以本文为基线；在实施完成前 `README.md`、`AGENTS.md`、`docs/project-structure.md` 中的现行插件边界描述仍然有效，不得提前改写。
+状态：已实施（子进程运行时落地完成）。官方插件分发改由 [plugin-distribution-plan.md](plugin-distribution-plan.md) 接管（不随安装包分发、按需导入，2026-10-13）；本文的 frozen 分发与首启种子表述保留为历史决策记录，不再作为现行行为。
 
 ## 0. 实施状态（2026-09-22）
 

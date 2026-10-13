@@ -78,7 +78,7 @@ src/              # 源码根与固定运行时静态资产
     import-frame.js   # 插件详情页 iframe 协议 SDK 资产
     plugin-ui.json    # 宿主固定插件 UI 投影
     dist/         # [generated] Vite 构建产物（gitignored）：ohmymeme.js + settings-vue.js
-plugins/          # 九个官方插件分发包
+plugins/          # 九个官方插件源码与打包输入（不随应用分发，需按需导入）
   source.qqnt/    # QQNT 源插件
   source.telegram/ # Telegram 源插件
   source.douyin/  # 抖音源插件
@@ -94,7 +94,7 @@ config/
 scripts/
   build.py        # PyInstaller + InnoSetup 构建脚本 (i18n zh/en)
   plugin_docs_check.py # Todo16 固定插件文档/入口/边界离线校验
-  plugin_packaging.py # 九个官方插件的元数据、staging 与 source/frozen parity 校验
+  plugin_packaging.py # 九个官方插件的元数据、ZIP 打包/安装与 source/frozen parity 校验
   launcher.py     # PyInstaller 入口
   hooks/          # 自定义 PyInstaller hooks（Linux GTK: WebKit2/Soup typelib 收集，内置无对应 hook）
     hook-gi.repository.WebKit2.py
@@ -137,7 +137,8 @@ tests/
 - 零参数 `create_plugin()` 每次都返回独立状态实例。registry 在加载前核验 ID、入口点和 API；缺失、禁用或不兼容只返回该固定动作的旧失败哨兵，绝不回退或替换其他 provider。
 - 宿主拥有 SQLite、缓存、manifest、Config、UI、原生能力与 LAN 安全边界。插件仅接收窄配置、限域密钥和 operation 临时目录，不接收持久 Config、缓存或存储路径；持久配置、数据库、图片存储、manifest 提交、Bridge/UI、原生窗口/剪贴板/拖拽、LAN 密钥协商/审批/加密/命令均不得移入插件。
 - OperationCoordinator 管理 provider 的启动、取消和资源回收。宿主先注册线程、helper 子进程、socket 和临时资源，再允许阻塞；operation drain 后才释放宿主 lease 和临时目录。passcode、Cookie 与同步凭据是 transient operation secret，不进入持久 Config 或日志。
-- `scripts/plugin_packaging.py` 校验官方 source/frozen staging 的模块、入口元数据、manifest 和许可证文件；source/frozen staging 一致性只覆盖源码、入口元数据与 staging，不等同于对最终冻结可执行文件的实际构建验证。`docs/plugin-license-matrix.json`、`NOTICE`、`LICENSES/`、`THIRD-PARTY-NOTICES/` 是许可证和发布范围的证据入口。
+- 分发模型：官方插件不随冻结产物/安装包分发，也不随应用启动自动种子。导入有两种方式：GitHub 仓库导入（公开仓库根目录 `plugins/{plugin-id}/`，含 `plugin.json` 与 `<package_root>/` 或 `src/<package_root>/` 包目录；默认 ref 匹配当前版本 tag，404 回落 HEAD，直连失败经 GitHub 镜像 `github.dpik.top`/`gh.dpik.top`/`gh-proxy.org` 重试，归档限额 50MB/解压 20MB 并拒绝符号链接与路径穿越）与本地 ZIP（`OhMyMeme-plugin-<id>-v<version>.zip`，由 `--pack-zips` 生成，随 Release 附件发布）。两种方式共用安装事务：canonical 身份校验、原子版本切换与 state 记录（含 source 元数据）；未导入时相关入口隐藏或返回原失败哨兵，旧 `origin=="bundled"` 平铺种子副本在启动时清理。
+- `scripts/plugin_packaging.py` 校验官方 source/frozen staging 的模块、入口元数据、manifest 和许可证文件，并提供 `--pack-zips`（发布 ZIP 附件）、`--install-dev`（按真实安装事务装入指定 data_dir）与仓库 `plugins/<id>/plugin.json` 门禁；source/frozen staging 一致性只覆盖源码、入口元数据与 staging，不等同于对最终冻结可执行文件的实际构建验证。官方插件脱离安装包后，`docs/plugin-license-matrix.json`、`NOTICE`、`LICENSES/`、`THIRD-PARTY-NOTICES/` 的 frozen 证据范围重界定待后续跟进；这些文件仍是当前许可证和发布范围的证据入口。
 - 九个 provider 的 source/frozen 分发基线由 `scripts/plugin_packaging.py` 校验，只覆盖源码、入口元数据与 staging，不等同于对最终冻结可执行文件的实际构建验证。`scripts/plugin_docs_check.py` 消费 inventory、`config/plugin-manifest.json` 和 `README.md`/`AGENTS.md`/`docs/project-structure.md`；其无效输入为 `fixtures/plugin-parity/inventory-invalid.json`、`fixtures/plugin-parity/docs-invalid/README.md` 与 `fixtures/plugin-parity/docs-conflicting-nonfeatures/README.md`。
 - 外部下载的微信 helper 及其 CMake/OpenSSL 输入不随制品交付；本地 helper 源码映射不构成外部 helper EXE 的来源到二进制可复现性证明。不得把 source/frozen staging 或许可证证据表述为最终 helper 或最终冻结可执行文件的实际构建证明。
 - 不提供 marketplace 或不受信任插件沙箱。

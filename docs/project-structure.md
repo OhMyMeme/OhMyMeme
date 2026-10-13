@@ -22,19 +22,19 @@ OhMyMeme/
 │   ├── offsets.json                               微信辅助程序的版本偏移配置
 │   └── plugin-manifest.json                       九个官方插件的 canonical 分发清单
 ├── plugins/                                      [source]
-│   ├── source.qqnt/                               QQNT 源插件分发包
-│   ├── source.telegram/                           Telegram 源插件分发包
-│   ├── source.douyin/                             抖音源插件分发包
-│   ├── source.wechat/                             微信源插件分发包
-│   ├── sync.ftp/                                  FTP 同步插件分发包
-│   ├── sync.s3/                                   S3 同步插件分发包
-│   ├── sync.r2/                                   R2 同步插件分发包
-│   ├── sync.webdav/                               WebDAV 同步插件分发包
-│   └── transport.lan/                             局域网传输插件分发包
+│   ├── source.qqnt/                               QQNT 官方源插件（源码与打包输入）
+│   ├── source.telegram/                           Telegram 官方源插件（源码与打包输入）
+│   ├── source.douyin/                             抖音官方源插件（源码与打包输入）
+│   ├── source.wechat/                             微信官方源插件（源码与打包输入）
+│   ├── sync.ftp/                                  FTP 官方同步插件（源码与打包输入）
+│   ├── sync.s3/                                   S3 官方同步插件（源码与打包输入）
+│   ├── sync.r2/                                   R2 官方同步插件（源码与打包输入）
+│   ├── sync.webdav/                               WebDAV 官方同步插件（源码与打包输入）
+│   └── transport.lan/                             局域网官方传输插件（源码与打包输入）
 ├── docs/                                         [source]
 │   ├── plugin-distribution-plan.md                官方插件按需分发与导入方案（GitHub / 本地 ZIP）
 │   ├── plugin-runtime-plan.md                     子进程插件体系落地计划与实施状态
-│   ├── plugin-ui-injection-plan.md                插件 UI 注入点规划（声明式 + iframe，待实施）
+│   ├── plugin-ui-injection-plan.md                插件 UI 注入点规划（声明式 + iframe，已实施）
 │   ├── project-structure.md                       本项目结构地图
 │   └── wechat_keyfinder_protocol.md               Python 与微信 C++ 辅助程序协议
 ├── fixtures/                                     [test]
@@ -52,7 +52,7 @@ OhMyMeme/
 │   ├── package_lifecycle.py                       构建产物生命周期验证
 │   ├── package_smoke.py                           打包布局和发布契约验证
 │   ├── plugin_docs_check.py                        固定插件文档/入口/边界离线校验
-│   ├── plugin_packaging.py                        九包 source/frozen staging 与元数据验证
+│   ├── plugin_packaging.py                        九包元数据/ZIP 打包/开发安装与 source/frozen 验证
 │   ├── hooks/                                    PyInstaller GTK 自定义 hook
 │   │   ├── hook-gi.repository.Soup.py
 │   │   └── hook-gi.repository.WebKit2.py
@@ -323,7 +323,9 @@ app/container.py
 
 零参数 `create_plugin()` 每次都返回独立状态实例。宿主拥有 SQLite、缓存、manifest、Config、UI、原生能力与 LAN 安全边界；插件仅接收窄配置、限域密钥和 operation 临时目录，不接收持久 Config、缓存或存储路径。`OperationCoordinator 管理 provider 的启动、取消和资源回收`，所以线程、子进程、socket、临时目录、数据库连接和持久写入仍由宿主创建、登记、drain 和关闭。
 
-九包源码位于 `plugins/`，`scripts/plugin_packaging.py` 比较 source/frozen staging 的模块、入口元数据、manifest 与许可证文件。source/frozen staging 一致性只覆盖源码、入口元数据与 staging，不等同于对最终冻结可执行文件的实际构建验证。`scripts/plugin_docs_check.py` 使用 inventory 和固定文档事实检查这些声明，负例位于 `fixtures/plugin-parity/inventory-invalid.json`、`fixtures/plugin-parity/docs-invalid/README.md` 与 `fixtures/plugin-parity/docs-conflicting-nonfeatures/README.md`。
+九包源码位于 `plugins/`，`scripts/plugin_packaging.py` 比较 source/frozen staging 的模块、入口元数据、manifest 与许可证文件，并生成发布 ZIP（`--pack-zips`）、执行开发安装（`--install-dev`）与仓库 `plugins/<id>/plugin.json` 门禁。source/frozen staging 一致性只覆盖源码、入口元数据与 staging，不等同于对最终冻结可执行文件的实际构建验证。`scripts/plugin_docs_check.py` 使用 inventory 和固定文档事实检查这些声明，负例位于 `fixtures/plugin-parity/inventory-invalid.json`、`fixtures/plugin-parity/docs-invalid/README.md` 与 `fixtures/plugin-parity/docs-conflicting-nonfeatures/README.md`。
+
+官方插件不随冻结产物/安装包分发，也不随应用启动自动加载：在设置「插件」中从 GitHub 仓库（公开仓库根目录 `plugins/{plugin-id}/` 契约）或本地 ZIP 导入后才可用（`core/plugins/runtime/github_source.py` + `seeding` 安装事务），未导入时相关入口隐藏或返回原失败哨兵；旧 `origin=="bundled"` 平铺种子副本启动时清理。发布 ZIP 由 `--pack-zips` 生成并随 Release 附件发布。
 
 许可证和发布范围由 `docs/plugin-license-matrix.json`、`NOTICE`、`LICENSES/` 与 `THIRD-PARTY-NOTICES/` 记录。外部下载的微信 helper 及其 CMake/OpenSSL 输入不随制品交付；本地 helper 源码映射不构成外部 helper EXE 的来源到二进制可复现性证明。
 

@@ -63,19 +63,20 @@
 - 宿主拥有 SQLite、缓存、manifest、Config、UI、原生能力与 LAN 安全边界；这包括数据库写入、缩略图/缓存、manifest 提交、WebView/Bridge、剪贴板/拖拽/窗口，以及 LAN 认证、审批、加密和命令白名单。
 - 插件仅接收窄配置、限域密钥和 operation 临时目录，不接收持久 Config、缓存或存储路径。Telegram passcode、抖音 Cookie 和同步凭据仅在本次 operation 内可用，输出先由宿主脱敏后再交给 UI。
 - OperationCoordinator 管理 provider 的启动、取消和资源回收；宿主创建 operation、注册线程/进程/socket，并在 drain 后清理临时目录，插件只通过窄端口提交结果或执行网络/导入职责。
-- `scripts/plugin_packaging.py` 负责官方包的 source/frozen staging 一致性。source/frozen staging 一致性只覆盖源码、入口元数据与 staging，不等同于对最终冻结可执行文件的实际构建验证；可核查的范围以打包与许可证证据报告为准。
+- `scripts/plugin_packaging.py` 校验官方包的 source/frozen staging 一致性，并提供 `--pack-zips`（生成 `OhMyMeme-plugin-<id>-v<version>.zip` 发布附件）与 `--install-dev`（按真实安装事务装入指定 data_dir），同时门禁仓库内 `plugins/<id>/plugin.json` 与 canonical 清单一致。source/frozen staging 一致性只覆盖源码、入口元数据与 staging，不等同于对最终冻结可执行文件的实际构建验证；可核查的范围以打包与许可证证据报告为准。
 - 九个 provider 的 parity 基线只允许 ids、timestamps、temporary paths、thread ordering 差异；`scripts/plugin_docs_check.py` 读取 Todo1 inventory、canonical manifest 和三份架构文档，防止文档脱离当前入口和边界；`fixtures/plugin-parity/docs-invalid/` 与 `fixtures/plugin-parity/docs-conflicting-nonfeatures/` 分别覆盖缺失事实和矛盾非功能声明。
 - 许可证、来源和发布范围见 `docs/plugin-license-matrix.json`、`NOTICE`、`LICENSES/` 与 `THIRD-PARTY-NOTICES/`。外部下载的微信 helper 及其 CMake/OpenSSL 输入不随制品交付；本地 helper 源码映射不构成外部 helper EXE 的来源到二进制可复现性证明。
 - 这是固定官方包的重组边界，不提供 marketplace 或不受信任插件沙箱。
+- 官方插件不随安装包（冻结产物与各平台安装包）分发、也不随应用启动自动加载：首次使用在设置「插件」中从 GitHub 仓库导入（推荐，默认匹配当前版本 tag，失败回落 HEAD，直连失败经 GitHub 镜像重试）或选择官方插件 ZIP 导入，安装后仍由独立 worker 进程运行；未导入时对应导入/同步/LAN 入口隐藏或返回原有失败哨兵。旧版本平铺种子的 `bundled` 副本会在启动时清理，需重新导入。
 - 第三方插件仅支持本地 ZIP 安装、卸载与重启生效的启用管理；也不接收动态 Bridge、任意 HTML/JS 注入或任意执行能力。UI 仅限声明式 UI 注入白名单（`ui.json`）与插件详情页沙箱 iframe。
 
-`plugins/source.qqnt` 是实际 QQNT 算法包，入口为 `ohmymeme_plugin_qqnt:create_plugin`（`ohmymeme.plugins.v1`）。实例通过 operation 临时目录和 `ImportSink` 工作；昵称缓存、用户输出路径、外部导出覆盖校验、线程和数据库生命周期均属于宿主。旧 `ohmymeme.integrations.imports.qqnt` 保留兼容接口。完整九包源码安装与 frozen 收集由 `scripts/plugin_packaging.py` 统一校验。
+`plugins/source.qqnt` 是实际 QQNT 算法包，入口为 `ohmymeme_plugin_qqnt:create_plugin`（`ohmymeme.plugins.v1`）。实例通过 operation 临时目录和 `ImportSink` 工作；昵称缓存、用户输出路径、外部导出覆盖校验、线程和数据库生命周期均属于宿主。旧 `ohmymeme.integrations.imports.qqnt` 保留兼容接口。完整九包源码、仓库 `plugin.json` 与发布 ZIP 由 `scripts/plugin_packaging.py` 统一校验。
 
 `plugins/source.telegram` 和 `plugins/source.douyin` 分别持有 Telegram 解密/转换/批量导入与抖音协议/ABogus 算法，工厂为 `ohmymeme_plugin_telegram:create_plugin`、`ohmymeme_plugin_douyin:create_plugin`。进度、取消和子进程清单按实例隔离；passcode/Cookie 仅从 operation 临时密钥读取，输出经宿主 policy 脱敏，结束后清除。旧模块保留公开调用接口，不保存算法副本。
 
 `plugins/source.wechat` 持有微信账号检测、helper JSON 协议、源 SQLite/WAL 解密与 CDN 下载算法，入口为 `ohmymeme.plugins.v1:source.wechat = ohmymeme_plugin_wechat:create_plugin`。helper 持久缓存、发布 SHA-256 和 ResourceLocator/offsets 定位仍由宿主保管，只把校验后的 helper 与 offsets 的 operation 内副本交给插件。读取的是用户微信源库，不是应用数据库；下载结果仅交 `ImportSink`，不直接写入应用 DB、缓存或 manifest。保留 masked/RVA 协议、CDN 白名单、逐跳 SSRF 与 MD5/图片字节校验，缺少真实 helper 哈希时默认拒绝。取消和 90 秒 helper 超时通过宿主 OperationCoordinator 回收进程，等待退出后清理临时目录。
 
-四个默认导入界面沿用原标签、参数、结果与失败哨兵，宿主固定 dispatcher 为同一提供方保留同一实例的进度/取消会话；缺失、禁用、不兼容的包不会回退到其他提供方。旧 `ohmymeme.integrations.imports.wechat` 仅保留发布 ABI 与宿主 helper 资源策略。九个官方包可通过 `mise exec -- python scripts/plugin_packaging.py --install-editable-official` 配合九个包路径离线安装；冻结构建会从同一 staging 收集模块、入口元数据和 manifest。
+四个默认导入界面沿用原标签、参数、结果与失败哨兵，宿主固定 dispatcher 为同一提供方保留同一实例的进度/取消会话；缺失、禁用、不兼容的包不会回退到其他提供方。旧 `ohmymeme.integrations.imports.wechat` 仅保留发布 ABI 与宿主 helper 资源策略。九个官方包可通过 `mise exec -- python scripts/plugin_packaging.py --install-editable-official` 配合九个包路径离线安装（开发/测试用）；发布 ZIP 由 `mise run plugins-pack`（等价 `--pack-zips --out dist/plugins`）生成，冻结产物不再收集插件模块，官方插件按上述按需导入模型加载。
 
 ### 下载
 
