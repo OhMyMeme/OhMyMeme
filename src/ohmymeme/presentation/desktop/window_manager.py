@@ -1992,6 +1992,83 @@ class WebUI:
                 if isinstance(cache, dict):
                     cache.pop(plugin_id, None)
 
+        @app.route("/api/plugins/github/inspect", method="POST")
+        def plugin_github_inspect():
+            # GitHub 仓库预览：下载解析 plugins/{id}，不落盘
+            from ohmymeme.core.plugins.runtime import github_source, seeding
+
+            payload = bottle.request.json or {}
+            plugin_id = payload.get("plugin")
+            if not isinstance(plugin_id, str) or not plugin_id:
+                bottle.response.status = 400
+                return {"ok": False, "error": "plugin id required"}
+            repo = payload.get("repo") or github_source.OFFICIAL_REPO
+            ref = payload.get("ref") or ""
+            fetched = None
+            try:
+                from ohmymeme import __version__
+
+                fetched = github_source.fetch_plugin(
+                    repo, ref, plugin_id, app_version=__version__
+                )
+                return {
+                    "ok": True,
+                    "repo": fetched["repo"],
+                    "ref": fetched["ref"],
+                    "id": fetched["meta"]["id"],
+                    "name": fetched["meta"].get("name", plugin_id),
+                    "version": fetched["version"],
+                    "entry": fetched["meta"]["entry"],
+                    "official": plugin_id in seeding.OFFICIAL_IDS,
+                    "tree_sha256": fetched["tree_sha256"],
+                }
+            except github_source.PluginSeedError as error:
+                bottle.response.status = 400
+                return {"ok": False, "error": str(error)}
+            except Exception as error:
+                bottle.response.status = 400
+                return {"ok": False, "error": str(error)}
+            finally:
+                if fetched is not None:
+                    github_source.dispose(fetched)
+
+        @app.route("/api/plugins/github/install", method="POST")
+        def plugin_github_install():
+            # GitHub 仓库安装：经安装事务落盘并停止旧 worker
+            from ohmymeme.core.plugins.runtime import github_source
+
+            payload = bottle.request.json or {}
+            plugin_id = payload.get("plugin")
+            if not isinstance(plugin_id, str) or not plugin_id:
+                bottle.response.status = 400
+                return {"ok": False, "error": "plugin id required"}
+            repo = payload.get("repo") or github_source.OFFICIAL_REPO
+            ref = payload.get("ref") or ""
+            fetched = None
+            try:
+                from ohmymeme import __version__
+
+                fetched = github_source.fetch_plugin(
+                    repo, ref, plugin_id, app_version=__version__
+                )
+                entry = github_source.install_plugin(self._cfg.data_dir, fetched)
+                self._container.plugin_runtime.stop_plugin(entry["id"], "install")
+                self._drop_worker_cache(entry["id"])
+                return {
+                    "ok": True,
+                    "plugin": entry["id"],
+                    "version": entry["version"],
+                }
+            except github_source.PluginSeedError as error:
+                bottle.response.status = 400
+                return {"ok": False, "error": str(error)}
+            except Exception as error:
+                bottle.response.status = 400
+                return {"ok": False, "error": str(error)}
+            finally:
+                if fetched is not None:
+                    github_source.dispose(fetched)
+
         @app.route("/api/plugins/ui")
         def plugin_ui_contributions():
             # 聚合已装插件的声明式贡献；无效 ui.json 只隔离该插件

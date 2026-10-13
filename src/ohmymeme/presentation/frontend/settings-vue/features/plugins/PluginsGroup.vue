@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { ref, reactive, onMounted, onUnmounted } from 'vue'
+import { ref, reactive, computed, onMounted, onUnmounted } from 'vue'
 import { NButton, NCheckbox, NInput, NInputNumber, NSelect, NTag, NUpload, useDialog } from 'naive-ui'
 import type { UploadFileInfo } from 'naive-ui'
 import { showToast, markDirty, disabledPlugins } from '../../shared/store'
@@ -42,6 +42,19 @@ interface PluginDetail {
   frames: FrameView[]
 }
 
+interface GithubPreview {
+  ok?: boolean
+  error?: string
+  repo: string
+  ref: string
+  id: string
+  name: string
+  version: string
+  entry: string
+  official?: boolean
+  tree_sha256: string
+}
+
 // 插件列表与其声明式 UI 投影
 const plugins = ref<PluginRow[]>([])
 const contributions = ref<PluginUIContribution[]>([])
@@ -55,6 +68,18 @@ const openDetails = reactive<Record<string, boolean>>({})
 const detailData = reactive<Record<string, PluginDetail>>({})
 // NUpload 不自动上传，仅承载本地文件选择
 const installFiles = ref<UploadFileInfo[]>([])
+// GitHub 导入表单状态与最近一次预览结果
+const githubRepo = ref('OhMyMeme/OhMyMeme')
+const githubRef = ref('')
+const githubPlugin = ref<string | null>(null)
+const githubPreview = ref<GithubPreview | null>(null)
+const githubBusy = ref(false)
+
+// 官方插件 id 作为 GitHub 导入下拉候选（filterable + tag 允许手输）
+const githubOptions = computed<{ label: string; value: string }[]>(() =>
+  plugins.value.filter((p) => p.official).map((p) => ({ label: p.id, value: p.id })),
+)
+
 
 const KIND_LABELS: Record<string, string> = { source: '导入来源', sync: '同步', transport: '传输' }
 
@@ -169,6 +194,63 @@ async function onPluginFileChange({ file }: { file: UploadFileInfo }) {
     showToast('安装失败：' + errMessage(error))
   } finally {
     installFiles.value = []
+  }
+}
+
+// 调用 GitHub 预览接口，成功时记录结果
+async function inspectGithub(): Promise<GithubPreview> {
+  if (!githubPlugin.value) throw new Error('请选择插件')
+  const resp = await fetch('/api/plugins/github/inspect', {
+    method: 'POST', credentials: 'same-origin',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ repo: githubRepo.value, ref: githubRef.value, plugin: githubPlugin.value }),
+  })
+  const data: GithubPreview = await resp.json()
+  if (!resp.ok || !data.ok) throw new Error(data.error || '预览失败')
+  githubPreview.value = data
+  return data
+}
+
+// 预览 GitHub 仓库插件
+async function previewGithub() {
+  githubBusy.value = true
+  try {
+    const data = await inspectGithub()
+    showToast('已获取预览：' + data.id + ' ' + data.version)
+  } catch (error) {
+    githubPreview.value = null
+    showToast('预览失败：' + errMessage(error))
+  } finally {
+    githubBusy.value = false
+  }
+}
+
+// 从 GitHub 导入插件（无预览时先预览再确认）
+async function importGithub() {
+  if (!githubPlugin.value) {
+    showToast('请选择插件')
+    return
+  }
+  githubBusy.value = true
+  try {
+    const preview = githubPreview.value && githubPreview.value.id === githubPlugin.value
+      ? githubPreview.value
+      : await inspectGithub()
+    if (!(await confirmDialog('从 GitHub 导入', '将安装 ' + preview.repo + ' 的 ' + preview.id + '（' + preview.version + '），确认？'))) return
+    const resp = await fetch('/api/plugins/github/install', {
+      method: 'POST', credentials: 'same-origin',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ repo: githubRepo.value, ref: githubRef.value, plugin: githubPlugin.value }),
+    })
+    const data: { ok?: boolean; error?: string; plugin?: string; version?: string } = await resp.json()
+    if (!resp.ok || !data.ok) throw new Error(data.error || '安装失败')
+    showToast('插件已安装：' + data.plugin + ' ' + data.version)
+    githubPreview.value = null
+    initPanel()
+  } catch (error) {
+    showToast('导入失败：' + errMessage(error))
+  } finally {
+    githubBusy.value = false
   }
 }
 
@@ -403,7 +485,7 @@ function setFieldValue(panel: PanelView, key: string, value: string | number | b
 <template>
   <div class="section">
     <div class="section-title">插件</div>
-    <p style="font-size:11.5px;color:var(--gray-11);margin-bottom:10px;line-height:1.6">官方插件不再随应用分发，需通过「选择插件安装包」从文件导入 ZIP（GitHub 导入入口在后续版本提供）。导入后在独立进程运行，禁用或启用后<b>重启应用</b>生效；禁用的插件不会加载，也不会出现在对应导入/同步入口。第三方插件同样通过本地 ZIP 包安装（安装前会再次确认），重载后按磁盘版本启动。</p>
+    <p style="font-size:11.5px;color:var(--gray-11);margin-bottom:10px;line-height:1.6">官方插件不再随应用分发，可从 GitHub 仓库导入（推荐）或通过「选择插件安装包」从文件导入 ZIP。导入后在独立进程运行，禁用或启用后<b>重启应用</b>生效；禁用的插件不会加载，也不会出现在对应导入/同步入口。第三方插件同样通过本地 ZIP 包安装（安装前会再次确认），重载后按磁盘版本启动。</p>
     <div style="display:flex;gap:8px;margin-bottom:8px;align-items:center">
       <NUpload
         v-model:file-list="installFiles"
@@ -414,6 +496,27 @@ function setFieldValue(panel: PanelView, key: string, value: string | number | b
       >
         <NButton size="small">选择插件安装包</NButton>
       </NUpload>
+    </div>
+
+    <div class="section-title" style="font-size:12px;margin:10px 0 6px">从 GitHub 导入</div>
+    <div style="display:flex;gap:8px;margin-bottom:6px;align-items:center;flex-wrap:wrap">
+      <NInput size="small" style="width:180px" placeholder="owner/repo" :value="githubRepo" @update:value="(v) => githubRepo = v" />
+      <NInput size="small" style="width:180px" placeholder="留空默认匹配当前版本 tag" :value="githubRef" @update:value="(v) => githubRef = v" />
+      <NSelect
+        size="small"
+        style="width:180px"
+        filterable
+        tag
+        placeholder="插件 ID"
+        :value="githubPlugin"
+        :options="githubOptions"
+        @update:value="(v) => { githubPlugin = v ? String(v) : null; githubPreview = null }"
+      />
+      <NButton size="small" :loading="githubBusy" @click="previewGithub">预览</NButton>
+      <NButton size="small" type="primary" :loading="githubBusy" @click="importGithub">导入</NButton>
+    </div>
+    <div v-if="githubPreview" style="font-size:11.5px;color:var(--gray-11);margin-bottom:8px">
+      预览：{{ githubPreview.id }} · {{ githubPreview.version }} · {{ githubPreview.entry }} · {{ githubPreview.ref }} · {{ githubPreview.tree_sha256.slice(0, 7) }}
     </div>
 
     <div v-if="!plugins.length" style="font-size:12px;color:var(--gray-11)">暂无插件</div>

@@ -80,7 +80,7 @@ def write_state(data_dir, state):
 
 
 # 计算包目录内容指纹（跳过缓存文件）
-def _tree_fingerprint(root):
+def tree_fingerprint(root):
     digest = hashlib.sha256()
     for file in sorted(root.rglob("*")):
         if not file.is_file() or file.suffix in _SKIP_SUFFIXES:
