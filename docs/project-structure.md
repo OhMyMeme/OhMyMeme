@@ -32,6 +32,7 @@ OhMyMeme/
 │   ├── sync.webdav/                               WebDAV 同步插件分发包
 │   └── transport.lan/                             局域网传输插件分发包
 ├── docs/                                         [source]
+│   ├── plugin-distribution-plan.md                官方插件按需分发与导入方案（GitHub / 本地 ZIP）
 │   ├── plugin-runtime-plan.md                     子进程插件体系落地计划与实施状态
 │   ├── plugin-ui-injection-plan.md                插件 UI 注入点规划（声明式 + iframe，待实施）
 │   ├── project-structure.md                       本项目结构地图
