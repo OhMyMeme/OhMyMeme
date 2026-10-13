@@ -119,9 +119,26 @@ jobs:
           name: nightly-macos-${{ matrix.arch }}
           path: dist/OhMyMeme-v*-${{ matrix.arch }}.dmg
 
+  nightly-plugins:
+    if: ${{ github.repository == 'OhMyMeme/OhMyMeme' }}
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: dev
+          fetch-depth: 0
+      - uses: jdx/mise-action@v4
+      - name: Pack official plugin ZIPs
+        run: python scripts/plugin_packaging.py --pack-zips --out dist/plugins --version nightly
+      - name: Upload plugin ZIPs
+        uses: actions/upload-artifact@v4
+        with:
+          name: nightly-plugins
+          path: dist/plugins/*.zip
+
   publish-nightly:
     if: ${{ github.repository == 'OhMyMeme/OhMyMeme' }}
-    needs: [nightly-windows, nightly-linux, nightly-macos]
+    needs: [nightly-windows, nightly-linux, nightly-macos, nightly-plugins]
     runs-on: ubuntu-24.04
     permissions:
       contents: write

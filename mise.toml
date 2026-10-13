@@ -123,3 +123,13 @@ description = 'Validate package contracts without building artifacts'
 tools = { python = '3.12' }
 run = 'python -m scripts.package_smoke'
 
+[tasks.plugins-pack]
+description = 'Pack the nine official plugin ZIP attachments into dist/plugins'
+tools = { python = '3.12' }
+run = 'python scripts/plugin_packaging.py --pack-zips --out dist/plugins'
+
+[tasks.plugins-install-dev]
+description = 'Install the nine official plugins through the real transaction (usage: mise run plugins-install-dev -- --data-dir <DIR> [--version X])'
+tools = { python = '3.12' }
+run = 'python scripts/plugin_packaging.py --install-dev'
+

@@ -317,44 +317,6 @@ def _write_hung_child(path, body):
     )
 
 
-@pytest.mark.parametrize("module_name", ["scripts.build", "scripts.nuitka.build"])
-@pytest.mark.parametrize("preexisting", [False, True])
-def test_staging_timeout_reclaims_only_owned_paths(
-    monkeypatch, tmp_path, module_name, preexisting
-):
-    # A real child creates a partial marker before the bounded timeout.
-    module = __import__(module_name, fromlist=["_"])
-    staging = tmp_path / "plugin-staging"
-    if preexisting:
-        staging.mkdir()
-        (staging / "keep.txt").write_text("keep", encoding="utf-8")
-    child = tmp_path / "hung-staging.py"
-    _write_hung_child(
-        child,
-        "args = __import__('sys').argv\n"
-        "staging = Path(args[args.index('--staging-dir') + 1])\n"
-        "staging.mkdir(parents=True, exist_ok=True)\n"
-        "(staging / 'partial.marker').write_text('partial', encoding='utf-8')\n",
-    )
-
-    monkeypatch.setattr(module, "PYTHON", sys.executable)
-    monkeypatch.setattr(module, "PLUGIN_PACKAGING", child)
-    monkeypatch.setattr(module, "PLUGIN_STAGING_DIR", staging)
-    monkeypatch.setattr(module, "PLUGIN_STAGING_MANIFEST", staging / "staging.json")
-    monkeypatch.setattr(module, "BUILD_TIMEOUT", 0.2)
-
-    with pytest.raises(SystemExit) as error:
-        module.stage_official_plugins()
-
-    assert error.value.code == 124
-    assert (staging / "partial.marker").exists() is False
-    if preexisting:
-        assert staging.is_dir()
-        assert (staging / "keep.txt").read_text(encoding="utf-8") == "keep"
-    else:
-        assert staging.exists() is False
-
-
 @pytest.mark.parametrize(
     ("module_name", "build_name", "check_name"),
     [
@@ -375,7 +337,6 @@ def test_compiler_timeout_reclaims_owned_outputs_and_preserves_existing(
     dist_root.mkdir()
     (build_root / "existing-output").write_text("keep", encoding="utf-8")
     (dist_root / "existing-output").write_text("keep", encoding="utf-8")
-    staging = build_root / "plugin-staging"
     partial_dist = dist_root / "partial-output"
     partial_build = build_root / "partial-output"
     child = tmp_path / "hung-compiler.py"
@@ -390,8 +351,6 @@ def test_compiler_timeout_reclaims_owned_outputs_and_preserves_existing(
 
     monkeypatch.setattr(module, "PROJECT_ROOT", project_root)
     monkeypatch.setattr(module, "BUILD_DIR", dist_root)
-    monkeypatch.setattr(module, "PLUGIN_STAGING_DIR", staging)
-    monkeypatch.setattr(module, "PLUGIN_STAGING_MANIFEST", staging / "staging.json")
     monkeypatch.setattr(module, "PACKAGE_DIR", tmp_path)
     monkeypatch.setattr(module, "SRC_DIR", tmp_path / "src")
     monkeypatch.setattr(module, "PYTHON", sys.executable)
@@ -402,12 +361,6 @@ def test_compiler_timeout_reclaims_owned_outputs_and_preserves_existing(
     if module_name == "scripts.build":
         monkeypatch.setattr(module, "ensure_vue_frontend", lambda: None)
 
-    def stage_stub():
-        staging.mkdir(parents=True)
-        (staging / "partial.marker").write_text("partial", encoding="utf-8")
-        return staging
-
-    monkeypatch.setattr(module, "stage_official_plugins", stage_stub)
     original_runner = module._run_bounded
 
     def compiler_stub(_command, **kwargs):
@@ -425,7 +378,6 @@ def test_compiler_timeout_reclaims_owned_outputs_and_preserves_existing(
             getattr(module, build_name)(target="Linux")
 
     assert error.value.code == 124
-    assert staging.exists() is False
     assert partial_dist.exists() is False
     assert partial_build.exists() is False
     assert (dist_root / "existing-output").read_text(encoding="utf-8") == "keep"

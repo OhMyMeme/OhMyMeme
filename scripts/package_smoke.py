@@ -236,6 +236,16 @@ def _validate_source_contracts():
         raise ContractViolation("PyInstaller package entrypoint is missing")
     if 'cmd.append(str(PACKAGE_DIR / "__main__.py"))' not in nuitka_build:
         raise ContractViolation("Nuitka package entrypoint is missing")
+    for forbidden in ("--collect-submodules", "ohmymeme_plugin"):
+        if forbidden in build_script:
+            raise ContractViolation(
+                "frozen plugins are still bundled by PyInstaller: %s" % forbidden
+            )
+    for forbidden in ("--include-plugin-directory", "ohmymeme_plugin"):
+        if forbidden in nuitka_build:
+            raise ContractViolation(
+                "frozen plugins are still bundled by Nuitka: %s" % forbidden
+            )
     for path in ("NOTICE", "LICENSES/GPL-3.0-only.txt", "LICENSES/README.md"):
         if not (ROOT / path).is_file():
             raise ContractViolation("notice source missing: %s" % path)

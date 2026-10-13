@@ -37,11 +37,18 @@ jobs:
         run: python scripts/build.py --installer-only
       - name: Package contract smoke
         run: python -m scripts.package_smoke --contract-only --target windows-x64
+      - name: Pack official plugin ZIPs
+        run: python scripts/plugin_packaging.py --pack-zips --out dist/plugins
       - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
           name: OhMyMeme-Windows
           path: dist/OhMyMeme-*-setup.exe
+      - name: Upload plugin ZIPs
+        uses: actions/upload-artifact@v4
+        with:
+          name: OhMyMeme-Plugins-Windows
+          path: dist/plugins/*.zip
 
   build-linux:
     if: ${{ github.event_name == 'workflow_dispatch' || github.event.workflow_run.conclusion == 'success' }}
@@ -75,6 +82,8 @@ jobs:
         run: python scripts/build.py --linux --arch ${{ matrix.arch }}
       - name: Package contract smoke
         run: python -m scripts.package_smoke --contract-only
+      - name: Pack official plugin ZIPs
+        run: python scripts/plugin_packaging.py --pack-zips --out dist/plugins
       - name: Upload artifacts
         uses: actions/upload-artifact@v4
         with:
@@ -83,6 +92,11 @@ jobs:
             dist/OhMyMeme-v*-${{ matrix.arch }}.AppImage
             dist/OhMyMeme-v*-${{ matrix.arch }}.deb
             dist/OhMyMeme-v*-${{ matrix.arch }}.rpm
+      - name: Upload plugin ZIPs
+        uses: actions/upload-artifact@v4
+        with:
+          name: OhMyMeme-Plugins-Linux-${{ matrix.arch }}
+          path: dist/plugins/*.zip
 
   build-macos:
     if: ${{ github.event_name == 'workflow_dispatch' || github.event.workflow_run.conclusion == 'success' }}
@@ -113,8 +127,15 @@ jobs:
         run: python scripts/build.py --macos --arch ${{ matrix.arch }}
       - name: Package contract smoke
         run: python -m scripts.package_smoke --contract-only --target macos-${{ matrix.arch }}
+      - name: Pack official plugin ZIPs
+        run: python scripts/plugin_packaging.py --pack-zips --out dist/plugins
       - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
           name: OhMyMeme-macOS-${{ matrix.arch }}
           path: dist/OhMyMeme-v*-${{ matrix.arch }}.dmg
+      - name: Upload plugin ZIPs
+        uses: actions/upload-artifact@v4
+        with:
+          name: OhMyMeme-Plugins-macOS-${{ matrix.arch }}
+          path: dist/plugins/*.zip

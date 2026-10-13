@@ -59,6 +59,13 @@ def _manifest_module():
     return import_module("ohmymeme.core.plugins.manifest")
 
 
+def _seeding_module():
+    # Load the host install transaction without importing the application layer.
+    if str(SRC) not in sys.path:
+        sys.path.insert(0, str(SRC))
+    return import_module("ohmymeme.core.plugins.runtime.seeding")
+
+
 def _distribution_name(provider_id):
     # Distribution names preserve the published official identity.
     suffix = (
@@ -1491,6 +1498,42 @@ def _run_pack_zips(out_dir, version):
     }
 
 
+def _run_install_dev(data_dir, version):
+    # Install the nine official ZIPs into a data dir through the real host transaction.
+    try:
+        seeding = _seeding_module()
+    except ImportError as error:
+        raise PackagingError([f"install-dev: cannot import host seeding: {error}"])
+    target = Path(data_dir)
+    target.mkdir(parents=True, exist_ok=True)
+    packages = []
+    errors = []
+    with tempfile.TemporaryDirectory(prefix="ohmymeme-plugin-install-dev-") as temp_dir:
+        for provider_id in _canonical_ids():
+            archive = Path(temp_dir) / _zip_filename(provider_id, version)
+            try:
+                build_plugin_zip(provider_id, version, archive)
+                resolved = seeding.install_plugin(str(target), archive)
+            except PackagingError as error:
+                errors.extend(error.errors)
+                continue
+            except (OSError, seeding.PluginSeedError) as error:
+                errors.append(f"{provider_id}.install: {error}")
+                continue
+            packages.append(
+                {"id": provider_id, "version": resolved.get("version", version)}
+            )
+    return {
+        "schema_version": SCHEMA_VERSION,
+        "mode": "install-dev",
+        "status": "PASS" if not errors else "REJECTED",
+        "version": version,
+        "data_dir": str(target),
+        "packages": packages,
+        "errors": errors,
+    }
+
+
 def _write_report(path, report):
     # Write deterministic evidence only after actual validation has completed.
     if path is None:
@@ -1504,13 +1547,14 @@ def _write_report(path, report):
 
 
 def _parse_args(argv):
-    # Keep source, staging, editable and pack-zips modes explicit and exclusive.
+    # Keep source, staging, editable, pack-zips and install-dev modes exclusive.
     parser = argparse.ArgumentParser(description=__doc__)
     modes = parser.add_mutually_exclusive_group(required=True)
     modes.add_argument("--source", action="store_true")
     modes.add_argument("--stage", action="store_true")
     modes.add_argument("--install-editable-official", nargs="+")
     modes.add_argument("--pack-zips", action="store_true")
+    modes.add_argument("--install-dev", action="store_true")
     parser.add_argument("--frozen-staging")
     parser.add_argument("--staging-dir")
     parser.add_argument("--staging-manifest")
@@ -1518,6 +1562,7 @@ def _parse_args(argv):
     parser.add_argument("--frozen-manifest", default=_posix_path(MANIFEST_TARGET))
     parser.add_argument("--report")
     parser.add_argument("--out")
+    parser.add_argument("--data-dir")
     parser.add_argument("--version")
     args = parser.parse_args(argv)
     if args.source and not all(
@@ -1544,6 +1589,8 @@ def _parse_args(argv):
         parser.error("editable installation does not accept staging arguments")
     if args.pack_zips and not args.out:
         parser.error("--pack-zips requires --out")
+    if args.install_dev and not args.data_dir:
+        parser.error("--install-dev requires --data-dir")
     return args
 
 
@@ -1570,6 +1617,9 @@ def main(argv=None):
         elif args.pack_zips:
             version = args.version or _app_version()
             report = _run_pack_zips(args.out, version)
+        elif args.install_dev:
+            version = args.version or _app_version()
+            report = _run_install_dev(args.data_dir, version)
         else:
             report = _run_editable(args.install_editable_official)
     except PackagingError as error:
@@ -1581,7 +1631,15 @@ def main(argv=None):
                 else (
                     "stage"
                     if args.stage
-                    else "pack-zips" if args.pack_zips else "install-editable-official"
+                    else (
+                        "pack-zips"
+                        if args.pack_zips
+                        else (
+                            "install-dev"
+                            if args.install_dev
+                            else "install-editable-official"
+                        )
+                    )
                 )
             ),
             "status": "REJECTED",

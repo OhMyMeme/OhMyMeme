@@ -27,21 +27,7 @@ SRC_DIR = PROJECT_ROOT / "src"
 PACKAGE_DIR = SRC_DIR / "ohmymeme"
 BUILD_DIR = PROJECT_ROOT / "dist"
 APP_NAME = "OhMyMeme"
-PLUGIN_PACKAGING = PROJECT_ROOT / "scripts" / "plugin_packaging.py"
-PLUGIN_STAGING_DIR = PROJECT_ROOT / "build" / "plugin-staging"
-PLUGIN_STAGING_MANIFEST = PLUGIN_STAGING_DIR / "staging-manifest.json"
 PLUGIN_MANIFEST_TARGET = "ohmymeme/config/plugin-manifest.json"
-OFFICIAL_PLUGIN_IDS = (
-    "source.qqnt",
-    "source.telegram",
-    "source.douyin",
-    "source.wechat",
-    "sync.ftp",
-    "sync.s3",
-    "sync.r2",
-    "sync.webdav",
-    "transport.lan",
-)
 OPTIONAL_RUNTIME_EXCLUSIONS = ("gmssl",)
 EXTERNAL_HELPER_BINARY_SUFFIXES = {".a", ".dll", ".exe", ".lib", ".obj", ".pdb"}
 
@@ -117,7 +103,6 @@ def _cleanup_owned_on_failure(paths):
 
 def _compiler_cleanup_paths():
     return (
-        PLUGIN_STAGING_DIR,
         BUILD_DIR,
         PROJECT_ROOT / "build",
         PROJECT_ROOT / (APP_NAME + ".build"),
@@ -186,38 +171,11 @@ def clean():
         shutil.rmtree(dist_src, ignore_errors=True)
 
 
-def stage_official_plugins():
-    """将官方插件和真实元数据放入一次性 frozen staging。"""
-    if not PLUGIN_PACKAGING.is_file():
-        print("ERROR: plugin packaging script not found:", PLUGIN_PACKAGING)
-        sys.exit(1)
-    command = [
-        PYTHON,
-        str(PLUGIN_PACKAGING),
-        "--stage",
-        "--staging-dir",
-        str(PLUGIN_STAGING_DIR),
-        "--staging-manifest",
-        str(PLUGIN_STAGING_MANIFEST),
-        "--source-manifest",
-        str(PROJECT_ROOT / "config" / "plugin-manifest.json"),
-    ]
-    print("运行: %s" % " ".join(command))
-    with _cleanup_owned_on_failure((PLUGIN_STAGING_DIR,)):
-        result = _run_bounded(command, cwd=str(PROJECT_ROOT))
-        if result.returncode != 0:
-            print("官方插件 staging 失败 (code=%d)" % result.returncode)
-            sys.exit(result.returncode)
-    return PLUGIN_STAGING_DIR
-
-
 def build_nuitka(onefile=False, use_clang=False, target=None):
     _assert_external_helper_not_packaged()
     check_nuitka()
     clean()
     with _cleanup_owned_on_failure(_compiler_cleanup_paths()):
-        plugin_staging = stage_official_plugins()
-
         if target is None:
             target = platform.system()
 
@@ -267,7 +225,7 @@ def build_nuitka(onefile=False, use_clang=False, target=None):
             + str(PROJECT_ROOT / "config" / "offsets.json")
             + "=ohmymeme/config/offsets.json",
             "--include-data-files="
-            + str(plugin_staging / PLUGIN_MANIFEST_TARGET)
+            + str(PROJECT_ROOT / "config" / "plugin-manifest.json")
             + "="
             + PLUGIN_MANIFEST_TARGET,
         ]
@@ -295,27 +253,6 @@ def build_nuitka(onefile=False, use_clang=False, target=None):
             "--include-package=bottle",
             "--disable-plugin=pywebview",
         ]
-
-        for provider_id in OFFICIAL_PLUGIN_IDS:
-            package_prefix = (
-                "ohmymeme_plugin_sync_"
-                if provider_id.startswith("sync.")
-                else "ohmymeme_plugin_"
-            )
-            pkg_opts.append(
-                "--include-package="
-                + package_prefix
-                + provider_id.rsplit(".", 1)[-1]
-            )
-            pkg_opts.append(
-                "--include-plugin-directory="
-                + str(PROJECT_ROOT / "plugins" / provider_id / "src")
-            )
-
-        for metadata_dir in sorted(plugin_staging.glob("*.dist-info")):
-            data_opts.append(
-                "--include-data-dir=" + str(metadata_dir) + "=" + metadata_dir.name
-            )
 
         if target == "Windows":
             pkg_opts += [

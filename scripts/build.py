@@ -30,21 +30,7 @@ SRC_DIR = PROJECT_ROOT / "src"
 PACKAGE_DIR = SRC_DIR / "ohmymeme"
 BUILD_DIR = PROJECT_ROOT / "dist"
 APP_NAME = "OhMyMeme"
-PLUGIN_PACKAGING = PROJECT_ROOT / "scripts" / "plugin_packaging.py"
-PLUGIN_STAGING_DIR = PROJECT_ROOT / "build" / "plugin-staging"
-PLUGIN_STAGING_MANIFEST = PLUGIN_STAGING_DIR / "staging-manifest.json"
 PLUGIN_MANIFEST_TARGET = "ohmymeme/config/plugin-manifest.json"
-OFFICIAL_PLUGIN_IDS = (
-    "source.qqnt",
-    "source.telegram",
-    "source.douyin",
-    "source.wechat",
-    "sync.ftp",
-    "sync.s3",
-    "sync.r2",
-    "sync.webdav",
-    "transport.lan",
-)
 OPTIONAL_RUNTIME_EXCLUSIONS = ("gmssl",)
 EXTERNAL_HELPER_BINARY_SUFFIXES = {".a", ".dll", ".exe", ".lib", ".obj", ".pdb"}
 
@@ -121,7 +107,6 @@ def _cleanup_owned_on_failure(paths):
 
 def _compiler_cleanup_paths():
     return (
-        PLUGIN_STAGING_DIR,
         BUILD_DIR,
         PROJECT_ROOT / "build",
         PROJECT_ROOT / (APP_NAME + ".spec"),
@@ -272,36 +257,9 @@ def clean():
     build_dir = PROJECT_ROOT / "build" / APP_NAME
     if build_dir.is_dir():
         shutil.rmtree(build_dir, ignore_errors=True)
-    if PLUGIN_STAGING_DIR.is_dir():
-        shutil.rmtree(PLUGIN_STAGING_DIR, ignore_errors=True)
     spec_file = PROJECT_ROOT / ("%s.spec" % APP_NAME)
     if spec_file.exists():
         spec_file.unlink()
-
-
-def stage_official_plugins():
-    """将官方插件和真实元数据放入一次性 frozen staging。"""
-    if not PLUGIN_PACKAGING.is_file():
-        print("ERROR: plugin packaging script not found:", PLUGIN_PACKAGING)
-        sys.exit(1)
-    command = [
-        PYTHON,
-        str(PLUGIN_PACKAGING),
-        "--stage",
-        "--staging-dir",
-        str(PLUGIN_STAGING_DIR),
-        "--staging-manifest",
-        str(PLUGIN_STAGING_MANIFEST),
-        "--source-manifest",
-        str(PROJECT_ROOT / "config" / "plugin-manifest.json"),
-    ]
-    print(L("running"), " ".join(command))
-    with _cleanup_owned_on_failure((PLUGIN_STAGING_DIR,)):
-        result = _run_bounded(command, cwd=str(PROJECT_ROOT))
-        if result.returncode != 0:
-            print("ERROR: official plugin staging failed (code=%d)" % result.returncode)
-            sys.exit(result.returncode)
-    return PLUGIN_STAGING_DIR
 
 
 def build_pyinstaller(target=None):
@@ -310,8 +268,6 @@ def build_pyinstaller(target=None):
     ensure_vue_frontend()
     clean()
     with _cleanup_owned_on_failure(_compiler_cleanup_paths()):
-        plugin_staging = stage_official_plugins()
-
         version = get_version()
         sep = ";" if IS_WINDOWS else ":"
 
@@ -335,29 +291,13 @@ def build_pyinstaller(target=None):
             + sep
             + "ohmymeme/config/offsets.json",
             "--add-data",
-            str(plugin_staging / PLUGIN_MANIFEST_TARGET)
+            str(PROJECT_ROOT / "config" / "plugin-manifest.json")
             + sep
             + PLUGIN_MANIFEST_TARGET,
             "--hidden-import", "ohmymeme.app.bootstrap",
             "--collect-all", "curl_cffi",
             str(PROJECT_ROOT / "scripts" / "launcher.py"),
         ]
-
-        for provider_id in OFFICIAL_PLUGIN_IDS:
-            package_prefix = (
-                "ohmymeme_plugin_sync_"
-                if provider_id.startswith("sync.")
-                else "ohmymeme_plugin_"
-            )
-            package_root = package_prefix + provider_id.rsplit(".", 1)[-1]
-            cmd += [
-                "--paths",
-                str(PROJECT_ROOT / "plugins" / provider_id / "src"),
-                "--collect-submodules",
-                package_root,
-            ]
-        for metadata_dir in sorted(plugin_staging.glob("*.dist-info")):
-            cmd += ["--add-data", str(metadata_dir) + sep + metadata_dir.name]
 
         exclude = [
             "numpy", "PyQt5", "PyQt5.QtCore", "PyQt5.QtGui",
