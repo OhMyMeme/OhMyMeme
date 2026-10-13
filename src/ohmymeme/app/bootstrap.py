@@ -41,7 +41,12 @@ def _ensure_vue_frontend():
     try:
         npx = "npx.cmd" if os.name == "nt" else "npx"
         if not dist_js.exists():
-            subprocess.run([npx, "vite", "build"], cwd=str(root), check=False, timeout=600)
+            subprocess.run(
+                [npx, "vite", "build"],
+                cwd=str(root),
+                check=False,
+                timeout=600,
+            )
         if not settings_js.exists():
             subprocess.run(
                 [npx, "vite", "build", "--config", "vite.settings.config.ts"],

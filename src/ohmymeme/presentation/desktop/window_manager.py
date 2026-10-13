@@ -72,7 +72,7 @@ from ohmymeme.services.sync import service as sync_module
 from .api.facades import JsApi, SettingsApi
 from .api.plugin_dispatch import compatibility_registry
 from .api.pywebview_adapter import PyWebViewAdapter
-from .bottle_app import install_security_hooks
+from .bottle_app import create_bottle_app, install_security_hooks
 from .import_workers import import_paths
 from .media import find_meme_file, thumbnail_path
 from .routes.media import original_mime_type
@@ -1801,7 +1801,8 @@ class WebUI:
 
     # --- Bottle 路由 ---
 
-    def _setup_bottle(self):
+    def build_bottle_app(self):
+        """构建完整 WSGI 应用（注册路由与安全钩子，不启动服务器）"""
         app = bottle.Bottle()
 
         install_security_hooks(app, bottle, self._port)
@@ -1915,8 +1916,9 @@ class WebUI:
                     "wb", suffix=".zip", delete=False, dir=str(self._cfg.data_dir)
                 ) as handle:
                     temp = handle.name
+                    body = bottle.request.body
                     while True:
-                        chunk = bottle.request.body.read(1024 * 1024)
+                        chunk = body.read(1024 * 1024)
                         if not chunk:
                             break
                         handle.write(chunk)
@@ -2241,7 +2243,16 @@ class WebUI:
                 )
             return bottle.static_file(filepath, root=str(self._html_dir))
 
-        bottle.run(app, host="127.0.0.1", port=self._port, quiet=True)
+        return app
+
+    def _setup_bottle(self):
+        """启动本地 Bottle 服务器"""
+        bottle.run(
+            create_bottle_app(self, bottle),
+            host="127.0.0.1",
+            port=self._port,
+            quiet=True,
+        )
 
     # --- 缓存扫描 ---
 

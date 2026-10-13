@@ -223,13 +223,19 @@ function installGeometry(): Geometry {
   const rowRect = (index: number) => fakeRect(0, GEOM_TOP + index * rowPitch - scrollState.value, GEOM_WRAP_WIDTH, rowPitch)
   const cardRect = (index: number, col: number) => fakeRect(col * colPitch, GEOM_TOP + index * rowPitch - scrollState.value, cardWidth, cardHeight)
   for (const row of Array.from(grid.querySelectorAll<HTMLElement>('.virtual-meme-row'))) {
-    row.getBoundingClientRect = () => rowRect(Math.max(0, Math.floor(Number(row.dataset['rowStart']) / cols)))
+    Object.defineProperty(row, 'getBoundingClientRect', {
+      configurable: true,
+      value: () => rowRect(Math.max(0, Math.floor(Number(row.dataset['rowStart']) / cols))),
+    })
     for (const card of Array.from(row.querySelectorAll<HTMLElement>('.meme-card'))) {
-      card.getBoundingClientRect = () => {
-        const slot = Number(card.dataset['slotIndex'])
-        if (!Number.isInteger(slot)) return cardRect(Math.floor(Number(row.dataset['rowStart']) / cols), 0)
-        return cardRect(Math.floor(slot / cols), slot % cols)
-      }
+      Object.defineProperty(card, 'getBoundingClientRect', {
+        configurable: true,
+        value: () => {
+          const slot = Number(card.dataset['slotIndex'])
+          if (!Number.isInteger(slot)) return cardRect(Math.floor(Number(row.dataset['rowStart']) / cols), 0)
+          return cardRect(Math.floor(slot / cols), slot % cols)
+        },
+      })
     }
   }
   return {
@@ -1431,6 +1437,11 @@ describe('MainWindow 虚拟网格拖拽接线', () => {
     document.dispatchEvent(pointerEvent('pointercancel', { buttons: 0 }))
     await nextTick()
     expect(document.querySelector('.drag-ghost')).toBeNull()
+    // C 结束：手势取消后的视口补发请求命中缓存区，按数据层语义撤销了旧失败与错误入口；
+    // D 阶段验证的是"存在未解决失败时重试入口可见且禁用"，这里重新制造一次分页失败
+    await nextTick()
+    await expect(model.ensureRange(400, 600)).resolves.toBe(false)
+    expect(state.loadError).toBe(true)
     // D. saving（RPC 挂起）：不取消保存、不重复提交
     cardOf(33).dispatchEvent(pointerEvent('pointerdown', { clientX: 56, clientY: geometry.rowTop(8) + 30, buttons: 1 }))
     document.dispatchEvent(pointerEvent('pointermove', { clientX: geometry.colLeft(3) + 20, clientY: geometry.rowTop(8) + 30, buttons: 1 }))

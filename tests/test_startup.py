@@ -783,8 +783,10 @@ def test_sorting_visual_feedback_static_contract():
     )
     assert re.search(r"'select-enabled':\s*sortEnabled", main_window)
     # folder 头块先于虚拟列表起点，且不包含 Virtualizer；依赖库已彻底移除
-    assert 'class="meme-card folder-card"' in main_window.split("<Virtualizer", 1)[0]
-    assert main_window.index("folder-grid") < main_window.index("<Virtualizer")
+    virtualizer_tag = re.search(r"<Virtualizer(?![A-Za-z])", main_window)
+    assert virtualizer_tag, "virtual list tag must remain locally inspectable"
+    assert 'class="meme-card folder-card"' in main_window[: virtualizer_tag.start()]
+    assert main_window.index('class="meme-grid folder-grid"') < virtualizer_tag.start()
     assert "drag-select" not in main_window
     assert "drag-select" not in main_ts
     toggle_sort = re.search(

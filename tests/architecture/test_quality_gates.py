@@ -112,9 +112,9 @@ def test_frontend_gate_has_typed_test_dependencies_and_commands() -> None:
     assert "Pager.vue" in _source("tests/frontend/quality_gate.test.js")
     assert "npm exec playwright install chromium" in _source("mise.toml")
     tsconfig = _source("tsconfig.json")
-    assert (
-        '"src/ohmymeme/presentation/frontend/main/features/memes/**/*.vue"' in tsconfig
-    )
+    assert '"src/ohmymeme/presentation/frontend/main/app/**/*.vue"' in tsconfig
+    assert '"src/ohmymeme/presentation/frontend/main/features/**/*.vue"' in tsconfig
+    assert '"src/ohmymeme/presentation/frontend/main/shared/**/*.ts"' in tsconfig
 
 
 def test_check_runs_package_smoke_and_browser_tests() -> None:

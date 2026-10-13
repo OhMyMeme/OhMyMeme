@@ -149,14 +149,11 @@ def test_real_bottle_consumer_and_no_provider_execution(monkeypatch, tmp_path):
     # Call the registered production route without starting a server or provider.
     from ohmymeme.presentation.desktop import window_manager as desktop
 
-    run = Mock()
-    monkeypatch.setattr(desktop.bottle, "run", run)
     registry_get = Mock(side_effect=AssertionError("must not load provider"))
     monkeypatch.setattr(plugin_dispatch.PluginRegistry, "get", registry_get)
-    desktop.WebUI._setup_bottle(
+    app = desktop.WebUI.build_bottle_app(
         SimpleNamespace(_port=17899, _html_dir=ROOT / "src/webui")
     )
-    app = run.call_args.args[0]
     route = next(
         route.callback for route in app.routes if route.rule == "/api/plugin-ui"
     )
@@ -169,8 +166,9 @@ def test_real_bottle_consumer_and_no_provider_execution(monkeypatch, tmp_path):
         (ROOT / "fixtures/plugin-parity/ui-invalid.json").read_text("utf-8")
     )
     (tmp_path / "plugin-ui.json").write_text(json.dumps(invalid), "utf-8")
-    desktop.WebUI._setup_bottle(SimpleNamespace(_port=17899, _html_dir=tmp_path))
-    app = run.call_args.args[0]
+    app = desktop.WebUI.build_bottle_app(
+        SimpleNamespace(_port=17899, _html_dir=tmp_path)
+    )
     route = next(
         route.callback for route in app.routes if route.rule == "/api/plugin-ui"
     )

@@ -918,7 +918,10 @@ export function useMemes() {
         if (disposed || life !== lifeGen) return false
         // 异步返回后写状态前统一校验上下文：旧初始化不得写入新查询的元数据/窗口
         if (gen !== state.queryGen || !snapshotMatchesCurrent(snapshot)) return true
-        state.allTags = Array.isArray(data['tags']) ? [...data['tags']] : []
+        const rawTags = data['tags']
+        state.allTags = Array.isArray(rawTags)
+          ? rawTags.filter((tag): tag is string => typeof tag === 'string')
+          : []
         state.collections = [...initCollections]
         state.showStartupAnimation = data['show_startup_animation'] !== false
         state.startupBgColor = (data['startup_bg_color'] as string) || '#000000'

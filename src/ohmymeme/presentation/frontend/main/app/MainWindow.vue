@@ -18,9 +18,12 @@ import TagEditor from '../features/tags/TagEditor.vue'
 import UpdateDialog from '../features/updates/UpdateDialog.vue'
 import type { Meme } from '../shared/types'
 import { api } from '../shared/bridge'
-import { NButton, NInput, NTag, NModal, NSpin, NDropdown, useMessage, type DropdownMixedOption } from 'naive-ui'
+import { NButton, NInput, NTag, NModal, NSpin, NDropdown, useMessage, type DropdownDividerOption, type DropdownGroupOption, type DropdownOption, type DropdownRenderOption } from 'naive-ui'
 import { ArrowUpDown, ArrowUp, PanelLeft, X, Heart, Folder, ImagePlus, Check, Ellipsis, CloudUpload, CloudDownload, RefreshCw, Settings } from '@lucide/vue'
 import { lanConfirmVisible, lanConfirmDevice, confirmLanDevice, onLanConfirmShowChange } from '../features/lan/showLanDeviceConfirm'
+
+// naive-ui 根入口未导出 DropdownMixedOption（2.45.3），按联合等价声明本地别名
+type DropdownMixedOption = DropdownOption | DropdownGroupOption | DropdownDividerOption | DropdownRenderOption
 
 // 后端 evaluate_js 刷新入口（与 main.ts 声明一致；main.ts 不在类型检查范围）
 declare global {

@@ -34,3 +34,8 @@ def install_security_hooks(app, bottle, port: int):
         )
         if bottle.request.path.startswith("/api/"):
             bottle.response.headers["Cache-Control"] = "no-store"
+
+
+def create_bottle_app(owner, bottle, native=None):
+    """从 WebUI 实例构建完整 WSGI 应用（不启动服务器；bottle/native 为调用方形参）。"""
+    return owner.build_bottle_app()

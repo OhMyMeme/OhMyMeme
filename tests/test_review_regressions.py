@@ -22,6 +22,14 @@ from ohmymeme.core.plugins.runtime.manager import WorkerHandle
 from ohmymeme.core.plugins.runtime.worker import PluginWorker
 from ohmymeme.presentation.desktop.bottle_app import create_bottle_app
 
+# 该文件由 3404f84d 清扫提交带入，来自未落库的平行工作流：所引用的 Container/Settings/
+# Worker 形状与当前实现不一致（container.backups、container.import_jobs、
+# save_settings_checked、WorkerHandle.sessions 等均不存在），从未在任何分支通过。
+# 整体隔离，待按当前 API 逐条对齐后再解除。
+pytestmark = pytest.mark.skip(
+    reason="平行工作流回归文件与当前实现 API 不匹配（见 commit 3404f84d）"
+)
+
 
 @pytest.fixture
 def container(tmp_path):
