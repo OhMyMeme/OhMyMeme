@@ -6,16 +6,28 @@ import json
 import os
 import shlex
 import socket
+import sys
 import time
+from pathlib import Path
 from unittest.mock import Mock
 
 import pytest
-from plugin_wechat_qa import source_database
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
+
+from plugin_fixtures import install_official  # noqa: E402
+from plugin_wechat_qa import source_database  # noqa: E402
 
 from ohmymeme.app.container import Container
 from ohmymeme.core.domain import TaskKind
 from ohmymeme.integrations.imports import wechat
 from ohmymeme.presentation.desktop.window_manager import SettingsApi
+
+
+@pytest.fixture(autouse=True)
+def install_wechat_plugin(tmp_path):
+    # 官方插件不再自动种子，显式经真实安装事务装入宿主 data_dir
+    install_official(tmp_path / "host" / "data", "source.wechat")
 
 
 @pytest.fixture(autouse=True)

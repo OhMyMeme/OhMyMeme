@@ -6,6 +6,7 @@ import io
 
 import pytest
 from PIL import Image
+from plugin_fixtures import install_official
 
 from ohmymeme.app.operation_coordinator import OperationCoordinator
 from ohmymeme.app.runtime_imports import RuntimeImportWorker
@@ -62,6 +63,7 @@ class _Host:
         self.data_dir.mkdir(parents=True, exist_ok=True)
         self.cache_dir = self.data_dir / "cache"
         self.config = _Config(self.data_dir, self.cache_dir)
+        install_official(self.data_dir, "source.qqnt")
         self.manager = PluginRuntimeManager(self.data_dir)
         self.coordinator = OperationCoordinator()
         self.assets = AssetPaths(self.data_dir, self.cache_dir)

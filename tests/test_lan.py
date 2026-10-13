@@ -14,6 +14,7 @@ os.environ["OHMYMEME_TEST"] = "1"
 
 import ohmymeme_plugin_lan as transport
 import pytest
+from plugin_fixtures import install_official
 
 import ohmymeme.core.config as config_module
 import ohmymeme.core.database as database
@@ -144,6 +145,7 @@ def lan_env(tmp_path):
     database._db = db
     global _LAN_RUNTIME
     _LAN_RUNTIME = PluginRuntimeManager(tmp_path / "runtime")
+    install_official(tmp_path / "runtime", "transport.lan")
     _LAN_RUNTIME.ensure("transport.lan")
 
     lan.stop()
@@ -707,6 +709,7 @@ def test_no_secret_server(tmp_path):
     cfg.set("cache_dir", str(tmp_path / "cache"))
     db = MemeDB(tmp_path / "test.db")
     runtime = PluginRuntimeManager(tmp_path / "runtime")
+    install_official(tmp_path / "runtime", "transport.lan")
     old_cfg = config_module._config
     old_db = database._db
     config_module._config = cfg

@@ -292,7 +292,6 @@ class PluginRuntimeManager:
         self._queries = {}
         self._quarantine = {}
         self._crashes = {}
-        self._seeded = False
         self._lock = threading.RLock()
         self._closed = False
         self._heartbeat = threading.Thread(
@@ -300,16 +299,9 @@ class PluginRuntimeManager:
         )
         self._heartbeat.start()
 
-    # 默认从用户插件目录解析活动版本；缺失时先种子官方九包
+    # 默认从用户插件目录解析活动版本；未安装时抛出 plugin_missing
     def _default_resolver(self, plugin_id):
-        try:
-            return seeding.resolve_plugin(self._data_dir, plugin_id)
-        except seeding.PluginSeedError:
-            with self._lock:
-                if not self._seeded:
-                    seeding.seed_official_plugins(self._data_dir)
-                    self._seeded = True
-            return seeding.resolve_plugin(self._data_dir, plugin_id)
+        return seeding.resolve_plugin(self._data_dir, plugin_id)
 
     # 确保插件 worker 已就绪，必要时启动或重启
     def ensure(self, plugin_id):

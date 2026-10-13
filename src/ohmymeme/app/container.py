@@ -2,6 +2,7 @@
 
 """应用对象图和生命周期。"""
 
+import logging
 import threading
 from pathlib import Path
 
@@ -13,7 +14,7 @@ from ohmymeme.core.imports import HostImportSink, ImageImportService
 from ohmymeme.core.manifest import build as build_manifest
 from ohmymeme.core.plugins.manifest import CANONICAL_PROVIDERS, canonical_descriptor
 from ohmymeme.core.plugins.registry import PluginRegistry
-from ohmymeme.core.plugins.runtime import PluginRuntimeManager
+from ohmymeme.core.plugins.runtime import PluginRuntimeManager, seeding
 from ohmymeme.core.recovery import StorageRecovery
 from ohmymeme.integrations.platform.hotkey import GlobalHotkey
 from ohmymeme.integrations.platform.system import is_auto_start_enabled, set_auto_start
@@ -27,6 +28,8 @@ from .operation_coordinator import OperationCoordinator
 from .pull_commit_service import PullCommitService
 from .remote_mutation_coordinator import RemoteMutationCoordinator
 from .settings import Settings
+
+logger = logging.getLogger(__name__)
 
 
 class Container:
@@ -85,6 +88,10 @@ class Container:
             - disabled
         )
         self.plugin_runtime = PluginRuntimeManager(self.config.data_dir)
+        try:
+            seeding.purge_legacy_bundled(self.config.data_dir)
+        except Exception:
+            logger.exception("plugin legacy migration failed")
         self.sync = SyncService(
             self.config,
             self.db,

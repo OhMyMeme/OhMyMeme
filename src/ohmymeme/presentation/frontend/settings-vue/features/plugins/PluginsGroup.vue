@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { ref, reactive, onMounted, onUnmounted } from 'vue'
-import { NButton, NCheckbox, NInput, NInputNumber, NSelect, NUpload, useDialog } from 'naive-ui'
+import { NButton, NCheckbox, NInput, NInputNumber, NSelect, NTag, NUpload, useDialog } from 'naive-ui'
 import type { UploadFileInfo } from 'naive-ui'
 import { showToast, markDirty, disabledPlugins } from '../../shared/store'
 import type {
@@ -22,6 +22,8 @@ interface PluginRow {
   version: string
   versions?: string[]
   enabled: boolean
+  available?: boolean
+  official?: boolean
 }
 
 interface PanelView {
@@ -95,13 +97,14 @@ function hasDetail(provider: string): boolean {
 // 元信息行文案
 function metaText(plugin: PluginRow): string {
   const kind = KIND_LABELS[plugin.kind] || plugin.kind
-  const origin = plugin.origin === 'bundled' ? '官方' : '第三方'
-  return [kind, origin, plugin.version].filter(Boolean).join(' · ')
+  const origin = plugin.official ? '官方' : '第三方'
+  const version = plugin.available === false ? '未安装' : plugin.version
+  return [kind, origin, version].filter(Boolean).join(' · ')
 }
 
 // 是否显示版本回退控件
 function canRollback(plugin: PluginRow): boolean {
-  return plugin.origin !== 'bundled' && (plugin.versions || []).length >= 2
+  return plugin.available !== false && (plugin.versions || []).length >= 2
 }
 
 // 版本下拉选项
@@ -400,7 +403,7 @@ function setFieldValue(panel: PanelView, key: string, value: string | number | b
 <template>
   <div class="section">
     <div class="section-title">插件</div>
-    <p style="font-size:11.5px;color:var(--gray-11);margin-bottom:10px;line-height:1.6">官方插件随应用分发并在后台独立进程运行。禁用或启用后<b>重启应用</b>生效；禁用的插件不会加载，也不会出现在对应导入/同步入口。第三方插件可通过本地 ZIP 包安装（安装前会再次确认），重载后按磁盘版本启动。</p>
+    <p style="font-size:11.5px;color:var(--gray-11);margin-bottom:10px;line-height:1.6">官方插件不再随应用分发，需通过「选择插件安装包」从文件导入 ZIP（GitHub 导入入口在后续版本提供）。导入后在独立进程运行，禁用或启用后<b>重启应用</b>生效；禁用的插件不会加载，也不会出现在对应导入/同步入口。第三方插件同样通过本地 ZIP 包安装（安装前会再次确认），重载后按磁盘版本启动。</p>
     <div style="display:flex;gap:8px;margin-bottom:8px;align-items:center">
       <NUpload
         v-model:file-list="installFiles"
@@ -423,19 +426,22 @@ function setFieldValue(panel: PanelView, key: string, value: string | number | b
           </span>
           <span class="plugin-actions">
             <NButton v-if="hasDetail(plugin.id)" size="small" @click="toggleDetail(plugin.id)">{{ openDetails[plugin.id] ? '收起' : '详情' }}</NButton>
-            <template v-if="canRollback(plugin)">
-              <NSelect
-                size="small"
-                class="plugin-version"
-                :value="rollbackSel[plugin.id] ?? plugin.version"
-                :options="versionOptions(plugin)"
-                @update:value="(v) => rollbackSel[plugin.id] = String(v ?? '')"
-              />
-              <NButton size="small" @click="rollbackPlugin(plugin.id)">切换</NButton>
+            <template v-if="plugin.available !== false">
+              <template v-if="canRollback(plugin)">
+                <NSelect
+                  size="small"
+                  class="plugin-version"
+                  :value="rollbackSel[plugin.id] ?? plugin.version"
+                  :options="versionOptions(plugin)"
+                  @update:value="(v) => rollbackSel[plugin.id] = String(v ?? '')"
+                />
+                <NButton size="small" @click="rollbackPlugin(plugin.id)">切换</NButton>
+              </template>
+              <NButton size="small" type="error" tertiary @click="uninstallPlugin(plugin.id)">卸载</NButton>
+              <NButton size="small" @click="reloadPlugin(plugin.id)">重载</NButton>
+              <NCheckbox :checked="enabledState[plugin.id] === true" aria-label="启用插件" @update:checked="(v) => onToggleEnabled(plugin.id, v)" />
             </template>
-            <NButton v-if="plugin.origin !== 'bundled'" size="small" type="error" tertiary @click="uninstallPlugin(plugin.id)">卸载</NButton>
-            <NButton size="small" @click="reloadPlugin(plugin.id)">重载</NButton>
-            <NCheckbox :checked="enabledState[plugin.id] === true" aria-label="启用插件" @update:checked="(v) => onToggleEnabled(plugin.id, v)" />
+            <NTag v-else size="small">未安装</NTag>
           </span>
         </div>
 

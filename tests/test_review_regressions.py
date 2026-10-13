@@ -12,6 +12,7 @@ from wsgiref.util import setup_testing_defaults
 import bottle
 import pytest
 from PIL import Image
+from plugin_fixtures import install_official
 
 from ohmymeme.app.container import Container
 from ohmymeme.core import assets
@@ -235,7 +236,7 @@ def test_closing_settings_keeps_lan_running(container, monkeypatch):
 
 
 def test_seeded_official_factory_is_loaded_from_active_version(container, monkeypatch):
-    seeding.seed_official_plugins(container.config.data_dir)
+    install_official(container.config.data_dir, "source.qqnt")
     spec = seeding.resolve_plugin(container.config.data_dir, "source.qqnt")
     worker = PluginWorker("source.qqnt", "fixture")
     with monkeypatch.context() as scoped:

@@ -1,9 +1,15 @@
 # pyright: basic
 
 import socket
+import sys
 import threading
+from pathlib import Path
 
 import pytest
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+
+from plugin_fixtures import install_official  # noqa: E402
 
 from ohmymeme.app.operation_coordinator import OperationCoordinator
 from ohmymeme.core.domain import TaskKind, TaskState
@@ -43,6 +49,7 @@ def test_lan_service_shutdown_owns_multiple_sessions_and_confirmation_waits(
 
     coordinator = OperationCoordinator()
     runtime = PluginRuntimeManager(tmp_path / "runtime")
+    install_official(tmp_path / "runtime", "transport.lan")
     server = LanServer(coordinator=coordinator, plugin_runtime=runtime)
     pending = threading.Event()
     confirm_ids = []

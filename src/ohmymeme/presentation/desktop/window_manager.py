@@ -1852,20 +1852,23 @@ class WebUI:
             from ohmymeme.core.plugins.runtime import seeding
             from ohmymeme.presentation.desktop.api.ui_contributions import SCREENS
 
-            try:
-                seeding.seed_official_plugins(self._cfg.data_dir)
-            except Exception:
-                logger.exception("official plugin seeding failed")
             labels = {provider: label for provider, label, *_ in SCREENS}
             disabled = self._cfg.get("disabled_plugins", None)
             disabled = set(disabled) if isinstance(disabled, (list, tuple)) else set()
             state = seeding.read_state(self._cfg.data_dir)
+            entries = state.get("plugins") or {}
             rows = []
             for provider_id, _package_root, _capabilities in CANONICAL_PROVIDERS:
-                record = (state.get("plugins") or {}).get(provider_id) or {}
+                record = entries.get(provider_id) or {}
                 active = record.get("active")
-                version = ((record.get("versions") or {}).get(active) or {}).get(
-                    "version", ""
+                versions = dict(record.get("versions") or {})
+                available = (
+                    bool(active)
+                    and (
+                        seeding.plugins_dir(self._cfg.data_dir)
+                        / provider_id
+                        / str(active)
+                    ).is_dir()
                 )
                 rows.append(
                     {
@@ -1873,15 +1876,15 @@ class WebUI:
                         "label": labels.get(provider_id, provider_id),
                         "kind": provider_id.split(".", 1)[0],
                         "origin": record.get("origin", ""),
-                        "version": version,
+                        "official": True,
+                        "version": (
+                            (versions.get(active) or {}).get("version", "")
+                            if available
+                            else ""
+                        ),
                         "enabled": provider_id not in disabled,
-                        "available": bool(active)
-                        and (
-                            seeding.plugins_dir(self._cfg.data_dir)
-                            / provider_id
-                            / str(active)
-                        ).is_dir(),
-                        "versions": [],
+                        "available": available,
+                        "versions": sorted(versions.keys()) if available else [],
                     }
                 )
             for row in seeding.installed_plugins(self._cfg.data_dir):
@@ -1891,8 +1894,10 @@ class WebUI:
                         "label": row["name"],
                         "kind": row["kind"],
                         "origin": "installed",
+                        "official": False,
                         "version": row["version"],
                         "enabled": row["id"] not in disabled,
+                        "available": True,
                         "versions": row["versions"],
                     }
                 )
@@ -1942,7 +1947,7 @@ class WebUI:
 
         @app.route("/api/plugins/uninstall", method="POST")
         def plugin_uninstall():
-            # 仅第三方插件可卸载，官方九包由宿主分发
+            # 官方与第三方均可卸载
             from ohmymeme.core.plugins.runtime import seeding
 
             payload = bottle.request.json or {}

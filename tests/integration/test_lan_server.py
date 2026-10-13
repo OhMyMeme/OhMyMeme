@@ -3,9 +3,15 @@ import hmac
 import json
 import socket
 import struct
+import sys
 import threading
+from pathlib import Path
 
 import pytest
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+
+from plugin_fixtures import install_official  # noqa: E402
 
 import ohmymeme.core.config as config_module
 import ohmymeme.core.database as database
@@ -23,6 +29,7 @@ def lan_env(tmp_path):
     cfg.set("lan_port", 0)
     db = MemeDB(tmp_path / "test.db")
     runtime = PluginRuntimeManager(tmp_path / "runtime")
+    install_official(tmp_path / "runtime", "transport.lan")
     old_cfg = config_module._config
     old_db = database._db
     old_callback = lan.set_confirm_callback(None)

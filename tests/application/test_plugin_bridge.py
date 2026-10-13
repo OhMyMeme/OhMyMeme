@@ -8,6 +8,7 @@ from types import SimpleNamespace
 from unittest.mock import Mock
 
 import pytest
+from plugin_fixtures import install_official
 
 from ohmymeme.core.plugins.manifest import (
     ENTRY_POINT_GROUP,
@@ -413,6 +414,8 @@ def test_real_provider_idle_progress_shapes(tmp_path):
 
     container = Container(tmp_path / "host")
     try:
+        for provider in ("qqnt", "telegram", "douyin", "wechat"):
+            install_official(container.config.data_dir, "source." + provider)
         webui = container.create_webui()
         api = desktop.SettingsApi(webui, container.settings)
         for provider, method in (
@@ -436,6 +439,8 @@ def test_real_qqnt_probe_and_native_picker_success(shell, tmp_path):
 
     api, webui, dialog = shell
     manager = PluginRuntimeManager(tmp_path / "runtime")
+    install_official(tmp_path / "runtime", "source.qqnt")
+    install_official(tmp_path / "runtime", "source.telegram")
     webui._container.plugin_runtime = manager
     try:
         webui._cfg.get.side_effect = lambda key, default=None: (
