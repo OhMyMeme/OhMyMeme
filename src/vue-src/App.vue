@@ -394,6 +394,20 @@ function showToast(msg: string) {
   setTimeout(() => el.classList.remove('show'), 1600)
 }
 
+// 超限图片导入：弹窗让用户选择「保留」或「取消导入」，再回传后端决策
+async function handleOverlimitImport(token: string) {
+  const keep = await confirmDialog.value?.open(
+    '图片超出导入限制',
+    '该图片的大小或分辨率超出限制，是否仍要保留并导入？',
+    { confirmText: '保留', cancelText: '取消导入', variant: 'primary', focusConfirm: true }
+  )
+  const rr = await window.pywebview?.api?.resolve_overlimit_import(token, keep ? 'keep' : 'cancel')
+  if (rr?.ok && rr.imported) { showToast('导入成功'); search(); refreshCollections(); return }
+  if (rr?.duplicate) { showToast('已存在相同表情包'); return }
+  if (rr?.ok) return  // 取消导入：静默
+  showToast(rr?.error || '处理失败')
+}
+
 // 卡片悬停快速收藏（右键菜单外的一键入口）
 async function quickFavorite(meme: Meme) {
   if (meme.cloud) return
@@ -1067,7 +1081,8 @@ async function onDrop(e: DragEvent) {
     try {
       const r = await window.pywebview?.api?.download_original_image(uri)
       if (r?.ok) { showToast('导入成功'); search(); refreshCollections(); return }
-      if (r?.duplicate) { showToast('该图片已存在'); return }
+      if (r?.duplicate) { showToast('已存在相同表情包'); return }
+      if (r?.over_limit) { await handleOverlimitImport(r.token); return }
       if (r?.similar_pending) {
         const action = await similarImportDialog.value?.open(r.candidates || [])
         if (action) {
@@ -1112,7 +1127,8 @@ async function onDrop(e: DragEvent) {
         }
         return
       }
-      if (j?.duplicate) { showToast('该图片已存在'); return }
+      if (j?.duplicate) { showToast('已存在相同表情包'); return }
+      if (j?.over_limit) { await handleOverlimitImport(j.token); return }
       if (res.ok || j?.ok) { showToast('导入成功'); search(); refreshCollections() }
       else { showToast(j?.error || '导入失败：服务器返回错误') }
     } catch (_) {
@@ -1446,7 +1462,7 @@ onUnmounted(() => {
   </div>
 
   <CollectionBuilder />
-  <ImportMenu ref="importMenu" @imported="onImportDone" @importing="onImporting" />
+  <ImportMenu ref="importMenu" @imported="onImportDone" @importing="onImporting" @overlimit="handleOverlimitImport" />
   <ImportProgressOverlay ref="importProgress" @imported="onImportDone" />
   <SyncOverlay ref="syncOverlay" @synced="onSyncDone" />
   <TagEditor ref="tagEditor" />

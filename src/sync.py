@@ -15,7 +15,7 @@ from pathlib import Path
 from typing import Optional
 from urllib.parse import quote, unquote, urlparse
 
-from .config import _IMPORT_MAX_BYTES, _IMPORT_MAX_PX, get_config
+from .config import exceeds_import_limit, get_config
 from .database import get_db
 from .manifest import INDEX_FILENAME
 from .manifest import build as build_manifest
@@ -930,7 +930,7 @@ def _pull_worker(entries, remote_root, cache_dir, db):
                         except Exception:
                             pass
                         fsize = local_path.stat().st_size
-                        if fsize > _IMPORT_MAX_BYTES or max(w, h) > _IMPORT_MAX_PX:
+                        if exceeds_import_limit(fsize, w, h):
                             # 超限文件不接收：删除本地文件并跳过（不写入 manifest）
                             logger.info(f"pull skip (over limit): {fname}")
                             local_results["skipped"] += 1

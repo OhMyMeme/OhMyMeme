@@ -30,6 +30,23 @@ _IMPORT_MAX_PX = 2560  # 最长边像素上限（超过 2K）
 _IMPORT_MAX_BYTES = 20 * 1024 * 1024  # 文件大小上限（20 MiB）
 
 
+def import_limits():
+    """返回导入限制 (max_bytes, max_px)；0 表示该维度不限制"""
+    if get_config().get("import_no_limit", False):
+        return 0, 0
+    return _IMPORT_MAX_BYTES, _IMPORT_MAX_PX
+
+
+def exceeds_import_limit(fsize, width=0, height=0):
+    """是否超出导入大小/分辨率限制"""
+    max_bytes, max_px = import_limits()
+    if max_bytes and fsize > max_bytes:
+        return True
+    if max_px and (width > max_px or height > max_px):
+        return True
+    return False
+
+
 def _get_config_dir() -> Path:
     """跨平台配置目录"""
     if platform.system() == "Windows":
@@ -73,6 +90,8 @@ class Config:
         "cache_dir": "",  # 自定义表情包存储目录（空=默认 data_dir/cache）
         # 本地备份
         "backup_dir": "",  # 自定义备份输出目录（空=默认 data_dir/backups）
+        # 导入限制
+        "import_no_limit": False,  # 关闭后不限制导入图片大小/分辨率
         # 云端同步
         "sync_auto_fetch_index": False,
         "sync_auto_sync": False,

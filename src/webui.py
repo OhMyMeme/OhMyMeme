@@ -69,8 +69,7 @@ from .clipboard_util import (
     copy_image_to_clipboard,
 )
 from .config import (
-    _IMPORT_MAX_BYTES,
-    _IMPORT_MAX_PX,
+    exceeds_import_limit,
     get_config,
     guide_ok,
     set_guide_ok,
@@ -1493,6 +1492,40 @@ class JsApi:
             return {"ok": False, "error": "文件超过大小/分辨率限制，已跳过"}
         return {"ok": False, "error": "导入失败"}
 
+    def resolve_overlimit_import(self, token: str, action: str) -> dict:
+        """响应用户对超限图片的导入决策（action: keep 保留 / cancel 取消导入）"""
+        item = _pop_pending_overlimit(token)
+        if not item:
+            return {"ok": False, "error": "决策已过期，请重新导入"}
+        path = item["path"]
+        if (action or "cancel") != "keep":
+            # 取消导入：删除待决策临时文件，不导入
+            try:
+                os.unlink(path)
+            except OSError:
+                pass
+            return {"ok": True, "cancelled": True}
+        try:
+            r = self._webui._do_import(
+                [path],
+                [item.get("oname")] if item.get("oname") else None,
+                allow_overlimit=True,
+            )
+        except Exception as e:
+            logger.error("resolve overlimit import error: %s", e)
+            return {"ok": False, "error": "导入失败"}
+        finally:
+            try:
+                os.unlink(path)
+            except OSError:
+                pass
+        ids = r.get("ids") or []
+        if ids:
+            return {"ok": True, "id": ids[0], "imported": True}
+        if r.get("skipped_dup"):
+            return {"ok": False, "duplicate": True, "error": "已存在相同表情包"}
+        return {"ok": False, "error": "导入失败"}
+
     def get_sync_progress(self) -> dict:
         return sync_module.get_sync_progress()
 
@@ -1600,7 +1633,7 @@ class JsApi:
             if h.hexdigest() != sha:
                 return {"ok": False, "status": "sha_mismatch"}
             fsize = tmp.stat().st_size
-            if fsize > _IMPORT_MAX_BYTES:
+            if exceeds_import_limit(fsize):
                 return {"ok": False, "status": "too_large"}
             w = hgt = 0
             if HAS_PIL:
@@ -1609,7 +1642,7 @@ class JsApi:
                         w, hgt = img.size
                 except Exception:
                     return {"ok": False, "status": "invalid_image"}
-                if max(w, hgt) > _IMPORT_MAX_PX:
+                if exceeds_import_limit(0, w, hgt):
                     return {"ok": False, "status": "too_large"}
             src_phash = _perceptual_hash_path(tmp)
             with _IMPORT_LOCK:
@@ -1771,6 +1804,8 @@ class JsApi:
                         "name": orig or "未命名",
                         "rejected": rejected,
                     }
+                if r.get("skipped_dup"):
+                    return {"ok": False, "duplicate": True, "error": "已存在相同表情包"}
                 return {"ok": True, "id": 0, "name": "未命名", "rejected": rejected}
             img = clip
             tmp = tempfile.NamedTemporaryFile(suffix=".png", delete=False)
@@ -1783,7 +1818,13 @@ class JsApi:
                     for chunk in iter(lambda: f.read(65536), b""):
                         sha256.update(chunk)
                 if self._db.get_by_hash(sha256.hexdigest()):
-                    return {"ok": False, "error": "该图片已存在"}
+                    return {"ok": False, "duplicate": True, "error": "已存在相同表情包"}
+                if exceeds_import_limit(
+                    os.path.getsize(tmp_path), img.width, img.height
+                ):
+                    token = _register_pending_overlimit(tmp_path, "")
+                    if token:
+                        return {"ok": False, "over_limit": True, "token": token}
                 r = self._webui._do_import([tmp_path], [""])
                 ids = r.get("ids") or []
                 rejected = r.get("rejected", 0)
@@ -2620,6 +2661,7 @@ class SettingsApi:
             "hover_zoom": d.get("hover_zoom", True),
             "copy_avoid_webp": d.get("copy_avoid_webp", False),
             "disable_auto_hide": d.get("disable_auto_hide", False),
+            "import_no_limit": d.get("import_no_limit", False),
             "manifest_include_tags": d.get("manifest_include_tags", True),
             "manifest_include_favorites": d.get("manifest_include_favorites", True),
             "cloud_direct": d.get("cloud_direct", True),
@@ -2794,6 +2836,7 @@ class SettingsApi:
             "hover_zoom": True,
             "copy_avoid_webp": self._cfg.get("copy_avoid_webp", False),
             "disable_auto_hide": False,
+            "import_no_limit": False,
             "manifest_include_tags": True,
             "manifest_include_favorites": True,
             "cloud_direct": True,
@@ -3831,6 +3874,57 @@ def _pop_pending_similar(token: str) -> dict:
     return item
 
 
+# 等待用户决策的超限图片导入项（token → 待导入信息），避免源临时文件被调用方清理
+_PENDING_OVERLIMIT = {}
+_PENDING_OVERLIMIT_LOCK = threading.Lock()
+_PENDING_OVERLIMIT_TTL = 300  # 秒，超时自动丢弃
+
+
+def _register_pending_overlimit(path: str, oname: str):
+    """把超限文件复制到独立临时文件并登记，等待用户决定保留/取消；失败返回 None"""
+    import secrets
+    import shutil
+    import tempfile
+
+    ext = os.path.splitext(path)[1] or ".png"
+    try:
+        fd, hold = tempfile.mkstemp(prefix="ohmm_overlimit_", suffix=ext)
+        os.close(fd)
+        shutil.copy2(path, hold)
+    except OSError:
+        return None
+    token = secrets.token_hex(16)
+    with _PENDING_OVERLIMIT_LOCK:
+        _PENDING_OVERLIMIT[token] = {
+            "path": hold,
+            "oname": oname,
+            "ts": time.time(),
+        }
+        # 清理过期项
+        now = time.time()
+        for k, v in list(_PENDING_OVERLIMIT.items()):
+            if now - v["ts"] > _PENDING_OVERLIMIT_TTL:
+                try:
+                    os.unlink(v["path"])
+                except OSError:
+                    pass
+                del _PENDING_OVERLIMIT[k]
+    return token
+
+
+def _pop_pending_overlimit(token: str) -> dict:
+    with _PENDING_OVERLIMIT_LOCK:
+        item = _PENDING_OVERLIMIT.pop(token, None)
+        if item and time.time() - item.get("ts", 0) > _PENDING_OVERLIMIT_TTL:
+            # 已过期：删除临时文件并视为不存在
+            try:
+                os.unlink(item["path"])
+            except OSError:
+                pass
+            item = None
+    return item
+
+
 def _iter_cache_images(cache_dir):
     """遍历缓存目录下所有在库图片的 (filename, fullpath)，跳过 thumbnails 与子目录"""
     try:
@@ -3985,8 +4079,8 @@ def _prepare_image_import(path) -> dict:
                 w, h = img.size
         except Exception:
             pass
-    if fsize > _IMPORT_MAX_BYTES or max(w, h) > _IMPORT_MAX_PX:
-        return {"status": "rejected", "error": "文件超过大小/分辨率限制，已跳过"}
+    if exceeds_import_limit(fsize, w, h):
+        return {"status": "over_limit", "error": "文件超过大小/分辨率限制"}
     fhash = _file_sha256(path)
     row = db.get_by_hash(fhash)
     if row:
@@ -4427,7 +4521,9 @@ class WebUI:
                 return full
         return ""
 
-    def _do_import(self, file_paths, names=None, progress_cb=None):
+    def _do_import(
+        self, file_paths, names=None, progress_cb=None, allow_overlimit=False
+    ):
         import shutil
 
         cfg = get_config()
@@ -4467,7 +4563,7 @@ class WebUI:
                                 w, h = img.size
                         except Exception:
                             pass
-                    if fsize > _IMPORT_MAX_BYTES or max(w, h) > _IMPORT_MAX_PX:
+                    if not allow_overlimit and exceeds_import_limit(fsize, w, h):
                         rejected += 1
                         logger.info(
                             "import rejected (over limit): %s", os.path.basename(path)
@@ -4539,7 +4635,7 @@ class WebUI:
                 return {
                     "ok": False,
                     "duplicate": True,
-                    "error": "该图片已存在，无需重复导入",
+                    "error": "已存在相同表情包",
                 }
             if r.get("rejected"):
                 return {
@@ -4548,18 +4644,27 @@ class WebUI:
                     "error": "文件超过大小/分辨率限制，已跳过",
                 }
             return {"ok": False, "error": "导入失败"}
-        if prep.get("status") == "rejected":
+        if prep.get("status") == "over_limit":
+            # 超限：复制到独立临时文件登记，等前端弹窗决定「保留」或「取消导入」
+            token = _register_pending_overlimit(path, oname)
+            if token:
+                return {
+                    "ok": False,
+                    "over_limit": True,
+                    "token": token,
+                    "error": "文件超过大小/分辨率限制",
+                }
             return {
                 "ok": False,
                 "rejected": 1,
-                "error": prep.get("error") or "导入失败",
+                "error": "文件超过大小/分辨率限制，已跳过",
             }
         if prep.get("status") == "hash_dup":
             return {
                 "ok": False,
                 "duplicate": True,
                 "existing_id": prep.get("existing_id", 0),
-                "error": "该图片已存在，无需重复导入",
+                "error": "已存在相同表情包",
             }
         # similar：先把文件复制到独立临时目录，避免调用方 finally 清理源文件
         import tempfile
@@ -4914,7 +5019,7 @@ class WebUI:
                                 w, h = img.size
                         except Exception:
                             pass
-                    if fsize > _IMPORT_MAX_BYTES or max(w, h) > _IMPORT_MAX_PX:
+                    if exceeds_import_limit(fsize, w, h):
                         logger.info("scan_cache skip (over limit): %s", fname)
                         continue
                     sha256 = hashlib.sha256()

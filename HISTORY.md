@@ -12,6 +12,8 @@
 - **设置页插件区块回填完成事件** — `initPlugins` 回填循环完成后派发 `omm-plugin-section-filled`（`detail.plugin_id`），插件脚本据以同步下拉/颜色控件等非 `data-key` 管理的控件；同时修复桥接未就绪时插件列表渲染「暂无插件」导致折叠栏不生成、设置不回填的问题——`initPlugins` 增加 `initPluginRetries`（20×200ms）与 `initPlugins` 同样的重试
 - **官方插件模板与个性化插件** — 新增配套仓库 `omm-plugin-template`（manifest 字段/权限/on_load API/生命周期/设置区块约定/路由与 API/依赖 vendor/调试的完整开发指南）与 `omm-personalized-plugin`（启动动画、背景、字体、顶栏按钮布局的个性化定制，背景与字体保存即生效；v1.1.0 起启动动画改「选择文件」并自动复制进插件数据目录，字体改常用中文字体下拉、颜色改 RGBA 滑杆 + HEX 输入 + 色块实时预览的联动控件，设置控件由插件 `assets/settings.js`+`settings.css` 注入）
 - **插件系统测试** — 新增 `tests/test_plugin_manager.py` 33 例：manifest 校验与跳过（id 非法/缺 name/version/api_version 不匹配/repo 非法/损坏 JSON）、sandbox 跳过、依赖缺失拒绝、entry 异常隔离、权限门控、回调异常与超时熔断、启停与用户禁用重启语义、设置合并与按 id 分文件持久化 roundtrip、旧 `plugins_state.json` 设置自动迁移、`on_settings_changed` 触发、资产解析与路径穿越拒绝（含 `data/` 前缀到插件数据目录）、注入顺序与禁用失效、资产版本随设置变化、自定义路由分发与 Content-Type、启动动画/窗口尺寸按 id 序覆盖、启动媒体时长/类型字段透传、按钮注册与约束、vendor sys.path 追加移除、注入辅助函数、设置页标记齐全（含窗口开关区块与插件重试/回填事件）、`_resolve_window_size` 分支、JsApi/SettingsApi 插件分发、配置窗口尺寸默认值与旧配置迁移保留；`test_startup` 补主窗口 960×640 尺寸断言、「允许调整窗口大小」开关契约与 `resize_window` 尺寸钳制 2 例；全量 `tests/` 489 passed（`test_lan` 环境性失败除外）
+- **导入超限弹窗与关闭限制开关** — 单张交互式导入（拖放本地路径/原图下载、文件上传、剪贴板）超过 2560px 或 20MB 时弹窗选择「保留」或「取消导入」（超限文件先复制到独立临时文件，超时 5 分钟自动丢弃）；设置页「基础设置 → 导入限制」新增「关闭表情包大小限制」（配置 `import_no_limit`，默认关），关闭后本地导入、云端拉取与局域网接收均不再拦截超限文件
+- **重复表情提示统一** — 导入与库中完全相同的表情（同 SHA-256）时，主窗口底部小字提示统一为「已存在相同表情包」
 
 ## 变更
 - **设置页导航新增「插件」分组** — 位于「危险操作」之后；`settings.js` 脏检查跳过插件自管输入（`data-plugin`），插件设置保存不再触发宿主「有未保存的更改」提示
