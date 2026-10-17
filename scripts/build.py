@@ -105,8 +105,8 @@ _MSGS = {
         "en": "ERROR: --installer-only not supported for target %s",
     },
     "cross_compile_not_supported": {
-        "zh": "错误: PyInstaller 不支持交叉编译，在 Linux 上无法生成 Windows 可执行文件。\n      请使用 GitHub Actions（推送到 main 或手动触发 workflow）或在 Windows 机器上运行此脚本。",
-        "en": "ERROR: PyInstaller does not support cross-compilation. Cannot produce a Windows executable from Linux.\n       Use GitHub Actions (push to main or trigger workflow_dispatch) or run this script on a Windows machine.",
+        "zh": "错误: PyInstaller 不支持交叉编译，在 Linux 上无法生成 Windows 可执行文件。\n      请使用 GitHub Actions（手动触发 workflow）或在 Windows 机器上运行此脚本。",
+        "en": "ERROR: PyInstaller does not support cross-compilation. Cannot produce a Windows executable from Linux.\n       Use GitHub Actions (trigger workflow_dispatch) or run this script on a Windows machine.",
     },
     "keyfinder_missing": {
         "zh": "警告: 未找到 %s，微信导入功能在产物中将不可用（先编译 src/wechat_keyfinder）",

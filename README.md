@@ -150,7 +150,7 @@ python scripts/build.py   # 自动检测当前系统打包
 
 > **⚠️ 注意**: PyInstaller **不支持交叉编译**，Windows/Linux/macOS 各平台需在自己的系统上构建。
 > 其他参数（`--windows`/`--linux`/`--macos`/`--package` 等）与打包细节见 [CONTRIBUTING.md](CONTRIBUTING.md)。
-> 也可使用 [GitHub Actions](https://github.com/OhMyMeme/OhMyMeme/actions)（推送 `main` 自动触发，或手动运行 workflow）。
+> 也可使用 [GitHub Actions](https://github.com/OhMyMeme/OhMyMeme/actions)（手动运行 `Release`/`Build` workflow）。
 
 ## PR 贡献
 

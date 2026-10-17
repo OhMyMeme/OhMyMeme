@@ -1,0 +1,223 @@
+name: Release
+
+# 手动触发的正式版发布：从 main 分支构建三平台产物并创建 GitHub Release。
+# 版本号取自 src/__init__.py 的 __version__；tag 与 release 标题均为该版本号（不带 v），
+# tag 指向 main 当前 HEAD。正文仅含下载表格，更新内容由维护者随后手动编辑。
+
+on:
+  workflow_dispatch:
+
+jobs:
+  prepare:
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.resolve.outputs.version }}
+      sha: ${{ steps.resolve.outputs.sha }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: main
+          fetch-depth: 0
+      - name: Resolve version
+        id: resolve
+        run: |
+          set -euo pipefail
+          version=$(sed -n 's/^__version__[[:space:]]*=[[:space:]]*"\([^"]*\)".*/\1/p' src/__init__.py | head -n1)
+          if [ -z "$version" ]; then
+            echo "ERROR: 无法从 src/__init__.py 读取 __version__" >&2
+            exit 1
+          fi
+          if ! printf '%s' "$version" | grep -Eq '^[0-9]+\.[0-9]+\.[0-9]+$'; then
+            echo "ERROR: 版本号格式非法: $version" >&2
+            exit 1
+          fi
+          git fetch --tags -q || true
+          if git rev-parse -q --verify "refs/tags/$version" >/dev/null; then
+            echo "ERROR: tag $version 已存在，放弃发布" >&2
+            exit 1
+          fi
+          sha=$(git rev-parse HEAD)
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+          echo "sha=$sha" >> "$GITHUB_OUTPUT"
+          echo "解析到 version=$version sha=$sha"
+
+  ffmpeg-win64:
+    needs: prepare
+    uses: ./.github/workflows/ffmpeg-win64.yml
+    with:
+      ref: main
+
+  build-windows:
+    needs: ffmpeg-win64
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: main
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install dependencies
+        run: |
+          pip install -r requirements.txt
+          pip install pyinstaller
+      - uses: actions/download-artifact@v4
+        with:
+          name: ffmpeg-win64
+          path: ffmpeg-win64
+      - name: Build with PyInstaller
+        run: python scripts/build.py --build-only
+      - name: Verify bundled wechat_keyfinder helper
+        run: python scripts/build.py --verify-helper
+      - name: Verify bundled ffmpeg
+        run: python scripts/build.py --verify-ffmpeg
+      - name: Install InnoSetup
+        run: |
+          choco install innosetup --no-progress
+          echo "ISCC_DIR=C:\Program Files (x86)\Inno Setup 6\ISCC.exe" | Out-File -FilePath $env:GITHUB_ENV -Append
+      - name: Build installer
+        run: python scripts/build.py --installer-only
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: OhMyMeme-Windows
+          path: dist/OhMyMeme-*-setup.exe
+
+  build-linux:
+    needs: prepare
+    strategy:
+      matrix:
+        include:
+          - arch: x86_64
+            runner: ubuntu-latest
+          - arch: aarch64
+            runner: ubuntu-24.04-arm
+    runs-on: ${{ matrix.runner }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: main
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y rpm python3-gi python3-gi-cairo gir1.2-gtk-4.0 gir1.2-webkit2-4.1 libgirepository1.0-dev libgirepository-2.0-dev gobject-introspection libcairo2-dev libffi-dev
+          pip install -r requirements.txt
+          pip install pyinstaller
+          pip install PyGObject
+      - name: Build Linux packages
+        run: python scripts/build.py --linux --arch ${{ matrix.arch }}
+      - name: Upload artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: OhMyMeme-Linux-${{ matrix.arch }}
+          path: |
+            dist/OhMyMeme-v*-${{ matrix.arch }}.AppImage
+            dist/OhMyMeme-v*-${{ matrix.arch == 'x86_64' && 'amd64' || 'arm64' }}.deb
+            dist/OhMyMeme-v*-${{ matrix.arch }}.rpm
+
+  build-macos:
+    needs: prepare
+    strategy:
+      matrix:
+        include:
+          - arch: arm64
+            runner: macos-latest
+          - arch: x86_64
+            runner: macos-15-intel
+    runs-on: ${{ matrix.runner }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: main
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install dependencies
+        run: |
+          pip install -r requirements.txt
+          pip install pyinstaller
+      - name: Build macOS packages (.app + .dmg)
+        run: python scripts/build.py --macos --arch ${{ matrix.arch }}
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: OhMyMeme-macOS-${{ matrix.arch }}
+          path: dist/OhMyMeme-v*-${{ matrix.arch }}.dmg
+
+  publish:
+    needs: [prepare, build-windows, build-linux, build-macos]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+          merge-multiple: true
+      - name: Generate release notes
+        env:
+          VERSION: ${{ needs.prepare.outputs.version }}
+          REPO: ${{ github.repository }}
+        run: |
+          python3 - <<'PY'
+          import glob
+          import os
+
+          version = os.environ["VERSION"]
+          repo = os.environ["REPO"]
+          base = f"https://github.com/{repo}/releases/download/{version}"
+
+          def cell(pattern, label):
+              hits = sorted(glob.glob(os.path.join("artifacts", pattern)))
+              if not hits:
+                  return None
+              path = hits[0]
+              mb = round(os.path.getsize(path) / (1024 * 1024), 1)
+              size = f"{int(mb)} MB" if mb == int(mb) else f"{mb} MB"
+              name = os.path.basename(path)
+              return f"[{label}]({base}/{name}) ({size})"
+
+          def join(parts):
+              parts = [p for p in parts if p]
+              return "<br>".join(parts) if parts else "—"
+
+          win = cell(f"OhMyMeme-{version}-setup.exe", "exe")
+          mac_x = cell(f"OhMyMeme-v{version}-x86_64.dmg", "dmg")
+          mac_a = cell(f"OhMyMeme-v{version}-arm64.dmg", "dmg")
+          lin_x = join([
+              cell(f"OhMyMeme-v{version}-amd64.deb", "deb"),
+              cell(f"OhMyMeme-v{version}-x86_64.rpm", "rpm"),
+              cell(f"OhMyMeme-v{version}-x86_64.AppImage", "AppImage"),
+          ])
+          lin_a = join([
+              cell(f"OhMyMeme-v{version}-arm64.deb", "deb"),
+              cell(f"OhMyMeme-v{version}-aarch64.rpm", "rpm"),
+              cell(f"OhMyMeme-v{version}-aarch64.AppImage", "AppImage"),
+          ])
+
+          lines = [
+              f"# v{version}",
+              "",
+              "| 系统 \\ 架构 | x86_64 (amd64) | arm64 (aarch64) |",
+              "| --- | --- | --- |",
+              f"| Windows | {win or '—'} | — |",
+              f"| macOS | {mac_x or '—'} | {mac_a or '—'} |",
+              f"| Linux | {lin_x} | {lin_a} |",
+              "",
+          ]
+          notes = "\n".join(lines)
+          with open("notes.md", "w", encoding="utf-8") as f:
+              f.write(notes)
+          print(notes)
+          PY
+      - name: Create release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          VERSION: ${{ needs.prepare.outputs.version }}
+          SHA: ${{ needs.prepare.outputs.sha }}
+        run: |
+          gh release create "$VERSION" --repo "${{ github.repository }}" \
+            --target "$SHA" --title "$VERSION" --notes-file notes.md
