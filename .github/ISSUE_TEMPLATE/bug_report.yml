@@ -1,0 +1,71 @@
+name: Bug 报告
+description: 报告软件中存在的问题
+title: "bug: "
+type: Bug
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        > 描述越具体，越容易被定位和修复。标题建议写清“哪里出了什么错”，例如“修改设置后未更新”。带 * 的为必填项。
+
+  - type: checkboxes
+    id: searched
+    attributes:
+      label: 提交前确认
+      options:
+        - label: 我已搜索过现有 issue，确认没有重复
+          required: true
+
+  - type: textarea
+    id: description
+    attributes:
+      label: 问题描述
+      description: 请详细描述遇到的问题
+    validations:
+      required: true
+
+  - type: textarea
+    id: reproduce
+    attributes:
+      label: 复现步骤
+      description: 请说明如何复现这个问题
+    validations:
+      required: true
+
+  - type: textarea
+    id: environment
+    attributes:
+      label: 环境信息
+      description: 操作系统、软件版本，以及其他可能的相关信息（如 Webview 版本等）
+    validations:
+      required: true
+
+  - type: textarea
+    id: behavior
+    attributes:
+      label: 预期行为与实际行为
+      description: 可选，请说明你预期发生什么、实际发生了什么
+    validations:
+      required: false
+
+  - type: textarea
+    id: logs
+    attributes:
+      label: 日志或截图
+      description: 可选，请粘贴日志文件上传地址或上传图片等
+    validations:
+      required: false
+
+  - type: dropdown
+    id: pr_willingness
+    attributes:
+      label: 是否愿意提交 PR
+      description: 如果你有意愿自己实现这个功能，请选择；不确定也可以选“需要指导”
+      options:
+        - ""
+        - "愿意"
+        - "不愿意"
+        - "需要指导"
+    validations:
+      required: true
