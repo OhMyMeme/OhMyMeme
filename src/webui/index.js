@@ -67,7 +67,13 @@ function onSearch() {
   searchTimer = setTimeout(() => refreshMemes(), 300);
 }
 
-async function refreshMemes() {
+async function refreshMemes(settings) {
+  if (settings && settings.theme) {
+    const theme = settings.theme === 'light' ? 'light' : 'dark';
+    document.documentElement.dataset.theme = theme;
+    document.documentElement.style.background = theme === 'light' ? '#f8fafc' : '#0d0d0f';
+    document.documentElement.style.colorScheme = theme;
+  }
   const q = document.getElementById('search').value.trim();
   const gen = ++memeGen;
   memePage = 1;

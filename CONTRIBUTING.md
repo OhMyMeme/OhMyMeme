@@ -82,6 +82,8 @@ python -m pytest tests/ -v
 
 ## 前端
 
+- 主题复用配置键 `theme`（默认 `dark`，可选 `light`），两套前端通过 `data-theme` 与 CSS 变量配色；HTML 路由在首屏注入主题，修改配色后需验证主窗口、设置窗口、保存/重开与恢复默认设置。 主题回归验证包含保存失败、连续保存/重置、主窗口刷新乱序；运行 `python -m pytest tests/test_startup.py -k theme`（需 Node.js），修改前端后执行 `npm run build` 更新本地构建产物。
+
 - JS 调用后端：`pywebview.api.method(...)` → 自动序列化；辅助函数 `async function api(method, ...args) { return await pywebview.api[method](...args); }`
 - 返回类型 `str`/`int`/`bool`/`dict`/`list`，错误返回 `None` 或 `{"ok": false, "error": "..."}`
 - 图片不走 JS API JSON：缩略图通过 `/api/thumb/{id}` HTTP 路由渲染

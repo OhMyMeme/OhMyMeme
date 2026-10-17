@@ -1,3 +1,11 @@
+// 根据已保存的配置更新主题与窗口底色。
+export function applyTheme(value: unknown) {
+  const theme = value === 'light' ? 'light' : 'dark'
+  document.documentElement.dataset.theme = theme
+  document.documentElement.style.background = theme === 'light' ? '#f8fafc' : '#0d0d0f'
+  document.documentElement.style.colorScheme = theme
+}
+
 export async function api(method: string, ...args: any[]): Promise<any> {
   try {
     if (typeof pywebview === 'undefined' || !pywebview.api) return null

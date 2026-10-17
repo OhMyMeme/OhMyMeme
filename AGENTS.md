@@ -136,6 +136,7 @@ tests/
 - WebUI 维护非持久的快捷键显示会话状态：仅隐藏主窗口被全局快捷键显示后，成功复制或成功原生向外文件拖拽才会自动隐藏；任意 hide、普通/托盘显示、LAN/其他 show、内部排序拖拽及失败交互均不会触发该自动隐藏。配置 `disable_auto_hide` 默认 `false`，开启后 `schedule_hide()` 入口直接返回 False（复制与拖拽成功均不自动隐藏，会话状态保留），设置页「基础设置 → 全局快捷键」区块复选框 `s-disable-auto-hide`。
 
 ### 窗口
+- 主题配置 `theme` 默认 `dark`，可在设置页「基础设置 → 窗口」切换 `light`；`get_init_data`、两套 `get_settings`/`reset_settings` 返回主题，保存经 `refreshMemes` 更新主窗口；`_theme_html` 在 HTML 首屏注入主题和底色，前端 `applyTheme` 同步 `data-theme`、底色与 `color-scheme`，CSS 变量覆盖主窗口和设置窗口配色。 主题保存与重置共用 settingsQueue；SettingsApi.save_settings 返回 `{ok,theme}`，成功才应用主题。主窗口 refreshMemes 接受已保存的界面设置快照，并用请求代次丢弃过期响应；快捷键与开机自启未改变时跳过重复设置。旧版 index.html 同样注入主题，index.css 提供浅色变量。
 - 主窗口 ~960×640 frameless, 设置窗口 720×560 frameless（每次 `_create_settings_window` 以主窗口当前位置居中创建——`x = 主窗口x + (宽-720)//2`，主窗口坐标不可用时交由系统摆放）
 - 设置窗口是独立 webview：`open_settings` 每次销毁重建，`focus_settings_window` 仅做 z-order 提升；`resizable=True`，关闭/重建时 `_save_settings_window_size()` 把尺寸写配置键 `settings_window_width`/`settings_window_height`（0=默认 720×560），下次创建恢复
 - **窗口大小调整（配置 `window_resize_enabled`，默认关）**：开启后主窗与设置窗可拖 8 向边框调整——settings.html「窗口」区块 `#s-window-resize`，保存后主窗 `refreshMemes` 同步 `state.windowResizeEnabled` 即时调 `applyWindowResizeHandles()`；拖拽 layer `#win-resize-layer`（App.vue `syncWinResizeHandles()` 按开关增删）与设置窗 `settings.js` 的 `applyWindowResizeHandles()` 均用 `screenX/screenY` 相对起点的**绝对增量**（rAF 节流），拖完一次调 resize API 持久化；`JsApi.resize_window(w,h)` 钳 480-8000/360-6000、`SettingsApi.resize_window(w,h,persist)` 钳 600-8000/480-6000 且 persist 时写 `settings_window_*` 配置；关闭时拖过的尺寸与配置尺寸一并持久化

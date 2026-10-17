@@ -1,5 +1,5 @@
 import { reactive, ref, readonly } from 'vue'
-import { api } from '../utils/api'
+import { api, applyTheme } from '../utils/api'
 import type { Meme } from '../types'
 
 const MEME_PAGE = 200
@@ -41,6 +41,7 @@ export function useMemes() {
     await waitForPywebview()
     const data = await api('get_init_data')
     if (data) {
+      applyTheme(data.theme)
       state.memes = data.memes || []
       state.allTags = data.tags || []
       state.collections = data.collections || []

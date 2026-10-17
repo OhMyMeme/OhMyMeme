@@ -156,6 +156,18 @@ _STATIC_MIME_TYPES = {
 _DEFAULT_STARTUP_VIDEO = "/resources/OhMyMeme.mp4"
 
 
+# 在脚本加载前设置主题与底色，避免独立窗口首次绘制闪烁。
+def _theme_html(html, theme):
+    theme = "light" if theme == "light" else "dark"
+    background = "#f8fafc" if theme == "light" else "#0d0d0f"
+    return html.replace(
+        "<html ",
+        f'<html data-theme="{theme}" '
+        f'style="background:{background};color-scheme:{theme}" ',
+        1,
+    )
+
+
 def _inject_before(html: str, marker: str, inject: str) -> str:
     """在最后一个 marker 前插入 inject（无 marker 或无内容时原样返回）"""
     if not inject or marker not in html:
@@ -876,6 +888,7 @@ class JsApi:
         collections = self._sys_collections() + self._build_collection_tree()
         fields = get_plugin_manager().init_fields()
         return {
+            "theme": self._cfg.get("theme", "dark"),
             "memes": memes,
             "tags": self.get_tags(),
             "collections": collections,
@@ -1814,6 +1827,7 @@ class JsApi:
         from .platform_util import is_auto_start_enabled
 
         return {
+            "theme": d.get("theme", "dark"),
             "hotkey": d.get("hotkey", "Ctrl+Alt+N"),
             "hotkey_show_at_mouse": d.get("hotkey_show_at_mouse", False),
             "auto_play_gif": d.get("auto_play_gif", True),
@@ -1895,6 +1909,7 @@ class JsApi:
         set_auto_start(False)
         _cloud_reset()
         return {
+            "theme": self._cfg.get("theme", "dark"),
             "hotkey": hotkey,
             "hotkey_show_at_mouse": self._cfg.get("hotkey_show_at_mouse", False),
             "auto_play_gif": self._cfg.get("auto_play_gif", True),
@@ -2556,6 +2571,7 @@ class SettingsApi:
         from .platform_util import is_auto_start_enabled
 
         return {
+            "theme": d.get("theme", "dark"),
             "hotkey": d.get("hotkey", "Ctrl+Alt+N"),
             "hotkey_show_at_mouse": d.get("hotkey_show_at_mouse", False),
             "auto_play_gif": d.get("auto_play_gif", True),
@@ -2677,7 +2693,10 @@ class SettingsApi:
 
     def save_settings(self, settings: dict):
         if isinstance(settings, dict):
-            if "auto_start" in settings:
+            previous_hotkey = self._cfg.get("hotkey", "Ctrl+Alt+N")
+            if "auto_start" in settings and settings["auto_start"] != self._cfg.get(
+                "auto_start", False
+            ):
                 from .platform_util import set_auto_start
 
                 set_auto_start(settings["auto_start"])
@@ -2696,13 +2715,26 @@ class SettingsApi:
                     _cloud_reset()
                     if cloud:
                         _start_cloud_refresh()
-            if "hotkey" in settings:
+            self._refresh_main_settings()
+            if "hotkey" in settings and settings["hotkey"] != previous_hotkey:
                 self._webui._on_hotkey_change(settings["hotkey"])
-            try:
-                if len(webview.windows) > 0:
-                    webview.windows[0].evaluate_js("refreshMemes();")
-            except Exception:
-                pass
+            return {"ok": True, "theme": self._cfg.get("theme", "dark")}
+        return {"ok": False, "error": "invalid_settings"}
+
+    # 将已保存的界面设置直接推送到主窗口。
+    def _refresh_main_settings(self):
+        import json
+
+        settings = {
+            "theme": self._cfg.get("theme", "dark"),
+            "hover_zoom": self._cfg.get("hover_zoom", True),
+            "window_resize_enabled": self._cfg.get("window_resize_enabled", False),
+        }
+        try:
+            if webview.windows:
+                webview.windows[0].evaluate_js(f"refreshMemes({json.dumps(settings)});")
+        except Exception:
+            logger.debug("主窗口设置刷新失败", exc_info=True)
 
     def reset_settings(self) -> dict:
         prev_cache_dir = self._cfg.get("cache_dir", "")
@@ -2716,12 +2748,9 @@ class SettingsApi:
 
         set_auto_start(False)
         _cloud_reset()
-        try:
-            if len(webview.windows) > 0:
-                webview.windows[0].evaluate_js("refreshMemes();")
-        except Exception:
-            pass
+        self._refresh_main_settings()
         return {
+            "theme": self._cfg.get("theme", "dark"),
             "hotkey": hotkey,
             "hotkey_show_at_mouse": self._cfg.get("hotkey_show_at_mouse", False),
             "auto_play_gif": self._cfg.get("auto_play_gif", True),
@@ -4613,18 +4642,27 @@ class WebUI:
             # 仅当 vue.html 与构建产物都存在时才走 Vue 前端，否则回退旧 index.html
             if vue_html.exists() and (HTML_DIR / "dist" / "ohmymeme.js").exists():
                 tags = get_plugin_manager().asset_tags("main")
-                if tags:
-                    try:
-                        html = vue_html.read_text(encoding="utf-8")
-                        html = _inject_before(html, "</body>", tags)
-                        bottle.response.content_type = "text/html; charset=utf-8"
-                        return html
-                    except OSError as e:
-                        logger.warning(f"vue.html 读取失败回退静态: {e}")
+                try:
+                    html = _theme_html(
+                        vue_html.read_text(encoding="utf-8"), self._cfg.get("theme")
+                    )
+                    html = _inject_before(html, "</body>", tags)
+                    bottle.response.content_type = "text/html; charset=utf-8"
+                    return html
+                except OSError as e:
+                    logger.warning(f"vue.html 读取失败回退静态: {e}")
                 return bottle.static_file("vue.html", root=str(HTML_DIR))
             html_path = HTML_DIR / "index.html"
             if html_path.exists():
-                return bottle.static_file("index.html", root=str(HTML_DIR))
+                try:
+                    html = _theme_html(
+                        html_path.read_text(encoding="utf-8"), self._cfg.get("theme")
+                    )
+                    bottle.response.content_type = "text/html; charset=utf-8"
+                    return html
+                except OSError as e:
+                    logger.warning(f"index.html 读取失败: {e}")
+                    return bottle.HTTPError(500, "页面读取失败")
             return "<h1>OhMyMeme</h1><p>index.html not found</p>"
 
         @app.route("/settings/")
@@ -4635,17 +4673,18 @@ class WebUI:
                     get_plugin_manager().asset_tags("settings")
                 )
                 sections = get_plugin_manager().settings_sections()
-                if links or scripts or sections:
-                    try:
-                        html = html_path.read_text(encoding="utf-8")
-                        html = _inject_before(html, "</head>", links)
-                        html = _inject_after(html, "<!-- plugin-sections -->", sections)
-                        # settings.js 之后注入（defer 按文档序执行，插件可访问其全局）
-                        html = _inject_before(html, "</body>", scripts)
-                        bottle.response.content_type = "text/html; charset=utf-8"
-                        return html
-                    except OSError as e:
-                        logger.warning(f"settings.html 读取失败回退静态: {e}")
+                try:
+                    html = _theme_html(
+                        html_path.read_text(encoding="utf-8"), self._cfg.get("theme")
+                    )
+                    html = _inject_before(html, "</head>", links)
+                    html = _inject_after(html, "<!-- plugin-sections -->", sections)
+                    # settings.js 之后注入（defer 按文档序执行，插件可访问其全局）
+                    html = _inject_before(html, "</body>", scripts)
+                    bottle.response.content_type = "text/html; charset=utf-8"
+                    return html
+                except OSError as e:
+                    logger.warning(f"settings.html 读取失败回退静态: {e}")
                 return bottle.static_file("settings.html", root=str(HTML_DIR))
             return "<h1>设置</h1><p>settings.html not found</p>"
 
@@ -4938,6 +4977,9 @@ class WebUI:
             frameless=True,
             easy_drag=False,
             hidden=self._silent_start,
+            background_color=(
+                "#f8fafc" if self._cfg.get("theme") == "light" else "#0d0d0f"
+            ),
         )
         self._visible = not self._silent_start
 
@@ -4988,6 +5030,9 @@ class WebUI:
                 resizable=True,
                 frameless=True,
                 easy_drag=False,
+                background_color=(
+                    "#f8fafc" if self._cfg.get("theme") == "light" else "#0d0d0f"
+                ),
             )
             return True
         except Exception as e:

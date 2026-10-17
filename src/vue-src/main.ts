@@ -7,7 +7,7 @@ declare global {
   interface Window {
     pywebview: any
     focusSearch: () => void
-    refreshMemes: () => void
+    refreshMemes: (settings?: any) => void
     refreshTags: () => void
     refreshCollections: () => void
     showGuide: () => void

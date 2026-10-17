@@ -1,5 +1,6 @@
 *, *::before, *::after { margin: 0; padding: 0; box-sizing: border-box; }
 :root {
+  color-scheme: dark;
   --bg: #0d0d0f; --surface: #1a1a1f; --surface-2: #222228;
   --card: #222228; --card-hover: #2a2a32;
   --bg-secondary: #141417;
@@ -13,6 +14,18 @@
   --shadow: 0 1px 3px rgba(0,0,0,.3), 0 1px 2px rgba(0,0,0,.2);
   --shadow-lg: 0 20px 25px -5px rgba(0,0,0,.3), 0 8px 10px -6px rgba(0,0,0,.3);
   --transition: 150ms cubic-bezier(0.4,0,0.2,1);
+}
+:root[data-theme="light"] {
+  color-scheme: light;
+  --bg: #f8fafc; --surface: #ffffff; --surface-2: #f1f5f9;
+  --card: #f1f5f9; --card-hover: #e2e8f0;
+  --bg-secondary: #ffffff;
+  --border: #e2e8f0; --border-light: #cbd5e1;
+  --fg: #0f172a; --fg-secondary: #475569; --muted: #64748b;
+  --accent: #2563eb; --accent-hover: #1d4ed8;
+  --success: #15803d; --danger: #dc2626;
+  --shadow: 0 1px 3px rgba(15,23,42,.1), 0 1px 2px rgba(15,23,42,.06);
+  --shadow-lg: 0 20px 25px -5px rgba(15,23,42,.1), 0 8px 10px -6px rgba(15,23,42,.1);
 }
 html { font-size: 13px; }
 body {
