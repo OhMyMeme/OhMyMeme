@@ -43,6 +43,8 @@
 
 Windows 除 `.exe` 安装包外另提供 `.msi`（WiX，适合离线/组策略批量部署）与 `.msix`（Microsoft Store 上架 / 侧载）两种格式。
 
+隐私策略见 [docs/privacy.md](docs/privacy.md)。
+
 ### 从源码运行
 
 **环境要求**: Python 3.10+

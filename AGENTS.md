@@ -89,6 +89,9 @@ src/              # 主代码
     index.html/index.css/index.js  # 旧主窗口（已备份至 webui-backup/，不再使用）
 config/
   offsets.json    # wechat_keyfinder 易变参数（版本号等，微信升级时只改此文件）
+docs/
+  privacy.md      # 隐私策略（中英双语，列出全部主动发起的网络连接；Microsoft Store 上架「隐私策略 URL」指向此文件）
+  wechat_keyfinder_protocol.md # helper 二进制协议说明
 scripts/
   build.py        # PyInstaller + InnoSetup/MSI(WiX)/MSIX 构建脚本 (i18n zh/en)
   installer/      # windows.iss (InnoSetup) / wix/app.wxs (MSI) / msix/AppxManifest.xml (MSIX)
@@ -503,6 +506,7 @@ python scripts/build.py --lang en  # 指定语言构建
 - **MSI**（`build_msi`）：WiX Toolset **v5**（`<Files Include="$(var.PayloadDir)\**" />` 递归收割，v4 无此元素故必须 v5）编译 `scripts/installer/wix/app.wxs`：`wix build app.wxs -arch x64 -d Version=<x.y.z> -d PayloadDir=<dist/OhMyMeme> -o <out.msi>`；perMachine、`Program Files`、开始菜单/桌面快捷方式、`MajorUpgrade`；`UpgradeCode` 固定 `7c4e9b21-3a6f-4d58-b9e7-1f2a6c8d5e30`（勿改，否则升级断链）；产物 `dist/OhMyMeme-<filename_version>.msi`
 - **MSIX**（`build_msix`）：`scripts/installer/msix/AppxManifest.xml` 为模板，**已填入本项目 Store 身份**（`Name=TNTXZ.OhMyMeme` / `Publisher=CN=4215BB25-0E28-400F-94EF-AF09583E9BCF` / `PublisherDisplayName=TNTXZ`；公开标识，非密钥，可安全入库）。`build_msix` 用正则取 `<Identity>` 标签内 `Name`/`Publisher`，env `OHMYMEME_MSIX_IDENTITY_NAME`/`OHMYMEME_MSIX_PUBLISHER`/`OHMYMEME_MSIX_PUBLISHER_DISPLAY_NAME` 覆盖后整体重写标签（值仍含 `REPLACE-WITH-STORE` 占位串时告警）；`Version` 由 `_msix_four_part` 转四段式 `X.Y.Z.0`（Revision 必须 0）；`_msix_assets` 由 `src/resources/icon.png`（PIL）生成 `Assets/` 的 `StoreLogo.png`(50)/`Square44x44Logo.png`(44)/`Square150x150Logo.png`(150)；staging = `dist/msix-staging`（整目录拷贝 `dist/OhMyMeme` + 清单 + 资产）→ `makeappx pack /d <staging> /p <out.msix> /o` → 清理 staging；**清单为 full-trust 桌面应用**（`EntryPoint="windows.fullTrustApplication"` + `rescap:Capability Name="runFullTrust"`，`TargetDeviceFamily=Windows.Desktop`）；**不做签名**（Store 上架时重签，本地侧载需开发者模式 `Add-AppxPackage -AllowUnsigned`）；**刻意不禁用 AppData/注册表虚拟化**——`desktop6:FileSystemWriteVirtualization`/`RegistryWriteVirtualization` 需 `unvirtualizedResources` restricted capability 且官方限定「仅部分 Microsoft 及合作方游戏」，商店上架会被拒；代价是 MSIX 版的 `%APPDATA%`/`%LOCALAPPDATA%` 写入被重定向到包容器（与 `.exe`/`.msi` 安装的配置/data 目录不互通）
 - 产物命名 `OhMyMeme-<filename_version>.msi`/`.msix`（nightly 即 `OhMyMeme-nightly.*`）
+- **Store 上架配套**：Partner Center「隐私策略 URL」指向仓库内 `docs/privacy.md`（中英双语，逐条列出全部主动联网目标：GitHub 更新检查/镜像、用户自建 FTP/S3/R2/WebDAV、抖音 `douyin.com`、微信 CDN、`googledownloads.cn`、`contributor.starsfire.top`、`uapis.cn`）。**新增任何联网功能时须同步更新该文件**（Store 会核对声明与实际行为是否一致）
 
 ### Linux 源码运行依赖 (GTK 后端)
 - pywebview Linux 使用 GTK 后端（`WebKit2`），源码/venv/conda 运行需当前 Python 能导入 `gi`：

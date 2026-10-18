@@ -158,6 +158,7 @@ python scripts/build.py --linux --installer-only --package deb  # Linux 包类�
   - `--msi`：WiX Toolset v5 生成 `dist/OhMyMeme-<版本>.msi`（离线/组策略批量部署）。安装 `dotnet tool install --global wix --version 5.*`，模板 `scripts/installer/wix/app.wxs`
   - `--msix`：Windows SDK 的 `makeappx.exe` 生成 `dist/OhMyMeme-<版本>.msix`（Microsoft Store 上架 / 侧载）。模板 `scripts/installer/msix/AppxManifest.xml`，产物不签名（Store 会重签）
   - MSIX 身份信息（`Name`/`Publisher`/`PublisherDisplayName`）来自 Partner Center，模板内已填入本项目 Store 身份（`TNTXZ.OhMyMeme` / `CN=4215BB25-0E28-400F-94EF-AF09583E9BCF` / `TNTXZ`）；**这些是公开标识（每个已发布包内都可见），可安全提交**，非密钥，无法据以冒充发布（发布需 Partner Center 账号 + 签名证书私钥）；CI 可用环境变量覆盖：`OHMYMEME_MSIX_IDENTITY_NAME`/`OHMYMEME_MSIX_PUBLISHER`/`OHMYMEME_MSIX_PUBLISHER_DISPLAY_NAME`
+  - Microsoft Store 上架时的「隐私策略 URL」填写仓库内 [docs/privacy.md](docs/privacy.md) 的公开链接；该文件须与实际网络行为保持一致（新增联网功能时同步更新）
 - Linux 包支持 .deb / .rpm / .AppImage，构建机需装 GTK/WebKit 依赖（见 AGENTS.md「Linux 打包（GTK）」）
 - 输出目录: `dist/`
 
