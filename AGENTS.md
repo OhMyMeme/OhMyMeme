@@ -189,6 +189,7 @@ tests/
 ### 同步
 - manifest 文件: `meme-index.json`
 - SHA-256 差异对比, `push(delete_remote)`/`pull(remove_local)`
+- **push 仅上传云端缺失/变更文件**: `push()` 拉取远端 `meme-index.json` 后按「文件名缺失 或 `sha256` 不同」过滤出待上传集合（`remote_memes` 为准），只把这些交给 worker；`files_total`/`bytes_total` 与进度只反映待上传文件，`skipped` = 云端清单一致的本地文件数。**不再对每个文件发 `file_exists`（HEAD）复核物理存在**——云端清单为唯一判据（大库同步省去逐文件往返；代价是清单声称存在但物理被带外删除的文件不会自动补传，需重跑/清理孤儿）。远端无 manifest（首次同步）时 `remote_memes` 为空 → 上传全部本地文件
 - 远端路径: `{root}/memes/`, `{root}/meme-index.json`
 - 同步进度: `_sync_state` 全局变量追踪进度，`get_sync_progress()` 供 JS 轮询
 - `push()`/`pull()` 内循环中更新 files_done/bytes_done/current_file 等字段
@@ -196,7 +197,7 @@ tests/
 - 设置页 4 个开关控制进度/完成弹窗是否显示
 - **多线程传输**: `push()`/`pull()` 使用 `ThreadPoolExecutor`，每个线程创建独立后端连接
 - 并发数: 配置项 `sync_threads`（默认 3，范围 1-8），通过 `config.json` 或 `SettingsApi` 修改
-- `_push_worker`/`_pull_worker`: 接收文件子列表，操作独立后端连接，原子递增 `_sync_state`
+- `_push_worker`/`_pull_worker`: 接收文件子列表，操作独立后端连接，原子递增 `_sync_state`；`_push_worker(entries, remote_root, cache_dir)` 只负责上传调用方已过滤好的缺失/变更文件（无存在性跳过分支），`_pull_worker` 仍按本地清单/文件存在性跳过未变项
 - **WebDAV 目录创建去重**: `_push_worker` 同一批次所有文件都上传到 `memes/`，只在循环前 `ensure_remote_dir` 一次；`_WebDAVBackend.ensure_remote_dir` 对**每个目录 URL**在 `_dav_dirs_lock` 内原子执行「缓存检查 + MKCOL + 缓存写入」，成功/405/复核命中均写 `_dav_dirs` 缓存，多 worker 并发对同一目录也只发一次 MKCOL——避免重复 MKCOL 触发远端锁。**`push()` 每次在拿到 `_sync_run_lock` 后先清空 `_dav_dirs`**，避免命中上一次同步缓存、跳过已被删除远端目录的 MKCOL。
 - `_sync_lock` (`threading.Lock`) 保护 `_sync_state` 写操作；`_increment_sync_progress()` 提供原子递增
 - `_chunk_list(lst, n)` 将文件列表均匀切分给各线程

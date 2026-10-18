@@ -799,8 +799,8 @@ def _fetch_remote_memes(bk, remote_root):
 # ─── 多线程工作函数 ───
 
 
-def _push_worker(entries, remote_root, cache_dir, remote_memes):
-    """单线程批量上传一批文件"""
+def _push_worker(entries, remote_root, cache_dir):
+    """单线程批量上传一批文件（调用方已按远端 manifest 过滤出缺失/变更的文件）"""
     bk = _get_backend()
     bk.connect()
     local_results = {"uploaded": 0, "skipped": 0, "errors": 0, "bytes": 0, "failed": []}
@@ -810,18 +810,7 @@ def _push_worker(entries, remote_root, cache_dir, remote_memes):
             fname = entry["filename"]
             local_file = cache_dir / fname
             fsize = local_file.stat().st_size if local_file.exists() else 0
-            local_hash = entry["sha256"]
-            remote_entry = remote_memes.get(fname)
             rem_path = remote_root.rstrip("/") + "/" + REMOTE_MEME_DIR + "/" + fname
-            if remote_entry and remote_entry.get("sha256") == local_hash:
-                try:
-                    remote_ok = bk.file_exists(rem_path)
-                except Exception:
-                    remote_ok = False
-                if remote_ok:
-                    local_results["skipped"] += 1
-                    _increment_sync_progress(files_add=1)
-                    continue
             if not local_file.exists():
                 local_results["errors"] += 1
                 local_results["failed"].append(
@@ -1344,31 +1333,50 @@ def push(delete_remote: bool = None) -> dict:
         remote_memes = _fetch_remote_memes(bk, remote_root)
         local_idx = {m["filename"]: m for m in local["memes"]}
 
-        entries = local["memes"]
-        if max_workers <= 1 or len(entries) <= 1:
+        # 仅上传云端缺失/变更的文件：按远端 manifest 比对（文件名缺失或 sha256 不同）
+        entries = [
+            m
+            for m in local["memes"]
+            if (remote_memes.get(m["filename"]) or {}).get("sha256") != m["sha256"]
+        ]
+        skipped_uptodate = len(local["memes"]) - len(entries)
+
+        # 进度总数只反映实际要上传的文件（连接前已按本地数占位，此处重算）
+        files_total = len(entries)
+        bytes_total = 0
+        for entry in entries:
+            fp = cache_dir / entry["filename"]
+            if fp.exists():
+                bytes_total += fp.stat().st_size
+        _update_sync_state(files_total=files_total, bytes_total=bytes_total)
+
+        if not entries:
+            chunks = []
+        elif max_workers <= 1 or len(entries) <= 1:
             chunks = [entries]
         else:
             chunks = _chunk_list(entries, min(max_workers, len(entries)))
 
         aggregated = {
             "uploaded": 0,
-            "skipped": 0,
+            "skipped": skipped_uptodate,
             "errors": 0,
             "bytes": 0,
             "failed": [],
         }
-        with ThreadPoolExecutor(max_workers=len(chunks)) as executor:
-            futures = [
-                executor.submit(_push_worker, ch, remote_root, cache_dir, remote_memes)
-                for ch in chunks
-            ]
-            for future in as_completed(futures):
-                r = future.result()
-                aggregated["uploaded"] += r["uploaded"]
-                aggregated["skipped"] += r["skipped"]
-                aggregated["errors"] += r["errors"]
-                aggregated["bytes"] += r["bytes"]
-                aggregated["failed"].extend(r.get("failed", []))
+        if chunks:
+            with ThreadPoolExecutor(max_workers=len(chunks)) as executor:
+                futures = [
+                    executor.submit(_push_worker, ch, remote_root, cache_dir)
+                    for ch in chunks
+                ]
+                for future in as_completed(futures):
+                    r = future.result()
+                    aggregated["uploaded"] += r["uploaded"]
+                    aggregated["skipped"] += r["skipped"]
+                    aggregated["errors"] += r["errors"]
+                    aggregated["bytes"] += r["bytes"]
+                    aggregated["failed"].extend(r.get("failed", []))
 
         if aggregated["errors"] > 0:
             _update_sync_state(failed_items=aggregated["failed"])
