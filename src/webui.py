@@ -344,6 +344,191 @@ def _cloud_reset():
             path.unlink()
     except OSError:
         pass
+    _sync_status_reset()
+
+
+# 顶栏同步状态：内存缓存远端清单 + 后台刷新，供主窗口低开销轮询
+_sync_status_lock = threading.Lock()
+_sync_status_state = {
+    "manifest": None,
+    "cache_loaded": False,
+    "checked": False,
+    "refreshing": False,
+    "error": "",
+    "updated_at": 0.0,
+}
+_sync_status_gen = 0
+
+
+def _sync_status_reset():
+    # 云配置变更：作废在途刷新并清空清单缓存
+    global _sync_status_gen
+    with _sync_status_lock:
+        _sync_status_gen += 1
+        _sync_status_state.update(
+            manifest=None,
+            cache_loaded=False,
+            checked=False,
+            refreshing=False,
+            error="",
+            updated_at=0.0,
+        )
+
+
+def _sync_status_invalidate():
+    # 同步完成后远端清单已变化：作废在途刷新并标记待重拉（保留旧清单供离线时展示）
+    global _sync_status_gen
+    with _sync_status_lock:
+        _sync_status_gen += 1
+        _sync_status_state.update(
+            checked=False,
+            refreshing=False,
+            error="",
+        )
+
+
+def _sync_status_set_manifest(manifest):
+    # 复用已有拉取结果（启动自动同步/云清单刷新），避免重复请求远端
+    with _sync_status_lock:
+        _sync_status_state.update(
+            manifest=manifest if isinstance(manifest, dict) else None,
+            cache_loaded=True,
+            checked=True,
+            error="",
+            updated_at=time.time(),
+        )
+
+
+def _sync_status_ensure_cache_locked():
+    # 首次查询先读 cloud-index.json 缓存出值，网络刷新由后台线程完成
+    if _sync_status_state["cache_loaded"]:
+        return
+    _sync_status_state["cache_loaded"] = True
+    data = sync_module.load_cloud_manifest()
+    if isinstance(data, dict):
+        _sync_status_state["manifest"] = data
+
+
+def _start_sync_status_refresh(force=False) -> bool:
+    # 后台拉取远端清单（refreshing 去重；已检查过则仅 force 重拉）
+    global _sync_status_gen
+    with _sync_status_lock:
+        if _sync_status_state["refreshing"]:
+            return False
+        if _sync_status_state["checked"] and not force:
+            return False
+        _sync_status_state["refreshing"] = True
+        _sync_status_state["error"] = ""
+        gen = _sync_status_gen
+    threading.Thread(target=_sync_status_worker, args=(gen,), daemon=True).start()
+    return True
+
+
+def _sync_status_worker(gen):
+    # 拉取远端清单并写入状态；代次不匹配（配置重置/同步完成）时丢弃结果
+    try:
+        data = sync_module.download_index()
+        with _sync_status_lock:
+            if gen != _sync_status_gen:
+                return
+            _sync_status_state.update(
+                manifest=data if isinstance(data, dict) else None,
+                cache_loaded=True,
+                checked=True,
+                refreshing=False,
+                error="",
+                updated_at=time.time(),
+            )
+    except Exception as e:
+        logger.info("sync status refresh failed: %s", e)
+        with _sync_status_lock:
+            if gen != _sync_status_gen:
+                return
+            _sync_status_state.update(
+                checked=True,
+                refreshing=False,
+                error=str(e),
+                updated_at=time.time(),
+            )
+
+
+def _sync_status_snapshot(force=False) -> dict:
+    # 组装顶栏所需状态：配置/清单差集/后台传输进度
+    cfg = get_config()
+    if not str(cfg.get("sync_type", "") or "").strip():
+        return {"configured": False}
+    with _sync_status_lock:
+        _sync_status_ensure_cache_locked()
+        need_refresh = force or not _sync_status_state["checked"]
+    if need_refresh:
+        _start_sync_status_refresh(force=force)
+    with _sync_status_lock:
+        manifest = _sync_status_state["manifest"]
+        checked = _sync_status_state["checked"]
+        refreshing = _sync_status_state["refreshing"]
+        error = _sync_status_state["error"]
+        checked_at = _sync_status_state["updated_at"]
+    local = set(get_db().get_all_filenames() or [])
+    remote_names = set()
+    remote_ready = set()
+    if isinstance(manifest, dict):
+        for entry in manifest.get("memes") or []:
+            if not isinstance(entry, dict):
+                continue
+            fname = entry.get("filename")
+            if not sync_module._safe_remote_fname(fname):
+                continue
+            remote_names.add(fname)
+            if sync_module._safe_sha(entry.get("sha256")):
+                remote_ready.add(fname)
+    local_missing = len(remote_ready - local) if manifest is not None else 0
+    cloud_missing = len(local - remote_names) if manifest is not None else 0
+    if manifest is not None:
+        manifest_state = "ok"
+    elif refreshing or not checked:
+        manifest_state = "loading"
+    elif error:
+        manifest_state = "error"
+    else:
+        manifest_state = "missing"
+    progress = sync_module.get_sync_progress()
+    status = str(progress.get("status", "idle") or "idle")
+    active = status in ("uploading", "downloading", "deleting")
+
+    def _int(value):
+        try:
+            return int(value or 0)
+        except (TypeError, ValueError):
+            return 0
+
+    files_done = _int(progress.get("files_done"))
+    files_total = _int(progress.get("files_total"))
+    return {
+        "configured": True,
+        "manifest_state": manifest_state,
+        "refreshing": refreshing,
+        "checked": checked,
+        "error": error,
+        "checked_at": checked_at,
+        "local_count": len(local),
+        "remote_count": len(remote_names),
+        "local_missing": local_missing,
+        "cloud_missing": cloud_missing,
+        "synced": manifest is not None and local_missing == 0 and cloud_missing == 0,
+        "transfer": {
+            "active": active,
+            "status": status,
+            "direction": progress.get("direction", ""),
+            "files_done": files_done,
+            "files_total": files_total,
+            "remaining": max(files_total - files_done, 0) if files_total else 0,
+            "bytes_done": _int(progress.get("bytes_done")),
+            "bytes_total": _int(progress.get("bytes_total")),
+            "progress": _int(progress.get("progress")),
+            "speed": _int(progress.get("speed")),
+            "current_file": progress.get("current_file", "") or "",
+        },
+    }
 
 
 def _cloud_view():
@@ -420,6 +605,7 @@ def _cloud_refresh_worker(fetched=None):
                     local=local,
                     loaded=True,
                 )
+            _sync_status_set_manifest(data)
             cfg = get_config()
             if cfg.get("cloud_direct", False):
                 try:
@@ -1529,6 +1715,19 @@ class JsApi:
     def get_sync_progress(self) -> dict:
         return sync_module.get_sync_progress()
 
+    def get_sync_status(self, force: bool = False) -> dict:
+        """顶栏同步状态：是否配置云端、清单差集、后台传输进度（force 重拉清单）"""
+        try:
+            return _sync_status_snapshot(bool(force))
+        except Exception as e:
+            logger.warning("get_sync_status error: %s", e)
+            return {
+                "configured": bool(get_config().get("sync_type", "")),
+                "manifest_state": "error",
+                "error": str(e),
+                "transfer": {"active": False, "status": "idle"},
+            }
+
     def sync_push(self) -> dict:
         try:
             self._webui.ensure_local_thumbs()
@@ -1541,6 +1740,8 @@ class JsApi:
                 "error": str(e),
                 "failed_files": sync_module.get_sync_progress().get("failed_items", []),
             }
+        finally:
+            _sync_status_invalidate()
 
     def sync_pull(self) -> dict:
         try:
@@ -1553,6 +1754,8 @@ class JsApi:
                 "error": str(e),
                 "failed_files": sync_module.get_sync_progress().get("failed_items", []),
             }
+        finally:
+            _sync_status_invalidate()
 
     def run_auto_sync(self) -> dict:
         """启动时自动同步：根据配置拉取远端索引和/或全量同步"""
@@ -1567,6 +1770,8 @@ class JsApi:
 
                 fetched = download_index()
                 result["fetched"] = fetched is not None
+                if isinstance(fetched, dict):
+                    _sync_status_set_manifest(fetched)
             if self._cfg.get("cloud_direct", False):
                 # 云端直接使用：复用本次 fetch 结果（fetch 关闭则线程内自拉）
                 _start_cloud_refresh(fetched)
@@ -3447,6 +3652,8 @@ class SettingsApi:
                 "error": str(e),
                 "failed_files": sync_module.get_sync_progress().get("failed_items", []),
             }
+        finally:
+            _sync_status_invalidate()
 
     def sync_pull(self, remove_local: bool = None) -> dict:
         try:
@@ -3467,6 +3674,8 @@ class SettingsApi:
                 "error": str(e),
                 "failed_files": sync_module.get_sync_progress().get("failed_items", []),
             }
+        finally:
+            _sync_status_invalidate()
 
     def sync_test(self) -> str:
         try:
@@ -3527,6 +3736,7 @@ class SettingsApi:
             manifest = download_index()
             if not manifest:
                 return {"ok": False, "error": "无法获取远端索引"}
+            _sync_status_set_manifest(manifest)
             db = get_db()
             local_rows = db.search(keyword="", tags=None, limit=999999)
             local_count = len(local_rows)

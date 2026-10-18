@@ -1239,6 +1239,7 @@ vm.runInContext(source.slice(source.indexOf('let settingsQueue'), source.indexOf
   const pending = [];
   context.window = {pywebview: {api: {get_settings: () => new Promise(r => pending.push(r))}}};
   context.state = {};
+  context.syncBadge = {value: null};
   context.search = context.syncWinResizeHandles = () => {};
   vm.runInContext(refresh, context);
   context.window.refreshMemes();

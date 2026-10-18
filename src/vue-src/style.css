@@ -13,6 +13,9 @@
   --primary-light: #dbeafe;
   --primary-strong: #1d4ed8;
   --danger: #ef4444;
+  --success: #22c55e;
+  --warning: #f59e0b;
+  --warning-text: #f59e0b;
   --accent: #3b82f6;
   --radius: 8px;
   --radius-sm: 4px;
@@ -35,6 +38,9 @@
   --primary: #2563eb;
   --accent: #2563eb;
   --danger: #dc2626;
+  --success: #16a34a;
+  --warning: #d97706;
+  --warning-text: #b45309;
   --border-hair: rgba(15,23,42,0.08);
   --shadow-lg: 0 20px 25px -5px rgba(15,23,42,.1), 0 8px 10px -6px rgba(15,23,42,.1);
 }

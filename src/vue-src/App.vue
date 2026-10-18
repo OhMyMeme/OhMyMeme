@@ -15,6 +15,7 @@ import Pager from './components/Pager.vue'
 import SimilarImportDialog from './components/SimilarImportDialog.vue'
 import SetupGuide from './components/SetupGuide.vue'
 import SyncOverlay from './components/SyncOverlay.vue'
+import SyncStatusBadge from './components/SyncStatusBadge.vue'
 import TagEditor from './components/TagEditor.vue'
 import UpdateDialog from './components/UpdateDialog.vue'
 import { applyTheme } from './utils/api'
@@ -179,7 +180,7 @@ function syncWinResizeHandles() {
 
 // 顶栏按钮：核心键默认顺序，插件可经约束覆盖顺序/隐藏（close 不可隐藏）
 const CORE_BTN_ORDER: Record<string, number> = {
-  sort: 10, select: 20, upload: 30, download: 40, import: 50, refresh: 60, settings: 70, close: 1000,
+  sort: 10, select: 20, sync: 25, upload: 30, download: 40, import: 50, refresh: 60, settings: 70, close: 1000,
 }
 function coreBtnHidden(key: string): boolean {
   return state.pluginButtonConstraints.hide.includes(key)
@@ -221,13 +222,14 @@ onMounted(() => {
     if (settings) applySettings(settings)
     else window.pywebview?.api?.get_settings?.().then(applySettings).catch(console.error)
     search()
+    syncBadge.value?.refresh()
   }
   window.refreshTags = refreshTags
   window.refreshCollections = refreshCollections
   // 设置页「设置向导」按钮入口（SettingsApi.open_guide 调用）
   window.showGuide = showSetupGuide
   // 云端直接使用：后端预取缩略图/入库后通知，刷新网格+标签+分组
-  window.onCloudReady = () => { imgRetries.clear(); thumbRev.value++; search(); refreshTags(); refreshCollections() }
+  window.onCloudReady = () => { imgRetries.clear(); thumbRev.value++; search(); refreshTags(); refreshCollections(); syncBadge.value?.refresh() }
   // 插件设置保存后由后端推送：刷新插件 CSS link（改 URL 防缓存）+ 通知插件脚本
   window.ommPluginRefresh = (pid?: string) => {
     document.querySelectorAll<HTMLLinkElement>('link[href*="/plugins/"]').forEach(link => {
@@ -491,6 +493,7 @@ function onImporting() {
 }
 
 const syncOverlay = ref<InstanceType<typeof SyncOverlay> | null>(null)
+const syncBadge = ref<InstanceType<typeof SyncStatusBadge> | null>(null)
 
 function syncUpload() {
   syncOverlay.value?.start('sync_push', '上传中', 'show_upload_progress', 'show_upload_done')
@@ -504,6 +507,7 @@ function onSyncDone() {
   search()
   refreshTags()
   refreshCollections()
+  syncBadge.value?.refresh()
 }
 
 async function rescanCache() {
@@ -520,7 +524,7 @@ function hideWindow() {
 
 async function onTitlebarMouseDown(e: MouseEvent) {
   if (e.button !== 0) return
-  if ((e.target as HTMLElement).closest('.title-btn') || (e.target as HTMLElement).closest('.icon-btn') || (e.target as HTMLElement).closest('.sidebar-toggle') || (e.target as HTMLElement).closest('.logo')) return
+  if ((e.target as HTMLElement).closest('.title-btn') || (e.target as HTMLElement).closest('.icon-btn') || (e.target as HTMLElement).closest('.sidebar-toggle') || (e.target as HTMLElement).closest('.logo') || (e.target as HTMLElement).closest('.sync-pop')) return
   try {
     const gen = dragGeneration
     const nativeDrag = await window.pywebview?.api?.start_window_drag(e.button + 1, e.screenX, e.screenY)
@@ -1143,6 +1147,7 @@ async function onDrop(e: DragEvent) {
 function onDocKeydown(e: KeyboardEvent) {
   if (e.key !== 'Escape') return
   if (ctx.visible.value) { ctx.hide(); return }
+  if (syncBadge.value?.isOpen()) { syncBadge.value.close(); return }
   if (hoverPreview.value) { clearHoverPreview(); return }
   if (selectMode.value) { toggleSelect(); return }
   if (sortEnabled.value) { toggleSort(); return }
@@ -1270,6 +1275,7 @@ onUnmounted(() => {
         <button v-if="!coreBtnHidden('select')" class="icon-btn" :class="{ 'sort-on': selectMode }" :style="{ order: coreBtnOrder('select') }" title="多选" aria-label="多选" @click="toggleSelect">
           <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M9 11l3 3L22 4"/><path d="M21 12v7a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11"/></svg>
         </button>
+        <SyncStatusBadge v-if="!coreBtnHidden('sync')" ref="syncBadge" :style="{ order: coreBtnOrder('sync') }" />
         <button v-if="!coreBtnHidden('upload')" class="icon-btn" :style="{ order: coreBtnOrder('upload') }" title="上传到远端" aria-label="上传到远端" @click="syncUpload()">
           <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 19V5m-7 7l7-7 7 7"/></svg>
         </button>
