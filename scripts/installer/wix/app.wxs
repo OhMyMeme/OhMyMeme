@@ -1,0 +1,50 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- OhMyMeme MSI (WiX Toolset v5)
+     编译（由 build.py 调用）:
+       wix build app.wxs -arch x64 -d Version=<x.y.z> -d PayloadDir=<dist\OhMyMeme> -o <out.msi>
+     PayloadDir 指向 PyInstaller onedir 产物目录，整目录递归收割进 INSTALLFOLDER。 -->
+<Wix xmlns="http://wixtoolset.org/schemas/v4/wxs">
+  <Package
+    Name="OhMyMeme"
+    Manufacturer="OhMyMeme"
+    Version="$(var.Version)"
+    UpgradeCode="7c4e9b21-3a6f-4d58-b9e7-1f2a6c8d5e30"
+    Scope="perMachine"
+    Compressed="yes">
+
+    <MajorUpgrade DowngradeErrorMessage="已安装更高版本的 OhMyMeme，请先卸载。 / A newer version of OhMyMeme is already installed." />
+    <MediaTemplate EmbedCab="yes" />
+
+    <StandardDirectory Id="ProgramFiles64Folder">
+      <Directory Id="INSTALLFOLDER" Name="OhMyMeme" />
+    </StandardDirectory>
+    <StandardDirectory Id="ProgramMenuFolder">
+      <Directory Id="ApplicationProgramsFolder" Name="OhMyMeme" />
+    </StandardDirectory>
+    <StandardDirectory Id="DesktopFolder" />
+
+    <Feature Id="MainFeature" Title="OhMyMeme" Level="1">
+      <ComponentGroupRef Id="AppFiles" />
+      <ComponentRef Id="ApplicationShortcut" />
+      <ComponentRef Id="DesktopShortcut" />
+    </Feature>
+  </Package>
+
+  <Fragment>
+    <ComponentGroup Id="AppFiles" Directory="INSTALLFOLDER">
+      <Files Include="$(var.PayloadDir)\**" />
+    </ComponentGroup>
+  </Fragment>
+
+  <Fragment>
+    <Component Id="ApplicationShortcut" Directory="ApplicationProgramsFolder" Guid="2d8a1f34-5b6c-4e79-8a23-4c9f1e6b7d01">
+      <Shortcut Id="StartMenuShortcut" Name="OhMyMeme" Target="[INSTALLFOLDER]OhMyMeme.exe" WorkingDirectory="INSTALLFOLDER" />
+      <RemoveFolder Id="RemoveApplicationProgramsFolder" Directory="ApplicationProgramsFolder" On="uninstall" />
+      <RegistryValue Root="HKCU" Key="Software\OhMyMeme" Name="startMenuShortcut" Type="integer" Value="1" KeyPath="yes" />
+    </Component>
+    <Component Id="DesktopShortcut" Directory="DesktopFolder" Guid="2d8a1f34-5b6c-4e79-8a23-4c9f1e6b7d02">
+      <Shortcut Id="DesktopShortcut" Name="OhMyMeme" Target="[INSTALLFOLDER]OhMyMeme.exe" WorkingDirectory="INSTALLFOLDER" />
+      <RegistryValue Root="HKCU" Key="Software\OhMyMeme" Name="desktopShortcut" Type="integer" Value="1" KeyPath="yes" />
+    </Component>
+  </Fragment>
+</Wix>

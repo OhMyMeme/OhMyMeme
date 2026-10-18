@@ -1,0 +1,55 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- OhMyMeme MSIX manifest (Microsoft Store / sideload) -->
+<!--
+  Identity 字段来自 Partner Center（产品 → 产品标识），均为公开标识（非密钥）：
+    Name               = Package/Identity/Name
+    Publisher          = Package/Identity/Publisher
+    PublisherDisplayName = Package/Properties/PublisherDisplayName
+  build.py 会用环境变量覆盖（CI 用）：
+    OHMYMEME_MSIX_IDENTITY_NAME / OHMYMEME_MSIX_PUBLISHER /
+    OHMYMEME_MSIX_PUBLISHER_DISPLAY_NAME
+  Version 与 Assets 由 build.py 在打包时生成（四段式 X.Y.Z.0）。
+-->
+<Package
+  xmlns="http://schemas.microsoft.com/appx/manifest/foundation/windows10"
+  xmlns:uap="http://schemas.microsoft.com/appx/manifest/uap/windows10"
+  xmlns:rescap="http://schemas.microsoft.com/appx/manifest/foundation/windows10/restrictedcapabilities"
+  IgnorableNamespaces="uap rescap">
+
+  <Identity
+    Name="TNTXZ.OhMyMeme"
+    Publisher="CN=4215BB25-0E28-400F-94EF-AF09583E9BCF"
+    Version="0.0.0.0" />
+
+  <Properties>
+    <DisplayName>OhMyMeme</DisplayName>
+    <PublisherDisplayName>TNTXZ</PublisherDisplayName>
+    <Logo>Assets\StoreLogo.png</Logo>
+    <Description>轻量化跨平台表情包管理系统</Description>
+  </Properties>
+
+  <Dependencies>
+    <TargetDeviceFamily Name="Windows.Desktop" MinVersion="10.0.17763.0" MaxVersionTested="10.0.22621.0" />
+  </Dependencies>
+
+  <Resources>
+    <Resource Language="zh-CN" />
+    <Resource Language="en-US" />
+  </Resources>
+
+  <Applications>
+    <Application Id="OhMyMeme" Executable="OhMyMeme.exe" EntryPoint="windows.fullTrustApplication">
+      <uap:VisualElements
+        DisplayName="OhMyMeme"
+        Description="轻量化跨平台表情包管理系统"
+        BackgroundColor="transparent"
+        Square150x150Logo="Assets\Square150x150Logo.png"
+        Square44x44Logo="Assets\Square44x44Logo.png">
+      </uap:VisualElements>
+    </Application>
+  </Applications>
+
+  <Capabilities>
+    <rescap:Capability Name="runFullTrust" />
+  </Capabilities>
+</Package>

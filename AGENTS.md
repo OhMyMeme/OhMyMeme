@@ -90,7 +90,8 @@ src/              # 主代码
 config/
   offsets.json    # wechat_keyfinder 易变参数（版本号等，微信升级时只改此文件）
 scripts/
-  build.py        # PyInstaller + InnoSetup 构建脚本 (i18n zh/en)
+  build.py        # PyInstaller + InnoSetup/MSI(WiX)/MSIX 构建脚本 (i18n zh/en)
+  installer/      # windows.iss (InnoSetup) / wix/app.wxs (MSI) / msix/AppxManifest.xml (MSIX)
   launcher.py     # PyInstaller 入口
   hooks/          # 自定义 PyInstaller hooks（Linux GTK: WebKit2/Soup typelib 收集，内置无对应 hook）
     hook-gi.repository.WebKit2.py
@@ -472,6 +473,7 @@ python -m pytest tests/ -v  # 运行测试
 ruff check src/   # lint 检查
 black src/        # 格式化
 python scripts/build.py  # PyInstaller + InnoSetup 完整构建
+python scripts/build.py --installer-only --msi --msix  # 追加 WiX MSI 与 MSIX（Windows）
 python scripts/build.py --lang en  # 指定语言构建
 ```
 
@@ -492,7 +494,15 @@ python scripts/build.py --lang en  # 指定语言构建
 - `--installer-only` — 仅制作安装包（PyInstaller 已打包完时）
 - `--nightly`/`--version X` — 改写版本号构建（临时改写 `src/__init__.py`，完成后恢复）
 - `--verify-ffmpeg`/`--verify-helper` — 校验产物内置 ffmpeg/wechat_keyfinder（CI 打包后调用）
+- `--msi`/`--msix` — Windows 追加安装包格式（**additive**：`.exe` 始终构建，二者在 Inno 之外追加；工具/清单缺失仅告警跳过，不中断）。`build_windows_installers(app_version, filename_version, want_msi, want_msix)` 统一编排，`--installer-only` 与常规打包流程共用
 - Windows 安装包需 InnoSetup 6/7；输出目录 `dist/`；原 Nuitka 构建脚本归档于 `scripts/nuitka/build.py`
+
+### Windows MSI / MSIX 打包（Microsoft Store）
+- **触发**：`--msi`/`--msix`（三个 workflow 的 windows job 均以 `--installer-only --msi --msix` 调用；nightly 额外带 `--nightly`）
+- **工具定位**（缺失仅告警跳过，不中断）：`find_wix()` = `WIX` 环境变量 → PATH 的 `wix(.exe)` → `%USERPROFILE%\.dotnet\tools\wix.exe`（需 `dotnet tool install --global wix --version 5.*`）；`find_makeappx()` = `MAKEAPPX_DIR`/`MAKEAPPX` → 扫描 `C:\Program Files (x86)\Windows Kits\10\bin\<ver>\x64\makeappx.exe` 取最高版本（runner 预装 Windows SDK）
+- **MSI**（`build_msi`）：WiX Toolset **v5**（`<Files Include="$(var.PayloadDir)\**" />` 递归收割，v4 无此元素故必须 v5）编译 `scripts/installer/wix/app.wxs`：`wix build app.wxs -arch x64 -d Version=<x.y.z> -d PayloadDir=<dist/OhMyMeme> -o <out.msi>`；perMachine、`Program Files`、开始菜单/桌面快捷方式、`MajorUpgrade`；`UpgradeCode` 固定 `7c4e9b21-3a6f-4d58-b9e7-1f2a6c8d5e30`（勿改，否则升级断链）；产物 `dist/OhMyMeme-<filename_version>.msi`
+- **MSIX**（`build_msix`）：`scripts/installer/msix/AppxManifest.xml` 为模板，**已填入本项目 Store 身份**（`Name=TNTXZ.OhMyMeme` / `Publisher=CN=4215BB25-0E28-400F-94EF-AF09583E9BCF` / `PublisherDisplayName=TNTXZ`；公开标识，非密钥，可安全入库）。`build_msix` 用正则取 `<Identity>` 标签内 `Name`/`Publisher`，env `OHMYMEME_MSIX_IDENTITY_NAME`/`OHMYMEME_MSIX_PUBLISHER`/`OHMYMEME_MSIX_PUBLISHER_DISPLAY_NAME` 覆盖后整体重写标签（值仍含 `REPLACE-WITH-STORE` 占位串时告警）；`Version` 由 `_msix_four_part` 转四段式 `X.Y.Z.0`（Revision 必须 0）；`_msix_assets` 由 `src/resources/icon.png`（PIL）生成 `Assets/` 的 `StoreLogo.png`(50)/`Square44x44Logo.png`(44)/`Square150x150Logo.png`(150)；staging = `dist/msix-staging`（整目录拷贝 `dist/OhMyMeme` + 清单 + 资产）→ `makeappx pack /d <staging> /p <out.msix> /o` → 清理 staging；**清单为 full-trust 桌面应用**（`EntryPoint="windows.fullTrustApplication"` + `rescap:Capability Name="runFullTrust"`，`TargetDeviceFamily=Windows.Desktop`）；**不做签名**（Store 上架时重签，本地侧载需开发者模式 `Add-AppxPackage -AllowUnsigned`）；**刻意不禁用 AppData/注册表虚拟化**——`desktop6:FileSystemWriteVirtualization`/`RegistryWriteVirtualization` 需 `unvirtualizedResources` restricted capability 且官方限定「仅部分 Microsoft 及合作方游戏」，商店上架会被拒；代价是 MSIX 版的 `%APPDATA%`/`%LOCALAPPDATA%` 写入被重定向到包容器（与 `.exe`/`.msi` 安装的配置/data 目录不互通）
+- 产物命名 `OhMyMeme-<filename_version>.msi`/`.msix`（nightly 即 `OhMyMeme-nightly.*`）
 
 ### Linux 源码运行依赖 (GTK 后端)
 - pywebview Linux 使用 GTK 后端（`WebKit2`），源码/venv/conda 运行需当前 Python 能导入 `gi`：
@@ -514,7 +524,7 @@ python scripts/build.py --lang en  # 指定语言构建
 - **check.yml**: Ubuntu, lint + test, push 和 PR 到任意分支均触发
 - **ffmpeg-win64.yml**: 可复用 workflow（`workflow_call` + `workflow_dispatch`，`ref` 输入可指定缓存 key 分支），交叉编译裁剪版 ffmpeg 一次并 artifact 上传（actions/cache 按 `build_win64.sh` 内容哈希做 key，源码未变直接复用）；被 build.yml/nightly.yml/release.yml 的 windows job 以 `needs` 拉起
 - **build.yml**: Windows + Linux + macOS 三平台，仅 `workflow_dispatch` 手动触发（不再随 check/main 自动构建）
-  - `build-windows`: InnoSetup 安装包 `dist/OhMyMeme-*-setup.exe`（打包前 download-artifact 取 ffmpeg-win64 到工作区 `ffmpeg-win64/`，打包后 `python scripts/build.py --verify-ffmpeg` 校验内置 ffmpeg）
+  - `build-windows`: InnoSetup 安装包 `dist/OhMyMeme-*-setup.exe` + WiX MSI `dist/OhMyMeme-*.msi` + MSIX `dist/OhMyMeme-*.msix`（`choco install innosetup` + `dotnet tool install --global wix --version 5.*`，`python scripts/build.py --installer-only --msi --msix` 一次产出；打包前 download-artifact 取 ffmpeg-win64 到工作区 `ffmpeg-win64/`，打包后 `python scripts/build.py --verify-ffmpeg` 校验内置 ffmpeg）
   - `build-linux`: AppImage/deb/rpm（`--linux`）
   - `build-macos`: `.app` + `.dmg`（`--macos`，PyInstaller `--windowed` + iconutil 生成 icns）；矩阵双架构 `arm64`（macos-latest）+ `x86_64`（macos-15-intel），产物 `OhMyMeme-v*-{arch}.dmg`
 - **release.yml**: 手动触发的正式版发布——`prepare` job 从 `main` 的 `src/__init__.py` 读 `__version__`（校验格式、tag 不存在），三平台 job 构建（同 build.yml），`publish` job 汇总 artifact、生成三列下载表格正文、`gh release create <version> --target <main HEAD> --title <version>`（tag 与标题均不带 v）；正文仅下载表格，更新内容由维护者随后手动编辑

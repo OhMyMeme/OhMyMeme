@@ -37,13 +37,20 @@ jobs:
         run: |
           choco install innosetup --no-progress
           echo "ISCC_DIR=C:\Program Files (x86)\Inno Setup 6\ISCC.exe" | Out-File -FilePath $env:GITHUB_ENV -Append
-      - name: Build installer
-        run: python scripts/build.py --installer-only
+      - name: Install WiX Toolset
+        run: |
+          dotnet tool install --global wix --version 5.*
+          echo "$env:USERPROFILE\.dotnet\tools" | Out-File -FilePath $env:GITHUB_PATH -Append
+      - name: Build installers (exe + msi + msix)
+        run: python scripts/build.py --installer-only --msi --msix
       - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
           name: OhMyMeme-Windows
-          path: dist/OhMyMeme-*-setup.exe
+          path: |
+            dist/OhMyMeme-*-setup.exe
+            dist/OhMyMeme-*.msi
+            dist/OhMyMeme-*.msix
 
   build-linux:
     strategy:

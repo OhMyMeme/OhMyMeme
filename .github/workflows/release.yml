@@ -75,13 +75,20 @@ jobs:
         run: |
           choco install innosetup --no-progress
           echo "ISCC_DIR=C:\Program Files (x86)\Inno Setup 6\ISCC.exe" | Out-File -FilePath $env:GITHUB_ENV -Append
-      - name: Build installer
-        run: python scripts/build.py --installer-only
+      - name: Install WiX Toolset
+        run: |
+          dotnet tool install --global wix --version 5.*
+          echo "$env:USERPROFILE\.dotnet\tools" | Out-File -FilePath $env:GITHUB_PATH -Append
+      - name: Build installers (exe + msi + msix)
+        run: python scripts/build.py --installer-only --msi --msix
       - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
           name: OhMyMeme-Windows
-          path: dist/OhMyMeme-*-setup.exe
+          path: |
+            dist/OhMyMeme-*-setup.exe
+            dist/OhMyMeme-*.msi
+            dist/OhMyMeme-*.msix
 
   build-linux:
     needs: prepare
@@ -184,7 +191,11 @@ jobs:
               parts = [p for p in parts if p]
               return "<br>".join(parts) if parts else "—"
 
-          win = cell(f"OhMyMeme-{version}-setup.exe", "exe")
+          win = join([
+              cell(f"OhMyMeme-{version}-setup.exe", "exe"),
+              cell(f"OhMyMeme-{version}.msi", "msi"),
+              cell(f"OhMyMeme-{version}.msix", "msix"),
+          ])
           mac_x = cell(f"OhMyMeme-v{version}-x86_64.dmg", "dmg")
           mac_a = cell(f"OhMyMeme-v{version}-arm64.dmg", "dmg")
           lin_x = join([
