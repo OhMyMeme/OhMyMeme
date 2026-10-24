@@ -159,6 +159,14 @@ jobs:
         with:
           path: artifacts
           merge-multiple: true
+      - name: Verify downloaded artifacts
+        run: |
+          set -euo pipefail
+          find artifacts -type f -print
+          test -n "$(find artifacts -type f -print -quit)" || {
+            echo "ERROR: artifacts 为空，未下载到构建产物" >&2
+            exit 1
+          }
       - name: Generate release notes
         env:
           VERSION: ${{ needs.prepare.outputs.version }}
@@ -226,3 +234,16 @@ jobs:
         run: |
           gh release create "$VERSION" --repo "${{ github.repository }}" \
             --target "$SHA" --title "$VERSION" --notes-file notes.md
+      - name: Upload release assets
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          VERSION: ${{ needs.prepare.outputs.version }}
+        run: |
+          set -euo pipefail
+          mapfile -t assets < <(find artifacts -type f | sort)
+          if [ ${#assets[@]} -eq 0 ]; then
+            echo "ERROR: 没有可上传的发布产物" >&2
+            exit 1
+          fi
+          gh release upload "$VERSION" "${assets[@]}" \
+            --repo "${{ github.repository }}" --clobber
