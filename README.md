@@ -4,6 +4,12 @@
 
 ### **QQ交流群：891636253**
 
+<a href="https://apps.microsoft.com/detail/9PD2TD8H8ZH0?referrer=appbadge&mode=full" target="_blank"  rel="noopener noreferrer">
+	<img src="https://get.microsoft.com/images/zh-cn%20dark.svg" width="200"/>
+</a>
+
+[**从Release下载**](https://github.com/OhMyMeme/OhMyMeme/releases/latest)
+
 ![picture](https://raw.githubusercontent.com/OhMyMeme/OhMyMeme/refs/heads/dev/resource/picture.gif)
 
 ## 功能
@@ -39,6 +45,10 @@
 ## 快速开始
 
 ### 下载
+
+<a href="https://apps.microsoft.com/detail/9PD2TD8H8ZH0?referrer=appbadge&mode=full" target="_blank"  rel="noopener noreferrer">
+	<img src="https://get.microsoft.com/images/zh-cn%20dark.svg" width="200"/>
+</a>
 
 从 [Releases](https://github.com/OhMyMeme/OhMyMeme/releases/latest) 下载对应系统的安装包或可执行文件，直接运行。
 
