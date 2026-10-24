@@ -1529,15 +1529,33 @@ def sync_test() -> str:
 
 def _apply_remote_collections(remote_data: dict):
     db = get_db()
-    for rc in remote_data.get("collections", []):
-        cname = rc["name"]
-        cid = db.create_collection(cname)
-        if cid < 0:
-            continue
-        for fname in rc.get("filenames", []):
-            row = db.get_by_filename(fname)
-            if row:
-                db.add_to_collection(row["id"], cid)
+
+    def walk(nodes, parent_id=None):
+        if not isinstance(nodes, list):
+            return
+        for rc in nodes:
+            if not isinstance(rc, dict):
+                continue
+            cname = rc.get("name")
+            if not isinstance(cname, str):
+                continue
+            cname = cname.strip()
+            if not cname:
+                continue
+            cid = db.create_collection(cname, parent_id)
+            if cid < 0:
+                continue
+            filenames = rc.get("filenames")
+            if isinstance(filenames, list):
+                for fname in filenames:
+                    if not isinstance(fname, str) or not _safe_remote_fname(fname):
+                        continue
+                    row = db.get_by_filename(fname)
+                    if row:
+                        db.add_to_collection(row["id"], cid)
+            walk(rc.get("children"), cid)
+
+    walk(remote_data.get("collections"))
 
 
 def _apply_remote_order(remote_data: dict):

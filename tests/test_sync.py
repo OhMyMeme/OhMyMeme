@@ -523,6 +523,77 @@ class TestSyncPush(unittest.TestCase):
         local = json.loads((self.data_dir / INDEX_FILENAME).read_text(encoding="utf-8"))
         self.assertIn("collections", local)
 
+    def test_apply_remote_collections_restores_nested_tree(self):
+        """pull 应用远端分组时递归 children，恢复多级分组与成员关系"""
+
+        class TrackingDb:
+            def __init__(self):
+                self.next_id = 0
+                self.collections = []
+                self.members = []
+
+            def create_collection(self, name, parent_id=None):
+                self.next_id += 1
+                self.collections.append((self.next_id, name, parent_id))
+                return self.next_id
+
+            def get_by_filename(self, filename):
+                ids = {"a.png": 11, "b.png": 12}
+                return {"id": ids[filename]} if filename in ids else None
+
+            def add_to_collection(self, meme_id, collection_id):
+                self.members.append((meme_id, collection_id))
+
+        db = TrackingDb()
+        data = {
+            "collections": [
+                {
+                    "name": "父分组",
+                    "filenames": ["a.png"],
+                    "children": [
+                        {"name": "子分组", "filenames": ["b.png"]},
+                    ],
+                }
+            ]
+        }
+        with patch("src.sync.get_db", return_value=db):
+            sync._apply_remote_collections(data)
+        self.assertEqual(
+            db.collections,
+            [(1, "父分组", None), (2, "子分组", 1)],
+        )
+        self.assertEqual(db.members, [(11, 1), (12, 2)])
+
+    def test_apply_remote_collections_ignores_unsafe_names(self):
+        """远端分组条目非法/文件名不安全时跳过，不影响其余分组"""
+
+        class TrackingDb:
+            def __init__(self):
+                self.collections = []
+                self.members = []
+
+            def create_collection(self, name, parent_id=None):
+                self.collections.append((name, parent_id))
+                return 7
+
+            def get_by_filename(self, filename):
+                return {"id": 1}
+
+            def add_to_collection(self, meme_id, collection_id):
+                self.members.append((meme_id, collection_id))
+
+        db = TrackingDb()
+        data = {
+            "collections": [
+                {"name": "", "filenames": ["a.png"]},
+                {"name": "正常", "filenames": ["../evil.png", "ok.png"]},
+            ]
+        }
+        with patch("src.sync.get_db", return_value=db):
+            sync._apply_remote_collections(data)
+        self.assertEqual(db.collections, [("正常", None)])
+        self.assertEqual(db.members, [(1, 7)])
+
     def test_pull_applies_remote_favorite(self):
         """pull 把远端 favorite 并集合并进本地（经 _apply_remote_favorites）"""
         self.fake_backend.remote_memes = {"test.png": _entry("test.png", "abc")}
