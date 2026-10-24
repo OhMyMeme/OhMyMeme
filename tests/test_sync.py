@@ -510,6 +510,19 @@ class TestSyncPush(unittest.TestCase):
         local = json.loads((self.data_dir / INDEX_FILENAME).read_text(encoding="utf-8"))
         self.assertNotIn("favorite", local)
 
+    def test_build_manifest_omits_collections_when_disabled(self):
+        """manifest_include_collections=False 时顶层不含 collections 键"""
+        self.cfg.set("manifest_include_collections", False)
+        sync.build_manifest()
+        local = json.loads((self.data_dir / INDEX_FILENAME).read_text(encoding="utf-8"))
+        self.assertNotIn("collections", local)
+
+    def test_build_manifest_includes_collections_by_default(self):
+        """分组写入清单默认开启"""
+        sync.build_manifest()
+        local = json.loads((self.data_dir / INDEX_FILENAME).read_text(encoding="utf-8"))
+        self.assertIn("collections", local)
+
     def test_pull_applies_remote_favorite(self):
         """pull 把远端 favorite 并集合并进本地（经 _apply_remote_favorites）"""
         self.fake_backend.remote_memes = {"test.png": _entry("test.png", "abc")}
@@ -625,23 +638,22 @@ class TestSyncPush(unittest.TestCase):
         self.assertEqual(result["skipped"], 1)
         self.assertEqual(result["uploaded"], 0)
 
-    def test_push_reuploads_when_remote_file_missing(self):
-        """远端清单声称一致但真实文件缺失 → push 重新上传（污染自愈）"""
-        # 远端清单有 test.png(同hash)，但物理文件缺失
+    def test_push_skips_when_remote_manifest_matches(self):
+        """远端清单声明一致（同 hash）即跳过，不再逐文件复核物理存在"""
+        # 远端清单有 test.png(同hash)，物理文件缺失也以清单为准，不重传
         self.fake_backend.remote_memes = {"test.png": _entry("test.png", "abc")}
         self.fake_backend.remote_files = set()  # 物理缺失
         result = sync.push()
-        self.assertEqual(result["uploaded"], 1)  # 重新上传而非 skip
-        self.assertEqual(result["skipped"], 0)
-        self.assertIn("test.png", self.fake_backend.remote_files)  # 已补传
+        self.assertEqual(result["uploaded"], 0)
+        self.assertEqual(result["skipped"], 1)
 
-    def test_push_reuploads_when_existence_check_fails(self):
-        """file_exists 复核异常 → 保守重传（不依赖污染清单）"""
+    def test_push_skips_without_existence_check(self):
+        """仅比对远端清单，不再调用 file_exists（file_exists 抛异常也不影响）"""
         self.fake_backend.remote_memes = {"test.png": _entry("test.png", "abc")}
         self.fake_backend.raise_on_exists.add("test.png")
         result = sync.push()
-        self.assertEqual(result["uploaded"], 1)
-        self.assertEqual(result["skipped"], 0)
+        self.assertEqual(result["uploaded"], 0)
+        self.assertEqual(result["skipped"], 1)
 
     # ─── PR4 新增用例 ───
 

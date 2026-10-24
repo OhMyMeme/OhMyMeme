@@ -135,6 +135,53 @@ class TestConfig(unittest.TestCase):
             Config(self.config_path).get("manifest_include_favorites"), False
         )
 
+    def test_manifest_include_collections_default_on(self):
+        cfg = Config(self.config_path)
+        self.assertIs(cfg.get("manifest_include_collections"), True)
+        self.assertIs(Config.DEFAULTS.get("manifest_include_collections"), True)
+
+        cfg.set("manifest_include_collections", False)
+        cfg.save()
+        self.assertIs(
+            Config(self.config_path).get("manifest_include_collections"), False
+        )
+
+    def test_copy_mode_default_is_gif_suffix_only(self):
+        cfg = Config(self.config_path)
+        self.assertEqual(cfg.get("copy_resize_mode"), 4)
+        self.assertEqual(Config.DEFAULTS.get("copy_resize_mode"), 4)
+
+    def test_removed_cloud_toggles_are_forced_to_defaults(self):
+        self.config_path.write_text(
+            json.dumps(
+                {
+                    "sync_auto_fetch_index": True,
+                    "sync_delete_remote": True,
+                    "sync_remove_local": True,
+                    "sync_hide_upload_warning": True,
+                    "show_upload_progress": False,
+                    "show_upload_done": False,
+                    "show_download_progress": False,
+                    "show_download_done": False,
+                    "webdav_allow_insecure": True,
+                }
+            ),
+            encoding="utf-8",
+        )
+        cfg = Config(self.config_path)
+        self.assertIs(cfg.get("sync_auto_fetch_index"), False)
+        self.assertIs(cfg.get("sync_delete_remote"), False)
+        self.assertIs(cfg.get("sync_remove_local"), False)
+        self.assertIs(cfg.get("sync_hide_upload_warning"), False)
+        self.assertIs(cfg.get("show_upload_progress"), True)
+        self.assertIs(cfg.get("show_upload_done"), True)
+        self.assertIs(cfg.get("show_download_progress"), True)
+        self.assertIs(cfg.get("show_download_done"), True)
+        # 新增的 WebDAV 信任开关不受固定默认值影响，可由用户配置
+        self.assertIs(cfg.get("webdav_allow_insecure"), True)
+        cfg.update_from_dict({"sync_delete_remote": True})
+        self.assertIs(cfg.get("sync_delete_remote"), False)
+
     def test_removed_auto_paste_setting_is_not_retained(self):
         self.config_path.write_text('{"auto_paste_meme": true}', encoding="utf-8")
 
@@ -582,6 +629,58 @@ class TestHotkeyWatchdog(unittest.TestCase):
         hk._hook_last_seen = 0.0
         self.assertTrue(hk._hook_health_check(now=130.0 + KEYBOARD_PROBE_TIMEOUT))
         self.assertIsNone(hk._probe_pending_at)
+
+    def test_probe_blocker_swallows_pending_probe_and_refreshes(self):
+        """pending 窗口内的 F15 探针被阻塞钩子吞掉并刷新心跳，防止泄漏到前台（issue #95）。"""
+        import types
+
+        hk = self._fresh_hotkey()
+        blocker = hk._make_probe_blocker()
+
+        # 无 pending：F15（真实宏键盘按键）正常放行
+        hk._probe_pending_at = None
+        self.assertTrue(blocker(types.SimpleNamespace(name="f15", scan_code=-126)))
+
+        # pending 窗口内：注入探针（scan_code=-126）被吞并刷新 _hook_last_seen 完成确认
+        hk._probe_pending_at = 100.0
+        hk._hook_last_seen = 0.0
+        self.assertFalse(blocker(types.SimpleNamespace(name="f15", scan_code=-126)))
+        self.assertGreaterEqual(hk._hook_last_seen, 100.0)
+
+        # pending 窗口内：真实按键事件放行
+        self.assertTrue(blocker(types.SimpleNamespace(name="a", scan_code=30)))
+        self.assertTrue(blocker(types.SimpleNamespace(name="ctrl", scan_code=29)))
+
+    def test_probe_blocker_passes_on_malformed_event(self):
+        """事件属性访问异常时阻塞钩子回退放行，绝不拦截正常按键。"""
+        hk = self._fresh_hotkey()
+        blocker = hk._make_probe_blocker()
+        hk._probe_pending_at = 100.0
+
+        class BrokenEvent(object):
+            def __getattr__(self, name):
+                raise RuntimeError("boom")
+
+        self.assertTrue(blocker(BrokenEvent()))
+
+    @mock.patch.dict("sys.modules", {"keyboard": None}, clear=False)
+    @mock.patch("sys.platform", "win32")
+    def test_try_keyboard_registers_and_unregisters_probe_blocker(self):
+        """_try_keyboard 注册探针阻塞钩子，unregister 时移除。"""
+        from src.hotkey import GlobalHotkey
+
+        fake_mod = self._fake_keyboard_module()
+        hk = GlobalHotkey()
+        try:
+            with mock.patch.dict("sys.modules", {"keyboard": fake_mod}):
+                ok = hk._try_keyboard("Ctrl+Alt+N", lambda: None)
+                self.assertTrue(ok)
+                self.assertIsNotNone(hk._probe_blocker)
+
+                hk.unregister()
+                self.assertIsNone(hk._probe_blocker)
+        finally:
+            hk.unregister()
 
     def test_restart_keyboard_listener_reinstalls_hook(self):
         """钩子失效重启：结束旧线程→重装钩子→重挂热键；成功后清 pending。"""
@@ -1364,6 +1463,27 @@ class TestBackup(unittest.TestCase):
         r = backup.restore_backup(bad, self.tmp, self.cache, self.db)
         self.assertFalse(r["ok"])
         self.assertIn("不完整", r["error"])
+
+
+class TestGifSuffixCopy(unittest.TestCase):
+    def test_suffix_only_copy_keeps_bytes(self):
+        from src.clipboard_util import convert_image_mode_4
+
+        with tempfile.TemporaryDirectory() as d:
+            src = Path(d) / "a.webp"
+            payload = b"RIFF\x00\x00\x00\x00WEBPVP8 not-a-real-image"
+            src.write_bytes(payload)
+            out = convert_image_mode_4(str(src))
+            self.assertTrue(out.endswith(".gif"))
+            self.assertEqual(Path(out).read_bytes(), payload)
+
+    def test_gif_input_is_not_copied(self):
+        from src.clipboard_util import convert_image_mode_4
+
+        with tempfile.TemporaryDirectory() as d:
+            src = Path(d) / "a.gif"
+            src.write_bytes(b"GIF89a")
+            self.assertEqual(convert_image_mode_4(str(src)), str(src))
 
 
 if __name__ == "__main__":

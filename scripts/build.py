@@ -3,6 +3,7 @@
 OhMyMeme build script (PyInstaller)
 Deps: pip install pyinstaller
 Windows extra: InnoSetup 6/7 (ISCC.exe) — to create installer
+Windows optional: Windows SDK makeappx.exe — for --msix
 
 Usage:
     python scripts/build.py                  # build + installer (auto-detect)
@@ -11,6 +12,7 @@ Usage:
     python scripts/build.py --macos          # macOS target (.app + .dmg, arch auto-detect)
     python scripts/build.py --macos --arch x86_64  # macOS Intel build
     python scripts/build.py --installer-only # installer only (assumes already built)
+    python scripts/build.py --installer-only --msix  # + MSIX (Store)
     python scripts/build.py --build-only     # build only, skip installer
     python scripts/build.py --package deb    # Linux package type: all|appimage|deb|rpm
     python scripts/build.py --lang en        # force English output
@@ -105,8 +107,8 @@ _MSGS = {
         "en": "ERROR: --installer-only not supported for target %s",
     },
     "cross_compile_not_supported": {
-        "zh": "错误: PyInstaller 不支持交叉编译，在 Linux 上无法生成 Windows 可执行文件。\n      请使用 GitHub Actions（推送到 main 或手动触发 workflow）或在 Windows 机器上运行此脚本。",
-        "en": "ERROR: PyInstaller does not support cross-compilation. Cannot produce a Windows executable from Linux.\n       Use GitHub Actions (push to main or trigger workflow_dispatch) or run this script on a Windows machine.",
+        "zh": "错误: PyInstaller 不支持交叉编译，在 Linux 上无法生成 Windows 可执行文件。\n      请使用 GitHub Actions（手动触发 workflow）或在 Windows 机器上运行此脚本。",
+        "en": "ERROR: PyInstaller does not support cross-compilation. Cannot produce a Windows executable from Linux.\n       Use GitHub Actions (trigger workflow_dispatch) or run this script on a Windows machine.",
     },
     "keyfinder_missing": {
         "zh": "警告: 未找到 %s，微信导入功能在产物中将不可用（先编译 src/wechat_keyfinder）",
@@ -242,6 +244,32 @@ _MSGS = {
     "verify_ffmpeg_failed": {
         "zh": "ffmpeg 校验未通过",
         "en": "ffmpeg verification failed",
+    },
+    "makeappx_not_found": {
+        "zh": "警告: 未找到 makeappx.exe（Windows SDK），跳过 MSIX 打包",
+        "en": "WARNING: makeappx.exe (Windows SDK) not found, skipping MSIX",
+    },
+    "msix_manifest_not_found": {
+        "zh": "错误: MSIX 清单不存在:",
+        "en": "ERROR: MSIX manifest not found:",
+    },
+    "msix_icon_missing": {
+        "zh": "错误: 缺少图标源 %s，无法生成 MSIX 资源",
+        "en": "ERROR: icon source missing: %s (cannot generate MSIX assets)",
+    },
+    "msix_identity_placeholder": {
+        "zh": "警告: MSIX Identity 仍为占位符（Name=%s）——"
+        "上架前请在 scripts/installer/msix/AppxManifest.xml 或环境变量中"
+        "填入 Partner Center 的真实身份信息",
+        "en": "WARNING: MSIX Identity is still a placeholder (Name=%s) — "
+        "set the real Partner Center identity in "
+        "scripts/installer/msix/AppxManifest.xml or via environment "
+        "variables before submitting to the Store",
+    },
+    "building_msix": {"zh": "制作 MSIX 包...", "en": "Building MSIX package..."},
+    "msix_failed": {
+        "zh": "MSIX 打包失败 (code=%d)",
+        "en": "MSIX packaging failed (code=%d)",
     },
 }
 
@@ -882,6 +910,162 @@ def build_installer(version, target=None, filename_version=None):
         print(L("installer_not_found"), installer)
 
 
+def find_makeappx():
+    """定位 Windows SDK 的 makeappx.exe（取最高版本）；MAKEAPPX_DIR/MAKEAPPX 可覆盖"""
+    candidates = []
+    env = os.environ.get("MAKEAPPX_DIR") or os.environ.get("MAKEAPPX")
+    if env:
+        p = Path(env)
+        candidates.append(p if p.suffix.lower() == ".exe" else p / "makeappx.exe")
+    kits = Path(r"C:\Program Files (x86)\Windows Kits\10\bin")
+    if kits.is_dir():
+        versions = []
+        for d in kits.iterdir():
+            if not d.is_dir():
+                continue
+            try:
+                key = tuple(int(x) for x in d.name.split("."))
+            except ValueError:
+                continue
+            versions.append((key, d))
+        for _, d in sorted(versions, reverse=True):
+            candidates.append(d / "x64" / "makeappx.exe")
+    for p in candidates:
+        if p.is_file():
+            return str(p)
+    return None
+
+
+def _msix_assets(assets_dir):
+    """由 src/resources/icon.png 生成 MSIX 所需各尺寸 PNG 徽标"""
+    png = SRC_DIR / "resources" / "icon.png"
+    if not png.is_file():
+        print(L("msix_icon_missing", png))
+        sys.exit(1)
+    from PIL import Image
+
+    assets_dir.mkdir(parents=True, exist_ok=True)
+    base = Image.open(png).convert("RGBA")
+    sizes = {
+        "StoreLogo.png": 50,
+        "Square44x44Logo.png": 44,
+        "Square150x150Logo.png": 150,
+    }
+    for name, size in sizes.items():
+        base.resize((size, size), Image.LANCZOS).save(assets_dir / name, "PNG")
+
+
+def _msix_four_part(version):
+    """把 x.y.z 版本转成 MSIX 要求的四段式 x.y.z.0（Revision 必须为 0）"""
+    m = re.match(r"^(\d+)\.(\d+)\.(\d+)", version)
+    if m:
+        return "%s.%s.%s.0" % m.groups()
+    return "0.0.1.0"
+
+
+def _msix_attr(tag, name):
+    m = re.search(r'\b%s="([^"]*)"' % name, tag)
+    return m.group(1) if m else ""
+
+
+def build_msix(version, target=None, filename_version=None):
+    """生成 MSIX 包（Microsoft Store / 侧载）；version 为三段式数字版本"""
+    if target is None:
+        target = platform.system()
+    if target != "Windows":
+        print(L("skip_installer"))
+        return
+
+    makeappx = find_makeappx()
+    if not makeappx:
+        print(L("makeappx_not_found"))
+        return
+
+    dist_dir = BUILD_DIR / APP_NAME
+    if not dist_dir.is_dir():
+        print(L("outdir_not_found"), dist_dir)
+        print(L("run_build_first"))
+        return
+
+    template = PROJECT_ROOT / "scripts" / "installer" / "msix" / "AppxManifest.xml"
+    if not template.exists():
+        print(L("msix_manifest_not_found"), template)
+        return
+
+    filename_version = filename_version or version
+    manifest_version = _msix_four_part(version)
+
+    content = template.read_text(encoding="utf-8")
+    m = re.search(r"<Identity\b[^>]*>", content)
+    if not m:
+        print(L("msix_manifest_not_found"), template)
+        return
+    tag = m.group(0)
+    identity_name = os.environ.get("OHMYMEME_MSIX_IDENTITY_NAME") or _msix_attr(
+        tag, "Name"
+    )
+    publisher = os.environ.get("OHMYMEME_MSIX_PUBLISHER") or _msix_attr(
+        tag, "Publisher"
+    )
+    if "REPLACE-WITH-STORE" in identity_name:
+        print(L("msix_identity_placeholder", identity_name))
+    new_tag = '<Identity Name="%s" Publisher="%s" Version="%s" />' % (
+        identity_name,
+        publisher,
+        manifest_version,
+    )
+    content = content[: m.start()] + new_tag + content[m.end() :]
+    pdn = os.environ.get("OHMYMEME_MSIX_PUBLISHER_DISPLAY_NAME")
+    if pdn:
+        content = re.sub(
+            r"<PublisherDisplayName>[^<]*</PublisherDisplayName>",
+            "<PublisherDisplayName>%s</PublisherDisplayName>" % pdn,
+            content,
+            count=1,
+        )
+
+    staging = BUILD_DIR / "msix-staging"
+    if staging.is_dir():
+        shutil.rmtree(staging, ignore_errors=True)
+    staging.mkdir(parents=True)
+    _msix_assets(staging / "Assets")
+    (staging / "AppxManifest.xml").write_text(content, encoding="utf-8")
+    for entry in dist_dir.iterdir():
+        dst = staging / entry.name
+        if entry.is_dir():
+            shutil.copytree(entry, dst)
+        else:
+            shutil.copy2(entry, dst)
+
+    out = BUILD_DIR / ("%s-%s.msix" % (APP_NAME, filename_version))
+    if out.exists():
+        out.unlink()
+
+    print(L("building_msix"))
+    result = subprocess.run(
+        [makeappx, "pack", "/d", str(staging), "/p", str(out), "/o"],
+        cwd=str(PROJECT_ROOT),
+    )
+    shutil.rmtree(staging, ignore_errors=True)
+    if result.returncode != 0:
+        print(L("msix_failed", result.returncode))
+        sys.exit(result.returncode)
+    if out.exists():
+        print(L("installer_done"), out)
+    else:
+        print(L("installer_not_found"), out)
+
+
+def build_windows_installers(
+    app_version, filename_version, want_msix=False
+):
+    """构建 Windows 安装包集合：InnoSetup .exe 始终构建（工具缺失仅告警），
+    可选追加 MSIX（--msix）"""
+    build_installer(app_version, target="Windows", filename_version=filename_version)
+    if want_msix:
+        build_msix(app_version, target="Windows", filename_version=filename_version)
+
+
 def build_linux_packages(version, package="all", pkg_version=None, arch=None):
     build_sh = PROJECT_ROOT / "scripts" / "installer" / "linux" / "build.sh"
     if not build_sh.exists():
@@ -1074,6 +1258,11 @@ if __name__ == "__main__":
         "non-zero on failure)",
     )
     parser.add_argument(
+        "--msix",
+        action="store_true",
+        help="Also build the MSIX package (Windows; needs Windows SDK makeappx)",
+    )
+    parser.add_argument(
         "--package",
         choices=["all", "appimage", "deb", "rpm"],
         default="all",
@@ -1157,8 +1346,10 @@ if __name__ == "__main__":
     try:
         if args.installer_only:
             if target == "Windows":
-                build_installer(
-                    app_version, target=target, filename_version=build_version
+                build_windows_installers(
+                    app_version,
+                    build_version,
+                    want_msix=args.msix,
                 )
             elif target == "Linux":
                 build_linux_packages(
@@ -1185,8 +1376,10 @@ if __name__ == "__main__":
             if args.build_only:
                 pass
             elif target == "Windows":
-                build_installer(
-                    app_version, target=target, filename_version=build_version
+                build_windows_installers(
+                    app_version,
+                    build_version,
+                    want_msix=args.msix,
                 )
             elif target == "Linux":
                 build_linux_packages(

@@ -2,23 +2,38 @@
 import { ref, nextTick } from 'vue'
 import { rememberFocus, restoreFocus, trapTabFocus } from '../utils/api'
 
+interface ConfirmOptions {
+  confirmText?: string
+  cancelText?: string
+  variant?: 'danger' | 'primary'
+  focusConfirm?: boolean
+}
+
 const visible = ref(false)
 const title = ref('')
 const message = ref('')
+const confirmText = ref('确定')
+const cancelText = ref('取消')
+const confirmClass = ref('btn btn-danger')
 const boxEl = ref<HTMLElement>()
+const confirmEl = ref<HTMLButtonElement>()
 const cancelEl = ref<HTMLButtonElement>()
 
 let resolveFn: ((v: boolean) => void) | null = null
 
-async function open(t: string, msg: string): Promise<boolean> {
+async function open(t: string, msg: string, opts: ConfirmOptions = {}): Promise<boolean> {
   if (resolveFn) { resolveFn(false); resolveFn = null }
   title.value = t
   message.value = msg
+  confirmText.value = opts.confirmText || '确定'
+  cancelText.value = opts.cancelText || '取消'
+  confirmClass.value = opts.variant === 'primary' ? 'btn btn-primary' : 'btn btn-danger'
   rememberFocus()
   visible.value = true
   await nextTick()
   // 默认聚焦「取消」，危险操作需显式点「确定」
-  cancelEl.value?.focus()
+  if (opts.focusConfirm) confirmEl.value?.focus()
+  else cancelEl.value?.focus()
   return new Promise(resolve => { resolveFn = resolve })
 }
 
@@ -43,8 +58,8 @@ defineExpose({ open })
       <div id="confirm-dialog-title" class="confirm-dialog-title">{{ title }}</div>
       <div id="confirm-dialog-message" class="confirm-dialog-message">{{ message }}</div>
       <div class="confirm-dialog-actions">
-        <button class="btn btn-danger" @click="close(true)">确定</button>
-        <button ref="cancelEl" class="btn btn-secondary" @click="close(false)">取消</button>
+        <button ref="confirmEl" :class="confirmClass" @click="close(true)">{{ confirmText }}</button>
+        <button ref="cancelEl" class="btn btn-secondary" @click="close(false)">{{ cancelText }}</button>
       </div>
     </div>
   </div>

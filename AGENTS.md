@@ -23,7 +23,7 @@ JsApi / SettingsApi → SQLite (WAL) + 本地缓存 + 远端同步
 ## 核心原则
 - **不得重构该项目** — 仅做最小必要修改，不改变现有架构、设计模式、代码组织
 - **尽量不创建新文件** — 优先修改现有文件
-- **增改同步** — 增加新功能或创建新文件后，同步修改 `README.md` 和 `AGENTS.md` 中对应描述
+- **增改同步** — 增加新功能或创建新文件后，同步修改 `README.md`、`CONTRIBUTING.md` 和 `AGENTS.md` 中对应描述（用户可见改动进 README，开发者环境/构建/CI 信息进 CONTRIBUTING，实现细节进 AGENTS）
 - **关联文件同步** — 修改后检查是否需要同步更新 `.gitignore`、`Makefile`、`pyproject.toml`、`requirements.txt`、`environment.yml` 等关联文件
 - 使用中文回答用户的问题
 
@@ -58,6 +58,7 @@ src/              # 主代码
   native_drag.py   # Windows 原生文件拖拽 (WinForms DoDragDrop + CF_HDROP, 惰性加载 pythonnet)
   crypto_util.py  # 加密 (Fernet + PBKDF2, 降级 XOR)
   manifest.py     # meme-index.json 构建/加载
+  plugin_manager.py # 插件系统（发现/校验/加载/权限门控/超时熔断/注册表聚合，v0.7.0）
   platform_util.py # 平台工具 (WSL检测, 开机自启, 单实例互斥)
   adb_util.py      # ADB 自动检测/下载 + QQ 表情包缓存导入（ADB 拉取 + 魔数识别扩展名 + ZIP 打包）
   qqnt_extract.py  # QQNT 本地收藏表情提取（GPL-3.0 衍生模块，纯函数 + 回调接口，无 UI 依赖）
@@ -72,24 +73,31 @@ src/              # 主代码
   env_check.py     # 首次运行环境检测（WebView2/.NET 检测 + tkinter/MessageBox 非 webview UI + 标记文件）
   vue-src/       # Vue 3 前端源码（Vite 构建，产物到 webui/dist/ohmymeme.js）
     App.vue      # 根组件：标题栏/搜索/侧边栏/面包屑/标签栏/网格/分页
-    main.ts      # 入口：挂载 + window.focusSearch 全局（快捷键呼出聚焦搜索）
+    main.ts      # 入口：按 #settings-mount / #app-mount 分别挂载设置页或主窗口
     style.css    # 主窗口样式（CSS 变量主题，蓝色 #3b82f6）
     types/       # TS 类型定义 (Meme/Collection/Tag)
     utils/       # api 桥接 + esc + renderMarkdown
     composables/ # useMemes 状态 / useDragSort 拖拽 / useContextMenu / useCollectionBuilder
-    components/  # Pager/TagEditor/ImportMenu/ImportProgressOverlay/SyncOverlay/
+    components/  # Pager/TagEditor/ImportMenu/ImportProgressOverlay/SyncOverlay/SyncStatusBadge/
                  # ContextMenu/CollectionBuilder/CollectionTreeNode/UpdateDialog/SimilarImportDialog/SetupGuide
   webui/          # 前端静态文件
     vue.html      # 主窗口入口（Vue），Bottle 优先加载
     dist/ohmymeme.js # Vite 构建产物（gitignored）
-    settings.html # 设置窗口 HTML（vanilla，两列布局：左导航+右内容）
-    settings.css  # 设置窗口样式
-    settings.js   # 设置窗口逻辑（设置项/同步/导入向导）
+    settings.html  # 设置窗口 Vue 挂载壳（#settings-mount + dist/ohmymeme.js）
     index.html/index.css/index.js  # 旧主窗口（已备份至 webui-backup/，不再使用）
+  vue-src/settings/ # 设置窗口 Vue 源码
+    SettingsApp.vue # 入口：注入样式、执行 legacy、移动插件区块
+    settings-body.html # 主体模板（旧 settings.html 的 body）
+    settings.css      # 样式
+    legacy.js         # 逻辑（旧 settings.js 迁移，经典脚本全局函数）
 config/
   offsets.json    # wechat_keyfinder 易变参数（版本号等，微信升级时只改此文件）
+docs/
+  privacy.md      # 隐私策略（中英双语，列出全部主动发起的网络连接；Microsoft Store 上架「隐私策略 URL」指向此文件）
+  wechat_keyfinder_protocol.md # helper 二进制协议说明
 scripts/
-  build.py        # PyInstaller + InnoSetup 构建脚本 (i18n zh/en)
+  build.py        # PyInstaller + InnoSetup/MSIX 构建脚本 (i18n zh/en)
+  installer/      # windows.iss (InnoSetup) / msix/AppxManifest.xml (MSIX)
   launcher.py     # PyInstaller 入口
   hooks/          # 自定义 PyInstaller hooks（Linux GTK: WebKit2/Soup typelib 收集，内置无对应 hook）
     hook-gi.repository.WebKit2.py
@@ -105,6 +113,7 @@ tests/
   test_import_concurrency.py # pytest 风格: _do_import 并发去重 (同图1条/异图都可导)
   test_avoid_webp.py # pytest 风格: 复制时避免 WebP (WebP->GIF/JPG 转换/帧延时/残影/回退)
   test_cloud_direct.py # pytest 风格: 云端直接使用 (manifest diff/云过滤/分页合并/cloud_download/缩略图统一)
+  test_plugin_manager.py # pytest 风格: 插件系统 (manifest校验/隔离/熔断/权限/注入/状态roundtrip，monkeypatch `_get_data_dir` 隔离)
   fixtures/grid_slot_probe.cjs # Node 网格拖拽槽位回归探针
   fixtures/tiny_vp9.webm   # TG 转换端到端夹具（VP9+alpha，build.py --verify-ffmpeg 用）
 ```
@@ -127,21 +136,44 @@ tests/
 
 ### 全局快捷键
 - 三级降级: `keyboard` → `pynput` → 200ms 轮询 (`keyboard.is_pressed`)
-- **运行期失效自愈**：`keyboard` 0.13.5 的 `GenericListener` 处理线程（`processing_thread`）一旦因未捕获异常崩溃即永久失效（进程存活、界面正常但热键无响应，需重启软件才恢复）。`GlobalHotkey` 两道防线：①`_try_keyboard` 用 `make_safe` 把回调包成 `_safe_callback`，吞掉回调异常，防止其杀死 `processing_thread`；②注册后启动 daemon 守护线程（`_start_keyboard_watchdog`，`KEYBOARD_WATCH_INTERVAL`=5s）周期检查 `keyboard._listener` 的 `listening_thread`/`processing_thread` 是否存活，任一死亡即 `_reregister_keyboard`（`remove_hotkey` → 置 `listener.listening=False` → `start_if_necessary()` → 重新 `add_hotkey`）自动重挂；③（Windows）**钩子心跳探针**：WH_KEYBOARD_LL 会被系统静默摘除（睡眠恢复/回调超时/显示切换），此时线程仍在泵消息、存活检查不可见——`_hook_health_check` 每 `KEYBOARD_PROBE_INTERVAL`(30s) 经 `keybd_event` 注入一次无害 F15 探针，`KEYBOARD_PROBE_TIMEOUT`(15s) 内钩子未上报任何键盘事件（`keyboard.hook` 观察者刷新 `_hook_last_seen`，用户自身按键也算）即判定钩子失效，`_restart_keyboard_listener` 以 `PostThreadMessageW(WM_QUIT)` 结束旧监听线程（其钩子随线程退出被系统移除；线程拒不退出则中止重启避免双钩子导致热键触发两次）→ `start_if_necessary()` 重装钩子 → 重挂热键，约 45s 内自愈。**热键事件日志**：`_get_file_logger` 惰性创建独立 logger，把注册/回调异常/线程死亡/自愈重挂等事件追加到 `data_dir/hotkey.log`（`_log_hotkey_event` 同步写文件+控制台，初始化失败降级为常规 logger 不阻塞）。**pytest 下禁用文件日志**（`PYTEST_CURRENT_TEST` 环境变量守卫）——TestHotkeyWatchdog/test_startup 会触发注册/重注册日志，夹具错误（如 inject-fail）曾污染真实 hotkey.log 被误读为运行期自愈失败（真实自愈必先记录「监听/处理线程已退出」，日志中无此行即无真实失效）。**重注册与注销的正确性**：`_reregister_keyboard` 返回 bool 且与 `unregister` 持同一 `_reregister_lock` 串行化——`add_hotkey` 失败时置 `_reregister_pending=True` 并返回 False（不记录成功、守护下轮继续重试），成功才清 pending 并记成功事件；注销已开始（回调已清空或停止事件已置位）时重注册直接返回 False 不重新挂热键。**生命周期代次 token**：`_watchdog_gen` 仅在 `unregister` 递增（`register`/`_try_keyboard` 不递增——同一实例重复 register 时旧 watchdog 仍受 `unregister` 已递增的代次约束），`_start_keyboard_watchdog` 捕获当前代次并由 `_reregister_keyboard(listener, gen)`/`_restart_keyboard_listener(listener, gen)` 在锁内校验 `gen == _watchdog_gen`，旧 watchdog（旧代次）的重注册操作直接返回 False，杜绝注销后立即重新注册时旧线程对新热键的误操作。
+- **运行期失效自愈**：`keyboard` 0.13.5 的 `GenericListener` 处理线程（`processing_thread`）一旦因未捕获异常崩溃即永久失效（进程存活、界面正常但热键无响应，需重启软件才恢复）。`GlobalHotkey` 两道防线：①`_try_keyboard` 用 `make_safe` 把回调包成 `_safe_callback`，吞掉回调异常，防止其杀死 `processing_thread`；②注册后启动 daemon 守护线程（`_start_keyboard_watchdog`，`KEYBOARD_WATCH_INTERVAL`=5s）周期检查 `keyboard._listener` 的 `listening_thread`/`processing_thread` 是否存活，任一死亡即 `_reregister_keyboard`（`remove_hotkey` → 置 `listener.listening=False` → `start_if_necessary()` → 重新 `add_hotkey`）自动重挂；③（Windows）**钩子心跳探针**：WH_KEYBOARD_LL 会被系统静默摘除（睡眠恢复/回调超时/显示切换），此时线程仍在泵消息、存活检查不可见——`_hook_health_check` 每 `KEYBOARD_PROBE_INTERVAL`(30s) 经 `SendInput`（失败回退 `keybd_event`）注入带 `dwExtraInfo=0x4F484D4D`（ASCII "OHMM"）标记的无害 F15 探针，并由 `keyboard.hook(..., suppress=True)` 注册的**探针阻塞钩子**在 pending 窗口内把探针吞掉——不吞会作为真实按键泄漏到前台窗口（gvim/SSH 终端等响应该键，issue #95），吞掉时在钩子内直接刷新 `_hook_last_seen` 完成探针确认（被吞事件不会到达非阻塞观察者），pending 窗口外的真实 F15 与其余按键一律放行；`KEYBOARD_PROBE_TIMEOUT`(15s) 内钩子未上报任何键盘事件（阻塞钩子/`keyboard.hook` 观察者刷新 `_hook_last_seen`，用户自身按键也算）即判定钩子失效，`_restart_keyboard_listener` 以 `PostThreadMessageW(WM_QUIT)` 结束旧监听线程（其钩子随线程退出被系统移除；线程拒不退出则中止重启避免双钩子导致热键触发两次）→ `start_if_necessary()` 重装钩子 → 重挂热键，约 45s 内自愈。**热键事件日志**：`_get_file_logger` 惰性创建独立 logger，把注册/回调异常/线程死亡/自愈重挂等事件追加到 `data_dir/hotkey.log`（`_log_hotkey_event` 同步写文件+控制台，初始化失败降级为常规 logger 不阻塞）。**pytest 下禁用文件日志**（`PYTEST_CURRENT_TEST` 环境变量守卫）——TestHotkeyWatchdog/test_startup 会触发注册/重注册日志，夹具错误（如 inject-fail）曾污染真实 hotkey.log 被误读为运行期自愈失败（真实自愈必先记录「监听/处理线程已退出」，日志中无此行即无真实失效）。**重注册与注销的正确性**：`_reregister_keyboard` 返回 bool 且与 `unregister` 持同一 `_reregister_lock` 串行化——`add_hotkey` 失败时置 `_reregister_pending=True` 并返回 False（不记录成功、守护下轮继续重试），成功才清 pending 并记成功事件；注销已开始（回调已清空或停止事件已置位）时重注册直接返回 False 不重新挂热键。**生命周期代次 token**：`_watchdog_gen` 仅在 `unregister` 递增（`register`/`_try_keyboard` 不递增——同一实例重复 register 时旧 watchdog 仍受 `unregister` 已递增的代次约束），`_start_keyboard_watchdog` 捕获当前代次并由 `_reregister_keyboard(listener, gen)`/`_restart_keyboard_listener(listener, gen)` 在锁内校验 `gen == _watchdog_gen`，旧 watchdog（旧代次）的重注册操作直接返回 False，杜绝注销后立即重新注册时旧线程对新热键的误操作。
 - macOS 跳过 `keyboard` 库（darwin 后端需 root 权限，报 `Error 13` 且 root 下会段错误），直接走 `pynput`（CGEventTap，需辅助功能权限）
 - WSL 无法捕获全局快捷键
 - 配置 `hotkey_show_at_mouse` 默认 `false`；仅 Windows 生效。开启后仅在全局热键将隐藏主面板显示时，按鼠标所在显示器工作区依次尝试 `(cursor_x, cursor_y)`、`(right-width, cursor_y)`、`(cursor_x, bottom-height)`、`(right-width, bottom-height)`，仅使用首个完整容纳窗口的候选位置；出错或没有可用位置时不移动。托盘保持普通切换，热键回调仍为零参数。
-- WebUI 维护非持久的快捷键显示会话状态：仅隐藏主窗口被全局快捷键显示后，成功复制或成功原生向外文件拖拽才会自动隐藏；任意 hide、普通/托盘显示、LAN/其他 show、内部排序拖拽及失败交互均不会触发该自动隐藏。
+- WebUI 维护非持久的快捷键显示会话状态：仅隐藏主窗口被全局快捷键显示后，成功复制或成功原生向外文件拖拽才会自动隐藏；任意 hide、普通/托盘显示、LAN/其他 show、内部排序拖拽及失败交互均不会触发该自动隐藏。配置 `disable_auto_hide` 默认 `false`，开启后 `schedule_hide()` 入口直接返回 False（复制与拖拽成功均不自动隐藏，会话状态保留），设置页「基础设置 → 全局快捷键」区块复选框 `s-disable-auto-hide`。
 
 ### 窗口
+- 主题配置 `theme` 默认 `dark`，可在设置页「基础设置 → 窗口」切换 `light`；`get_init_data`、两套 `get_settings`/`reset_settings` 返回主题，保存经 `refreshMemes` 更新主窗口；`_theme_html` 在 HTML 首屏注入主题和底色，前端 `applyTheme` 同步 `data-theme`、底色与 `color-scheme`，CSS 变量覆盖主窗口和设置窗口配色。 主题保存与重置共用 settingsQueue；SettingsApi.save_settings 返回 `{ok,theme}`，成功才应用主题。主窗口 refreshMemes 接受已保存的界面设置快照，并用请求代次丢弃过期响应；快捷键与开机自启未改变时跳过重复设置。旧版 index.html 同样注入主题，index.css 提供浅色变量。
 - 主窗口 ~960×640 frameless, 设置窗口 720×560 frameless（每次 `_create_settings_window` 以主窗口当前位置居中创建——`x = 主窗口x + (宽-720)//2`，主窗口坐标不可用时交由系统摆放）
-- 设置窗口是独立 webview：`open_settings` 每次销毁重建，`focus_settings_window` 仅做 z-order 提升
+- 设置窗口是独立 webview：`open_settings` 每次销毁重建，`focus_settings_window` 仅做 z-order 提升；`resizable=True`，关闭/重建时 `_save_settings_window_size()` 把尺寸写配置键 `settings_window_width`/`settings_window_height`（0=默认 720×560），下次创建恢复
+- **窗口大小调整（配置 `window_resize_enabled`，默认关）**：开启后主窗与设置窗可拖 8 向边框调整——settings.html「窗口」区块 `#s-window-resize`，保存后主窗 `refreshMemes` 同步 `state.windowResizeEnabled` 即时调 `applyWindowResizeHandles()`；拖拽 layer `#win-resize-layer`（App.vue `syncWinResizeHandles()` 按开关增删）与设置窗 `vue-src/settings/legacy.js` 的 `applyWindowResizeHandles()` 均用 `screenX/screenY` 相对起点的**绝对增量**（rAF 节流），拖完一次调 resize API 持久化；`JsApi.resize_window(w,h)` 钳 480-8000/360-6000、`SettingsApi.resize_window(w,h,persist)` 钳 600-8000/480-6000 且 persist 时写 `settings_window_*` 配置；关闭时拖过的尺寸与配置尺寸一并持久化；`SettingsApi.reset_main_window_size()` 清空 `window_width`/`window_height` 并把主窗口恢复 960×640（设置页「恢复默认窗口大小」按钮）
 - Windows 全局热键显示位置仅在隐藏到显示的转换时计算，使用鼠标所在显示器工作区；不改变托盘激活或其他窗口显示路径
 - 自定义 JS 拖拽: 鼠标事件 → `pywebview.api.move_window(dx, dy)`
 - 增量回退（Windows/macOS）用 `screenX/screenY`（**勿改 `clientX/clientY`** — clientX 是相对窗口坐标，窗口自身滞后位移会被下一次 mousemove 当作反向增量回传，形成反馈振荡导致高频抖动）；Linux 走合成器原生拖动不经过此路径
 - **Linux 拖拽必须走合成器**：`w.move()` 在 Wayland 下无效（合成器不允许客户端自定位），mousedown 时 JS 调 `start_window_drag()` → 后端 `GLib.idle_add(native.begin_move_drag, ...)` 交给合成器交互式拖动；时间戳用 `Gdk.CURRENT_TIME`（GDK 文档允许未知时间时用它，X11 回填最近输入事件时间、Wayland 不参与）
 - `#titlebar` 上可拖拽 (排除 `.title-btn` 按钮区域)
 - 侧边栏折叠按钮 `.sidebar-toggle` 位于搜索框左侧（`#search-wrap` 内），点击折叠/展开 `#sidebar`；搜索框 `flex:1` 随侧边栏 180px↔48px 动态伸缩；**滑动手势**：折叠态在侧栏条（48px）内按住右滑（水平位移 ≥40px 且水平主导）展开，展开态在侧栏内左滑折叠（`onSidebarSwipeDown/Move/End` 观察 pointer 事件，触发后的误触 click 由 `onSwipeClickCapture` 在 document 捕获阶段一次性吞掉，下次 pointerdown 复位），`#sidebar` 带 `touch-action: pan-y` 支持触摸
+
+### 设置页（Vue）
+
+- `src/webui/settings.html` 仅为 Vue 挂载壳：`#settings-mount` + `#plugin-sections-source`（服务端注入锚点）+ `/dist/ohmymeme.js`；原 `settings.css`/`settings.js` 已删除
+- `src/vue-src/main.ts` 按页面存在 `#settings-mount` 还是 `#app-mount` 挂载 `SettingsApp` 或 `App`，仍为单入口单 bundle（`inlineDynamicImports`）
+- `SettingsApp.vue` 以 `?raw` 引入 `settings-body.html`/`legacy.js`、以 `?inline` 引入 `settings.css`：先注入样式，再把 body `v-html` 渲染，随后把 `legacy.js` 作为经典 `<script>` 插入（函数声明成为全局，兼容大量 inline `onclick`），最后移动插件区块并调用 `initSettings`/`initVersion`/`initDirtyTracking`/`initPlugins`
+- `legacy.js` 是原设置页逻辑的迁移副本，移除了原 `DOMContentLoaded` 自启块（改由 `SettingsApp` 显式调用）；新增 `confirmManifestToggle`、`testSync` 的证书确认分支与 `resetMainWindowSize` 全局函数
+
+### 插件系统 (plugin_manager.py)
+- 全局单例 `get_plugin_manager()`：`main.py` 在 WebUI 创建前 `init(cfg)`、shutdown 时 `unload()`；插件目录 = 配置 `plugin_dirs`（条目自身含 `plugin.json` 即直连该目录，否则扫描其子目录）+ `data_dir/plugins/`；启停状态持久化 `data_dir/plugins_state.json`（`{"disabled":[...]}`，原子写），**插件设置按 id 分文件存 `config_dir/plugins/<id>/settings.json`**（`get_settings`/`save_settings` 内存缓存 + 原子写，pid 须匹配 `_ID_RE`；`config_dir` = 配置文件所在目录即 `%APPDATA%/OhMyMeme`，随用户配置；旧版 `plugins_state.json` 内嵌 `settings` 与旧位置 `data_dir/plugins/<id>/settings.json` 首次 `init` 自动迁移到该路径——`_migrate_settings_location` 新位置已存在则丢弃旧文件、迁空的目录一并移除），插件私有数据 `data_dir/plugins_data/<id>/`
+- manifest：`id`（`^[a-z0-9][a-z0-9_-]{0,63}$`）/`name`/`version` 缺失不注册；`api_version` 必须 == `PLUGIN_API_VERSION`(1)；`repo` 可选但须 `https://|git@|ssh://` 开头；`sandbox:true` v0.7 跳过加载（v0.8 子进程）；`entry` 与资产路径必须位于插件目录内；`dependencies` 用 `find_spec` 检测（缺失即 failed，不自动安装）；`vendor/` 加载时追加 `sys.path` 尾部、禁用/卸载时移除
+- 加载与熔断全程不抛：状态 `loaded / disabled / failed`（`reason` 展示在设置页）；超时 `LOAD_TIMEOUT` 15s（on_load/on_unload）/ `HANDLER_TIMEOUT` 10s（回调、路由、按钮、`on_settings_changed`）/ `_API_TIMEOUT` 120s（JS API），超时或回调异常 → `status=disabled` 熔断（下次重启恢复）；`_invoke` 放行 `loaded/loading`——on_load 执行期间 status=loading（否则回调内注册会误报 plugin_disabled），运行期其余状态返回 `plugin_disabled`
+- 权限门控（manifest `permissions`，未声明的注册调用在 `on_load` 内抛 `PermissionError` → 该插件加载失败）：`route`/`main_api`/`settings_api`/`assets:serve`/`settings:section`/`buttons`/`startup`/`window`/`host:evaluate_js`；未知权限仅告警忽略；`on_settings_changed`/`on_unload` 从 entry 模块 `getattr` 取（可缺省）
+- 资产注入：`asset_tags(window)` 按 manifest `windows` 过滤、按 id 序生成 `<link>` 与 `<script defer>`（版本 = `插件版本-md8(设置哈希)`，设置变化自动改 URL 防缓存）；webui 服务端注入——vue.html/settings.html 存在插件标签时 `_inject_before("</head>")`/`_inject_before("</body>")`，settings.html 另有 `<!-- plugin-sections -->` 锚点供 `_inject_after` 插区块，无插件时保持 `static_file` 快路径；插件 defer script 位于宿主脚本（ohmymeme.js）之后按文档序执行，故插件脚本能访问宿主全局与 `pywebview.api`
+- 路由与服务：`/plugins/<id>/<path>` 静态服务（`resolve_asset` 仅查 loaded + 路径穿越/缺失 → 404，不查权限；**`data/<path>` 前缀解析到 `data_dir/plugins_data/<id>/`**——启动动画等经 `settings_api` 复制的媒体走此路径，strip 后空/穿越同样 404）；自定义路由 `custom_routes()` 返回 `[(pid, rule, fn)]` 且**必须注册在兜底 `/<filepath:path>` 之前**（Bottle 0.13 按注册顺序匹配动态规则），`call_route(pid, fn, params)` 处理器收单个 dict（query+表单），返回 str → `route_content_type` 按扩展名推 Content-Type、dict → JSON，停用插件路由返回 404；插件路由返回 404 与错误码统一由 `_make_plugin_route_cb` 处理
+- 聚合下发：`get_init_data` 并入 `init_fields()` → `startup_video_src`/`startup_bg_color`（空即用默认 `/resources/OhMyMeme.mp4` 与 `#000000`）/`startup_media_duration_ms`（>0 时前端图片按时长收起，默认 0）/`startup_media_type`（`image` 走 `<img>` 分支只播一遍）/`plugin_buttons`/`plugin_button_constraints`；`WebUI._resolve_window_size()` 取值优先级 = 插件 `window_params` > 配置 `window_width`/`window_height`（0 或越界 480-8000/360-6000 回退）> 默认 960×640，`_save_window_position` 关闭窗口时把宽高随位置一并持久化
+- 设置页：nav「插件」分组（`data-group="plugin"`）+ 宿主 `#plugin-list` 渲染**折叠栏**（`renderPluginItem` 标题=插件名，点击标题/头部 `pluginToggleCollapse(id)` 展开 `#plugin-body-<id>`（默认收起，`aria-expanded` + `.open` 箭头旋转），右侧 `.plugin-toggle` 开关启停且 `stopPropagation` 不触发折叠；键盘 Enter/Space 经 `pluginAccKey` 触发）；插件区块契约 = `section[data-group="plugin"][data-plugin=<id>]` 内输入带 `data-plugin`+`data-key`（`initPlugins` 把该插件全部 `.section[data-plugin]` 移入其折叠体后再用 `plugin_get_settings` 回填 checkbox/value，`pluginSaveSection(id)` 收集合并保存），**桥接未就绪时 `initPlugins` 经 `initPluginRetries`（20×200ms）重试**——否则 `api()` 返回 null 导致列表渲染「暂无插件」、折叠栏不生成；回填循环完成后派发 `window` CustomEvent **`omm-plugin-section-filled`**（`detail.plugin_id`），插件脚本据以同步下拉/颜色控件等非 `data-key` 控件；`initDirtyTracking` 跳过 `[data-plugin]` 子树；保存成功后后端 `evaluate_js` 推**主窗口** `window.ommPluginRefresh(pid)`（settings legacy 与 App.vue 各实现：刷新 `/plugins/` link 加 `?t=` + 派发 `omm-plugin-refresh` CustomEvent，插件脚本监听该事件重新应用）
+- 前端按钮：插件按钮 `v-for state.pluginButtons`（`icon` 非空渲染 `.icon-btn` 含 `.plugin-btn-icon` img，否则 `title-btn`），点击 `JsApi.plugin_button_click`；核心按钮 `v-if=!coreBtnHidden(key)` + `:style order=coreBtnOrder(key)`，`CORE_BTN_ORDER` = sort10/select20/sync25/upload30/download40/import50/refresh60/settings70/close1000（约束 `order` 覆盖、`hide` 隐藏）
+- 桥接：JsApi `plugin_call`/`plugin_button_click`/`resize_window`；SettingsApi `plugin_list`/`plugin_set_enabled`/`plugin_get_settings`/`plugin_save_settings`（成功推 `ommPluginRefresh`）/`plugin_open_dir`/`plugin_call`/`resize_window(w,h,persist)`/`plugin_pick_file(plugin_id, media=video|image|any)`（校验插件 loaded 后弹原生文件对话框，返回 `{ok,path}` 或 `{cancelled:true}`，供启动动画等媒体选择）
+- 启停语义：禁用立即生效（`clear_registry` + vendor 移除 + 持久化），启用返回 `restart:true` 需重启加载；用户禁用的插件重启后不加载 entry（`status=disabled`）
+- 配套仓库：`omm-plugin-template`（开发模板 + manifest/权限/`on_load(ctx)` API/生命周期/区块契约/超时依赖的完整文档）、`omm-personalized-plugin`（官方个性化插件 v1.1.0：启动动画选择视频/图片文件并复制进 `plugins_data` 按 `data/` 资产服务、RGBA+HEX 颜色控件与字体下拉的设置控件 `assets/settings.js`+`settings.css`、背景/字体立即生效、按钮布局约束；**窗口尺寸改由宿主 `window_resize_enabled` 开关接管，不再设 `win_width`/`win_height`**）；测试 `tests/test_plugin_manager.py`（33 例，`monkeypatch src.config._get_data_dir` 隔离真实数据目录）
 
 ### 数据库
 - 7 表: `memes`, `tags`, `meme_tags`, `collections`, `meme_collections`, `favorites`, `recent_uses`
@@ -160,22 +192,32 @@ tests/
 - 密钥字段 (ftp_password, s3_secret_key 等) 用 Fernet 加密存储
 - 全局单例: `get_config()`, `get_db()`
 - `hotkey_show_at_mouse` 默认 `false`，控制 Windows 上全局热键显示隐藏主面板时是否按鼠标位置放置
+- `disable_auto_hide` 默认 `false`，关闭热键会话的自动隐藏（复制/拖拽成功后保持窗口可见）；设置页「基础设置 → 全局快捷键」区块复选框 `s-disable-auto-hide`（`get_settings`/`save_settings`/`reset_settings` 透传，门控在 `WebUI.schedule_hide()` 入口）
 - `hover_zoom` 默认 `true`，控制主界面悬停卡片放大预览是否启用；设置页「基础设置 → 悬停预览」区块复选框 `s-hover-zoom`（`get_settings`/`save_settings`/`reset_settings` 与 `get_init_data` 均透传）
+- `import_no_limit` 默认 `false`，关闭导入大小/分辨率限制（本地导入/云端拉取/局域网接收）；设置页「基础设置 → 导入限制」区块复选框 `s-import-no-limit`（`SettingsApi.get_settings`/`save_settings`/`reset_settings` 透传，判定经 `config.import_limits()`/`exceeds_import_limit()`）
+- `window_resize_enabled` 默认 `false`，设置页「窗口」区块 `#s-window-resize`，开启后主窗/设置窗可拖 8 向边框调整（见「窗口」节）；`settings_window_width`/`settings_window_height` 默认 `0`（=默认 720×560），`SettingsApi.resize_window(..., persist=True)` 与设置窗关闭/重建时写入，下次创建恢复；三键均在 `get_settings`/`save_settings`/`reset_settings` 透传，`window_resize_enabled` 另经 `get_init_data`/`JsApi.get_settings` 下发主窗口
 - `manifest_include_tags` 默认 `true`，控制 `manifest.build()` 是否把标签写入 `meme-index.json` 每个条目的 `tags` 数组（关闭时条目不含 `tags` 键，本地标签不受影响）；设置页「云端同步」区块开关
+- `manifest_include_collections` 默认 `true`，控制 `manifest.build()` 是否把分组树写入 `meme-index.json` 顶层 `collections`（关闭时整个键不写入；设置页「将分组写入同步清单」开关，关闭前弹确认「关闭后将无法云同步分组」）
 - `manifest_include_favorites` 默认 `true`，控制 `manifest.build()` 是否把收藏文件名写入 `meme-index.json` 顶层 `favorite` 数组（关闭时整个 `favorite` 键不写入，本地收藏不受影响）；设置页「云端同步」区块开关
+- `webdav_allow_insecure` 默认 `false`，为 `true` 时 WebDAV 的 `urllib` 请求改用 `ssl._create_unverified_context()`；`test_connection` 捕获 `SSLCertVerificationError`/`CERTIFICATE_VERIFY_FAILED` 抛 `SyncError("WEBDAV_SSL_UNTRUSTED: ...")`，设置页据此弹「继续使用/不使用」，继续则写该键并重试，另设复选框可随时关闭
+- `copy_resize_mode` 默认 `4`（仅把复制出的副本后缀改为 `.gif`，字节不变；0 不处理 / 1 WebP 缩放 / 2 转 GIF / 3 转 GIF 隐写原图）
 - `cache_dir`（表情包图片目录）可自定义：配置键 `cache_dir` 非空时 `Config.cache_dir` 返回该路径，否则默认 `data_dir/cache`；设置页「存储位置」通过 `SettingsApi.pick_storage_dir`/`apply_storage_dir` 切换，`apply_storage_dir` 可选把旧目录文件递归迁移（跳过 `thumbnails`）；**切换后旧文件不再可见**，故未迁移时必须确保文件已存在于新目录；`_storage_dir_validation` 拒绝相对/相同/上下级目录以及 `data_dir`/`thumbnail_dir` 及其上下级（受保护路径）；DB/缩略图/manifest 仍留在 `data_dir`，数据库只存文件名，文件在新目录时按 basename 自动解析；`reset_settings` 恢复默认时保留 `cache_dir`。迁移为**后台三阶段幂等**设计（避免跨盘长拷贝时进程被杀导致分裂状态）：①复制阶段源只读（`O_EXCL` 排他写入，dst 已存在且大小一致视为已复制跳过——幂等；失败/取消仅清理本次新副本，源完好无分裂，不回滚）；②写配置（唯一切换点，此后新目录已完整）；③删源（失败仅残留旧目录冗余，不阻断）。迁移开始写 `data_dir/storage_migration.json` 清单、完成后删除；`main.py` 启动时若检测到未完成清单则后台幂等续跑（强杀/断电后重启自愈）。取消由 move 回滚改为删新副本，消除回滚自身失败风险
 
 ### 同步
 - manifest 文件: `meme-index.json`
 - SHA-256 差异对比, `push(delete_remote)`/`pull(remove_local)`
+- **push 仅上传云端缺失/变更文件**: `push()` 拉取远端 `meme-index.json` 后按「文件名缺失 或 `sha256` 不同」过滤出待上传集合（`remote_memes` 为准），只把这些交给 worker；`files_total`/`bytes_total` 与进度只反映待上传文件，`skipped` = 云端清单一致的本地文件数。**不再对每个文件发 `file_exists`（HEAD）复核物理存在**——云端清单为唯一判据（大库同步省去逐文件往返；代价是清单声称存在但物理被带外删除的文件不会自动补传，需重跑/清理孤儿）。远端无 manifest（首次同步）时 `remote_memes` 为空 → 上传全部本地文件
 - 远端路径: `{root}/memes/`, `{root}/meme-index.json`
 - 同步进度: `_sync_state` 全局变量追踪进度，`get_sync_progress()` 供 JS 轮询
 - `push()`/`pull()` 内循环中更新 files_done/bytes_done/current_file 等字段
 - 前端 300ms 轮询 `get_sync_progress()` 显示进度条 + 实时速度
-- 设置页 4 个开关控制进度/完成弹窗是否显示
+- 进度/完成弹窗固定显示：原设置页 4 个开关已移除，`_FIXED_CLOUD_TOGGLES` 在 `Config._load`/`update_from_dict` 强制默认（上传/下载进度与完成提示均开；删除远端/删除本地多余/上传前不再提醒/启动获取索引均关）
+- **顶栏同步状态指示（SyncStatusBadge.vue）**: `JsApi.get_sync_status(force=False)` 返回 `configured/manifest_state/refreshing/checked/error/checked_at/local_count/remote_count/local_missing/cloud_missing/synced/transfer`。模块级 `_sync_status_state`（manifest/cache_loaded/checked/refreshing/error/updated_at）由 `_sync_status_lock` 保护，`_sync_status_gen` 代次丢弃在途旧结果；`_sync_status_snapshot()` 首次查询先读 `cloud-index.json` 缓存出值，未检查过则起 daemon 线程 `download_index()`（`_start_sync_status_refresh` 去重，`force` 强制重拉），`run_auto_sync`/`_cloud_refresh_worker`/`SettingsApi.check_sync_status` 复用已拉取清单写入 `_sync_status_set_manifest`，`JsApi`/`SettingsApi` 的 `sync_push`/`sync_pull` 完成后 `_sync_status_invalidate` 让下次轮询重拉；`_cloud_reset` 同时 `_sync_status_reset`。差集口径：`local_missing = len(remote_ready - local)`（`remote_ready` = manifest 中文件名安全且 sha256 合法的远端条目集合，与 `cloud_missing` 过滤一致），`cloud_missing = len(local - remote_names)`（本机有云端没有），`synced = manifest 存在且两者均为 0`；`sync_type` 为空返回 `{"configured": false}`。`transfer` 取 `sync.get_sync_progress()`，`active` 仅 uploading/downloading/deleting，`remaining = max(files_total-files_done, 0)`
+- **SyncStatusBadge 交互**: 前端按 `sync_type` 决定图标是否显示（未配置云端不渲染）；状态图标 = 云 + 绿色对勾（已同步）/ 云 + 黄色感叹号（未同步/无清单/拉取失败），拉取中云图标脉冲；传输中切换为「内圈↑↓ + 外圈进度环」，环取 `files_done/files_total`（无文件总数回退 `bytes_done/bytes_total`，均未知为不定进度动画），封顶 99%。点击图标在标题栏下方弹出 272px 浮层（fixed 定位、随按钮定位、箭头对齐图标）；传输中浮层显示「还有 N 个文件」、进度条、`n/N`、速度、当前文件与「传输在后台继续进行」，鼠标移离 220ms 自动关闭；非传输态显示已同步 / 「本地缺失 N 个文件」/「云端缺失 N 个文件」、本机与云端计数、相对检查时间，点击外部或 Esc 关闭（App.vue `onDocKeydown` 在隐藏窗口前先关浮层），右上角刷新按钮 `get_sync_status(true)` 强制重拉。轮询：传输中 600ms、空闲 5s、刷新中 900ms；窗口 focus/可见时立即刷新；传输结束自动关闭传输浮层并补一次普通刷新。`aria-haspopup`/`aria-expanded`、`role="progressbar"`、`role="dialog"`、`prefers-reduced-motion` 降级均有
+- **SVG/主题 token**: `style.css` 新增 `--success`/`--warning`/`--warning-text`（浅色主题分别 `#16a34a`/`#d97706`/`#b45309`），供状态角标与缺失计数使用
 - **多线程传输**: `push()`/`pull()` 使用 `ThreadPoolExecutor`，每个线程创建独立后端连接
 - 并发数: 配置项 `sync_threads`（默认 3，范围 1-8），通过 `config.json` 或 `SettingsApi` 修改
-- `_push_worker`/`_pull_worker`: 接收文件子列表，操作独立后端连接，原子递增 `_sync_state`
+- `_push_worker`/`_pull_worker`: 接收文件子列表，操作独立后端连接，原子递增 `_sync_state`；`_push_worker(entries, remote_root, cache_dir)` 只负责上传调用方已过滤好的缺失/变更文件（无存在性跳过分支），`_pull_worker` 仍按本地清单/文件存在性跳过未变项
 - **WebDAV 目录创建去重**: `_push_worker` 同一批次所有文件都上传到 `memes/`，只在循环前 `ensure_remote_dir` 一次；`_WebDAVBackend.ensure_remote_dir` 对**每个目录 URL**在 `_dav_dirs_lock` 内原子执行「缓存检查 + MKCOL + 缓存写入」，成功/405/复核命中均写 `_dav_dirs` 缓存，多 worker 并发对同一目录也只发一次 MKCOL——避免重复 MKCOL 触发远端锁。**`push()` 每次在拿到 `_sync_run_lock` 后先清空 `_dav_dirs`**，避免命中上一次同步缓存、跳过已被删除远端目录的 MKCOL。
 - `_sync_lock` (`threading.Lock`) 保护 `_sync_state` 写操作；`_increment_sync_progress()` 提供原子递增
 - `_chunk_list(lst, n)` 将文件列表均匀切分给各线程
@@ -183,6 +225,7 @@ tests/
 - **孤儿清理互斥与进度**: `cleanup_remote_orphans(delete=True)` 删除前非阻塞获取 `_sync_run_lock`（被 push/pull 占用时返回「同步正在进行中」，绝不并发删除）；删除循环复用 `_sync_state`（`direction="delete"`，更新 current_file/files_done/files_total/progress，状态 deleting→done），前端复用 `#sync-progress-overlay` 轮询展示；扫描（delete=False）不互斥
 - **远端文件名校验**: `_safe_remote_fname()` 拒绝路径穿越/绝对路径/隐藏名；`_fetch_remote_memes` 解析远端 manifest 时过滤不安全文件名（含非 dict 条目），`_pull_worker` 下载前二次校验
 - **S3 后端 OSS 兼容**: boto3 客户端固定 `signature_version='s3'`（V2 签名，boto3 的 V4 与 chunked encoding 强耦合，OSS 不支持）；寻址方式由 `s3_addressing_style` 配置控制（默认 `"virtual"`，可选 `"path"`），映射到 `BotoConfig(s3={"addressing_style": ...})`；阿里云 OSS 仅支持 virtual-hosted style（bucket 作子域名），path-style 请求被拒绝；设置页 S3 表单「寻址方式」下拉框切换
+- **WebDAV 后端**: 配置项 `webdav_url`（服务地址，须 http(s):// 开头且含主机名）/`webdav_user`/`webdav_password`（Basic Auth，密码经 Fernet 加密存储）/`webdav_path`（远程路径前缀，可选）/`webdav_timeout`（默认 30s）/`webdav_allow_insecure`（默认 false，自签名证书时跳过校验）；基于 Python 标准库 `urllib.request` 实现 PROPFIND/MKCOL/PUT/GET/HEAD/DELETE，无新增依赖
 
 ### 云端直接使用
 - 配置 `cloud_direct`（**默认开**），设置页「云端同步」区块开关；`sync_type` 空→非空（首次配置云端）时 `showConfirm` 用**「开启/关闭」**按钮二选一确认（默认已勾选时仍询问一次；Esc/点遮罩返回 `null` 表示不改动，与点「关闭」的 `false` 区分，其余调用方按 falsy 判断不受影响），「关闭」即取消勾选（随保存生效）；开启期间 push 上传缩略图（`_push_thumbs`，gate 该开关），远端删除联动删缩略图不 gate
@@ -198,7 +241,7 @@ tests/
 ### 更新
 - GitHub API 查询: `/releases/latest` → `/releases?per_page=5` 回退
 - **仅检查稳定版**：`_parse_release` 跳过 prerelease 与含 `nightly` 的 tag（保证软件更新绝不指向非正式版）；`_parse_version` 跳过非数字段（如 `0.6.0-nightly`）
-- **非阻塞检查**：`check_latest_cached(force=False)` 是唯一入口——**`_ensure_check_started` 先查 `_check_running`（在跑则一律返回 `pending`，含 force 刷新未完成时，绝不命中旧 `_check_result`），再对非 force + 新鲜缓存（`_CHECK_TTL`=24h）直接返回**；无缓存/缓存过期/`force=True` 触发后台 daemon 线程跑 `check_latest()` 填 `_check_result`+`_check_result_at`（`_check_lock` 保护，幂等只启动一次），立即返回 `pending: true`（永不阻塞网络 3.8s~20s+）。**generation token**：`reset_check_cache()` 推进 `_check_generation`，后台 `_task` 完成时仅当代号匹配才写结果，防在途旧任务覆盖 reset 后新状态。`webui.py` 的 `JsApi.check_update`/`SettingsApi.check_update` 支持 `(debug, force)` 透传；前端 `App.vue` 的 `checkUpdateAndPrompt`（onMounted/24h 定时）首发 `force=true`、pending 时转 `checkUpdateResult` 非 force 轮询，`settings.js` 的 `checkUpdate` 首发 force、while 轮询暂取非 force——避免完成后再次 force 触发新检查造成永久 pending。**这解决了启动期间 `check_update` 同步阻塞曾导致的界面交互卡顿，及缓存不失效时 24h 定时器形同虚设的问题**
+- **非阻塞检查**：`check_latest_cached(force=False)` 是唯一入口——**`_ensure_check_started` 先查 `_check_running`（在跑则一律返回 `pending`，含 force 刷新未完成时，绝不命中旧 `_check_result`），再对非 force + 新鲜缓存（`_CHECK_TTL`=24h）直接返回**；无缓存/缓存过期/`force=True` 触发后台 daemon 线程跑 `check_latest()` 填 `_check_result`+`_check_result_at`（`_check_lock` 保护，幂等只启动一次），立即返回 `pending: true`（永不阻塞网络 3.8s~20s+）。**generation token**：`reset_check_cache()` 推进 `_check_generation`，后台 `_task` 完成时仅当代号匹配才写结果，防在途旧任务覆盖 reset 后新状态。`webui.py` 的 `JsApi.check_update`/`SettingsApi.check_update` 支持 `(debug, force)` 透传；前端 `App.vue` 的 `checkUpdateAndPrompt`（onMounted/24h 定时）首发 `force=true`、pending 时转 `checkUpdateResult` 非 force 轮询，settings legacy 的 `checkUpdate` 首发 force、while 轮询暂取非 force——避免完成后再次 force 触发新检查造成永久 pending。**这解决了启动期间 `check_update` 同步阻塞曾导致的界面交互卡顿，及缓存不失效时 24h 定时器形同虚设的问题**
 - 镜像并发: `_urlopen_mirror` / `_urlretrieve_mirror` 用 `ThreadPoolExecutor` + `as_completed`
 - 镜像列表: `github.dpik.top` → `gh.dpik.top` → `gh-proxy.org` → 直连 GitHub（已移除 `proxy.starsfire.top`——该代理仅浏览器可访问，程序化请求 404）
 - 下载进度: `start_download()` → 后台线程 → JS 每 500ms 轮询 `get_download_progress()`
@@ -211,7 +254,7 @@ tests/
 - **TCP 握手（明文帧）**: `[4B 长度][JSON]`；服务端发 `challenge{nonce}` → 客户端回 `proof{HMAC-SHA256(secret, nonce)}` → 验 `ok`/`no`（3 次错误断开）；无密钥时直接放行
 - **数据帧（加密）**: `[4B 长度][12B IV][AES-GCM 密文+16B tag]`；密钥由 PBKDF2(secret, 100000) 派生；JSON 载荷，命令由手机（客户端）发起
 - **设备确认（连接前置）**: 客户端握手后发 `device_info` 帧（`{name,model,os,ver}`，手机 Build.MODEL/MANUFACTURER/versionName）；桌面端 `_cmd_device_info` 弹窗展示设备信息，用户允许/拒绝后回 `{ok, approved, allow_secret_config}`；**未确认期间其他命令挂起**（`confirmed` Event，等待超时 60s 后拒），无确认回调（测试/无 UI）默认放行；`confirm_device()` 由 JS 回传批准结果（`pending_confirm` 记录 + `threading.Event`）；确认弹窗在**设置窗口**：`_lan_confirm_cb` 确保 `_settings_window` 存在（无则 `_create_settings_window`，创建失败才 `confirm_device(False)`）→ `focus_settings_window()` → 设置页 `showLanDeviceConfirm()` 弹窗 → `SettingsApi.lan_confirm_device` 回传；`get_status()` 暴露 `pending_confirm`（仅设备信息 dict），evaluate_js 推送失败不立即拒绝、由设置页 `lan_get_status` 轮询兜底展示（Esc = 拒绝）
-- **传输进度**: `_transfer_state` 全局（`_transfer_lock` 保护，active/direction/files_done/files_total/bytes_done/bytes_total/current_file/start_time/updated），`_transfer_update()` 在 `pull_file`/`push_file`/`get_config`/`send_config` 处理成功时累计**本端实际收发字节与文件数**，总量取手机帧附带的 `meta`（`{files_total, bytes_total}`，无 meta 的旧手机为 0 走降级显示）；`get_status()` 返回 `transfer` 快照，空闲超 5s（`_TRANSFER_IDLE`）或 `files_done>=files_total` 时 `active=False`，下次操作/陈旧状态自动重置计数；设置页 `#lan-progress-overlay` 复刻云同步进度浮层（pct + speed 并排 12dp、进度条、「后台运行」按钮），`settings.js` 自适应轮询（有传输 300ms / 空闲 5s），字节总量>0 显示百分比、否则文件计数（`n/N 文件`）、均未知显示「已传输 N 文件」，转 idle 自动隐藏（「后台运行」后本传输不再弹出）；与云同步浮层互斥列为 `_SETTINGS_OVERLAY_IDS`，Esc 关闭，方向标题「发送到手机/接收手机数据」
+- **传输进度**: `_transfer_state` 全局（`_transfer_lock` 保护，active/direction/files_done/files_total/bytes_done/bytes_total/current_file/start_time/updated），`_transfer_update()` 在 `pull_file`/`push_file`/`get_config`/`send_config` 处理成功时累计**本端实际收发字节与文件数**，总量取手机帧附带的 `meta`（`{files_total, bytes_total}`，无 meta 的旧手机为 0 走降级显示）；`get_status()` 返回 `transfer` 快照，空闲超 5s（`_TRANSFER_IDLE`）或 `files_done>=files_total` 时 `active=False`，下次操作/陈旧状态自动重置计数；设置页 `#lan-progress-overlay` 复刻云同步进度浮层（pct + speed 并排 12dp、进度条、「后台运行」按钮），settings legacy 自适应轮询（有传输 300ms / 空闲 5s），字节总量>0 显示百分比、否则文件计数（`n/N 文件`）、均未知显示「已传输 N 文件」，转 idle 自动隐藏（「后台运行」后本传输不再弹出）；与云同步浮层互斥列为 `_SETTINGS_OVERLAY_IDS`，Esc 关闭，方向标题「发送到手机/接收手机数据」
 - **命令**: `pull_manifest` / `push_manifest`（复用 sync 的 `_apply_remote_order`/`_apply_remote_collections`/`_apply_remote_tags`）/ `pull_file` / `push_file`（base64 传输）/ `get_config` / `send_config` / `device_info` / `ping`
 - **配置同步（双向，电脑为权威源）**: `get_config` 由手机拉取、`send_config` 由手机推送；两端均剔除 `_SECRET_KEYS`（FTP/S3/R2/WebDAV 密码等）；设置页「允许密钥传输」开关（`lan_set_allow_secret_config`，仅内存生效）开启后配置同步才包含密钥字段，开启前弹窗警示「请勿在公共网络或不信任的网络进行此操作！」；`device_info` 确认响应携带 `allow_secret_config` bool，手机端据此动态显示密钥拉取/推送按钮
 - **文件安全（与手机端对称）**: `_safe_fname` 拒绝路径穿越/绝对路径；`push_file` 四重校验：文件名安全 → 字节 ≤`MAX_FILE_SIZE`（64MB）→ 可选 `sha256` 与本地计算一致 → `_import_bytes` 先解码校验宽高>0 合法才写盘；**不合法字节绝不落盘**（杜绝孤儿缓存文件）；合法图片按 SHA-256 去重后存 `cache_dir/{hash[:16]}{ext}` 并入库
@@ -219,13 +262,13 @@ tests/
 
 ### 本地 HTTP 安全加固
 - Bottle 只绑 `127.0.0.1` 随机端口；`before_request` 校验 `Host` 必须为本机回环（`_host_allowed`），POST 额外校验 `Origin` 同源且 `Sec-Fetch-Site` 非 `cross-site`，拒绝则 403（阻断 DNS rebinding / 跨站注入）
-- **多线程服务器**：`bottle.run` 通过 `server_class=_ThreadedWSGIServer`（`ThreadingMixIn + WSGIServer`，`daemon_threads=True`，`request_queue_size=128`——wsgiref 默认 backlog=5，网格懒加载缩略图的突发连接易被丢弃导致整行图片加载失败）启用多线程——Bottle 默认 wsgiref 单线程串行处理，慢请求（`/api/contributors` 外网抓取、`/api/thumb` 现场生成缩略图）会阻塞其他路由投递，导致设置页 `settings.js`/`settings.css` 排队、JS 监听未注册期间窗口可见但拖动/点击全部无效
+- **多线程服务器**：`bottle.run` 通过 `server_class=_ThreadedWSGIServer`（`ThreadingMixIn + WSGIServer`，`daemon_threads=True`，`request_queue_size=128`——wsgiref 默认 backlog=5，网格懒加载缩略图的突发连接易被丢弃导致整行图片加载失败）启用多线程——Bottle 默认 wsgiref 单线程串行处理，慢请求（`/api/contributors` 外网抓取、`/api/thumb` 现场生成缩略图）会阻塞其他路由投递，导致设置页 bundle/settings.css 排队、JS 监听未注册期间窗口可见但拖动/点击全部无效
 - `/api/contributors` 结果带 1h TTL 缓存（模块级 `_CONTRIBUTORS_CACHE`，刷新在 `_CONTRIBUTORS_LOCK` 内单飞：**取锁后刷新时间并重查退避期**，等待中的并发请求不再重复抓取；刷新失败一律退避 60s 重试——有旧缓存回退旧缓存，无缓存冷启动失败返回 502，不再每个请求都反复触发 10s 慢抓取），设置页该图片加 `loading="lazy"`（位于默认隐藏的「关于」section，仅切换到该分组时才发起请求）；缩略图生成写盘为先写临时文件再 `os.replace` 原子替换（多线程下并发请求同一未缓存缩略图不再交错写产生永久损坏的缓存文件）
 - `after_request` 统一加 `X-Content-Type-Options: nosniff` / `Referrer-Policy: no-referrer` / `X-Frame-Options: DENY`，`/api/` 路由 `Cache-Control: no-store`
 - 文件名安全：`_safe_serve_filename`（webui）与 `_safe_remote_fname`（sync）拒绝含 `/` `\`、以 `.` `/` `\` `~` `..` 开头的名字；`_find_meme_file` 入口校验，远端 manifest 文件名在 `_fetch_remote_memes` 过滤 + `_pull_worker` 写盘前再防御
-- 前端 XSS：`utils/api.ts` 的 `esc()`/`renderMarkdown()` 转义所有拼入 innerHTML 的外部/动态数据（远端分组名、GitHub 版本号、QQ 昵称、输出目录、弹窗标题/正文等）；设置窗口 `settings.js` 同理
+- 前端 XSS：`utils/api.ts` 的 `esc()`/`renderMarkdown()` 转义所有拼入 innerHTML 的外部/动态数据（远端分组名、GitHub 版本号、QQ 昵称、输出目录、弹窗标题/正文等）；设置窗口 `legacy.js` 同理
 - **键盘无障碍（主窗口）**：全局 `:focus-visible` 焦点环（2px `var(--primary)`）；meme 卡/文件夹卡 `role="button" tabindex="0"` + Enter/Space 复制或打开分组，标签栏 span 同理（`aria-pressed`）；标题栏图标按钮全部带 `aria-label`；弹窗焦点管理：`utils/api.ts` 的 `rememberFocus()`/`restoreFocus()`/`trapTabFocus()`（模块级 `_focusTarget` 记录打开前焦点、关闭归还、Tab 在弹窗内循环），InputDialog/TagEditor 打开聚焦输入框、ConfirmDialog 默认聚焦「取消」（危险操作需显式点「确定」）、CollectionBuilder 聚焦 `#cb-name`；`#meme-grid.sort-enabled .meme-card:focus-visible` 为 2px 实线焦点环
-- **键盘无障碍（设置窗口）**：`settings.css` 全局 `:focus-visible` 焦点环（2px `var(--accent)`）；`.btn/.import-row/.nav-item/.title-btn:focus-visible` 用 box-shadow 双环、`.nav-item.danger:focus-visible` 红色环、`.check-row input[type="checkbox"]:focus-visible`；危险按钮统一 `.btn-danger-outline` 类（hover 变红 + 红色 focus 环，取代内联 `border-color:#ef4444`）；覆盖层焦点管理：`settings.js` 的 `rememberSettingsFocus()`/`restoreSettingsFocus()`/`trapSettingsFocus()`/`visibleSettingsOverlay()`（模块级 `_settingsFocusTarget` + `_SETTINGS_OVERLAY_IDS` 列表），各覆盖层（LAN 确认/danger/sync 进度与完成/LAN 进度/QQ/QQNT/TG/抖音/微信/上传确认/更新弹窗）打开时记住焦点、打开后聚焦首元素、关闭归还；全局 keydown 先对可见覆盖层做 Tab 循环陷阱，再按 Escape 依次关 danger→lan-confirm（拒绝）→dy→tg→wechat→qq→qqnt→sync-progress→lan-progress→sync-done→关设置窗口；静态覆盖层 `role="dialog" aria-modal="true"`，`#toast` 加 `role="status" aria-live="polite"`（主窗口 `#toast` 同理）
+- **键盘无障碍（设置窗口）**：`settings.css` 全局 `:focus-visible` 焦点环（2px `var(--accent)`）；`.btn/.import-row/.nav-item/.title-btn:focus-visible` 用 box-shadow 双环、`.nav-item.danger:focus-visible` 红色环、`.check-row input[type="checkbox"]:focus-visible`；危险按钮统一 `.btn-danger-outline` 类（hover 变红 + 红色 focus 环，取代内联 `border-color:#ef4444`）；覆盖层焦点管理：`legacy.js` 的 `rememberSettingsFocus()`/`restoreSettingsFocus()`/`trapSettingsFocus()`/`visibleSettingsOverlay()`（模块级 `_settingsFocusTarget` + `_SETTINGS_OVERLAY_IDS` 列表），各覆盖层（LAN 确认/danger/sync 进度与完成/LAN 进度/QQ/QQNT/TG/抖音/微信/上传确认/更新弹窗）打开时记住焦点、打开后聚焦首元素、关闭归还；全局 keydown 先对可见覆盖层做 Tab 循环陷阱，再按 Escape 依次关 danger→lan-confirm（拒绝）→dy→tg→wechat→qq→qqnt→sync-progress→lan-progress→sync-done→关设置窗口；静态覆盖层 `role="dialog" aria-modal="true"`，`#toast` 加 `role="status" aria-live="polite"`（主窗口 `#toast` 同理）
 - **设置窗口 UX**：保存模型—表单控件改动经 `initDirtyTracking()` 置 `_settingsDirty`，`closeSettings()` 变 async，脏时弹「有未保存的更改」确认再关（取消/×/Esc 均触发）；`saveSettings`/`getSettings`/`resetSettings` 成功后清脏；真正立即生效的控件（LAN 开关、密钥传输、存储位置「应用更改」）带 `.immediate-hint`「立即生效」标注；状态色收敛为 token：`--success: #22c55e`/`--danger: #ef4444`，JS 用 `setStatusColor()` 切 `.status-ok/.status-error` 类（不再写死 `#4caf50/#f44336`），HTML/CSS 内联色改 `var(--danger)`；复制处理下拉用 `.select-row`（label span + select），不再包 `.check-row`
 - **关于页**：设置窗口左侧导航末项「关于」（`data-group="about"`）收纳从基础设置迁出的版本更新区块（`s-ver-current`/`btn-check-update`/`s-update-status`，逻辑不变）；页面含大号 OhMyMeme logo（`.about-logo`，span 用 `--accent`，复刻主窗口标题栏效果）、版本号+检查更新，及贡献者名单（`.about-contributors` 深色卡片）。贡献者头像不走外部直连：`/api/contributors` 路由（webui.py Bottle）用 urllib 抓取 `contributor.starsfire.top/TNTXZ/OhMyMeme` 的 SVG（该服务忽略 `?bg=` 参数且无 CORS 头，浏览器直接 fetch 会失败），用 `svg.replace` 剥离白色背景 `<rect>` 后以 `image/svg+xml` 返回，使圆形头像直接落在深色页面上；`onerror` 时隐藏图片并显示「贡献者名单加载失败」回退文案。版本行下方含「GitHub 项目地址」「加入 QQ 群」「打开环境检测」按钮（前两者 `openAboutUrl` → `SettingsApi.open_url`，仅允许 http/https scheme，经 `os.startfile`/`open`/`xdg-open` 交系统默认浏览器打开，失败 toast 提示；后者 `openEnvCheck` → `SettingsApi.open_env_check` → `env_check.spawn_ui()` 非阻塞开检测窗口，成功/失败 toast）
 - **对比度（H2）**：`--muted: #8a94a8`（在 bg/surface 上 ≥5:1）；实心主按钮/激活态文字/选中态 outline 用 `--primary-strong: #1d4ed8`（白色文字 6.7:1、`--primary-light` 背景文字 5.49:1）；`--primary #3b82f6` 仅用于 hover 高亮，不作小字/浅底文字色
@@ -239,7 +282,7 @@ tests/
 - **单实例互斥（防多开）**：`main()` 在 logging 配置后、`OhMyMemeApp()` 创建前调 `platform_util.acquire_single_instance()`——Windows 用 `CreateMutexW("OhMyMeme_SingleInstance")`（`GetLastError()==ERROR_ALREADY_EXISTS` 即已有实例，句柄存模块级 `_single_instance_handle` 防 GC，进程退出内核自动释放，崩溃安全），POSIX（Linux/macOS/WSL）对 `tempdir/ohmymeme-<uid>.lock` `fcntl.flock(LOCK_EX|LOCK_NB)`（fd 保持打开）；已有实例运行时 Windows 弹 MessageBoxW「OhMyMeme 已在运行」后 `sys.exit(0)`，其余平台仅日志退出；互斥机制自身异常一律返回 True 不阻塞正常启动。Bottle 端口随机分配不构成冲突防线，故必须显式互斥
 - **首次运行环境检测（UI 子进程须在单实例检查前）**：`--env-check-ui`（内部旗标，`help=argparse.SUPPRESS`）分支在 logging 配置后、`acquire_single_instance()` **之前** `run_ui()` 后 return——父进程可能持有单实例 mutex，子进程再检测会直接退出。检测 UI 关闭后、`OhMyMemeApp()` 创建前（debug 块之后）：`args.env_debug or (os.name == "nt" and not is_done())` 时 `show_blocking()`（惰性 import，异常 log warning 不阻断）；`--debug-env` 先把 `detect_checks()` 逐条 `logger.info`
 - **源码运行自动编译前端**：`main.py` 启动时 `_ensure_vue_frontend()` 检查 `src/webui/dist/ohmymeme.js`，缺失（打包 `frozen` 或已有产物时跳过）则用 `npx.cmd`(Windows)/`npx`(其他) 跑 `vite build` 一次，失败仅告警不阻断启动
-- **启动动画**：`App.vue` 挂载时播放 `src/resources/OhMyMeme.mp4`（通过 Bottle 路由 `/resources/<filepath:path>` 提供，`webui.py` 的 `RESOURCES_DIR`，basename 校验防路径穿越，路由须在兜底 `/` 之前注册；PyInstaller 以 `--add-data src/resources` 打包）；`onMounted` 设置 6s 兜底定时器 + `<video>` `@ended` 移除遮罩，`#startup-anim` 全屏遮罩 z-index 2000，`.startup-fade` 0.4s 淡出。**仅启动时播放**：快捷键/托盘仅 toggle 窗口显隐不重载页面，故不会重复播放。设置页「显示启动动画」开关（配置键 `show_startup_animation`，默认开，`useMemes` state 同步）控制：开启时 `loadInitData` 后立即 `startupVideoReady=true` 挂载视频并**并行加载**（无 300ms 延时，动画天然覆盖桥接稳定时间）；关闭时 `dismissStartupAnim()` + `setTimeout(..., 300)` 降级为 300ms 延时。`get_init_data`/`reset_settings`/`get_settings` 均透传该键。**遮罩背景贴合视频边框**：OhMyMeme.mp4 边框为纯黑，`webui.py` 写死 `_STARTUP_BG_COLOR = "#000000"`（不做运行时 ffmpeg 采样，避免影响启动速度），经 `get_init_data` 的 `startup_bg_color` 传给前端，`App.vue` 把该色同时应用到 `#startup-anim` 与 html/body 背景。**可跳过**：点击遮罩立即 `dismissStartupAnim()`；系统 `prefers-reduced-motion: reduce` 时直接跳过动画走 300ms 降级路径（`window.matchMedia` 检测）
+- **启动动画**：`App.vue` 挂载时播放 `src/resources/OhMyMeme.mp4`（通过 Bottle 路由 `/resources/<filepath:path>` 提供，`webui.py` 的 `RESOURCES_DIR`，basename 校验防路径穿越，路由须在兜底 `/` 之前注册；PyInstaller 以 `--add-data src/resources` 打包）；`onMounted` 设置 6s 兜底定时器 + `<video>` `@ended` 移除遮罩，`#startup-anim` 全屏遮罩 z-index 2000，`.startup-fade` 0.4s 淡出。**仅启动时播放**：快捷键/托盘仅 toggle 窗口显隐不重载页面，故不会重复播放。设置页「显示启动动画」开关（配置键 `show_startup_animation`，默认开，`useMemes` state 同步）控制：开启时 `loadInitData` 后立即 `startupVideoReady=true` 挂载视频并**并行加载**（无 300ms 延时，动画天然覆盖桥接稳定时间）；关闭时 `dismissStartupAnim()` + `setTimeout(..., 300)` 降级为 300ms 延时。`get_init_data`/`reset_settings`/`get_settings` 均透传该键。**遮罩背景贴合视频边框**：OhMyMeme.mp4 边框为纯黑，`webui.py` 写死 `_STARTUP_BG_COLOR = "#000000"`（不做运行时 ffmpeg 采样，避免影响启动速度），经 `get_init_data` 的 `startup_bg_color` 传给前端，`App.vue` 把该色同时应用到 `#startup-anim` 与 html/body 背景。**可跳过**：点击遮罩立即 `dismissStartupAnim()`；系统 `prefers-reduced-motion: reduce` 时直接跳过动画走 300ms 降级路径（`window.matchMedia` 检测）。**插件媒体（图片/动图）**：`startup_media_type == "image"`（或 `startup_video_src` 扩展名匹配）时改用 `<img>` 分支，`@load` 后按 `startup_media_duration_ms`（缺省 3000，上限 15000）定时收起，GIF 时长由插件侧 PIL 逐帧解析；视频分支仍 `@ended` 收起，插件 `set_startup_override(..., duration_ms, media_type)` 经 `init_fields` 下发这两个字段
 - Vue `App.vue` 挂载后:
   1. 立即: `loadInitData()` → `get_init_data()` 加载数据库数据 → 秒开
   2. `checkUpdateAndPrompt()` 立即执行（与 rescan/同步并行）
@@ -256,8 +299,8 @@ tests/
   3. 按哈希查 DB (`get_by_hash`) 跳过重复内容
 - **双重去重** — 文件名去重防止每次启动重复注册，哈希去重防止同图不同名重复
 - `_do_import`（拖入/导入对话框）同样有哈希去重，且文件重命名为 `{hash[:16]}{ext}`
-- **感知哈希相似去重**（`download_original_image` 单图导入路径）：`memes.perceptual_hash` 列（TEXT 存 16 进制，旧库自动 ALTER 迁移）持久化每张图的 64 位感知哈希（`_perceptual_hash`，8x8 可分离 DCT pHash，比均值哈希对浅色/低信息图判别力更强）。导入时哈希未命中则 `_find_similar_candidates` **只算新图 phash + 从 DB 读存量 phash 比对**（整数 XOR，微秒级），`perceptual_hash` 为空的旧库行惰性回填：缺失 ≤`_PHASH_SYNC_BACKFILL_MAX`(5) 同步回填，超过则丢后台线程（`_PHASH_BACKFILLING` 防重入，start 异常复位），本次只比对已填的。`_build_cache_index` 一次性构建文件索引避免逐行 walk（仅在有缺失时执行）。汉明距离 `_PHASH_SIMILAR_DIST<=12` 视为近似，**全库比对无截断漏检**。命中候选时将文件复制到独立临时文件登记 `_PENDING_SIMILAR`（token 随机、TTL 300s 过期时在 pop/next-register 时删除临时文件），返回 `similar_pending`，前端 `SimilarImportDialog` 弹窗让用户选：保留新图 / 保留旧图 / 跳过（discard）/ 都保留（keep_both），经 `JsApi.resolve_similar_import(token, action)` 决定导入或放弃。哈希精确命中返回 `duplicate` 提示「已存在」。`_do_import`/`scan_cache` 新建时写入 `perceptual_hash`（`add_meme` 内部转 hex，规避 64 位溢出 SQLite INTEGER）。两条单图交互路径都启用：`download_original_image`（URL 拖放/下载原图）与 `/api/upload/`（File 拖放，单张时走 `_import_with_similar_decision`）；批量路径（多文件拖放/文件夹/同步 pull/LAN）不做感知去重（多文件走 `_do_import` 避免逐个打断）。`_do_import` 去重关键区（`get_by_hash`检查→copy2→`add_meme`→回查）由模块级 `_IMPORT_LOCK` 串行化：并发拖入完全相同字节的图也不产生重复记录（测试 `test_import_concurrency.py`）
-- **导入限制**：`config.py` 常量 `_IMPORT_MAX_PX=2560`（最长边）/`_IMPORT_MAX_BYTES=20MiB`，超过即拒绝接收；覆盖 `_do_import`、`scan_cache`、同步 `_pull_worker`、LAN `_import_bytes` 四类接收路径，跳过超限文件并计数（前端 toast 提示）
+- **感知哈希相似去重**（`download_original_image` 单图导入路径）：`memes.perceptual_hash` 列（TEXT 存 16 进制，旧库自动 ALTER 迁移）持久化每张图的 64 位感知哈希（`_perceptual_hash`，8x8 可分离 DCT pHash，比均值哈希对浅色/低信息图判别力更强）。导入时哈希未命中则 `_find_similar_candidates` **只算新图 phash + 从 DB 读存量 phash 比对**（整数 XOR，微秒级），`perceptual_hash` 为空的旧库行惰性回填：缺失 ≤`_PHASH_SYNC_BACKFILL_MAX`(5) 同步回填，超过则丢后台线程（`_PHASH_BACKFILLING` 防重入，start 异常复位），本次只比对已填的。`_build_cache_index` 一次性构建文件索引避免逐行 walk（仅在有缺失时执行）。汉明距离 `_PHASH_SIMILAR_DIST<=12` 视为近似，**全库比对无截断漏检**。命中候选时将文件复制到独立临时文件登记 `_PENDING_SIMILAR`（token 随机、TTL 300s 过期时在 pop/next-register 时删除临时文件），返回 `similar_pending`，前端 `SimilarImportDialog` 弹窗让用户选：保留新图 / 保留旧图 / 跳过（discard）/ 都保留（keep_both），经 `JsApi.resolve_similar_import(token, action)` 决定导入或放弃。哈希精确命中返回 `duplicate` 提示「已存在相同表情包」。`_do_import`/`scan_cache` 新建时写入 `perceptual_hash`（`add_meme` 内部转 hex，规避 64 位溢出 SQLite INTEGER）。两条单图交互路径都启用：`download_original_image`（URL 拖放/下载原图）与 `/api/upload/`（File 拖放，单张时走 `_import_with_similar_decision`）；批量路径（多文件拖放/文件夹/同步 pull/LAN）不做感知去重（多文件走 `_do_import` 避免逐个打断）。`_do_import` 去重关键区（`get_by_hash`检查→copy2→`add_meme`→回查）由模块级 `_IMPORT_LOCK` 串行化：并发拖入完全相同字节的图也不产生重复记录（测试 `test_import_concurrency.py`）
+- **导入限制**：`config.py` 常量 `_IMPORT_MAX_PX=2560`（最长边）/`_IMPORT_MAX_BYTES=20MiB`，超过即超限；**限制开关** `import_no_limit`（默认 `false`，设置页「基础设置 → 导入限制」复选框 `s-import-no-limit`；`config.import_limits()` 在关闭时返回 `(0, 0)` 表示不限制，`config.exceeds_import_limit(fsize, w, h)` 统一判定并被 `_do_import`/`scan_cache`/`_prepare_image_import`/`cloud_download`、同步 `_pull_worker`、LAN `_import_bytes` 共用——云拉取与局域网接收同样受开关影响）**。**单图交互式导入超限弹窗**：`download_original_image`/`/api/upload/` 经 `_import_with_similar_decision` 走 `_prepare_image_import`，超限时返回 `status="over_limit"` → 复制到独立临时文件登记 `_PENDING_OVERLIMIT`（token 随机、TTL 300s），返回 `{"ok": false, "over_limit": true, "token": ...}`；剪贴板单图（`JsApi.import_from_clipboard` 的图像分支）同法登记后返回 `over_limit`。前端 `App.vue` 用 `ConfirmDialog`（「保留」「取消导入」）经 `JsApi.resolve_overlimit_import(token, "keep"|"cancel")` 决策（`keep` 走 `_do_import(..., allow_overlimit=True)` 放行、`cancel` 删除临时文件）；文件拖放/上传两条路径在 `App.vue` 内直接处理，剪贴板经 `ImportMenu` 的 `@overlimit` 事件回调到同一 `handleOverlimitImport`。**批量路径**（文件对话框/文件夹/剪贴板文件列表/TG/抖音/微信）不做弹窗，仍跳过超限文件并计数（`_do_import` 的 `rejected` → 前端 toast）；同 sha 命中返回 `duplicate`，前端统一 toast「已存在相同表情包」
 - **文件夹导入** (`JsApi.import_folder`)：FOLDER 对话框 → `os.walk` 递归收集图片（扩展名过滤）→ **后台线程导入**（`start_import_job` + `_IMPORT_JOB_STATE`，前端 `ImportProgressOverlay` 300ms 轮询进度条 + 取消，取消时 `progress_cb` 返回 False 中断 `_do_import`，保留实际进度）→ `make_collection`（前端导入菜单「自动创建分组」勾选，默认开）时以文件夹名 `create_collection` + 批量 `add_to_collection`（同名分组复用，重复导入并入）。`import_memes`（文件对话框）同样后台化，走同一 job；`import_from_clipboard`（剪贴板，通常单张瞬时）保持同步返回 id。`_do_import` 提供可选 `progress_cb`（逐文件回调，返回 False 中断）
 - **渠道自动分组**：3 个入库渠道导入后调 `WebUI.ensure_import_collection(ids, 固定名)` 自动归入固定名分组——TG→「Telegram」、抖音→「抖音」、微信→「微信」；同一渠道不同时间导入复用同名分组。QQ（导出 ZIP 到外部）、QQNT（提取到输出文件夹）不入库故不建组。`create_collection` 现为「先按 name+parent_id 查已存在→返回既有 id，否则 INSERT」——**不再产生重复空分组**（仓库同名字段多次导入只一个分组，成员靠 meme_collections 的 PRIMARY KEY 去重），测试 `test_ensure_collection_same_name_reused`/`empty_args`
 
@@ -269,6 +312,7 @@ tests/
 - **SettingsApi**: `backup_get_info`/`backup_pick_dir`/`backup_create`/`backup_delete`（文件名白名单校验防穿越）/`backup_pick_zip`/`backup_restore`/`backup_progress`；后台线程 + 前端 300ms 轮询进度（`_BACKUP_STATE`，与存储迁移同模式），恢复成功后自动 build_manifest
 - **设置页 UI**: 独立「备份与恢复」导航分组（日志与关于之间）：备份目录选择、立即备份、备份列表（文件名/大小/删除，删除走 showConfirm 危险确认）、从 ZIP 恢复（pick_zip → showConfirm → 恢复）；`backup-progress-overlay` 进度弹窗（运行中不可关闭，完成后"关闭"按钮 + Esc）；列入 _SETTINGS_OVERLAY_IDS 做 Tab 焦点陷阱
 - **测试**: TestBackup 覆盖创建/列表/删除（thumbnails 排除、路径穿越拒绝）、恢复元数据保真（tags/收藏/分组）、孤儿保留与同名覆盖、非空库拒绝（零落盘 + staging 清理）、非法包/非 ZIP（BadZipFile 上抛由 worker 捕获）/文件数不符
+- **危险操作（清空全部数据）**: 设置页「危险操作」区块两个入口，均走 showConfirm 双重确认（输入 confirm）：`SettingsApi.delete_all_local`（`db.delete_all()` 清空库 + 删除 cache/与 thumbnails/ 全部文件 + 重建空 manifest）与 `SettingsApi.delete_all_cloud`（`sync.delete_all_remote()` 遍历远端清单删除 `memes/` 全部文件并删除远端 `meme-index.json`）
 
 ### 剪贴板 (GIF/WebP 直接传送)
 - `_copy_gif_windows` 同时写入三个剪贴板格式:
@@ -391,7 +435,7 @@ tests/
 - **解密流程**: `read_local_key()` 读取密钥 → 遍历 `user_data/cache` + `user_data/media_cache` → `decrypt_tdf_file()`/`decrypt_tdef_file()` 按魔数识别格式解密 → `detect_extension()` 通过文件头识别扩展名 → 仅保留 webp/webm
 - **webm 转换** (`convert_webm_to_webp`): 默认开启，ffmpeg 将 webm 转 animated webp，**有损 q80**（`-lossless 0 -quality 80`，无损编码实测 11-35s/个过慢改用有损，贴纸场景质量几乎无损），`-loop 1` 循环播放，保持宽高比（最长边 512，不放大），删除原 webm；转换前 `_check_ffmpeg()` 预检（`_resolve_ffmpeg()`：打包内置 `_MEIPASS/tools/ffmpeg/ffmpeg.exe` → PATH 系统 ffmpeg → None，命中即缓存到 `_FFMPEG_PATH`），缺失时报 `error_code="no_ffmpeg"` 中止；命令由 `_webm_cmd(ffmpeg, webm, out)` 构建（与打包校验 `build.py --verify-ffmpeg` 共用一份参数，防两处漂移）；**单个转换失败的文件跳过不导入**（`convert_failed` 计数并在完成消息提示）。**并行转换**：`_tg_worker` 内用 `ThreadPoolExecutor(max_workers=min(os.cpu_count(), 4))` 受控并发，实测单张 ~1.7s → 4 路约 2.9x 加速（千张 30 分 → ~11 分）；进度 `done/convert_failed` 在 `_TG_LOCK` 内原子累加，非 webm（webp）直接透传并计入进度；进度条按 `done/total`（total=全部待处理含 webp）平滑递增。**取消/回收**：`convert_webm_to_webp` 用 `Popen`+有界 `communicate(timeout)`，受 `_TG_ACTIVE_PROC` 集合（`_TG_LOCK` 保护）跟踪活动进程；`cancel_tg_import()` / `_reset_state()` 对所有运行中进程 `terminate()`；`_reap_proc()` 统一回收——kill 后无条件 `wait`（纠 zombie），wait 超时二次 SIGKILL 兜底，**仅进程实际退出（`poll()` 非 None）才从 `_TG_ACTIVE_PROC` 移除**；转换循环 `finally` 用 `executor.shutdown(wait=True, cancel_futures=True)` 等待已启动 future 退出，避免与 temp_dir 清理/下次导入交错。**ETA 用 `time.monotonic()`**（`_TG_T0` 起点与计算同单调时钟）。**防双 worker**：`start_tg_import` 在 `_TG_LOCK` 内检查后立即 `_update_tg(status="scanning")` 占位运行态，线程在锁外创建，并发第二次调用在锁内见 scanning 即返回 False
 - **静态版去重** (`dedup_static_against_animated`): Telegram 对同一动态贴纸缓存两份（512 webm 动画 + 320 webp 静态版），入库前用 PIL 识别动画 webp（`n_frames>1`），将每个静态 webp 与所有动画 webp 首帧做**归一化灰度差分**（白底合成 32×32，阈值 diff<0.02，实测匹配组 0.002-0.005 / 非匹配组 >0.1 间隔安全），内容一致的静态版跳过只保留动画版；无动画或 PIL 缺失时原样返回；`.webm` 文件（未转换时）不受影响。实测 127 静态中 45 个被判重跳过，0 误杀 0 漏跳，全量比较耗时 ~2s
-- **进度状态** (`_TG_STATE`): `idle` → `scanning` → `loading_key` → `decrypting` → `converting` → `importing` → `done`/`error`/`cancelled`，含 `error_code` 字段，前端 300ms 轮询 `get_tg_import_progress()`。**ETA 展示**：`_TG_STATE["elapsed_s"]` 由 worker 起点 `_TG_T0` 计算，`_refresh_tg_elapsed()` 在 `_update_tg`/`get_tg_progress` 内按运行中状态推进（idle/结束不推进）；前端 `settings.js` 的 `updateTgEta()` 据 `elapsed_s` + `progress` 线性外推「已用 X · 预计剩余 Y」（`formatDuration()` 折算分钟/秒），`tg-import-eta` 元素随轮询刷新、overlay 打开时清空
+- **进度状态** (`_TG_STATE`): `idle` → `scanning` → `loading_key` → `decrypting` → `converting` → `importing` → `done`/`error`/`cancelled`，含 `error_code` 字段，前端 300ms 轮询 `get_tg_import_progress()`。**ETA 展示**：`_TG_STATE["elapsed_s"]` 由 worker 起点 `_TG_T0` 计算，`_refresh_tg_elapsed()` 在 `_update_tg`/`get_tg_progress` 内按运行中状态推进（idle/结束不推进）；前端 `legacy.js` 的 `updateTgEta()` 据 `elapsed_s` + `progress` 线性外推「已用 X · 预计剩余 Y」（`formatDuration()` 折算分钟/秒），`tg-import-eta` 元素随轮询刷新、overlay 打开时清空
 - **入库**: 解密到临时目录后调 `webui._do_import()` 入库，完成后自动清理临时文件
 - **取消**: `cancel_tg_import()` 设置标志位，工作线程在每个阶段检查并中止
 - **前端 UI**: 设置页「导入」分组下 `.import-row` 列表行（硬编码 SVG 图标 + 名称），点击对应行弹出该软件的导入对话框（Telegram：tdata 目录手动指定 + 本地密码 + WebM 转换开关 → 进度覆盖层，错误时 `no_tdata`/`invalid_tdata`/`no_cache` 显示「手动选择 tdata 目录」重试按钮）
@@ -432,6 +476,12 @@ tests/
 - **源码运行按需构建** (`_ensure_dev_helper`): 开发态缺 helper 时自动 `cmake` 构建一次并拷回源码目录（与 `main._ensure_vue_frontend` 同思路），保证新克隆仓库执行 `python -m src` 即可用微信导入；**pytest 下跳过**（沿用 `hotkey.py` 的 `PYTEST_CURRENT_TEST` 守卫），构建失败仅告警不阻断启动
 - **前端 UI**: 设置页「导入」分组下 `.import-row` 列表行（硬编码 SVG 图标 + 名称），点击微信行弹出对话框（目录选择 + 环境检测 + 多账号下拉 → 进度覆盖层）；对话框标题下常驻用户协议警告框（红字：「该功能可能不符合微信用户协议，请谨慎使用！」）
 
+## 数据与配置路径 (config.py)
+- **config_dir**（`_get_config_dir`）: Windows `%APPDATA%/OhMyMeme`；macOS `~/Library/Application Support/OhMyMeme`；Linux `$XDG_CONFIG_HOME/OhMyMeme`（默认 `~/.config/OhMyMeme`）
+- **data_dir**（`_get_data_dir`）: Windows `%LOCALAPPDATA%/OhMyMeme`；macOS `~/Library/Caches/OhMyMeme`；Linux `$XDG_DATA_HOME/OhMyMeme`（默认 `~/.local/share/OhMyMeme`）
+- config_dir 内容: `config.json`（唯一用户配置）、`env_check.json`（环境检测标记）、`plugins/<插件id>/settings.json`（插件设置）、`nickname_cache.json`（QQNT 昵称缓存）
+- data_dir 内容: `memes.db`、`cache/`（原图，可经 `cache_dir` 配置重定向）、`thumbnails/`、`meme-index.json`（同步清单）、`cloud-index.json`（云端清单缓存）、`hotkey.log`（热键事件日志）、`plugins/`（插件代码）、`plugins_data/<id>/`（插件私有数据）、`plugins_state.json`（启停状态）、`backups/`（备份目录，可经 `backup_dir` 重定向）、`storage_migration.json`（存储迁移清单，完成后删除）
+
 ## 构建 & 测试
 ```bash
 pip install -r requirements.txt
@@ -442,8 +492,43 @@ python -m pytest tests/ -v  # 运行测试
 ruff check src/   # lint 检查
 black src/        # 格式化
 python scripts/build.py  # PyInstaller + InnoSetup 完整构建
+python scripts/build.py --installer-only --msix  # 追加 MSIX（Windows）
 python scripts/build.py --lang en  # 指定语言构建
 ```
+
+### CLI 参数 (main.py argparse)
+- `--debug` — 输出所有 DEBUG 级别日志（控制台级别由 INFO 提到 DEBUG）
+- `--silent` — 启动时最小化到托盘；源码模式下需显式传入（忽略配置文件的 `silent_start`）
+- `--debug-update` — 强制弹出更新对话框（测试用）
+- `--debug-startup` — 输出开机自启检测详情（注册表键、启动文件夹）
+- `--debug-adb` — 输出 ADB 检测详情及运行时日志（路径、版本、adb 命令）
+- `--debug-env` — 输出环境检测详情（WebView2/.NET）并强制打开检测窗口
+- `--env-check-ui` — 内部旗标（`argparse.SUPPRESS`，不显示在 help），独立运行环境检测 UI 子进程入口，在单实例检查之前执行
+
+### 构建脚本选项 (scripts/build.py, PyInstaller 6.0+)
+- `--windows`/`--linux`/`--macos` — 目标平台；**PyInstaller 不支持交叉编译**，各参数只能在对应系统上使用
+- `--macos --arch arm64|x86_64` — 指定 macOS 架构（默认按机器自动检测）；产出 `.app` + `.dmg`
+- `--linux --package all|appimage|deb|rpm` — Linux 包类型（默认 all）；构建机需 GTK/WebKit 依赖
+- `--build-only` — 仅 PyInstaller 打包，跳过安装包
+- `--installer-only` — 仅制作安装包（PyInstaller 已打包完时）
+- `--nightly`/`--version X` — 改写版本号构建（临时改写 `src/__init__.py`，完成后恢复）
+- `--verify-ffmpeg`/`--verify-helper` — 校验产物内置 ffmpeg/wechat_keyfinder（CI 打包后调用）
+- `--msix` — Windows 追加 MSIX 格式（**additive**：`.exe` 始终构建；工具/清单缺失仅告警跳过，不中断）。`build_windows_installers(app_version, filename_version, want_msix)` 统一编排，`--installer-only` 与常规打包流程共用
+- Windows 安装包需 InnoSetup 6/7；输出目录 `dist/`；原 Nuitka 构建脚本归档于 `scripts/nuitka/build.py`
+
+### Windows MSIX 打包（Microsoft Store）
+- **触发**：`--msix`（三个 workflow 的 windows job 均以 `--installer-only --msix` 调用；nightly 额外带 `--nightly`）
+- **工具定位**（缺失仅告警跳过，不中断）：`find_makeappx()` = `MAKEAPPX_DIR`/`MAKEAPPX` → 扫描 `C:\Program Files (x86)\Windows Kits\10\bin\<ver>\x64\makeappx.exe` 取最高版本（runner 预装 Windows SDK）
+- **MSIX**（`build_msix`）：`scripts/installer/msix/AppxManifest.xml` 为模板，**已填入本项目 Store 身份**（`Name=TNTXZ.OhMyMeme` / `Publisher=CN=4215BB25-0E28-400F-94EF-AF09583E9BCF` / `PublisherDisplayName=TNTXZ`；公开标识，非密钥，可安全入库）。`build_msix` 用正则取 `<Identity>` 标签内 `Name`/`Publisher`，env `OHMYMEME_MSIX_IDENTITY_NAME`/`OHMYMEME_MSIX_PUBLISHER`/`OHMYMEME_MSIX_PUBLISHER_DISPLAY_NAME` 覆盖后整体重写标签（值仍含 `REPLACE-WITH-STORE` 占位串时告警）；`Version` 由 `_msix_four_part` 转四段式 `X.Y.Z.0`（Revision 必须 0）；`_msix_assets` 由 `src/resources/icon.png`（PIL）生成 `Assets/` 的 `StoreLogo.png`(50)/`Square44x44Logo.png`(44)/`Square150x150Logo.png`(150)；staging = `dist/msix-staging`（整目录拷贝 `dist/OhMyMeme` + 清单 + 资产）→ `makeappx pack /d <staging> /p <out.msix> /o` → 清理 staging；**清单为 full-trust 桌面应用**（`EntryPoint="windows.fullTrustApplication"` + `rescap:Capability Name="runFullTrust"`，`TargetDeviceFamily=Windows.Desktop`）；**不做签名**（Store 上架时重签，本地侧载需开发者模式 `Add-AppxPackage -AllowUnsigned`）；**刻意不禁用 AppData/注册表虚拟化**——`desktop6:FileSystemWriteVirtualization`/`RegistryWriteVirtualization` 需 `unvirtualizedResources` restricted capability 且官方限定「仅部分 Microsoft 及合作方游戏」，商店上架会被拒；代价是 MSIX 版的 `%APPDATA%`/`%LOCALAPPDATA%` 写入被重定向到包容器（与 `.exe` 安装的配置/data 目录不互通）
+- 产物命名 `OhMyMeme-<filename_version>.msix`（nightly 即 `OhMyMeme-nightly.msix`）
+- **Store 上架配套**：Partner Center「隐私策略 URL」指向仓库内 `docs/privacy.md`（中英双语，逐条列出全部主动联网目标：GitHub 更新检查/镜像、用户自建 FTP/S3/R2/WebDAV、抖音 `douyin.com`、微信 CDN、`googledownloads.cn`、`contributor.starsfire.top`、`uapis.cn`）。**新增任何联网功能时须同步更新该文件**（Store 会核对声明与实际行为是否一致）
+
+### Linux 源码运行依赖 (GTK 后端)
+- pywebview Linux 使用 GTK 后端（`WebKit2`），源码/venv/conda 运行需当前 Python 能导入 `gi`：
+  - 系统层安装 `python3-gi`（Debian/Ubuntu `apt install python3-gi`；Arch `pacman -S python-gobject`）+ WebKitGTK 运行库（`gir1.2-webkit2-4.1` 或 4.0，Arch 经 `yay -S webkit2gtk`）
+  - venv 创建时加 `--system-site-packages`，或运行前设 `PYTHONPATH=/usr/lib/python3/dist-packages`（Arch 为 `/usr/lib/python3.12/site-packages`）
+  - conda 环境内可直接 `conda install -c conda-forge pygobject`
+- deb/rpm 安装包已内置 `gi` 与 WebKit2/Soup typelib，无需 python3-gi，但依赖系统 `gir1.2-webkit2-*` 运行库
 - **构建自动编译 Vue 前端**: `build.py` 的 `ensure_vue_frontend()` 在打包前检查 `src/webui/dist/ohmymeme.js`（被 gitignore，CI 全新检出缺失），缺失时自动 `npm ci`（有 lockfile，否则 `npm install`）→ `npx vite build`，失败则中止构建；构建机需 node/npm（GitHub Actions runner 预装），dist 已存在时直接跳过
 - **C++ 测试 job（check.yml `keyfinder-tests`）**: 独立于 `check` job 且在 `windows-latest` 运行——helper 是 Windows-only（CMakeLists 对非 WIN32 直接 FATAL_ERROR），放进 ubuntu job 会必然失败；放在 check.yml 而非 build.yml 是为了让 PR 阶段即有反馈（build.yml 由 check 通过后的 workflow_run 触发）。
 - **构建自动编译 wechat_keyfinder**: `build.py` 的 `build_keyfinder_helper()` 在打包前用 cmake+MSVC 编译 helper 并 `--add-binary` 打入产物（`*.exe` 被 gitignore，CI 全新检出缺失，故必须构建期产出）；无需 OpenSSL。**Windows 构建机需 cmake + MSVC**（GitHub Actions 的 `windows-latest` 预装；本机可用 VS BuildTools），缺失时构建**中止**（`--allow-missing-keyfinder` 仅供本地开发放行）。`build.yml`/`nightly.yml` 的 windows job 在打包后统一调用 `python scripts/build.py --verify-helper`（**单一实现，消除此前两处内联脚本重复导致的 drift 风险**），由 `build.py` 的 `verify_keyfinder_bundle()` 执行三项检查：①helper 存在（按文件名在产物树内查找，**不硬编码 `_internal/...` 布局**，PyInstaller 调整结构后仍有效）；②可执行性——`--help` 退出码为 0（**取代原先的 `size < 20000` 魔数**：既覆盖截断/架构不符/缺依赖，又不会因合法体积变化误报）；③PE 版本资源 `CompanyName == OhMyMeme`（缺元数据会退回 Defender 误报特征）。任一项不过即 exit 1。测试 `tests/test_build_verify.py`
@@ -454,13 +539,14 @@ python scripts/build.py --lang en  # 指定语言构建
 
 `make` 命令仅供参考（`make run`/`make test`/`make lint`/`make format`/`make build`），macOS/Linux 下可能不可用，优先使用原生 Python 命令。
 
-## CI (GitHub Actions) — 四个 workflow
+## CI (GitHub Actions) — 五个 workflow
 - **check.yml**: Ubuntu, lint + test, push 和 PR 到任意分支均触发
-- **ffmpeg-win64.yml**: 可复用 workflow（`workflow_call` + `workflow_dispatch`，`ref` 输入可指定缓存 key 分支），交叉编译裁剪版 ffmpeg 一次并 artifact 上传（actions/cache 按 `build_win64.sh` 内容哈希做 key，源码未变直接复用）；被 build.yml/nightly.yml 的 windows job 以 `needs` 拉起
-- **build.yml**: Windows + Linux + macOS 三平台，仅在 `check` 通过 main 分支后自动触发，也支持 `workflow_dispatch` 手动触发
-  - `build-windows`: InnoSetup 安装包 `dist/OhMyMeme-*-setup.exe`（打包前 download-artifact 取 ffmpeg-win64 到工作区 `ffmpeg-win64/`，打包后 `python scripts/build.py --verify-ffmpeg` 校验内置 ffmpeg）
+- **ffmpeg-win64.yml**: 可复用 workflow（`workflow_call` + `workflow_dispatch`，`ref` 输入可指定缓存 key 分支），交叉编译裁剪版 ffmpeg 一次并 artifact 上传（actions/cache 按 `build_win64.sh` 内容哈希做 key，源码未变直接复用）；被 build.yml/nightly.yml/release.yml 的 windows job 以 `needs` 拉起
+- **build.yml**: Windows + Linux + macOS 三平台，仅 `workflow_dispatch` 手动触发（不再随 check/main 自动构建）
+  - `build-windows`: InnoSetup 安装包 `dist/OhMyMeme-*-setup.exe` + MSIX `dist/OhMyMeme-*.msix`（`choco install innosetup`，`python scripts/build.py --installer-only --msix` 一次产出；打包前 download-artifact 取 ffmpeg-win64 到工作区 `ffmpeg-win64/`，打包后 `python scripts/build.py --verify-ffmpeg` 校验内置 ffmpeg）
   - `build-linux`: AppImage/deb/rpm（`--linux`）
   - `build-macos`: `.app` + `.dmg`（`--macos`，PyInstaller `--windowed` + iconutil 生成 icns）；矩阵双架构 `arm64`（macos-latest）+ `x86_64`（macos-15-intel），产物 `OhMyMeme-v*-{arch}.dmg`
+- **release.yml**: 手动触发的正式版发布——`prepare` job 从 `main` 的 `src/__init__.py` 读 `__version__`（校验格式、tag 不存在），三平台 job 构建（同 build.yml），`publish` job 汇总 artifact、生成三列下载表格正文、`gh release create <version> --target <main HEAD> --title <version>`（tag 与标题均不带 v）；正文仅下载表格，更新内容由维护者随后手动编辑
 - **nightly.yml**: Windows + Linux + macOS 三平台每日定时（UTC 20:00）+ `workflow_dispatch`，从 `dev` 分支构建非正式版（`--nightly`，版本号为 `nightly`）并发布为 `nightly` prerelease；`updater.py` 的 `_parse_release` 跳过 prerelease 与含 `nightly` 的 tag，**软件更新绝不会指向 nightly**；windows job 同样依赖 ffmpeg-win64 并跑 `--verify-ffmpeg`
 - 上传 `dist/OhMyMeme-*-setup.exe` / `dist/OhMyMeme-v*-x86_64.AppImage` 等作为 artifact
 

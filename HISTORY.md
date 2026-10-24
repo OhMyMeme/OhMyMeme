@@ -1,6 +1,36 @@
+# v0.7.0（未发布）
+
+## 新增功能
+- **插件系统** — 新增 `src/plugin_manager.py`：扫描插件目录（`<数据目录>/plugins/` + 配置 `plugin_dirs` 开发直连）加载第三方插件（`plugin.json` manifest，`api_version` 必须为 1）；单个插件 manifest 非法/依赖缺失/entry 异常/on_load 超时仅禁用该插件，宿主与其余插件不受影响；权限声明制（`route`/`main_api`/`settings_api`/`assets:serve`/`settings:section`/`buttons`/`startup`/`window`/`host:evaluate_js`），未声明的注册调用在 `on_load` 内抛 `PermissionError` 使该插件加载失败；回调超时熔断（on_load 15s / 普通回调 10s / JS API 120s）与回调异常自动停用（下次重启恢复）
+- **设置页「插件」分组** — 左栏新增「插件」导航：插件列表为折叠栏（标题=插件名，点击展开版本/作者/仓库/权限/状态/失败原因与该插件的设置区块，右侧开关启停，停用立即生效、启用提示重启），宿主插件区块与各插件自管设置区块统一显示并自动移入对应插件折叠栏内；插件设置表单经 `data-plugin`/`data-key` 约定自动回填与收集（`pluginSaveSection`），独立存储于按插件 id 分文件的 `%APPDATA%/OhMyMeme/plugins/<id>/settings.json`（配置目录，随用户配置；合并写入，不进宿主设置；旧版 `plugins_state.json` 内嵌设置与旧位置数据目录下的设置文件首次启动自动迁移），保存后触发插件 `on_settings_changed` 并向主窗口推送 `omm-plugin-refresh` 刷新插件样式与脚本；「打开插件目录」一键直达
+- **插件资产注入** — 插件按 `windows`（main/settings）注册 CSS/JS：设置页/主窗口服务端注入（`</head>` 前插 link、`</body>` 前插 defer script，设置页另有 `<!-- plugin-sections -->` 区块锚点），插件脚本在宿主脚本之后按 id 序执行；`/plugins/<id>/<path>` 静态服务（路径穿越/禁用即 404），资产 URL 带 `版本-设置哈希` 参数、设置变化自动改 URL 防缓存
+- **插件设置页区块与前后端 API** — 插件可向设置页「插件」分组注入 HTML 区块；`pywebview.api.plugin_call(id, method, args)` 在主窗口（JsApi）与设置窗口（SettingsApi）分别分发到插件注册的方法；插件自定义 HTTP 路由（GET/POST，参数 dict，返回 str/dict 自动 JSON，Content-Type 按扩展名推断）
+- **顶栏插件按钮与布局约束** — 标题栏渲染插件按钮（`{key,label,icon,order}`，icon 为空渲染文字按钮），点击经 `JsApi.plugin_button_click` 分发到插件 handler；插件可隐藏核心按钮（`sort/select/upload/download/import/refresh/settings/close`）或覆盖其 order（默认 10/20/30/40/50/60/70/1000），经 `get_init_data` 随首屏下发
+- **启动动画与窗口尺寸覆盖** — 插件（`startup`/`window` 权限）可覆盖启动视频源/底色与主窗口初始尺寸；`get_init_data` 新增 `startup_video_src`/`startup_bg_color`（空即用默认 `OhMyMeme.mp4`/`#000000`），`WebUI._resolve_window_size()` 按「插件覆盖 > 持久化窗口尺寸 > 默认 960×640」取值（范围校验 480-8000/360-6000），窗口关闭时尺寸随位置一并持久化（配置 `window_width`/`window_height`，0=默认）
+- **允许调整窗口大小** — 设置页「窗口」新增开关（配置 `window_resize_enabled`，默认关）：开启后主窗口与设置窗口均可拖 8 向边框调整大小（绝对增量 + rAF 节流），尺寸经 `JsApi.resize_window`（钳 480-8000/360-6000）/`SettingsApi.resize_window`（钳 600-8000/480-6000，persist 写配置）持久化，设置窗关闭/重建时也保存尺寸（配置 `settings_window_width`/`settings_window_height`，0=默认 720×560），重启后保留
+- **插件启动动画支持图片/动图与文件选择** — 插件可经 `set_startup_override(..., duration_ms, media_type)` 覆盖为图片/动图（`media_type="image"` 时前端用 `<img>` 按实际时长只播一遍，GIF 时长由插件侧 PIL 逐帧解析，上限 15s；视频仍 `@ended` 收起）；`SettingsApi.plugin_pick_file(plugin_id, media)` 提供原生文件对话框（video/image/any 过滤），选中文件由插件复制进 `plugins_data/<id>/` 并经 `/plugins/<id>/data/<path>`（`resolve_asset` 新增 `data/` 前缀解析到插件数据目录，含穿越防护）对外提供
+- **设置页插件区块回填完成事件** — `initPlugins` 回填循环完成后派发 `omm-plugin-section-filled`（`detail.plugin_id`），插件脚本据以同步下拉/颜色控件等非 `data-key` 管理的控件；同时修复桥接未就绪时插件列表渲染「暂无插件」导致折叠栏不生成、设置不回填的问题——`initPlugins` 增加 `initPluginRetries`（20×200ms）与 `initPlugins` 同样的重试
+- **官方插件模板与个性化插件** — 新增配套仓库 `omm-plugin-template`（manifest 字段/权限/on_load API/生命周期/设置区块约定/路由与 API/依赖 vendor/调试的完整开发指南）与 `omm-personalized-plugin`（启动动画、背景、字体、顶栏按钮布局的个性化定制，背景与字体保存即生效；v1.1.0 起启动动画改「选择文件」并自动复制进插件数据目录，字体改常用中文字体下拉、颜色改 RGBA 滑杆 + HEX 输入 + 色块实时预览的联动控件，设置控件由插件 `assets/settings.js`+`settings.css` 注入）
+- **插件系统测试** — 新增 `tests/test_plugin_manager.py` 33 例：manifest 校验与跳过（id 非法/缺 name/version/api_version 不匹配/repo 非法/损坏 JSON）、sandbox 跳过、依赖缺失拒绝、entry 异常隔离、权限门控、回调异常与超时熔断、启停与用户禁用重启语义、设置合并与按 id 分文件持久化 roundtrip、旧 `plugins_state.json` 设置自动迁移、`on_settings_changed` 触发、资产解析与路径穿越拒绝（含 `data/` 前缀到插件数据目录）、注入顺序与禁用失效、资产版本随设置变化、自定义路由分发与 Content-Type、启动动画/窗口尺寸按 id 序覆盖、启动媒体时长/类型字段透传、按钮注册与约束、vendor sys.path 追加移除、注入辅助函数、设置页标记齐全（含窗口开关区块与插件重试/回填事件）、`_resolve_window_size` 分支、JsApi/SettingsApi 插件分发、配置窗口尺寸默认值与旧配置迁移保留；`test_startup` 补主窗口 960×640 尺寸断言、「允许调整窗口大小」开关契约与 `resize_window` 尺寸钳制 2 例；全量 `tests/` 489 passed（`test_lan` 环境性失败除外）
+- **导入超限弹窗与关闭限制开关** — 单张交互式导入（拖放本地路径/原图下载、文件上传、剪贴板）超过 2560px 或 20MB 时弹窗选择「保留」或「取消导入」（超限文件先复制到独立临时文件，超时 5 分钟自动丢弃）；设置页「基础设置 → 导入限制」新增「关闭表情包大小限制」（配置 `import_no_limit`，默认关），关闭后本地导入、云端拉取与局域网接收均不再拦截超限文件
+- **重复表情提示统一** — 导入与库中完全相同的表情（同 SHA-256）时，主窗口底部小字提示统一为「已存在相同表情包」
+- **Windows MSIX 安装包** — 构建脚本新增 `--msix`（Windows SDK `makeappx` + 模板 `scripts/installer/msix/AppxManifest.xml`，产出 `dist/OhMyMeme-<版本>.msix`，用于 Microsoft Store 上架或侧载），在 `.exe` 安装包之外追加构建，缺少工具/清单时仅告警跳过；MSIX 身份信息（Name/Publisher/PublisherDisplayName）从 Partner Center 填入模板或经环境变量 `OHMYMEME_MSIX_IDENTITY_NAME`/`OHMYMEME_MSIX_PUBLISHER`/`OHMYMEME_MSIX_PUBLISHER_DISPLAY_NAME` 覆盖，产物不签名（Store 上架时重签）；MSI（WiX）构建已移除
+
+## 变更
+- **设置页改为 Vue 入口** — `src/webui/settings.html` 仅保留 Vue 挂载壳，原 `settings.css`/`settings.js` 删除；`src/vue-src/settings/SettingsApp.vue` 注入样式、渲染主体并执行迁移后的 `legacy.js`，插件区块仍由服务端锚点注入
+- **复制处理默认仅改后缀为 GIF** — `copy_resize_mode` 默认改为 4：复制副本字节不变、仅把扩展名改为 `.gif`（桌面与安卓一致），原 0/1/2/3 模式保留；该模式不受「复制时避免 WebP」影响
+- **标签/分组/收藏可分别关闭写入同步清单** — 新增 `manifest_include_collections`（默认开）；标签与分组开关关闭前弹确认「关闭后将无法云同步标签/分组」（桌面与安卓）
+- **WebDAV 自签名证书确认** — 测试连接遇不受信任证书时弹窗选择「继续使用/不使用」；继续则保存 `webdav_allow_insecure=true` 并重试，设置页保留开关可随时关闭（桌面与安卓）
+- **窗口与云端设置精简** — 设置页新增「恢复默认窗口大小（960×640）」；移除上传/下载进度与完成提示、上传前提醒、上传删远端、下载删本地、启动获取远端索引等 8 个云端开关，固定保持原默认值
+- **上传改为按云端清单差集，仅上传缺失文件** — 「上传到远端」现在先拉取云端清单，按「文件名缺失或 SHA-256 不同」筛出云端缺失/变更的表情，只上传这些文件（进度与总数只反映待上传项）；不再对每个文件逐次发起存在性请求，大库同步明显更快（云端清单为唯一判据，不再逐文件复核物理存在）
+- **设置页导航新增「插件」分组** — 位于「危险操作」之后；`legacy.js` 脏检查跳过插件自管输入（`data-plugin`），插件设置保存不再触发宿主「有未保存的更改」提示
+- **主窗口标题栏按钮改为数据驱动** — 核心按钮按固定 order 渲染（`v-if` 隐藏 + CSS order 定位），为插件按钮与布局约束让出插槽；启动动画视频源/底色改由 `get_init_data` 下发（插件可覆盖），行为不变
+- **个性化插件移除窗口尺寸设置** — `win_width`/`win_height` 不再由插件覆盖（`window` 权限撤销），窗口大小统一走宿主「允许调整窗口大小」开关 + 拖边框调整并持久化；插件升级 v1.1.0
+
 # v0.6.5
 
 ## 新增功能
+- **关闭自动隐藏开关** — 设置页「基础设置 → 全局快捷键」新增「关闭自动隐藏」（配置 `disable_auto_hide`，默认关）：开启后热键会话内复制或拖拽成功不再自动隐藏主窗口（`schedule_hide()` 入口门控），普通/托盘显示、手动隐藏等其余行为不变
 - **悬停放大预览开关** — 设置页「基础设置」新增「悬停预览」区块（配置 `hover_zoom`，默认开）：关闭后鼠标悬停卡片不再浮出整图预览；`get_init_data` 下发首屏状态，设置保存经 `refreshMemes` 同步到主窗口
 - **悬停放大预览** — 主界面表情悬停 0.5 秒自动浮出完整原图（长图/宽图在格内被 `object-fit:cover` 裁切，悬停突出显示全图），按卡片位置居中并夹紧在视口内（预览盒上限 `min(72vw,900)×72vh`），云卡片同样适用；排序/多选模式不触发，移动鼠标、网格滚动、右键、指针按下、Esc、翻页刷新自动收起，GIF 悬停播放（150ms 换原图）不受影响
 - **首次运行环境检测** — Windows 首次启动弹出原生检测窗口（tkinter，不经网页控件），检测 WebView2 Runtime 安装与版本（门槛 ≥ 94.0.992.0：pywebview 6 初始化无条件设置的 `IsSwipeNavigationEnabled` 自 SDK 1.0.992.28 起要求该版本，取其与 pywebview 源码解析阈值 86.0.622.0 的较大者；更旧版本会白屏）及 .NET Framework ≥ 4.6.2；检测 UI 为独立子进程（`--env-check-ui` 内部旗标在单实例检查前运行），「确定」写 `env_check.json` 标记后不再自动显示（×/ESC 不写，下次再提示），设置页「关于 → 打开环境检测」可随时重开（非阻塞），`--debug-env` 强制打开并输出检测详情；检测失败仅提示后续支持 winget 自动安装/升级（当前仅检测）
@@ -29,6 +59,7 @@
 - **云端直接使用默认开启** — 默认由关改为开（从未显式关闭过的配置自动启用，老用户无需手动寻找开关）；首次配置云端存储类型时的确认弹窗按钮由「确定/取消」改为**「开启/关闭」**二选一（默认已勾选时仍询问一次，Esc/点遮罩不改动），「关闭」即取消勾选
 
 ## 修复
+- **热键 F15 探针泄漏到前台窗口（issue #95）** — 每 30s 的钩子心跳探针此前作为真实按键到达前台应用（gvim/SSH 终端等响应该键）；改为 `SendInput` 注入带 `OHMM` `dwExtraInfo` 标记（回退 `keybd_event` 同样带标记）+ `keyboard.hook(suppress=True)` 阻塞钩子在探针确认窗口（pending，≤15s）内把探针吞掉——吞掉时在钩子内直接刷新心跳时间戳完成确认，钩子已死场景仍按原逻辑超时自愈；窗口外的真实 F15 按键与其余按键一律放行，阻塞钩子异常时回退放行
 - **内置 ffmpeg CI 构建失败** — ffmpeg-win64 交叉编译因 runner 缺 `x86_64-w64-mingw32-pkg-config`（由 mingw-w64-tools 提供，未安装）被 ffmpeg configure 静默禁用 pkg-config 库检测（warn 只写 config.log 不上屏），libwebp 检查精确报 "not found" 中止构建；`build_win64.sh` 改用原生 `--pkg-config=pkg-config`（尊重脚本导出的 PKG_CONFIG_PATH）+ configure 前预检 `libwebp.pc`，失败时输出 `ffbuild/config.log` 尾部兜底诊断；组件存在性执行检查（`-decoders/-encoders`）改为仅在能运行 PE 的环境执行（Linux runner 上交叉产物直接执行报 `Exec format error`），CI 侧由打包 windows job 的 `--verify-ffmpeg` 对产物端到端转换兜底
 - **内置 ffmpeg 裁掉 libvpx-vp9 解码器** — 根因：libvpx configure 未传交叉工具链——其 `setup_gnu_toolchain` 取 `${CROSS}gcc/ar/strip` 而源码从不设置 `CROSS`，只给 `--target=x86_64-win64-gcc` 会退化为宿主 gcc/ar，C/C++ 对象编成 ELF（仅 nasm 成员是 win64 COFF），mingw ld 按索引打开成员时格式不符被**静默跳过**，ffmpeg configure 的两条 libvpx 检查（pkg 与 check_lib）均报 undefined reference（`vpx_codec_vp9_dx`、`vpx_codec_control_`——后者是 vp8dx.h 展开的 ~20 个 static 包装函数各调一次），解码器被静默裁掉（configure 仅 warn 不上屏），导致 `--verify-ffmpeg` 失败、TG WebM 转 WebP 缺 VP9 解码（nm 能列出符号、绕过 strip/ranlib 各轮均无法修复——成员本身是 ELF，早先「strip 破坏索引」的初判为误判，cp/ranlib 保留作防线）；修复：configure 传 `CROSS=x86_64-w64-mingw32-`（CC/CXX/AR/LD/STRIP/NM 全交叉，CI 随之补装 `g++-mingw-w64-x86-64`——`[CXX] ratectrl_rtc.cc` 必需）+ `make HAVE_GNU_STRIP=no` 走 cp 分支保留未 strip 归档 + 安装后 `x86_64-w64-mingw32-ranlib` 重建归档索引 + 复刻 check_lib 的**链接自检**（失败输出链接错误、config.mk 工具行、objdump -f 成员格式统计、nm -s 索引与 ld -t trace 诊断后中止），另保留 `--disable-multithread`（使 check_lib 兜底 `-lvpx -lm` 不依赖 -lpthread）与三道防线：configure 后硬断言 `config_components.h` 含 `CONFIG_LIBVPX_VP9_DECODER 1`（失败输出 config.log 的 vpx 线索）、configure 前预检 `vpx.pc`、产物二进制组件字符串检查（任何平台 `grep`，Linux CI 也能拦截被裁组件）
 

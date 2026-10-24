@@ -15,8 +15,10 @@ import Pager from './components/Pager.vue'
 import SimilarImportDialog from './components/SimilarImportDialog.vue'
 import SetupGuide from './components/SetupGuide.vue'
 import SyncOverlay from './components/SyncOverlay.vue'
+import SyncStatusBadge from './components/SyncStatusBadge.vue'
 import TagEditor from './components/TagEditor.vue'
 import UpdateDialog from './components/UpdateDialog.vue'
+import { applyTheme } from './utils/api'
 import type { Meme } from './types'
 
 const { state, setMemes, search, goToPage, setSearch, toggleTag, setActiveCollection, refreshTags, refreshCollections, copyMeme, reorderMemes, canReorder, startNativeDrag, selectAllVisible, clearSelection, loadInitData } = useMemes()
@@ -88,28 +90,157 @@ let updateInterval: ReturnType<typeof setInterval> | null = null
 // 启动动画：仅页面首次加载（启动）时播放一次，快捷键呼出不重载页面故不重复播放
 const startupAnim = ref(true)
 const startupVideoReady = ref(false)
-const startupVideoSrc = '/resources/OhMyMeme.mp4'
 let startupAnimTimer: ReturnType<typeof setTimeout> | null = null
 function dismissStartupAnim() {
   startupAnim.value = false
+  document.body.style.background = 'var(--bg)'
+  applyTheme(document.documentElement.dataset.theme)
   if (startupAnimTimer) { clearTimeout(startupAnimTimer); startupAnimTimer = null }
 }
+
+// 启动媒体可为视频或图片/动图（插件指定 media_type 或按扩展名判定）；图片只展示一次
+const startupIsImage = computed(() => {
+  if (state.startupMediaType === 'image') return true
+  if (state.startupMediaType === 'video') return false
+  return /\.(png|jpe?g|gif|webp|bmp|avif)(\?|#|$)/i.test(state.startupVideoSrc)
+})
+function onStartupImgLoad() {
+  if (startupAnimTimer) { clearTimeout(startupAnimTimer); startupAnimTimer = null }
+  const dur = Math.min(state.startupMediaDurationMs > 0 ? state.startupMediaDurationMs : 3000, 15000)
+  startupAnimTimer = setTimeout(dismissStartupAnim, dur)
+}
+
+// ─── 窗口边框拖拽调整大小（window_resize_enabled 开启时）───
+const WIN_RESIZE_DIRS: [string, string][] = [
+  ['n', 'n-resize'], ['s', 's-resize'], ['w', 'w-resize'], ['e', 'e-resize'],
+  ['nw', 'nw-resize'], ['ne', 'ne-resize'], ['sw', 'sw-resize'], ['se', 'se-resize'],
+]
+let winResizeState: {
+  dir: string; sx: number; sy: number; w: number; h: number
+  tw: number; th: number; raf: number | null; moved: boolean
+} | null = null
+function syncWinResizeHandles() {
+  let layer = document.getElementById('win-resize-layer')
+  if (!state.windowResizeEnabled) {
+    if (layer) layer.remove()
+    return
+  }
+  if (layer) return
+  layer = document.createElement('div')
+  layer.id = 'win-resize-layer'
+  layer.setAttribute('aria-hidden', 'true')
+  WIN_RESIZE_DIRS.forEach(([dir, cursor]) => {
+    const h = document.createElement('div')
+    h.className = 'win-resize-handle dir-' + dir
+    h.style.cursor = cursor
+    h.addEventListener('pointerdown', (e) => {
+      if (e.button !== 0) return
+      winResizeState = {
+        dir, sx: e.screenX, sy: e.screenY,
+        w: window.innerWidth, h: window.innerHeight,
+        tw: 0, th: 0, raf: null, moved: false,
+      }
+      h.setPointerCapture(e.pointerId)
+      e.preventDefault()
+      e.stopPropagation()
+    })
+    h.addEventListener('pointermove', (e) => {
+      const st = winResizeState
+      if (!st) return
+      const dx = e.screenX - st.sx, dy = e.screenY - st.sy
+      if (!st.moved && Math.abs(dx) < 2 && Math.abs(dy) < 2) return
+      st.moved = true
+      let tw = st.w, th = st.h
+      if (st.dir.indexOf('e') !== -1) tw = st.w + dx
+      if (st.dir.indexOf('w') !== -1) tw = st.w - dx
+      if (st.dir.indexOf('s') !== -1) th = st.h + dy
+      if (st.dir.indexOf('n') !== -1) th = st.h - dy
+      st.tw = tw
+      st.th = th
+      if (st.raf) return
+      st.raf = requestAnimationFrame(() => {
+        if (!winResizeState) return
+        winResizeState.raf = null
+        window.pywebview?.api?.resize_window?.(winResizeState.tw, winResizeState.th)
+      })
+    })
+    const finish = () => {
+      const st = winResizeState
+      if (!st) return
+      if (st.raf) cancelAnimationFrame(st.raf)
+      if (st.moved && st.tw) window.pywebview?.api?.resize_window?.(st.tw, st.th)
+      winResizeState = null
+    }
+    h.addEventListener('pointerup', finish)
+    h.addEventListener('pointercancel', finish)
+    layer.appendChild(h)
+  })
+  document.body.appendChild(layer)
+}
+
+// 顶栏按钮：核心键默认顺序，插件可经约束覆盖顺序/隐藏（close 不可隐藏）
+const CORE_BTN_ORDER: Record<string, number> = {
+  sort: 10, select: 20, sync: 25, upload: 30, download: 40, import: 50, refresh: 60, settings: 70, close: 1000,
+}
+function coreBtnHidden(key: string): boolean {
+  return state.pluginButtonConstraints.hide.includes(key)
+}
+function coreBtnOrder(key: string): number {
+  const custom = state.pluginButtonConstraints.order[key]
+  return typeof custom === 'number' ? custom : (CORE_BTN_ORDER[key] ?? 100)
+}
+function pluginBtnOrder(b: { order?: number }): number {
+  return typeof b.order === 'number' ? b.order : 100
+}
+async function onPluginButtonClick(b: { plugin_id: string; key: string; label: string }) {
+  try {
+    const r = await window.pywebview?.api?.plugin_button_click?.(b.plugin_id, b.key)
+    if (r && r.ok === false) showToast(r.error || `插件按钮「${b.label}」执行失败`)
+  } catch { /* 桥接失败静默 */ }
+}
+
+// 插件脚本约定：await window.ommPluginsReady 表示 Vue 应用与初始化数据已就绪
+;(window as any).ommPluginsReady = new Promise<void>(resolve => {
+  ;(window as any).__ommPluginsReadyResolve = resolve
+})
 onMounted(() => {
   // 兜底：视频加载失败或未触发 ended 时最多 6s 后移除遮罩，避免卡死界面
   startupAnimTimer = setTimeout(dismissStartupAnim, 6000)
   // 后端 evaluate_js 刷新入口（设置保存/同步后由 webui.py 调用）
-  window.refreshMemes = () => {
-    window.pywebview?.api?.get_settings?.().then((s: any) => {
-      if (s) state.hoverZoom = s.hover_zoom !== false
-    })
+  let settingsRefreshGen = 0
+  window.refreshMemes = (settings?: any) => {
+    const gen = ++settingsRefreshGen
+    // 丢弃较早的设置响应，保存推送直接应用以免再等待桥接。
+    const applySettings = (s: any) => {
+      if (s && gen === settingsRefreshGen) {
+        applyTheme(s.theme)
+        state.hoverZoom = s.hover_zoom !== false
+        state.windowResizeEnabled = s.window_resize_enabled === true
+        syncWinResizeHandles()
+      }
+    }
+    if (settings) applySettings(settings)
+    else window.pywebview?.api?.get_settings?.().then(applySettings).catch(console.error)
     search()
+    syncBadge.value?.refresh()
   }
   window.refreshTags = refreshTags
   window.refreshCollections = refreshCollections
   // 设置页「设置向导」按钮入口（SettingsApi.open_guide 调用）
   window.showGuide = showSetupGuide
   // 云端直接使用：后端预取缩略图/入库后通知，刷新网格+标签+分组
-  window.onCloudReady = () => { imgRetries.clear(); thumbRev.value++; search(); refreshTags(); refreshCollections() }
+  window.onCloudReady = () => { imgRetries.clear(); thumbRev.value++; search(); refreshTags(); refreshCollections(); syncBadge.value?.refresh() }
+  // 插件设置保存后由后端推送：刷新插件 CSS link（改 URL 防缓存）+ 通知插件脚本
+  window.ommPluginRefresh = (pid?: string) => {
+    document.querySelectorAll<HTMLLinkElement>('link[href*="/plugins/"]').forEach(link => {
+      try {
+        const url = new URL(link.getAttribute('href') || '', location.href)
+        url.searchParams.set('t', String(Date.now()))
+        link.href = url.pathname + url.search
+      } catch { /* 忽略非法 href */ }
+    })
+    window.dispatchEvent(new CustomEvent('omm-plugin-refresh', { detail: { plugin_id: pid } }))
+  }
 })
 // 网格列数由 CSS repeat(auto-fill, minmax(112px, 1fr)) 随容器宽度自适应
 
@@ -265,6 +396,20 @@ function showToast(msg: string) {
   setTimeout(() => el.classList.remove('show'), 1600)
 }
 
+// 超限图片导入：弹窗让用户选择「保留」或「取消导入」，再回传后端决策
+async function handleOverlimitImport(token: string) {
+  const keep = await confirmDialog.value?.open(
+    '图片超出导入限制',
+    '该图片的大小或分辨率超出限制，是否仍要保留并导入？',
+    { confirmText: '保留', cancelText: '取消导入', variant: 'primary', focusConfirm: true }
+  )
+  const rr = await window.pywebview?.api?.resolve_overlimit_import(token, keep ? 'keep' : 'cancel')
+  if (rr?.ok && rr.imported) { showToast('导入成功'); search(); refreshCollections(); return }
+  if (rr?.duplicate) { showToast('已存在相同表情包'); return }
+  if (rr?.ok) return  // 取消导入：静默
+  showToast(rr?.error || '处理失败')
+}
+
 // 卡片悬停快速收藏（右键菜单外的一键入口）
 async function quickFavorite(meme: Meme) {
   if (meme.cloud) return
@@ -348,6 +493,7 @@ function onImporting() {
 }
 
 const syncOverlay = ref<InstanceType<typeof SyncOverlay> | null>(null)
+const syncBadge = ref<InstanceType<typeof SyncStatusBadge> | null>(null)
 
 function syncUpload() {
   syncOverlay.value?.start('sync_push', '上传中', 'show_upload_progress', 'show_upload_done')
@@ -361,6 +507,7 @@ function onSyncDone() {
   search()
   refreshTags()
   refreshCollections()
+  syncBadge.value?.refresh()
 }
 
 async function rescanCache() {
@@ -377,7 +524,7 @@ function hideWindow() {
 
 async function onTitlebarMouseDown(e: MouseEvent) {
   if (e.button !== 0) return
-  if ((e.target as HTMLElement).closest('.title-btn') || (e.target as HTMLElement).closest('.icon-btn') || (e.target as HTMLElement).closest('.sidebar-toggle') || (e.target as HTMLElement).closest('.logo')) return
+  if ((e.target as HTMLElement).closest('.title-btn') || (e.target as HTMLElement).closest('.icon-btn') || (e.target as HTMLElement).closest('.sidebar-toggle') || (e.target as HTMLElement).closest('.logo') || (e.target as HTMLElement).closest('.sync-pop')) return
   try {
     const gen = dragGeneration
     const nativeDrag = await window.pywebview?.api?.start_window_drag(e.button + 1, e.screenX, e.screenY)
@@ -938,7 +1085,8 @@ async function onDrop(e: DragEvent) {
     try {
       const r = await window.pywebview?.api?.download_original_image(uri)
       if (r?.ok) { showToast('导入成功'); search(); refreshCollections(); return }
-      if (r?.duplicate) { showToast('该图片已存在'); return }
+      if (r?.duplicate) { showToast('已存在相同表情包'); return }
+      if (r?.over_limit) { await handleOverlimitImport(r.token); return }
       if (r?.similar_pending) {
         const action = await similarImportDialog.value?.open(r.candidates || [])
         if (action) {
@@ -983,7 +1131,8 @@ async function onDrop(e: DragEvent) {
         }
         return
       }
-      if (j?.duplicate) { showToast('该图片已存在'); return }
+      if (j?.duplicate) { showToast('已存在相同表情包'); return }
+      if (j?.over_limit) { await handleOverlimitImport(j.token); return }
       if (res.ok || j?.ok) { showToast('导入成功'); search(); refreshCollections() }
       else { showToast(j?.error || '导入失败：服务器返回错误') }
     } catch (_) {
@@ -998,6 +1147,7 @@ async function onDrop(e: DragEvent) {
 function onDocKeydown(e: KeyboardEvent) {
   if (e.key !== 'Escape') return
   if (ctx.visible.value) { ctx.hide(); return }
+  if (syncBadge.value?.isOpen()) { syncBadge.value.close(); return }
   if (hoverPreview.value) { clearHoverPreview(); return }
   if (selectMode.value) { toggleSelect(); return }
   if (sortEnabled.value) { toggleSort(); return }
@@ -1081,6 +1231,8 @@ onUnmounted(() => {
 
 ;(async () => {
   await loadInitData()
+  syncWinResizeHandles()
+  ;(window as any).__ommPluginsReadyResolve?.()
   // 配置无 guide=ok（新装或旧版升级）时启动即弹设置向导；启动动画遮罩 z-index 更高，动画结束后自然露出
   if (!state.guideOk) setupGuide.value?.show()
   // 动画开启时：播放期间即加载后续内容（动画天然覆盖桥接稳定时间），去除 300ms 延时；
@@ -1117,22 +1269,35 @@ onUnmounted(() => {
       </div>
       <span class="spacer"></span>
       <div class="titlebar__actions">
-        <button class="icon-btn" :class="{ 'sort-on': sortEnabled }" title="拖拽排序" aria-label="拖拽排序" @click="toggleSort">
+        <button v-if="!coreBtnHidden('sort')" class="icon-btn" :class="{ 'sort-on': sortEnabled }" :style="{ order: coreBtnOrder('sort') }" title="拖拽排序" aria-label="拖拽排序" @click="toggleSort">
           <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M7 10l5-5 5 5M7 14l5 5 5-5"/></svg>
         </button>
-        <button class="icon-btn" :class="{ 'sort-on': selectMode }" title="多选" aria-label="多选" @click="toggleSelect">
+        <button v-if="!coreBtnHidden('select')" class="icon-btn" :class="{ 'sort-on': selectMode }" :style="{ order: coreBtnOrder('select') }" title="多选" aria-label="多选" @click="toggleSelect">
           <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M9 11l3 3L22 4"/><path d="M21 12v7a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11"/></svg>
         </button>
-        <button class="icon-btn" title="上传到远端" aria-label="上传到远端" @click="syncUpload()">
+        <SyncStatusBadge v-if="!coreBtnHidden('sync')" ref="syncBadge" :style="{ order: coreBtnOrder('sync') }" />
+        <button v-if="!coreBtnHidden('upload')" class="icon-btn" :style="{ order: coreBtnOrder('upload') }" title="上传到远端" aria-label="上传到远端" @click="syncUpload()">
           <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 19V5m-7 7l7-7 7 7"/></svg>
         </button>
-        <button class="icon-btn" title="从远端下载" aria-label="从远端下载" @click="syncDownload()">
+        <button v-if="!coreBtnHidden('download')" class="icon-btn" :style="{ order: coreBtnOrder('download') }" title="从远端下载" aria-label="从远端下载" @click="syncDownload()">
           <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 5v14m-7-7l7 7 7-7"/></svg>
         </button>
-        <button class="title-btn" @click="showImportMenu()">导入</button>
-        <button class="title-btn" @click="rescanCache()">刷新</button>
-        <button class="title-btn" @click="openSettings()">设置</button>
-        <button class="title-btn close-btn" aria-label="隐藏窗口" @click="hideWindow()">×</button>
+        <button v-if="!coreBtnHidden('import')" class="title-btn" :style="{ order: coreBtnOrder('import') }" @click="showImportMenu()">导入</button>
+        <button v-if="!coreBtnHidden('refresh')" class="title-btn" :style="{ order: coreBtnOrder('refresh') }" @click="rescanCache()">刷新</button>
+        <button v-if="!coreBtnHidden('settings')" class="title-btn" :style="{ order: coreBtnOrder('settings') }" @click="openSettings()">设置</button>
+        <button
+          v-for="b in state.pluginButtons"
+          :key="b.plugin_id + ':' + b.key"
+          :class="b.icon ? 'icon-btn' : 'title-btn'"
+          :style="{ order: pluginBtnOrder(b) }"
+          :title="b.label"
+          :aria-label="b.label"
+          @click="onPluginButtonClick(b)"
+        >
+          <img v-if="b.icon" class="plugin-btn-icon" :src="b.icon" alt="">
+          <span v-else>{{ b.label }}</span>
+        </button>
+        <button class="title-btn close-btn" :style="{ order: coreBtnOrder('close') }" aria-label="隐藏窗口" @click="hideWindow()">×</button>
       </div>
     </header>
 
@@ -1303,7 +1468,7 @@ onUnmounted(() => {
   </div>
 
   <CollectionBuilder />
-  <ImportMenu ref="importMenu" @imported="onImportDone" @importing="onImporting" />
+  <ImportMenu ref="importMenu" @imported="onImportDone" @importing="onImporting" @overlimit="handleOverlimitImport" />
   <ImportProgressOverlay ref="importProgress" @imported="onImportDone" />
   <SyncOverlay ref="syncOverlay" @synced="onSyncDone" />
   <TagEditor ref="tagEditor" />
@@ -1341,7 +1506,8 @@ onUnmounted(() => {
 
   <Transition name="startup-fade">
     <div v-if="startupAnim" id="startup-anim" :style="{ background: state.startupBgColor }" @click="dismissStartupAnim">
-      <video v-if="startupVideoReady" :src="startupVideoSrc" autoplay muted playsinline @ended="dismissStartupAnim"></video>
+      <img v-if="startupVideoReady && startupIsImage" :src="state.startupVideoSrc" @load="onStartupImgLoad">
+      <video v-else-if="startupVideoReady" :src="state.startupVideoSrc" autoplay muted playsinline @ended="dismissStartupAnim"></video>
     </div>
   </Transition>
 </template>

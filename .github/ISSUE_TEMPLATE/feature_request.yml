@@ -1,0 +1,68 @@
+name: 新功能请求
+description: 请求添加新功能
+title: "feat: "
+type: Feature
+labels: ["enhancement"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        > 描述越具体，越容易被采纳。带 * 的为必填项。
+
+  - type: checkboxes
+    id: searched
+    attributes:
+      label: 提交前确认
+      options:
+        - label: 我已搜索过现有 issue，确认没有重复
+          required: true
+
+  - type: textarea
+    id: description
+    attributes:
+      label: 功能描述
+      description: 请描述你希望添加的功能
+    validations:
+      required: true
+
+  - type: textarea
+    id: reason
+    attributes:
+      label: 理由
+      description: 可选，请说明当前的不便，或这个功能能带来的价值
+    validations:
+      required: false
+
+  - type: dropdown
+    id: impact
+    attributes:
+      label: 影响范围
+      description: 这个功能对现有使用方式的影响程度
+      options:
+        - 无影响
+        - 轻微影响
+        - 中等影响
+        - 重大影响
+    validations:
+      required: true
+
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: 补充说明（可选）
+      description: 替代方案、实现建议、界面草图或其他材料
+    validations:
+      required: false
+
+  - type: dropdown
+    id: pr_willingness
+    attributes:
+      label: 是否愿意提交 PR
+      description: 如果你有意愿自己实现这个功能，请选择；不确定也可以选“需要指导”
+      options:
+        - ""
+        - "愿意"
+        - "不愿意"
+        - "需要指导"
+    validations:
+      required: true

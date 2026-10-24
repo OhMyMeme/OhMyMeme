@@ -24,10 +24,9 @@ except ImportError:
 
 from . import __version__
 from .config import (
-    _IMPORT_MAX_BYTES,
-    _IMPORT_MAX_PX,
     _SECRET_KEYS,
     get_config,
+    import_limits,
 )
 from .database import get_db
 from .manifest import build as build_manifest
@@ -641,13 +640,14 @@ def _import_bytes(data: bytes, filename: str) -> dict:
         return {"ok": False, "error": "图片解析失败"}
     if w <= 0 or h <= 0:
         return {"ok": False, "error": "图片尺寸无效"}
-    if len(data) > _IMPORT_MAX_BYTES:
+    max_bytes, max_px = import_limits()
+    if max_bytes and len(data) > max_bytes:
         return {
             "ok": False,
-            "error": "文件超过 %dMB 限制" % (_IMPORT_MAX_BYTES // (1024 * 1024)),
+            "error": "文件超过 %dMB 限制" % (max_bytes // (1024 * 1024)),
         }
-    if max(w, h) > _IMPORT_MAX_PX:
-        return {"ok": False, "error": "分辨率超过 %dK 限制" % (_IMPORT_MAX_PX // 1000)}
+    if max_px and max(w, h) > max_px:
+        return {"ok": False, "error": "分辨率超过 %dK 限制" % (max_px // 1000)}
     fhash = hashlib.sha256(data).hexdigest()
     if db.get_by_hash(fhash):
         return {"ok": True, "dedup": True}

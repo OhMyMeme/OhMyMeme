@@ -7,6 +7,15 @@ function api(method, ...args) {
   catch(e) { console.error('api error', method, e); return null; }
 }
 
+/* Apply the saved theme to this window. */
+function applyTheme(value) {
+  const theme = value === 'light' ? 'light' : 'dark';
+  document.documentElement.dataset.theme = theme;
+  document.documentElement.style.background = theme === 'light' ? '#f8fafc' : '#0d0d0f';
+  document.documentElement.style.colorScheme = theme;
+  document.getElementById('s-theme').value = theme;
+}
+
 function esc(s) {
   return String(s)
     .replace(/&/g, '&amp;')
@@ -91,7 +100,11 @@ function initDirtyTracking() {
   if (!root) return;
   const track = (e) => {
     const t = e.target;
-    if (t && t.matches && t.matches('input, select, textarea')) markSettingsDirty();
+    if (t && t.matches && t.matches('input, select, textarea')) {
+      // 插件自管输入（data-plugin）单独保存，不计入宿主未保存状态
+      if (t.closest && t.closest('[data-plugin]')) return;
+      markSettingsDirty();
+    }
   };
   root.addEventListener('input', track);
   root.addEventListener('change', track);
@@ -390,6 +403,7 @@ function handleLanConfirm(pending) {
 async function getSettings() {
   const s = await api('get_settings');
   if (!s) return false;
+  applyTheme(s.theme);
   const hk = document.getElementById('s-hotkey');
   const gif = document.getElementById('s-gif');
   const as = document.getElementById('s-auto-start');
@@ -402,12 +416,20 @@ async function getSettings() {
   if (hp) hp.checked = s.hover_to_play === true;
   const hz = document.getElementById('s-hover-zoom');
   if (hz) hz.checked = s.hover_zoom !== false;
+  const wr = document.getElementById('s-window-resize');
+  if (wr) wr.checked = s.window_resize_enabled === true;
+  winResizeEnabled = s.window_resize_enabled === true;
+  applyWindowResizeHandles();
   const to = document.getElementById('s-try-original');
   if (to) to.checked = s.try_original_image === true;  // DeepSeek V4 Flash
   const cm = document.getElementById('s-copy-mode');
-  if (cm) cm.value = String(s.copy_resize_mode ?? 1);
+  if (cm) cm.value = String(s.copy_resize_mode ?? 4);
   const caw = document.getElementById('s-copy-avoid-webp');
   if (caw) caw.checked = s.copy_avoid_webp === true;
+  const dah = document.getElementById('s-disable-auto-hide');
+  if (dah) dah.checked = s.disable_auto_hide === true;
+  const inl = document.getElementById('s-import-no-limit');
+  if (inl) inl.checked = s.import_no_limit === true;
   if (as) as.checked = s.auto_start === true;
   if (ss) ss.checked = s.silent_start === true;
   const unc = document.getElementById('s-show-uncategorized');
@@ -417,13 +439,13 @@ async function getSettings() {
   const ssa = document.getElementById('s-show-startup-anim');
   if (ssa) ssa.checked = s.show_startup_animation !== false;
   toggleSilentStart();
-  const ff = document.getElementById('s-sync-fetch');
   const sa = document.getElementById('s-sync-auto');
   const st = document.getElementById('s-sync-type');
-  if (ff) ff.checked = s.sync_auto_fetch_index === true;
   if (sa) sa.checked = s.sync_auto_sync === true;
   const mit = document.getElementById('s-manifest-include-tags');
   if (mit) mit.checked = s.manifest_include_tags !== false;
+  const mic = document.getElementById('s-manifest-include-collections');
+  if (mic) mic.checked = s.manifest_include_collections !== false;
   const mif = document.getElementById('s-manifest-include-favorites');
   if (mif) mif.checked = s.manifest_include_favorites !== false;
   const cld = document.getElementById('s-cloud-direct');
@@ -456,20 +478,8 @@ async function getSettings() {
   document.getElementById('wd-user').value = s.webdav_user || '';
   document.getElementById('wd-pass').value = s.webdav_password || '';
   document.getElementById('wd-path').value = s.webdav_path || '';
-  const kr = document.getElementById('s-delete-remote');
-  const rl = document.getElementById('s-remove-local');
-  const hw = document.getElementById('s-hide-upload-warn');
-  if (kr) kr.checked = s.sync_delete_remote === true;
-  if (rl) rl.checked = s.sync_remove_local === true;
-  if (hw) hw.checked = s.sync_hide_upload_warning === true;
-  const up = document.getElementById('s-show-up-progress');
-  const ud = document.getElementById('s-show-up-done');
-  const dp = document.getElementById('s-show-dl-progress');
-  const dd = document.getElementById('s-show-dl-done');
-  if (up) up.checked = s.show_upload_progress !== false;
-  if (ud) ud.checked = s.show_upload_done !== false;
-  if (dp) dp.checked = s.show_download_progress !== false;
-  if (dd) dd.checked = s.show_download_done !== false;
+  const wdi = document.getElementById('s-webdav-insecure');
+  if (wdi) wdi.checked = s.webdav_allow_insecure === true;
   const lport = document.getElementById('s-lan-port');
   if (lport) lport.value = s.lan_port || 17852;
   const lsec = document.getElementById('s-lan-secret');
@@ -666,12 +676,19 @@ async function onSyncTypeChange() {
 
 function collectSyncSettings() {
   return {
-    sync_auto_fetch_index: document.getElementById('s-sync-fetch')?.checked === true,
+    sync_auto_fetch_index: false,
     sync_auto_sync: document.getElementById('s-sync-auto')?.checked === true,
     sync_type: document.getElementById('s-sync-type')?.value || '',
-    sync_delete_remote: document.getElementById('s-delete-remote')?.checked === true,
-    sync_remove_local: document.getElementById('s-remove-local')?.checked === true,
-    sync_hide_upload_warning: document.getElementById('s-hide-upload-warn')?.checked === true,
+    sync_delete_remote: false,
+    sync_remove_local: false,
+    sync_hide_upload_warning: false,
+    show_upload_progress: true,
+    show_upload_done: true,
+    show_download_progress: true,
+    show_download_done: true,
+    manifest_include_tags: document.getElementById('s-manifest-include-tags')?.checked !== false,
+    manifest_include_collections: document.getElementById('s-manifest-include-collections')?.checked !== false,
+    manifest_include_favorites: document.getElementById('s-manifest-include-favorites')?.checked !== false,
     cloud_direct: document.getElementById('s-cloud-direct')?.checked === true,
     cloud_thumb_auto_push: document.getElementById('s-cloud-thumb-push')?.checked === true,
     ftp_host: document.getElementById('s-ftp-host')?.value || '',
@@ -696,6 +713,7 @@ function collectSyncSettings() {
     webdav_user: document.getElementById('wd-user')?.value || '',
     webdav_password: document.getElementById('wd-pass')?.value || '',
     webdav_path: document.getElementById('wd-path')?.value || '',
+    webdav_allow_insecure: document.getElementById('s-webdav-insecure')?.checked === true,
   };
 }
 
@@ -740,6 +758,19 @@ function validateSync(sync) {
   return true;
 }
 
+let settingsQueue = Promise.resolve();
+
+// 按提交顺序执行保存和重置，失败后仍允许后续操作。
+function queueSettings(action) {
+  const pending = settingsQueue.then(action);
+  settingsQueue = pending.catch(e => {
+    console.error('settings error', e);
+    showToast('设置操作失败，请重试');
+  });
+  return settingsQueue;
+}
+
+// 捕获本次设置后排队保存。
 async function saveSettings() {
   const hotkey = document.getElementById('s-hotkey')?.value || 'Ctrl+Alt+N';
   const gif = document.getElementById('s-gif')?.checked !== false;
@@ -747,6 +778,8 @@ async function saveSettings() {
   const copy_mode = parseInt(document.getElementById('s-copy-mode')?.value || '1', 10);
   const copy_avoid_webp = document.getElementById('s-copy-avoid-webp')?.checked === true;
   const hotkey_show_at_mouse = document.getElementById('s-hotkey-show-at-mouse')?.checked === true;
+  const disable_auto_hide = document.getElementById('s-disable-auto-hide')?.checked === true;
+  const import_no_limit = document.getElementById('s-import-no-limit')?.checked === true;
   const auto_start = document.getElementById('s-auto-start')?.checked === true;
   const silent_start = document.getElementById('s-silent-start')?.checked === true;
   const show_uncategorized = document.getElementById('s-show-uncategorized')?.checked !== false;
@@ -760,9 +793,15 @@ async function saveSettings() {
   const lan_secret = document.getElementById('s-lan-secret')?.value || '';
   const hover_play = document.getElementById('s-hover-play')?.checked === true;
   const hover_zoom = document.getElementById('s-hover-zoom')?.checked !== false;
-  await api('save_settings', {
+  const window_resize_enabled = document.getElementById('s-window-resize')?.checked === true;
+  const theme = document.getElementById('s-theme').value === 'light' ? 'light' : 'dark';
+  const values = {
+    theme,
     hotkey, hotkey_show_at_mouse, auto_play_gif: gif, hover_to_play: hover_play,
     hover_zoom,
+    disable_auto_hide,
+    import_no_limit,
+    window_resize_enabled,
     try_original_image: try_original,  // DeepSeek V4 Flash
     copy_resize_mode: copy_mode,
     copy_avoid_webp,
@@ -770,19 +809,29 @@ async function saveSettings() {
     show_startup_animation, manifest_include_tags, manifest_include_favorites,
     lan_port, lan_secret,
     ...sync
+  };
+  return queueSettings(async () => {
+    const saved = await api('save_settings', values);
+    if (!saved || saved.ok !== true) {
+      showToast('保存设置失败，请重试');
+      return;
+    }
+    applyTheme(saved.theme);
+    showToast('设置已保存');
+    _settingsDirty = false;
+    winResizeEnabled = window_resize_enabled;
+    applyWindowResizeHandles();
+    // 云端直接使用刚开启：询问是否立即上传一次，把缩略图推上云端供缺失表情显示
+    const cloudNow = sync.cloud_direct === true;
+    if (cloudNow && !_lastCloudDirect && sync.sync_type) {
+      const up = await showConfirm(
+        '上传缩略图',
+        '云端直接使用需要云端存有缩略图才能正常显示缺失表情。是否立即上传一次（同步本地表情与缩略图）？'
+      );
+      if (up) await syncPush();
+    }
+    _lastCloudDirect = cloudNow;
   });
-  showToast('设置已保存');
-  _settingsDirty = false;
-  // 云端直接使用刚开启：询问是否立即上传一次，把缩略图推上云端供缺失表情显示
-  const cloudNow = sync.cloud_direct === true;
-  if (cloudNow && !_lastCloudDirect && sync.sync_type) {
-    const up = await showConfirm(
-      '上传缩略图',
-      '云端直接使用需要云端存有缩略图才能正常显示缺失表情。是否立即上传一次（同步本地表情与缩略图）？'
-    );
-    if (up) await syncPush();
-  }
-  _lastCloudDirect = cloudNow;
 }
 
 // 打开设置向导：聚焦主窗口并显示向导覆盖层；成功后关闭设置窗口保证主窗口可见
@@ -818,9 +867,20 @@ async function openEnvCheck() {
   }
 }
 
-async function resetSettings() {
+// 重置与保存共享队列，避免相互覆盖。
+function resetSettings() {
+  return queueSettings(resetSettingsNow);
+}
+
+// 回填已持久化的默认设置。
+async function resetSettingsNow() {
   const s = await api('reset_settings');
+  if (!s || s.ok === false) {
+    showToast('恢复默认设置失败，请重试');
+    return;
+  }
   if (s) {
+    applyTheme(s.theme);
     const hk = document.getElementById('s-hotkey');
     const gif = document.getElementById('s-gif');
     const as = document.getElementById('s-auto-start');
@@ -833,25 +893,33 @@ async function resetSettings() {
     if (hp) hp.checked = s.hover_to_play === true;
     const hz = document.getElementById('s-hover-zoom');
     if (hz) hz.checked = true;
+    const wr2 = document.getElementById('s-window-resize');
+    if (wr2) wr2.checked = false;
+    winResizeEnabled = false;
+    applyWindowResizeHandles();
     const tgtd = document.getElementById('s-tg-tdata');
     if (tgtd) tgtd.value = s.tg_tdata_path || '';
     const to = document.getElementById('s-try-original');  // DeepSeek V4 Flash
     if (to) to.checked = false;
     const cm = document.getElementById('s-copy-mode');
-    if (cm) cm.value = String(s.copy_resize_mode ?? 1);
+    if (cm) cm.value = String(s.copy_resize_mode ?? 4);
     const caw2 = document.getElementById('s-copy-avoid-webp');
     if (caw2) caw2.checked = s.copy_avoid_webp === true;
+    const dah2 = document.getElementById('s-disable-auto-hide');
+    if (dah2) dah2.checked = s.disable_auto_hide === true;
+    const inl2 = document.getElementById('s-import-no-limit');
+    if (inl2) inl2.checked = s.import_no_limit === true;
     if (as) as.checked = s.auto_start === true;
     if (ss) ss.checked = s.silent_start === true;
     toggleSilentStart();
     checkConnectivity();  // DeepSeek V4 Flash
-    const ff = document.getElementById('s-sync-fetch');
     const sa = document.getElementById('s-sync-auto');
     const st = document.getElementById('s-sync-type');
-    if (ff) ff.checked = false;
     if (sa) sa.checked = false;
     const mit2 = document.getElementById('s-manifest-include-tags');
     if (mit2) mit2.checked = true;
+    const mic2 = document.getElementById('s-manifest-include-collections');
+    if (mic2) mic2.checked = true;
     const mif2 = document.getElementById('s-manifest-include-favorites');
     if (mif2) mif2.checked = true;
     const cld2 = document.getElementById('s-cloud-direct');
@@ -880,20 +948,8 @@ async function resetSettings() {
     document.getElementById('wd-user').value = '';
     document.getElementById('wd-pass').value = '';
     document.getElementById('wd-path').value = '';
-    const kr = document.getElementById('s-delete-remote');
-    const rl = document.getElementById('s-remove-local');
-    const hw = document.getElementById('s-hide-upload-warn');
-    if (kr) kr.checked = false;
-    if (rl) rl.checked = false;
-    if (hw) hw.checked = false;
-    const up = document.getElementById('s-show-up-progress');
-    const ud = document.getElementById('s-show-up-done');
-    const dp = document.getElementById('s-show-dl-progress');
-    const dd = document.getElementById('s-show-dl-done');
-    if (up) up.checked = true;
-    if (ud) ud.checked = true;
-    if (dp) dp.checked = true;
-    if (dd) dd.checked = true;
+    const wdi2 = document.getElementById('s-webdav-insecure');
+    if (wdi2) wdi2.checked = false;
     const rec = document.getElementById('s-record-recent');
     if (rec) rec.checked = true;
     const ssa = document.getElementById('s-show-startup-anim');
@@ -914,7 +970,7 @@ async function resetSettings() {
   }
 }
 
-async function testSync() {
+async function testSync(isRetry = false) {
   const sync = collectSyncSettings();
   if (!validateSync(sync)) return;
   const btn = document.getElementById('btn-ftp-test');
@@ -923,7 +979,52 @@ async function testSync() {
   await api('save_settings', sync);
   const r = await api('sync_test');
   btn.disabled = false; btn.textContent = '测试连接';
+  if (typeof r === 'string' && r.startsWith('WEBDAV_SSL_UNTRUSTED:')) {
+    if (isRetry) {
+      status.textContent = '连接失败: 证书仍不受信任';
+      return;
+    }
+    const ok = await showConfirm(
+      '服务器证书不受信任',
+      '该 WebDAV 服务器使用了自签名或不受信任的证书。继续使用将跳过证书校验，存在中间人攻击风险。是否仍要继续使用？',
+      '继续使用',
+      '不使用'
+    );
+    if (!ok) {
+      status.textContent = '已取消：未信任该服务器证书';
+      return;
+    }
+    const cb = document.getElementById('s-webdav-insecure');
+    if (cb) cb.checked = true;
+    await api('save_settings', { webdav_allow_insecure: true });
+    await testSync(true);
+    return;
+  }
   status.textContent = r === 'ok' ? '连接成功' : '连接失败: ' + r;
+}
+
+async function confirmManifestToggle(el, label) {
+  if (!el || el.checked) {
+    markSettingsDirty();
+    return;
+  }
+  const ok = await showConfirm(
+    '关闭' + label + '同步',
+    '关闭后将无法云同步' + label + '。',
+    '仍然关闭',
+    '保持开启'
+  );
+  if (!ok) {
+    el.checked = true;
+    return;
+  }
+  markSettingsDirty();
+}
+
+async function resetMainWindowSize() {
+  const r = await api('reset_main_window_size');
+  if (r && r.ok) showToast('已恢复默认窗口大小');
+  else showToast('恢复失败：' + ((r && r.error) || '未知错误'));
 }
 
 async function checkSyncStatus() {
@@ -1040,9 +1141,9 @@ async function doSyncWithProgress(method, title, progressSetting, doneSetting, b
   if (!warnOk) return;
   await api('save_settings', sync);
 
-  // 检查设置
-  const showProgress = document.getElementById(progressSetting)?.checked !== false;
-  const showDone = document.getElementById(doneSetting)?.checked !== false;
+  // 进度/完成弹窗开关已从设置页移除，固定保持默认开启
+  const showProgress = true;
+  const showDone = true;
 
   const btn = document.getElementById(btnId);
   const status = document.getElementById(statusId);
@@ -2021,6 +2122,73 @@ document.addEventListener('mouseup', () => {
   dragState = null;
 });
 
+/* ─── 窗口边框拖拽调整大小（window_resize_enabled 开启时）─── */
+const WIN_RESIZE_DIRS = [
+  ['n', 'n-resize'], ['s', 's-resize'], ['w', 'w-resize'], ['e', 'e-resize'],
+  ['nw', 'nw-resize'], ['ne', 'ne-resize'], ['sw', 'sw-resize'], ['se', 'se-resize'],
+];
+let winResizeEnabled = false;
+let winResizeState = null;
+
+function applyWindowResizeHandles() {
+  let layer = document.getElementById('win-resize-layer');
+  if (!winResizeEnabled) {
+    if (layer) layer.remove();
+    return;
+  }
+  if (layer) return;
+  layer = document.createElement('div');
+  layer.id = 'win-resize-layer';
+  layer.setAttribute('aria-hidden', 'true');
+  WIN_RESIZE_DIRS.forEach(([dir, cursor]) => {
+    const h = document.createElement('div');
+    h.className = 'win-resize-handle dir-' + dir;
+    h.style.cursor = cursor;
+    h.addEventListener('pointerdown', (e) => {
+      if (e.button !== 0) return;
+      winResizeState = {
+        dir, sx: e.screenX, sy: e.screenY,
+        w: window.innerWidth, h: window.innerHeight,
+        tw: 0, th: 0, raf: null, moved: false,
+      };
+      h.setPointerCapture(e.pointerId);
+      e.preventDefault();
+      e.stopPropagation();
+    });
+    h.addEventListener('pointermove', (e) => {
+      const st = winResizeState;
+      if (!st) return;
+      const dx = e.screenX - st.sx, dy = e.screenY - st.sy;
+      if (!st.moved && Math.abs(dx) < 2 && Math.abs(dy) < 2) return;
+      st.moved = true;
+      let tw = st.w, th = st.h;
+      if (st.dir.indexOf('e') !== -1) tw = st.w + dx;
+      if (st.dir.indexOf('w') !== -1) tw = st.w - dx;
+      if (st.dir.indexOf('s') !== -1) th = st.h + dy;
+      if (st.dir.indexOf('n') !== -1) th = st.h - dy;
+      st.tw = tw;
+      st.th = th;
+      if (st.raf) return;
+      st.raf = requestAnimationFrame(() => {
+        if (!winResizeState) return;
+        winResizeState.raf = null;
+        api('resize_window', winResizeState.tw, winResizeState.th, false);
+      });
+    });
+    const finish = () => {
+      const st = winResizeState;
+      if (!st) return;
+      if (st.raf) cancelAnimationFrame(st.raf);
+      if (st.moved && st.tw) api('resize_window', st.tw, st.th, true);
+      winResizeState = null;
+    };
+    h.addEventListener('pointerup', finish);
+    h.addEventListener('pointercancel', finish);
+    layer.appendChild(h);
+  });
+  document.body.appendChild(layer);
+}
+
 /* Keyboard shortcuts */
 document.addEventListener('keydown', (e) => {
   if (e.key === 'Tab') {
@@ -2406,6 +2574,141 @@ async function startBackupRestore() {
   backupPollTimer = setInterval(pollBackupProgress, 300);
 }
 
+/* 插件：列表渲染/启停/自管设置收集（输入带 data-plugin + data-key） */
+const PLUGIN_PERM_LABELS = {
+  'route': '网络路由', 'main_api': '主窗口 API', 'settings_api': '设置窗口 API',
+  'assets:serve': '静态资源', 'settings:section': '设置页区块', 'buttons': '顶栏按钮',
+  'startup': '启动动画', 'window': '窗口尺寸', 'host:evaluate_js': '窗口脚本注入'
+};
+
+function renderPluginItem(p) {
+  const ok = p.status === 'loaded';
+  const statusText = ok ? '已启用' : (p.status === 'disabled' ? '已停用' : '加载失败');
+  const statusCls = p.status === 'loaded' ? 'status-ok' : (p.status === 'failed' ? 'status-error' : 'plugin-status-off');
+  const perms = (p.permissions || []).map(x => PLUGIN_PERM_LABELS[x] || x).join('、') || '无特殊权限';
+  const meta = ['v' + esc(p.version || '?'), p.author ? esc(p.author) : ''].filter(Boolean).join(' · ');
+  const repo = p.repo ? '<div class="plugin-repo">' + esc(p.repo) + '</div>' : '';
+  const reason = p.reason ? '<div class="plugin-reason">' + esc(p.reason) + '</div>' : '';
+  const desc = p.description ? '<div class="plugin-desc">' + esc(p.description) + '</div>' : '';
+  return '<div class="plugin-item" data-pid="' + esc(p.id) + '">' +
+    '<div class="plugin-head plugin-acc-head" role="button" tabindex="0" aria-expanded="false"' +
+      ' onclick="pluginToggleCollapse(\'' + esc(p.id) + '\')"' +
+      ' onkeydown="pluginAccKey(event, \'' + esc(p.id) + '\')">' +
+      '<span class="plugin-acc-arrow" aria-hidden="true">▸</span>' +
+      '<span class="plugin-acc-title">' + esc(p.name || p.id) + '</span>' +
+      '<label class="plugin-toggle" onclick="event.stopPropagation()"><input type="checkbox" ' + (ok ? 'checked' : '') +
+        ' onchange="pluginToggle(this, \'' + esc(p.id) + '\')"><span class="plugin-status ' +
+        statusCls + '">' + statusText + '</span></label>' +
+    '</div>' +
+    '<div class="plugin-acc-body" id="plugin-body-' + esc(p.id) + '" hidden>' +
+      '<div class="plugin-meta"><b>' + meta + '</b></div>' + desc + repo +
+      '<div class="plugin-perms">权限: ' + esc(perms) + '</div>' + reason +
+    '</div>' +
+  '</div>';
+}
+
+function pluginToggleCollapse(pid) {
+  const body = document.getElementById('plugin-body-' + pid);
+  if (!body) return;
+  const open = body.hasAttribute('hidden');
+  if (open) body.removeAttribute('hidden');
+  else body.setAttribute('hidden', '');
+  const head = body.previousElementSibling;
+  if (head && head.classList.contains('plugin-acc-head')) {
+    head.setAttribute('aria-expanded', open ? 'true' : 'false');
+  }
+  body.closest('.plugin-item').classList.toggle('open', open);
+}
+
+function pluginAccKey(ev, pid) {
+  if (ev.key === 'Enter' || ev.key === ' ') {
+    ev.preventDefault();
+    pluginToggleCollapse(pid);
+  }
+}
+
+let initPluginRetries = 0;
+
+async function initPlugins() {
+  let list = await api('plugin_list');
+  // 桥接未就绪时 api() 返回 null，与 initSettings 同样重试后再判定为空
+  if (!Array.isArray(list)) {
+    if (initPluginRetries < 20) {
+      initPluginRetries++;
+      setTimeout(initPlugins, 200);
+    }
+    return;
+  }
+  initPluginRetries = 0;
+  const root = document.getElementById('plugin-list');
+  if (root) {
+    root.innerHTML = list.length
+      ? list.map(renderPluginItem).join('')
+      : '<div class="plugin-empty">暂无插件。把插件文件夹放入插件目录后重启软件即可加载。</div>';
+  }
+  for (const p of list) {
+    const body = document.getElementById('plugin-body-' + p.id);
+    if (body) {
+      document.querySelectorAll('.section[data-plugin="' + p.id + '"]').forEach(sec => {
+        if (!body.contains(sec)) body.appendChild(sec);
+      });
+    }
+    if (p.status !== 'loaded') continue;
+    const values = await api('plugin_get_settings', p.id);
+    if (!values) continue;
+    document.querySelectorAll('[data-plugin="' + p.id + '"][data-key]').forEach(el => {
+      const v = values[el.dataset.key];
+      if (v === undefined || v === null) return;
+      if (el.type === 'checkbox') el.checked = !!v;
+      else el.value = v;
+    });
+    window.dispatchEvent(new CustomEvent('omm-plugin-section-filled', { detail: { plugin_id: p.id } }));
+  }
+}
+
+async function pluginToggle(el, pid) {
+  const r = await api('plugin_set_enabled', pid, el.checked);
+  if (!r || !r.ok) {
+    showToast('操作失败');
+    el.checked = !el.checked;
+    return;
+  }
+  if (r.restart) showToast('已启用，重启软件后生效');
+  else showToast(r.enabled ? '已启用' : '已停用');
+}
+
+async function pluginSaveSection(pid) {
+  const data = {};
+  document.querySelectorAll('[data-plugin="' + pid + '"][data-key]').forEach(el => {
+    if (!el.dataset.key) return;
+    data[el.dataset.key] = el.type === 'checkbox' ? el.checked : el.value;
+  });
+  const r = await api('plugin_save_settings', pid, data);
+  if (!r || !r.ok) {
+    showToast('保存失败：' + ((r && r.error) || '未知错误'));
+    return;
+  }
+  showToast('插件设置已保存');
+}
+
+function pluginOpenDir() {
+  Promise.resolve(api('plugin_open_dir')).then(r => {
+    if (!r || !r.ok) showToast('打开插件目录失败');
+  }).catch(() => {});
+}
+
+// 插件设置保存后由后端推送：刷新插件 CSS link（改 URL 防缓存）+ 通知插件脚本
+window.ommPluginRefresh = function (pid) {
+  document.querySelectorAll('link[href*="/plugins/"]').forEach(link => {
+    try {
+      const url = new URL(link.getAttribute('href'), location.href);
+      url.searchParams.set('t', Date.now());
+      link.href = url.pathname + url.search;
+    } catch (e) {}
+  });
+  window.dispatchEvent(new CustomEvent('omm-plugin-refresh', { detail: { plugin_id: pid } }));
+};
+
 /* 左栏分组导航：显示对应分组的 section，隐藏其余 */
 function switchSettingsGroup(group) {
   document.querySelectorAll('#settings-nav .nav-item').forEach(btn => {
@@ -2424,8 +2727,5 @@ async function initVersion() {
   const el = document.getElementById('s-ver-current');
   if (el) el.textContent = '当前版本: ' + (ver || '--');
 }
-document.addEventListener('DOMContentLoaded', () => {
-  initSettings();
-  setTimeout(initVersion, 500);
-  initDirtyTracking();
-});
+
+window.__ohmmSettingsLegacyReady = true;

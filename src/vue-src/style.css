@@ -1,4 +1,5 @@
 :root {
+  color-scheme: dark;
   --bg: #0d0d0f;
   --bg-elevated: #141417;
   --surface: #1a1a1f;
@@ -12,12 +13,36 @@
   --primary-light: #dbeafe;
   --primary-strong: #1d4ed8;
   --danger: #ef4444;
+  --success: #22c55e;
+  --warning: #f59e0b;
+  --warning-text: #f59e0b;
   --accent: #3b82f6;
   --radius: 8px;
   --radius-sm: 4px;
   --radius-lg: 12px;
   --shadow-lg: 0 20px 25px -5px rgba(0,0,0,.3), 0 8px 10px -6px rgba(0,0,0,.3);
   --border-hair: rgba(255,255,255,0.06);
+}
+
+:root[data-theme="light"] {
+  color-scheme: light;
+  --bg: #f8fafc;
+  --bg-elevated: #ffffff;
+  --surface: #ffffff;
+  --surface-2: #f1f5f9;
+  --fg: #0f172a;
+  --fg-secondary: #475569;
+  --muted: #64748b;
+  --border: #e2e8f0;
+  --border-light: #cbd5e1;
+  --primary: #2563eb;
+  --accent: #2563eb;
+  --danger: #dc2626;
+  --success: #16a34a;
+  --warning: #d97706;
+  --warning-text: #b45309;
+  --border-hair: rgba(15,23,42,0.08);
+  --shadow-lg: 0 20px 25px -5px rgba(15,23,42,.1), 0 8px 10px -6px rgba(15,23,42,.1);
 }
 
 * { margin: 0; padding: 0; box-sizing: border-box; }
@@ -146,6 +171,13 @@ body {
 .icon-btn svg {
   width: 16px;
   height: 16px;
+}
+
+.plugin-btn-icon {
+  width: 16px;
+  height: 16px;
+  object-fit: contain;
+  display: block;
 }
 
 .title-btn {
@@ -983,7 +1015,8 @@ body {
   overflow: hidden;
 }
 
-#startup-anim video {
+#startup-anim video,
+#startup-anim img {
   width: 100%;
   height: 100%;
   object-fit: contain;
@@ -1094,3 +1127,15 @@ body {
 ::-webkit-scrollbar-thumb:hover {
   background: var(--muted);
 }
+
+/* ���ڱ߿���ק������С��window_resize_enabled ����ʱע�� #win-resize-layer�� */
+#win-resize-layer { position: fixed; inset: 0; z-index: 90; pointer-events: none; }
+.win-resize-handle { position: absolute; pointer-events: auto; }
+.win-resize-handle.dir-n { top: 0; left: 10px; right: 10px; height: 6px; }
+.win-resize-handle.dir-s { bottom: 0; left: 10px; right: 10px; height: 6px; }
+.win-resize-handle.dir-w { left: 0; top: 10px; bottom: 10px; width: 6px; }
+.win-resize-handle.dir-e { right: 0; top: 10px; bottom: 10px; width: 6px; }
+.win-resize-handle.dir-nw { top: 0; left: 0; width: 14px; height: 14px; }
+.win-resize-handle.dir-ne { top: 0; right: 0; width: 14px; height: 14px; }
+.win-resize-handle.dir-sw { bottom: 0; left: 0; width: 14px; height: 14px; }
+.win-resize-handle.dir-se { bottom: 0; right: 0; width: 14px; height: 14px; }

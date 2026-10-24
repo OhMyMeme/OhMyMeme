@@ -354,5 +354,54 @@ class TestWebDAVEnsureDir(unittest.TestCase):
             bk.ensure_remote_dir("memes")
 
 
+class TestWebDAVTlsTrust(unittest.TestCase):
+    @patch("src.sync.urllib.request.urlopen")
+    def test_default_uses_system_verification(self, urlopen):
+        seen = {}
+
+        def fake_open(req, timeout=30, context=None):
+            seen["context"] = context
+            return _FakeResp(207)
+
+        urlopen.side_effect = fake_open
+        _make_backend().test_connection()
+        self.assertIsNone(seen["context"])
+
+    @patch("src.sync.urllib.request.urlopen")
+    def test_insecure_flag_uses_unverified_context(self, urlopen):
+        seen = {}
+
+        def fake_open(req, timeout=30, context=None):
+            seen["context"] = context
+            return _FakeResp(207)
+
+        urlopen.side_effect = fake_open
+        cfg = {
+            "webdav_url": "https://self-signed.example.com",
+            "webdav_user": "",
+            "webdav_password": "",
+            "webdav_path": "",
+            "webdav_allow_insecure": True,
+        }
+        bk = _WebDAVBackend(cfg)
+        bk.connect()
+        bk.test_connection()
+        self.assertIsNotNone(seen["context"])
+
+    @patch("src.sync.urllib.request.urlopen")
+    def test_certificate_error_has_marker(self, urlopen):
+        import ssl
+
+        def fake_open(req, timeout=30, context=None):
+            raise urllib.error.URLError(
+                ssl.SSLCertVerificationError("certificate verify failed")
+            )
+
+        urlopen.side_effect = fake_open
+        with self.assertRaises(SyncError) as cm:
+            _make_backend().test_connection()
+        self.assertIn("WEBDAV_SSL_UNTRUSTED", str(cm.exception))
+
+
 if __name__ == "__main__":
     unittest.main()

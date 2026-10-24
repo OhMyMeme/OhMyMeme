@@ -14,9 +14,15 @@ KEYBOARD_WATCH_INTERVAL = 5.0
 # Windows 钩子心跳探针：WH_KEYBOARD_LL 会被系统静默摘除（睡眠恢复/回调超时/显示切换），
 # 此时线程仍在泵消息、看门狗的存活检查不可见。每 KEYBOARD_PROBE_INTERVAL 秒注入一次
 # 无害探针键（F15，常规应用不响应），KEYBOARD_PROBE_TIMEOUT 秒内钩子未上报任何键盘
-# 事件（含用户自身按键）即判定钩子失效，重启监听线程重装钩子。
+# 事件（含用户自身按键）即判定钩子失效，重启监听线程重装钩子。注入带 OHMM
+# dwExtraInfo 标记，并由阻塞钩子吞掉防止泄漏到前台窗口（issue #95）。
 KEYBOARD_PROBE_INTERVAL = 30.0
 KEYBOARD_PROBE_TIMEOUT = 15.0
+
+# 探针事件 dwExtraInfo 标记（ASCII "OHMM"），带此标记的键盘事件为本程序注入，
+# 供阻塞钩子与外部诊断工具（如 issue #95 附带的 f15_listener）溯源识别
+_PROBE_EXTRA_INFO = 0x4F484D4D
+_PROBE_VK_F15 = 0x7E
 
 # 独立的热键事件日志（追加到 data_dir/hotkey.log，便于日后排查热键失效/自愈）
 _file_logger = None
@@ -97,6 +103,7 @@ class GlobalHotkey:
         self._last_probe_at = 0.0
         self._probe_pending_at = None
         self._hook_observer = None
+        self._probe_blocker = None
 
     def register(self, hotkey: str, callback) -> bool:
         """注册全局快捷键，自动尝试 keyboard → pynput → 轮询降级"""
@@ -163,6 +170,17 @@ class GlobalHotkey:
                 except Exception as e:
                     logger.warning(f"热键心跳观察者注册失败（心跳自愈降级）: {e}")
                     self._hook_observer = None
+
+                # 探针阻塞钩子（issue #95）：吞掉 pending 窗口内注入的 F15 探针，
+                # 防止其作为真实按键泄漏到前台窗口（gvim/ssh 等会响应 F15）。
+                # 被阻塞的事件不会到达非阻塞观察者，故在此直接刷新
+                # 心跳时间戳完成探针确认。
+                try:
+                    self._probe_blocker = self._make_probe_blocker()
+                    keyboard.hook(self._probe_blocker, suppress=True)
+                except Exception as e:
+                    logger.warning(f"探针阻塞钩子注册失败（探针可能泄漏）: {e}")
+                    self._probe_blocker = None
             logger.info(f"全局快捷键已注册 (keyboard): {hotkey}")
             _log_hotkey_event("info", "热键已注册 (keyboard): %s" % hotkey)
             return True
@@ -328,24 +346,117 @@ class GlobalHotkey:
             new_pt.start()
 
     def _inject_probe_key(self):
-        """注入一次无害探针按键（F15 按下+抬起），验证钩子是否仍在接收事件"""
+        """注入一次无害探针按键（F15 按下+抬起），带 OHMM dwExtraInfo 标记便于溯源。
+
+        优先 SendInput（可精确携带 dwExtraInfo），失败回退 keybd_event（同样带标记）。
+        """
+        try:
+            import ctypes
+            from ctypes import wintypes
+
+            user32 = ctypes.windll.user32
+
+            class KEYBDINPUT(ctypes.Structure):
+                _fields_ = [
+                    ("wVk", wintypes.WORD),
+                    ("wScan", wintypes.WORD),
+                    ("dwFlags", wintypes.DWORD),
+                    ("time", wintypes.DWORD),
+                    ("dwExtraInfo", ctypes.c_size_t),
+                ]
+
+            class MOUSEINPUT(ctypes.Structure):
+                _fields_ = [
+                    ("dx", wintypes.LONG),
+                    ("dy", wintypes.LONG),
+                    ("mouseData", wintypes.DWORD),
+                    ("dwFlags", wintypes.DWORD),
+                    ("time", wintypes.DWORD),
+                    ("dwExtraInfo", ctypes.c_size_t),
+                ]
+
+            class HARDWAREINPUT(ctypes.Structure):
+                _fields_ = [
+                    ("msg", wintypes.DWORD),
+                    ("wParamL", wintypes.WORD),
+                    ("wParamH", wintypes.WORD),
+                ]
+
+            class _INPUT_UNION(ctypes.Union):
+                _fields_ = [
+                    ("ki", KEYBDINPUT),
+                    ("mi", MOUSEINPUT),
+                    ("hi", HARDWAREINPUT),
+                ]
+
+            class INPUT(ctypes.Structure):
+                _anonymous_ = ("u",)
+                _fields_ = [
+                    ("type", wintypes.DWORD),
+                    ("u", _INPUT_UNION),
+                ]
+
+            def _make(vk, flags):
+                return INPUT(
+                    type=1,  # INPUT_KEYBOARD
+                    ki=KEYBDINPUT(
+                        wVk=vk,
+                        wScan=0,
+                        dwFlags=flags,
+                        time=0,
+                        dwExtraInfo=_PROBE_EXTRA_INFO,
+                    ),
+                )
+
+            arr = (INPUT * 2)(
+                _make(_PROBE_VK_F15, 0),
+                _make(_PROBE_VK_F15, 0x0002),  # KEYEVENTF_KEYUP
+            )
+            if user32.SendInput(2, arr, ctypes.sizeof(INPUT)) == 2:
+                return
+        except Exception:
+            pass
+        # SendInput 不可用（结构尺寸不符/系统拒绝）时回退 keybd_event，同样携带标记
         try:
             import ctypes
 
             user32 = ctypes.windll.user32
-            user32.keybd_event(0x7E, 0, 0, 0)
-            user32.keybd_event(0x7E, 0, 2, 0)  # KEYEVENTF_KEYUP
+            user32.keybd_event(_PROBE_VK_F15, 0, 0, _PROBE_EXTRA_INFO)
+            user32.keybd_event(_PROBE_VK_F15, 0, 0x0002, _PROBE_EXTRA_INFO)
         except Exception:
             pass
+
+    def _make_probe_blocker(self):
+        """构造探针阻塞钩子（suppress=True 注册），返回回调。
+
+        keyboard 的阻塞钩子在 direct_callback 中最先执行：pending 窗口内命中的
+        F15 探针返回 False 被吞掉（事件既不会到达前台应用，也不会到达非阻塞
+        观察者），故在钩子内直接刷新 _hook_last_seen 完成探针确认；其余事件返回
+        True 原样放行。任意异常回退放行，绝不拦截正常按键。
+        """
+
+        def _block_probe(event):
+            try:
+                if self._probe_pending_at is not None and (
+                    event.name == "f15" or event.scan_code == -126
+                ):
+                    self._hook_last_seen = time.monotonic()
+                    return False
+                return True
+            except Exception:
+                return True
+
+        return _block_probe
 
     def _hook_health_check(self, now) -> bool:
         """Windows 钩子心跳：探针注入后未见任何键盘事件（含用户按键）即钩子已失效。
 
         返回 True 表示本轮检测到钩子死亡；探针每 KEYBOARD_PROBE_INTERVAL 秒注入，
         超时 KEYBOARD_PROBE_TIMEOUT 秒未确认则判死。钩子存活时任何按键都会刷新
-        _hook_last_seen，用户正常打字即视为存活，无需依赖探针本身。
-        观察者未注册（hook 失败的降级模式）时无法观测任何事件，直接返回 False
-        避免探针永远"未见事件"造成反复误判重启。
+        _hook_last_seen，用户正常打字即视为存活，无需依赖探针本身；探针被阻塞
+        钩子吞掉时由钩子内刷新时间戳完成确认。观察者未注册（hook 失败的降级
+        模式）时无法观测任何事件，直接返回 False 避免探针永远"未见事件"造成
+        反复误判重启。
         """
         if self._hook_observer is None:
             return False
@@ -536,9 +647,12 @@ class GlobalHotkey:
                         keyboard.remove_hotkey(self._hotkey)
                     if self._hook_observer is not None:
                         keyboard.unhook(self._hook_observer)
+                    if self._probe_blocker is not None:
+                        keyboard.unhook(self._probe_blocker)
                 except Exception:
                     pass
                 self._hook_observer = None
+                self._probe_blocker = None
             elif self._backend == "pynput":
                 if self._listener:
                     try:

@@ -1,28 +1,21 @@
 name: Build
 
 on:
-  workflow_run:
-    workflows: ["Check"]
-    types:
-      - completed
-    branches: [main]
   workflow_dispatch:
 
 jobs:
   ffmpeg-win64:
-    if: ${{ github.event_name == 'workflow_dispatch' || github.event.workflow_run.conclusion == 'success' }}
     uses: ./.github/workflows/ffmpeg-win64.yml
     with:
-      ref: ${{ github.event.workflow_run.head_sha || github.ref }}
+      ref: ${{ github.ref }}
 
   build-windows:
-    if: ${{ github.event_name == 'workflow_dispatch' || github.event.workflow_run.conclusion == 'success' }}
     needs: ffmpeg-win64
     runs-on: windows-latest
     steps:
       - uses: actions/checkout@v4
         with:
-          ref: ${{ github.event.workflow_run.head_sha || github.ref }}
+          ref: ${{ github.ref }}
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
@@ -44,16 +37,17 @@ jobs:
         run: |
           choco install innosetup --no-progress
           echo "ISCC_DIR=C:\Program Files (x86)\Inno Setup 6\ISCC.exe" | Out-File -FilePath $env:GITHUB_ENV -Append
-      - name: Build installer
-        run: python scripts/build.py --installer-only
+      - name: Build installers (exe + msix)
+        run: python scripts/build.py --installer-only --msix
       - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
           name: OhMyMeme-Windows
-          path: dist/OhMyMeme-*-setup.exe
+          path: |
+            dist/OhMyMeme-*-setup.exe
+            dist/OhMyMeme-*.msix
 
   build-linux:
-    if: ${{ github.event_name == 'workflow_dispatch' || github.event.workflow_run.conclusion == 'success' }}
     strategy:
       matrix:
         include:
@@ -65,7 +59,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
         with:
-          ref: ${{ github.event.workflow_run.head_sha || github.ref }}
+          ref: ${{ github.ref }}
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
@@ -88,7 +82,6 @@ jobs:
             dist/OhMyMeme-v*-${{ matrix.arch }}.rpm
 
   build-macos:
-    if: ${{ github.event_name == 'workflow_dispatch' || github.event.workflow_run.conclusion == 'success' }}
     strategy:
       matrix:
         include:
@@ -100,7 +93,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
         with:
-          ref: ${{ github.event.workflow_run.head_sha || github.ref }}
+          ref: ${{ github.ref }}
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"

@@ -1,5 +1,5 @@
 import { reactive, ref, readonly } from 'vue'
-import { api } from '../utils/api'
+import { api, applyTheme } from '../utils/api'
 import type { Meme } from '../types'
 
 const MEME_PAGE = 200
@@ -18,6 +18,12 @@ const state = reactive({
   loading: false,
   showStartupAnimation: true,
   startupBgColor: '#000000',
+  startupVideoSrc: '/resources/OhMyMeme.mp4',
+  startupMediaDurationMs: 0,
+  startupMediaType: '',
+  windowResizeEnabled: false,
+  pluginButtons: [] as { plugin_id: string; key: string; label: string; icon: string; order: number }[],
+  pluginButtonConstraints: { hide: [] as string[], order: {} as Record<string, number> },
   hoverZoom: true,
   guideOk: true,
 })
@@ -35,6 +41,7 @@ export function useMemes() {
     await waitForPywebview()
     const data = await api('get_init_data')
     if (data) {
+      applyTheme(data.theme)
       state.memes = data.memes || []
       state.allTags = data.tags || []
       state.collections = data.collections || []
@@ -43,6 +50,16 @@ export function useMemes() {
       state.pageCount = Math.max(1, Math.ceil(state.total / MEME_PAGE))
       state.showStartupAnimation = data.show_startup_animation !== false
       state.startupBgColor = data.startup_bg_color || '#000000'
+      state.startupVideoSrc = data.startup_video_src || '/resources/OhMyMeme.mp4'
+      state.startupMediaDurationMs = Number(data.startup_media_duration_ms) || 0
+      state.startupMediaType = data.startup_media_type || ''
+      state.windowResizeEnabled = data.window_resize_enabled === true
+      state.pluginButtons = Array.isArray(data.plugin_buttons) ? data.plugin_buttons : []
+      const constraints = data.plugin_button_constraints || {}
+      state.pluginButtonConstraints = {
+        hide: Array.isArray(constraints.hide) ? constraints.hide : [],
+        order: constraints.order && typeof constraints.order === 'object' ? constraints.order : {},
+      }
       state.hoverZoom = data.hover_zoom !== false
       state.guideOk = data.guide_ok !== false
     }

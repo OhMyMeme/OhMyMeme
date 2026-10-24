@@ -27,8 +27,8 @@ jobs:
 
   # C++ helper 的密码学原语与密钥提取路径测试。单独 job 且仅 Windows：
   # wechat_keyfinder 是 Windows-only（CMakeLists 对非 WIN32 直接 FATAL_ERROR），
-  # 放进上面的 ubuntu job 会必然失败。放在 check.yml 而非 build.yml 是为了让
-  # PR 阶段就能拿到反馈（build.yml 由 check 通过后的 workflow_run 触发）。
+  # 放进上面的 ubuntu job 会必然失败。随 check 一起跑，让 PR 阶段即可拿到反馈
+  # （打包 job 已改为手动触发，见 build.yml / release.yml）。
   keyfinder-tests:
     runs-on: windows-latest
     steps:
