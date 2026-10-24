@@ -14,11 +14,16 @@
 - **插件系统测试** — 新增 `tests/test_plugin_manager.py` 33 例：manifest 校验与跳过（id 非法/缺 name/version/api_version 不匹配/repo 非法/损坏 JSON）、sandbox 跳过、依赖缺失拒绝、entry 异常隔离、权限门控、回调异常与超时熔断、启停与用户禁用重启语义、设置合并与按 id 分文件持久化 roundtrip、旧 `plugins_state.json` 设置自动迁移、`on_settings_changed` 触发、资产解析与路径穿越拒绝（含 `data/` 前缀到插件数据目录）、注入顺序与禁用失效、资产版本随设置变化、自定义路由分发与 Content-Type、启动动画/窗口尺寸按 id 序覆盖、启动媒体时长/类型字段透传、按钮注册与约束、vendor sys.path 追加移除、注入辅助函数、设置页标记齐全（含窗口开关区块与插件重试/回填事件）、`_resolve_window_size` 分支、JsApi/SettingsApi 插件分发、配置窗口尺寸默认值与旧配置迁移保留；`test_startup` 补主窗口 960×640 尺寸断言、「允许调整窗口大小」开关契约与 `resize_window` 尺寸钳制 2 例；全量 `tests/` 489 passed（`test_lan` 环境性失败除外）
 - **导入超限弹窗与关闭限制开关** — 单张交互式导入（拖放本地路径/原图下载、文件上传、剪贴板）超过 2560px 或 20MB 时弹窗选择「保留」或「取消导入」（超限文件先复制到独立临时文件，超时 5 分钟自动丢弃）；设置页「基础设置 → 导入限制」新增「关闭表情包大小限制」（配置 `import_no_limit`，默认关），关闭后本地导入、云端拉取与局域网接收均不再拦截超限文件
 - **重复表情提示统一** — 导入与库中完全相同的表情（同 SHA-256）时，主窗口底部小字提示统一为「已存在相同表情包」
-- **Windows MSI / MSIX 安装包** — 构建脚本新增 `--msi`（WiX Toolset v5 模板 `scripts/installer/wix/app.wxs`，产出 `dist/OhMyMeme-<版本>.msi`，适合离线/组策略批量部署）与 `--msix`（Windows SDK `makeappx` + 模板 `scripts/installer/msix/AppxManifest.xml`，产出 `dist/OhMyMeme-<版本>.msix`，用于 Microsoft Store 上架或侧载）；二者在 `.exe` 安装包之外追加构建，缺少工具/清单时仅告警跳过；MSIX 身份信息（Name/Publisher/PublisherDisplayName）从 Partner Center 填入模板或经环境变量 `OHMYMEME_MSIX_IDENTITY_NAME`/`OHMYMEME_MSIX_PUBLISHER`/`OHMYMEME_MSIX_PUBLISHER_DISPLAY_NAME` 覆盖，产物不签名（Store 上架时重签）
+- **Windows MSIX 安装包** — 构建脚本新增 `--msix`（Windows SDK `makeappx` + 模板 `scripts/installer/msix/AppxManifest.xml`，产出 `dist/OhMyMeme-<版本>.msix`，用于 Microsoft Store 上架或侧载），在 `.exe` 安装包之外追加构建，缺少工具/清单时仅告警跳过；MSIX 身份信息（Name/Publisher/PublisherDisplayName）从 Partner Center 填入模板或经环境变量 `OHMYMEME_MSIX_IDENTITY_NAME`/`OHMYMEME_MSIX_PUBLISHER`/`OHMYMEME_MSIX_PUBLISHER_DISPLAY_NAME` 覆盖，产物不签名（Store 上架时重签）；MSI（WiX）构建已移除
 
 ## 变更
+- **设置页改为 Vue 入口** — `src/webui/settings.html` 仅保留 Vue 挂载壳，原 `settings.css`/`settings.js` 删除；`src/vue-src/settings/SettingsApp.vue` 注入样式、渲染主体并执行迁移后的 `legacy.js`，插件区块仍由服务端锚点注入
+- **复制处理默认仅改后缀为 GIF** — `copy_resize_mode` 默认改为 4：复制副本字节不变、仅把扩展名改为 `.gif`（桌面与安卓一致），原 0/1/2/3 模式保留；该模式不受「复制时避免 WebP」影响
+- **标签/分组/收藏可分别关闭写入同步清单** — 新增 `manifest_include_collections`（默认开）；标签与分组开关关闭前弹确认「关闭后将无法云同步标签/分组」（桌面与安卓）
+- **WebDAV 自签名证书确认** — 测试连接遇不受信任证书时弹窗选择「继续使用/不使用」；继续则保存 `webdav_allow_insecure=true` 并重试，设置页保留开关可随时关闭（桌面与安卓）
+- **窗口与云端设置精简** — 设置页新增「恢复默认窗口大小（960×640）」；移除上传/下载进度与完成提示、上传前提醒、上传删远端、下载删本地、启动获取远端索引等 8 个云端开关，固定保持原默认值
 - **上传改为按云端清单差集，仅上传缺失文件** — 「上传到远端」现在先拉取云端清单，按「文件名缺失或 SHA-256 不同」筛出云端缺失/变更的表情，只上传这些文件（进度与总数只反映待上传项）；不再对每个文件逐次发起存在性请求，大库同步明显更快（云端清单为唯一判据，不再逐文件复核物理存在）
-- **设置页导航新增「插件」分组** — 位于「危险操作」之后；`settings.js` 脏检查跳过插件自管输入（`data-plugin`），插件设置保存不再触发宿主「有未保存的更改」提示
+- **设置页导航新增「插件」分组** — 位于「危险操作」之后；`legacy.js` 脏检查跳过插件自管输入（`data-plugin`），插件设置保存不再触发宿主「有未保存的更改」提示
 - **主窗口标题栏按钮改为数据驱动** — 核心按钮按固定 order 渲染（`v-if` 隐藏 + CSS order 定位），为插件按钮与布局约束让出插槽；启动动画视频源/底色改由 `get_init_data` 下发（插件可覆盖），行为不变
 - **个性化插件移除窗口尺寸设置** — `win_width`/`win_height` 不再由插件覆盖（`window` 权限撤销），窗口大小统一走宿主「允许调整窗口大小」开关 + 拖边框调整并持久化；插件升级 v1.1.0
 

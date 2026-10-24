@@ -66,6 +66,7 @@ from .clipboard_util import (
     convert_image_mode_1,
     convert_image_mode_2,
     convert_image_mode_3,
+    convert_image_mode_4,
     copy_image_to_clipboard,
 )
 from .config import (
@@ -1136,14 +1137,15 @@ class JsApi:
             return False
 
     def copy_meme(self, meme_id):
-        # 复制表情到剪贴板；copy_resize_mode: 0不处理 1webp缩放 2转gif 3转gif隐写原图
+        # 复制表情到剪贴板；copy_resize_mode: 0不处理 1webp缩放 2转gif
+        # 3转gif隐写原图 4仅改后缀为gif
         row = self._db.get_by_id(meme_id)
         if not row:
             return {"ok": False, "status": "copy_failed"}
         path = self._find_meme_file(row["filename"])
         if not path:
             return {"ok": False, "status": "copy_failed"}
-        resize_mode = int(self._cfg.get("copy_resize_mode", 1) or 0)
+        resize_mode = int(self._cfg.get("copy_resize_mode", 4) or 0)
         resize_max = int(self._cfg.get("copy_resize_max", 200) or 200)
         avoid_webp = bool(self._cfg.get("copy_avoid_webp", False))
         match resize_mode:
@@ -1153,8 +1155,11 @@ class JsApi:
                 path = convert_image_mode_2(path, resize_max) or path
             case 3:
                 path = convert_image_mode_3(path, resize_max) or path
+            case 4:
+                path = convert_image_mode_4(path, resize_max) or path
         # 复制微信等应用会把 WebP 当文件，故兜底把残余 WebP 转为 GIF/JPG
-        if avoid_webp:
+        # 模式 4 要求字节完全不变，不参与该兜底
+        if avoid_webp and resize_mode != 4:
             path = convert_avoid_webp(path, resize_max)
         ok = copy_image_to_clipboard(path)
         if not ok:
@@ -2106,6 +2111,7 @@ class JsApi:
             "webdav_user": d.get("webdav_user", ""),
             "webdav_password": d.get("webdav_password", ""),
             "webdav_path": d.get("webdav_path", ""),
+            "webdav_allow_insecure": d.get("webdav_allow_insecure", False),
             "show_upload_progress": d.get("show_upload_progress", True),
             "show_upload_done": d.get("show_upload_done", True),
             "show_download_progress": d.get("show_download_progress", True),
@@ -2159,7 +2165,7 @@ class JsApi:
             "hotkey": hotkey,
             "hotkey_show_at_mouse": self._cfg.get("hotkey_show_at_mouse", False),
             "auto_play_gif": self._cfg.get("auto_play_gif", True),
-            "copy_resize_mode": self._cfg.get("copy_resize_mode", 1),
+            "copy_resize_mode": self._cfg.get("copy_resize_mode", 4),
             "auto_start": False,
             "silent_start": False,
             "sync_auto_fetch_index": False,
@@ -2188,6 +2194,7 @@ class JsApi:
             "webdav_user": "",
             "webdav_password": "",
             "webdav_path": "",
+            "webdav_allow_insecure": False,
             "show_upload_progress": True,
             "show_upload_done": True,
             "show_download_progress": True,
@@ -2822,7 +2829,7 @@ class SettingsApi:
             "hotkey_show_at_mouse": d.get("hotkey_show_at_mouse", False),
             "auto_play_gif": d.get("auto_play_gif", True),
             "try_original_image": d.get("try_original_image", False),
-            "copy_resize_mode": int(d.get("copy_resize_mode", 1) or 0),
+            "copy_resize_mode": int(d.get("copy_resize_mode", 4) or 0),
             "cache_dir": str(self._cfg.cache_dir),
             "lan_port": d.get("lan_port", 17852),
             "lan_secret": d.get("lan_secret", ""),
@@ -2854,6 +2861,7 @@ class SettingsApi:
             "webdav_user": d.get("webdav_user", ""),
             "webdav_password": d.get("webdav_password", ""),
             "webdav_path": d.get("webdav_path", ""),
+            "webdav_allow_insecure": d.get("webdav_allow_insecure", False),
             "show_upload_progress": d.get("show_upload_progress", True),
             "show_upload_done": d.get("show_upload_done", True),
             "show_download_progress": d.get("show_download_progress", True),
@@ -2868,6 +2876,7 @@ class SettingsApi:
             "disable_auto_hide": d.get("disable_auto_hide", False),
             "import_no_limit": d.get("import_no_limit", False),
             "manifest_include_tags": d.get("manifest_include_tags", True),
+            "manifest_include_collections": d.get("manifest_include_collections", True),
             "manifest_include_favorites": d.get("manifest_include_favorites", True),
             "cloud_direct": d.get("cloud_direct", True),
             "cloud_thumb_auto_push": d.get("cloud_thumb_auto_push", True),
@@ -3001,7 +3010,7 @@ class SettingsApi:
             "hotkey": hotkey,
             "hotkey_show_at_mouse": self._cfg.get("hotkey_show_at_mouse", False),
             "auto_play_gif": self._cfg.get("auto_play_gif", True),
-            "copy_resize_mode": self._cfg.get("copy_resize_mode", 1),
+            "copy_resize_mode": self._cfg.get("copy_resize_mode", 4),
             "auto_start": False,
             "silent_start": False,
             "sync_auto_fetch_index": False,
@@ -3030,6 +3039,7 @@ class SettingsApi:
             "webdav_user": "",
             "webdav_password": "",
             "webdav_path": "",
+            "webdav_allow_insecure": False,
             "show_upload_progress": True,
             "show_upload_done": True,
             "show_download_progress": True,
@@ -3043,6 +3053,7 @@ class SettingsApi:
             "disable_auto_hide": False,
             "import_no_limit": False,
             "manifest_include_tags": True,
+            "manifest_include_collections": True,
             "manifest_include_favorites": True,
             "cloud_direct": True,
             "cloud_thumb_auto_push": True,
@@ -3064,6 +3075,19 @@ class SettingsApi:
                 self._cfg.save()
         except Exception:
             pass
+
+    def reset_main_window_size(self) -> dict:
+        """恢复主窗口默认大小 960x640 并清除持久化尺寸"""
+        try:
+            self._cfg.set("window_width", 0)
+            self._cfg.set("window_height", 0)
+            self._cfg.save()
+            w = self._webui._window
+            if w:
+                w.resize(960, 640)
+            return {"ok": True}
+        except Exception as e:
+            return {"ok": False, "error": str(e)}
 
     def move_window(self, dx: int, dy: int):
         w = self._webui._settings_window
@@ -4994,7 +5018,7 @@ class WebUI:
                     )
                     html = _inject_before(html, "</head>", links)
                     html = _inject_after(html, "<!-- plugin-sections -->", sections)
-                    # settings.js 之后注入（defer 按文档序执行，插件可访问其全局）
+                    # 插件脚本在 Vue 入口之后注入（defer 文档序）
                     html = _inject_before(html, "</body>", scripts)
                     bottle.response.content_type = "text/html; charset=utf-8"
                     return html

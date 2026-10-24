@@ -14,6 +14,18 @@ APP_NAME = "OhMyMeme"
 # 当前配置文件版本（与软件版本同步，用于数据迁移）
 _CONFIG_VERSION = __version__
 
+# 已移除设置页开关的固定默认值（无 UI，行为保持默认）
+_FIXED_CLOUD_TOGGLES = {
+    "sync_auto_fetch_index": False,
+    "sync_delete_remote": False,
+    "sync_remove_local": False,
+    "sync_hide_upload_warning": False,
+    "show_upload_progress": True,
+    "show_upload_done": True,
+    "show_download_progress": True,
+    "show_download_done": True,
+}
+
 # ~~~ 加密字段列表 ~~~（写入前自动加密，读取时自动解密）
 _SECRET_KEYS = {
     "s3_access_key",
@@ -102,6 +114,7 @@ class Config:
         "sync_hide_upload_warning": False,  # 不再提醒上传警告
         "sync_threads": 3,  # 同步并发线程数（1-8）
         "manifest_include_tags": True,  # 将标签写入 meme-index.json 清单
+        "manifest_include_collections": True,  # 将分组写入 meme-index.json 清单
         "manifest_include_favorites": True,  # 将收藏夹写入 meme-index.json 清单
         "cloud_direct": True,  # 云端直接使用（缺失表情点击下载；默认开启）
         "cloud_thumb_auto_push": True,  # 启动时静默检测云端缺失缩略图并后台上传
@@ -136,8 +149,10 @@ class Config:
         "webdav_password": "",
         "webdav_path": "",
         "webdav_timeout": 30,  # WebDAV 请求超时（秒）
+        "webdav_allow_insecure": False,  # 忽略 WebDAV 自签名/不受信任证书
         # 复制设置
-        "copy_resize_mode": 1,  # 0不处理；1webp缩放；2转gif；3转gif隐写原图
+        # 0不处理；1webp缩放；2转gif；3转gif隐写原图；4仅改后缀为gif
+        "copy_resize_mode": 4,
         "copy_resize_max": 200,  # 缩放后最长边像素
         "copy_avoid_webp": False,  # 复制时避免 WebP（动图转 GIF，静态转 JPG）
         # 局域网互联
@@ -214,7 +229,7 @@ class Config:
     def update_from_dict(self, d: dict):
         """从字典批量更新"""
         for k, v in d.items():
-            if k in self.DEFAULTS:
+            if k in self.DEFAULTS and k not in _FIXED_CLOUD_TOGGLES:
                 self.set(k, v)
 
     def reset(self):
@@ -239,6 +254,7 @@ class Config:
                 self._migrate(raw)
             except (json.JSONDecodeError, OSError):
                 pass
+        self._data.update(_FIXED_CLOUD_TOGGLES)
 
     def _migrate(self, raw):
         """配置文件版本迁移"""

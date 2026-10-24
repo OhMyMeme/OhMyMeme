@@ -1,6 +1,7 @@
 import { createApp, h, ref } from 'vue'
 import VueDragSelect from '@coleqiu/vue-drag-select'
 import App from './App.vue'
+import SettingsApp from './settings/SettingsApp.vue'
 import './style.css'
 
 declare global {
@@ -23,6 +24,7 @@ window.focusSearch = () => {
   if (el) el.focus()
 }
 
-const app = createApp(App)
-app.use(VueDragSelect) // 注册 <drag-select> / <drag-select-option>
-app.mount('#app-mount')
+const isSettings = !!document.getElementById('settings-mount')
+const app = createApp(isSettings ? SettingsApp : App)
+if (!isSettings) app.use(VueDragSelect) // 注册 <drag-select> / <drag-select-option>
+app.mount(isSettings ? '#settings-mount' : '#app-mount')

@@ -3,7 +3,7 @@
 OhMyMeme build script (PyInstaller)
 Deps: pip install pyinstaller
 Windows extra: InnoSetup 6/7 (ISCC.exe) — to create installer
-Windows optional: WiX Toolset v5 (wix.exe) — for --msi; Windows SDK makeappx.exe — for --msix
+Windows optional: Windows SDK makeappx.exe — for --msix
 
 Usage:
     python scripts/build.py                  # build + installer (auto-detect)
@@ -12,7 +12,7 @@ Usage:
     python scripts/build.py --macos          # macOS target (.app + .dmg, arch auto-detect)
     python scripts/build.py --macos --arch x86_64  # macOS Intel build
     python scripts/build.py --installer-only # installer only (assumes already built)
-    python scripts/build.py --installer-only --msi --msix  # + WiX MSI + MSIX (Store)
+    python scripts/build.py --installer-only --msix  # + MSIX (Store)
     python scripts/build.py --build-only     # build only, skip installer
     python scripts/build.py --package deb    # Linux package type: all|appimage|deb|rpm
     python scripts/build.py --lang en        # force English output
@@ -270,21 +270,6 @@ _MSGS = {
     "msix_failed": {
         "zh": "MSIX 打包失败 (code=%d)",
         "en": "MSIX packaging failed (code=%d)",
-    },
-    "wix_not_found": {
-        "zh": "警告: 未找到 wix.exe（WiX Toolset v5），跳过 MSI 打包。"
-        "安装: dotnet tool install --global wix --version 5.*",
-        "en": "WARNING: wix.exe (WiX Toolset v5) not found, skipping MSI. "
-        "Install: dotnet tool install --global wix --version 5.*",
-    },
-    "wix_source_not_found": {
-        "zh": "错误: WiX 源文件不存在:",
-        "en": "ERROR: WiX source not found:",
-    },
-    "building_msi": {"zh": "制作 MSI 包...", "en": "Building MSI package..."},
-    "msi_failed": {
-        "zh": "MSI 打包失败 (code=%d)",
-        "en": "MSI packaging failed (code=%d)",
     },
 }
 
@@ -951,21 +936,6 @@ def find_makeappx():
     return None
 
 
-def find_wix():
-    """定位 WiX Toolset v5 CLI（wix.exe）；WIX 环境变量可覆盖"""
-    candidates = [os.environ.get("WIX")]
-    for name in ("wix.exe", "wix"):
-        found = shutil.which(name)
-        if found:
-            candidates.append(found)
-    home = os.environ.get("USERPROFILE") or os.path.expanduser("~")
-    candidates.append(str(Path(home) / ".dotnet" / "tools" / "wix.exe"))
-    for c in candidates:
-        if c and os.path.isfile(c):
-            return c
-    return None
-
-
 def _msix_assets(assets_dir):
     """由 src/resources/icon.png 生成 MSIX 所需各尺寸 PNG 徽标"""
     png = SRC_DIR / "resources" / "icon.png"
@@ -1086,67 +1056,12 @@ def build_msix(version, target=None, filename_version=None):
         print(L("installer_not_found"), out)
 
 
-def build_msi(version, target=None, filename_version=None):
-    """生成 MSI 包（WiX Toolset v5，离线/GPO 分发）；version 为三段式数字版本"""
-    if target is None:
-        target = platform.system()
-    if target != "Windows":
-        print(L("skip_installer"))
-        return
-
-    wix = find_wix()
-    if not wix:
-        print(L("wix_not_found"))
-        return
-
-    dist_dir = BUILD_DIR / APP_NAME
-    if not dist_dir.is_dir():
-        print(L("outdir_not_found"), dist_dir)
-        print(L("run_build_first"))
-        return
-
-    wxs = PROJECT_ROOT / "scripts" / "installer" / "wix" / "app.wxs"
-    if not wxs.exists():
-        print(L("wix_source_not_found"), wxs)
-        return
-
-    filename_version = filename_version or version
-    out = BUILD_DIR / ("%s-%s.msi" % (APP_NAME, filename_version))
-
-    print(L("building_msi"))
-    result = subprocess.run(
-        [
-            wix,
-            "build",
-            str(wxs),
-            "-arch",
-            "x64",
-            "-d",
-            "Version=%s" % version,
-            "-d",
-            "PayloadDir=%s" % str(dist_dir.resolve()),
-            "-o",
-            str(out.resolve()),
-        ],
-        cwd=str(PROJECT_ROOT),
-    )
-    if result.returncode != 0:
-        print(L("msi_failed", result.returncode))
-        sys.exit(result.returncode)
-    if out.exists():
-        print(L("installer_done"), out)
-    else:
-        print(L("installer_not_found"), out)
-
-
 def build_windows_installers(
-    app_version, filename_version, want_msi=False, want_msix=False
+    app_version, filename_version, want_msix=False
 ):
     """构建 Windows 安装包集合：InnoSetup .exe 始终构建（工具缺失仅告警），
-    可选追加 MSI（--msi）与 MSIX（--msix）"""
+    可选追加 MSIX（--msix）"""
     build_installer(app_version, target="Windows", filename_version=filename_version)
-    if want_msi:
-        build_msi(app_version, target="Windows", filename_version=filename_version)
     if want_msix:
         build_msix(app_version, target="Windows", filename_version=filename_version)
 
@@ -1343,11 +1258,6 @@ if __name__ == "__main__":
         "non-zero on failure)",
     )
     parser.add_argument(
-        "--msi",
-        action="store_true",
-        help="Also build the WiX MSI package (Windows; needs WiX Toolset v5)",
-    )
-    parser.add_argument(
         "--msix",
         action="store_true",
         help="Also build the MSIX package (Windows; needs Windows SDK makeappx)",
@@ -1439,7 +1349,6 @@ if __name__ == "__main__":
                 build_windows_installers(
                     app_version,
                     build_version,
-                    want_msi=args.msi,
                     want_msix=args.msix,
                 )
             elif target == "Linux":
@@ -1470,7 +1379,6 @@ if __name__ == "__main__":
                 build_windows_installers(
                     app_version,
                     build_version,
-                    want_msi=args.msi,
                     want_msix=args.msix,
                 )
             elif target == "Linux":

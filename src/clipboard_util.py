@@ -4,6 +4,7 @@ import hashlib
 import io
 import logging
 import os
+import shutil
 import struct
 import tempfile
 
@@ -376,6 +377,27 @@ def convert_image_mode_3(image_path: str, resize_max: int) -> str:
         return steg_path
 
     return image_path
+
+
+def convert_image_mode_4(image_path: str, resize_max: int = 0) -> str:
+    """仅修改后缀为 gif：不改动字节，生成同内容 .gif 临时副本"""
+    if not os.path.isfile(image_path):
+        logger.warning(f"convert_image_mode_4: file not found {image_path}")
+        return ""
+    if os.path.splitext(image_path)[1].lower() == ".gif":
+        return image_path
+    try:
+        with open(image_path, "rb") as f:
+            digest = hashlib.md5(f.read()).hexdigest()
+        tmp_path = os.path.join(
+            tempfile.gettempdir(), f"ohmm_suffix_gif_{digest}_v1.gif"
+        )
+        if not os.path.isfile(tmp_path):
+            shutil.copyfile(image_path, tmp_path)
+        return tmp_path
+    except Exception as e:
+        logger.warning(f"convert_image_mode_4 failed: {e}")
+        return ""
 
 
 def copy_image_to_clipboard(image_path: str) -> bool:

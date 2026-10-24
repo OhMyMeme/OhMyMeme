@@ -79,7 +79,10 @@ def build() -> List[Dict]:
             entry["tags"] = tags_map.get(fname, [])
         memes.append(entry)
 
-    collections = _build_collection_tree(db)
+    collections = []
+    include_collections = bool(get_config().get("manifest_include_collections", True))
+    if include_collections:
+        collections = _build_collection_tree(db)
 
     include_favorites = bool(get_config().get("manifest_include_favorites", True))
     favorite = []
@@ -89,7 +92,9 @@ def build() -> List[Dict]:
             for r in db.search(keyword="", favorite_only=True, limit=999999)
         ]
 
-    data = {"version": 3, "memes": memes, "collections": collections}
+    data = {"version": 3, "memes": memes}
+    if include_collections:
+        data["collections"] = collections
     if include_favorites:
         data["favorite"] = favorite
     _write(data)

@@ -510,6 +510,19 @@ class TestSyncPush(unittest.TestCase):
         local = json.loads((self.data_dir / INDEX_FILENAME).read_text(encoding="utf-8"))
         self.assertNotIn("favorite", local)
 
+    def test_build_manifest_omits_collections_when_disabled(self):
+        """manifest_include_collections=False 时顶层不含 collections 键"""
+        self.cfg.set("manifest_include_collections", False)
+        sync.build_manifest()
+        local = json.loads((self.data_dir / INDEX_FILENAME).read_text(encoding="utf-8"))
+        self.assertNotIn("collections", local)
+
+    def test_build_manifest_includes_collections_by_default(self):
+        """分组写入清单默认开启"""
+        sync.build_manifest()
+        local = json.loads((self.data_dir / INDEX_FILENAME).read_text(encoding="utf-8"))
+        self.assertIn("collections", local)
+
     def test_pull_applies_remote_favorite(self):
         """pull 把远端 favorite 并集合并进本地（经 _apply_remote_favorites）"""
         self.fake_backend.remote_memes = {"test.png": _entry("test.png", "abc")}

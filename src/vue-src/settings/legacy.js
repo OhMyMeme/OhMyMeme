@@ -423,7 +423,7 @@ async function getSettings() {
   const to = document.getElementById('s-try-original');
   if (to) to.checked = s.try_original_image === true;  // DeepSeek V4 Flash
   const cm = document.getElementById('s-copy-mode');
-  if (cm) cm.value = String(s.copy_resize_mode ?? 1);
+  if (cm) cm.value = String(s.copy_resize_mode ?? 4);
   const caw = document.getElementById('s-copy-avoid-webp');
   if (caw) caw.checked = s.copy_avoid_webp === true;
   const dah = document.getElementById('s-disable-auto-hide');
@@ -439,13 +439,13 @@ async function getSettings() {
   const ssa = document.getElementById('s-show-startup-anim');
   if (ssa) ssa.checked = s.show_startup_animation !== false;
   toggleSilentStart();
-  const ff = document.getElementById('s-sync-fetch');
   const sa = document.getElementById('s-sync-auto');
   const st = document.getElementById('s-sync-type');
-  if (ff) ff.checked = s.sync_auto_fetch_index === true;
   if (sa) sa.checked = s.sync_auto_sync === true;
   const mit = document.getElementById('s-manifest-include-tags');
   if (mit) mit.checked = s.manifest_include_tags !== false;
+  const mic = document.getElementById('s-manifest-include-collections');
+  if (mic) mic.checked = s.manifest_include_collections !== false;
   const mif = document.getElementById('s-manifest-include-favorites');
   if (mif) mif.checked = s.manifest_include_favorites !== false;
   const cld = document.getElementById('s-cloud-direct');
@@ -478,20 +478,8 @@ async function getSettings() {
   document.getElementById('wd-user').value = s.webdav_user || '';
   document.getElementById('wd-pass').value = s.webdav_password || '';
   document.getElementById('wd-path').value = s.webdav_path || '';
-  const kr = document.getElementById('s-delete-remote');
-  const rl = document.getElementById('s-remove-local');
-  const hw = document.getElementById('s-hide-upload-warn');
-  if (kr) kr.checked = s.sync_delete_remote === true;
-  if (rl) rl.checked = s.sync_remove_local === true;
-  if (hw) hw.checked = s.sync_hide_upload_warning === true;
-  const up = document.getElementById('s-show-up-progress');
-  const ud = document.getElementById('s-show-up-done');
-  const dp = document.getElementById('s-show-dl-progress');
-  const dd = document.getElementById('s-show-dl-done');
-  if (up) up.checked = s.show_upload_progress !== false;
-  if (ud) ud.checked = s.show_upload_done !== false;
-  if (dp) dp.checked = s.show_download_progress !== false;
-  if (dd) dd.checked = s.show_download_done !== false;
+  const wdi = document.getElementById('s-webdav-insecure');
+  if (wdi) wdi.checked = s.webdav_allow_insecure === true;
   const lport = document.getElementById('s-lan-port');
   if (lport) lport.value = s.lan_port || 17852;
   const lsec = document.getElementById('s-lan-secret');
@@ -688,12 +676,19 @@ async function onSyncTypeChange() {
 
 function collectSyncSettings() {
   return {
-    sync_auto_fetch_index: document.getElementById('s-sync-fetch')?.checked === true,
+    sync_auto_fetch_index: false,
     sync_auto_sync: document.getElementById('s-sync-auto')?.checked === true,
     sync_type: document.getElementById('s-sync-type')?.value || '',
-    sync_delete_remote: document.getElementById('s-delete-remote')?.checked === true,
-    sync_remove_local: document.getElementById('s-remove-local')?.checked === true,
-    sync_hide_upload_warning: document.getElementById('s-hide-upload-warn')?.checked === true,
+    sync_delete_remote: false,
+    sync_remove_local: false,
+    sync_hide_upload_warning: false,
+    show_upload_progress: true,
+    show_upload_done: true,
+    show_download_progress: true,
+    show_download_done: true,
+    manifest_include_tags: document.getElementById('s-manifest-include-tags')?.checked !== false,
+    manifest_include_collections: document.getElementById('s-manifest-include-collections')?.checked !== false,
+    manifest_include_favorites: document.getElementById('s-manifest-include-favorites')?.checked !== false,
     cloud_direct: document.getElementById('s-cloud-direct')?.checked === true,
     cloud_thumb_auto_push: document.getElementById('s-cloud-thumb-push')?.checked === true,
     ftp_host: document.getElementById('s-ftp-host')?.value || '',
@@ -718,6 +713,7 @@ function collectSyncSettings() {
     webdav_user: document.getElementById('wd-user')?.value || '',
     webdav_password: document.getElementById('wd-pass')?.value || '',
     webdav_path: document.getElementById('wd-path')?.value || '',
+    webdav_allow_insecure: document.getElementById('s-webdav-insecure')?.checked === true,
   };
 }
 
@@ -906,7 +902,7 @@ async function resetSettingsNow() {
     const to = document.getElementById('s-try-original');  // DeepSeek V4 Flash
     if (to) to.checked = false;
     const cm = document.getElementById('s-copy-mode');
-    if (cm) cm.value = String(s.copy_resize_mode ?? 1);
+    if (cm) cm.value = String(s.copy_resize_mode ?? 4);
     const caw2 = document.getElementById('s-copy-avoid-webp');
     if (caw2) caw2.checked = s.copy_avoid_webp === true;
     const dah2 = document.getElementById('s-disable-auto-hide');
@@ -917,13 +913,13 @@ async function resetSettingsNow() {
     if (ss) ss.checked = s.silent_start === true;
     toggleSilentStart();
     checkConnectivity();  // DeepSeek V4 Flash
-    const ff = document.getElementById('s-sync-fetch');
     const sa = document.getElementById('s-sync-auto');
     const st = document.getElementById('s-sync-type');
-    if (ff) ff.checked = false;
     if (sa) sa.checked = false;
     const mit2 = document.getElementById('s-manifest-include-tags');
     if (mit2) mit2.checked = true;
+    const mic2 = document.getElementById('s-manifest-include-collections');
+    if (mic2) mic2.checked = true;
     const mif2 = document.getElementById('s-manifest-include-favorites');
     if (mif2) mif2.checked = true;
     const cld2 = document.getElementById('s-cloud-direct');
@@ -952,20 +948,8 @@ async function resetSettingsNow() {
     document.getElementById('wd-user').value = '';
     document.getElementById('wd-pass').value = '';
     document.getElementById('wd-path').value = '';
-    const kr = document.getElementById('s-delete-remote');
-    const rl = document.getElementById('s-remove-local');
-    const hw = document.getElementById('s-hide-upload-warn');
-    if (kr) kr.checked = false;
-    if (rl) rl.checked = false;
-    if (hw) hw.checked = false;
-    const up = document.getElementById('s-show-up-progress');
-    const ud = document.getElementById('s-show-up-done');
-    const dp = document.getElementById('s-show-dl-progress');
-    const dd = document.getElementById('s-show-dl-done');
-    if (up) up.checked = true;
-    if (ud) ud.checked = true;
-    if (dp) dp.checked = true;
-    if (dd) dd.checked = true;
+    const wdi2 = document.getElementById('s-webdav-insecure');
+    if (wdi2) wdi2.checked = false;
     const rec = document.getElementById('s-record-recent');
     if (rec) rec.checked = true;
     const ssa = document.getElementById('s-show-startup-anim');
@@ -986,7 +970,7 @@ async function resetSettingsNow() {
   }
 }
 
-async function testSync() {
+async function testSync(isRetry = false) {
   const sync = collectSyncSettings();
   if (!validateSync(sync)) return;
   const btn = document.getElementById('btn-ftp-test');
@@ -995,7 +979,52 @@ async function testSync() {
   await api('save_settings', sync);
   const r = await api('sync_test');
   btn.disabled = false; btn.textContent = '测试连接';
+  if (typeof r === 'string' && r.startsWith('WEBDAV_SSL_UNTRUSTED:')) {
+    if (isRetry) {
+      status.textContent = '连接失败: 证书仍不受信任';
+      return;
+    }
+    const ok = await showConfirm(
+      '服务器证书不受信任',
+      '该 WebDAV 服务器使用了自签名或不受信任的证书。继续使用将跳过证书校验，存在中间人攻击风险。是否仍要继续使用？',
+      '继续使用',
+      '不使用'
+    );
+    if (!ok) {
+      status.textContent = '已取消：未信任该服务器证书';
+      return;
+    }
+    const cb = document.getElementById('s-webdav-insecure');
+    if (cb) cb.checked = true;
+    await api('save_settings', { webdav_allow_insecure: true });
+    await testSync(true);
+    return;
+  }
   status.textContent = r === 'ok' ? '连接成功' : '连接失败: ' + r;
+}
+
+async function confirmManifestToggle(el, label) {
+  if (!el || el.checked) {
+    markSettingsDirty();
+    return;
+  }
+  const ok = await showConfirm(
+    '关闭' + label + '同步',
+    '关闭后将无法云同步' + label + '。',
+    '仍然关闭',
+    '保持开启'
+  );
+  if (!ok) {
+    el.checked = true;
+    return;
+  }
+  markSettingsDirty();
+}
+
+async function resetMainWindowSize() {
+  const r = await api('reset_main_window_size');
+  if (r && r.ok) showToast('已恢复默认窗口大小');
+  else showToast('恢复失败：' + ((r && r.error) || '未知错误'));
 }
 
 async function checkSyncStatus() {
@@ -1112,9 +1141,9 @@ async function doSyncWithProgress(method, title, progressSetting, doneSetting, b
   if (!warnOk) return;
   await api('save_settings', sync);
 
-  // 检查设置
-  const showProgress = document.getElementById(progressSetting)?.checked !== false;
-  const showDone = document.getElementById(doneSetting)?.checked !== false;
+  // 进度/完成弹窗开关已从设置页移除，固定保持默认开启
+  const showProgress = true;
+  const showDone = true;
 
   const btn = document.getElementById(btnId);
   const status = document.getElementById(statusId);
@@ -2698,9 +2727,5 @@ async function initVersion() {
   const el = document.getElementById('s-ver-current');
   if (el) el.textContent = '当前版本: ' + (ver || '--');
 }
-document.addEventListener('DOMContentLoaded', () => {
-  initSettings();
-  setTimeout(initVersion, 500);
-  initDirtyTracking();
-  initPlugins();
-});
+
+window.__ohmmSettingsLegacyReady = true;

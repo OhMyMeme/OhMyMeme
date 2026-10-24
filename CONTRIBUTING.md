@@ -124,7 +124,7 @@ src/
 config/
   offsets.json    # wechat_keyfinder 易变参数（微信升级时只改此文件）
 scripts/
-  build.py        # PyInstaller + InnoSetup/MSI/MSIX 构建脚本 (i18n zh/en)
+  build.py        # PyInstaller + InnoSetup/MSIX 构建脚本 (i18n zh/en)
   launcher.py     # PyInstaller 入口
   hooks/          # 自定义 PyInstaller hooks（Linux GTK typelib 收集）
 tests/            # 单元/集成测试（见上）
@@ -148,14 +148,13 @@ python scripts/build.py --macos          # macOS（仅 macOS 上运行，.app + 
 python scripts/build.py --macos --arch x86_64   # 指定 macOS 架构（默认自动检测）
 python scripts/build.py --build-only     # 仅打包，跳过安装包
 python scripts/build.py --installer-only # 仅制作安装包（Windows）
-python scripts/build.py --installer-only --msi --msix  # 追加 MSI + MSIX（见下）
+python scripts/build.py --installer-only --msix  # 追加 MSIX（见下）
 python scripts/build.py --linux --installer-only --package deb  # Linux 包类型 all|appimage|deb|rpm
 ```
 
 - **PyInstaller 不支持交叉编译**，各平台需在对应系统上构建；跨平台构建用 GitHub Actions
 - Windows 安装包需 [InnoSetup 6/7](https://jrsoftware.org/isdl.php)
-- Windows 追加格式（`--msi`/`--msix`，均追加在 `.exe` 之外，工具缺失时仅告警跳过）：
-  - `--msi`：WiX Toolset v5 生成 `dist/OhMyMeme-<版本>.msi`（离线/组策略批量部署）。安装 `dotnet tool install --global wix --version 5.*`，模板 `scripts/installer/wix/app.wxs`
+- Windows 追加格式（`--msix`，在 `.exe` 之外追加，工具缺失时仅告警跳过）：
   - `--msix`：Windows SDK 的 `makeappx.exe` 生成 `dist/OhMyMeme-<版本>.msix`（Microsoft Store 上架 / 侧载）。模板 `scripts/installer/msix/AppxManifest.xml`，产物不签名（Store 会重签）
   - MSIX 身份信息（`Name`/`Publisher`/`PublisherDisplayName`）来自 Partner Center，模板内已填入本项目 Store 身份（`TNTXZ.OhMyMeme` / `CN=4215BB25-0E28-400F-94EF-AF09583E9BCF` / `TNTXZ`）；**这些是公开标识（每个已发布包内都可见），可安全提交**，非密钥，无法据以冒充发布（发布需 Partner Center 账号 + 签名证书私钥）；CI 可用环境变量覆盖：`OHMYMEME_MSIX_IDENTITY_NAME`/`OHMYMEME_MSIX_PUBLISHER`/`OHMYMEME_MSIX_PUBLISHER_DISPLAY_NAME`
   - Microsoft Store 上架时的「隐私策略 URL」填写仓库内 [docs/privacy.md](docs/privacy.md) 的公开链接；该文件须与实际网络行为保持一致（新增联网功能时同步更新）
@@ -168,7 +167,7 @@ python scripts/build.py --linux --installer-only --package deb  # Linux 包类�
 |----------|------|------|
 | `check.yml` | push/PR 到任意分支 | Ubuntu lint + test（含 `keyfinder-tests` C++ 测试 job，Windows） |
 | `ffmpeg-win64.yml` | 被 build/nightly/release 以 `needs` 拉起 | 交叉编译裁剪版 ffmpeg，artifact 上传（按脚本内容哈希缓存） |
-| `build.yml` | 手动 | Windows 安装包（exe + msi + msix，含 ffmpeg/helper 校验）+ Linux 三格式 + macOS 双架构 `.dmg` |
+| `build.yml` | 手动 | Windows 安装包（exe + msix，含 ffmpeg/helper 校验）+ Linux 三格式 + macOS 双架构 `.dmg` |
 | `release.yml` | 手动 | 从 `main` 构建三平台产物并创建正式 Release（tag/标题为 `src/__init__.py` 的版本号，正文仅下载表格） |
 | `nightly.yml` | 每日 UTC 20:00 + 手动 | 从 `dev` 分支构建非正式版，发布为 `nightly` prerelease（软件更新不会指向 nightly） |
 

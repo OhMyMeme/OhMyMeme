@@ -619,12 +619,14 @@ def test_html_injection_helpers():
 def test_settings_page_has_plugin_group_and_anchor():
     from src import webui
 
-    html = (webui.HTML_DIR / "settings.html").read_text(encoding="utf-8")
+    settings_dir = webui.HTML_DIR.parent / "vue-src" / "settings"
+    shell = (webui.HTML_DIR / "settings.html").read_text(encoding="utf-8")
+    html = (settings_dir / "settings-body.html").read_text(encoding="utf-8")
     assert 'data-group="plugin"' in html
     assert "switchSettingsGroup('plugin')" in html
-    assert "<!-- plugin-sections -->" in html
+    assert "<!-- plugin-sections -->" in shell
     assert 'id="plugin-list"' in html
-    js = (webui.HTML_DIR / "settings.js").read_text(encoding="utf-8")
+    js = (settings_dir / "legacy.js").read_text(encoding="utf-8")
     assert "initPlugins" in js
     assert "plugin_save_settings" in js
     assert "ommPluginRefresh" in js
@@ -682,8 +684,8 @@ def test_settings_route_injection(tmp_path, monkeypatch):
     assert out.index("<link") < out.index("</head>")
     assert "/plugins/p/p.js?v=" in out
     assert out.index('data-group="plugin">P') > out.index("plugin-sections")
-    # 插件脚本在 settings.js 之后（defer 文档序）
-    assert out.index("/settings.js") < out.index("/plugins/p/p.js")
+    # 插件脚本在 Vue 入口之后（defer 文档序）
+    assert out.index("/dist/ohmymeme.js") < out.index("/plugins/p/p.js")
 
     # 注入标记完整存在于真实文件
     assert "</head>" in html and "</body>" in html

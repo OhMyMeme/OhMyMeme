@@ -17,6 +17,9 @@ from src.database import MemeDB
 from src.hotkey import GlobalHotkey
 from src.tray import _create_default_icon
 
+_SETTINGS_BODY = Path(__file__).resolve().parent.parent / "src" / "vue-src" / "settings" / "settings-body.html"
+_SETTINGS_LEGACY = Path(__file__).resolve().parent.parent / "src" / "vue-src" / "settings" / "legacy.js"
+
 
 class _FakeConfig:
     def __init__(self, hotkey_show_at_mouse):
@@ -537,15 +540,15 @@ def test_webui_html_exists():
     assert (HTML_DIR / "index.css").exists()
     assert (HTML_DIR / "index.js").exists()
     assert (HTML_DIR / "settings.html").exists()
-    assert (HTML_DIR / "settings.css").exists()
-    assert (HTML_DIR / "settings.js").exists()
     assert 'src="/index.js"' in html
     assert 'href="/index.css"' in html
-    settings_html = (HTML_DIR / "settings.html").read_text(encoding="utf-8")
-    assert 'src="/settings.js"' in settings_html
-    assert 'href="/settings.css"' in settings_html
+    shell = (HTML_DIR / "settings.html").read_text(encoding="utf-8")
+    assert 'src="/dist/ohmymeme.js"' in shell
+    assert 'id="settings-mount"' in shell
+    assert "<!-- plugin-sections -->" in shell
+    settings_html = _SETTINGS_BODY.read_text(encoding="utf-8")
     assert 'id="s-hotkey-show-at-mouse"' in settings_html
-    settings_js = (HTML_DIR / "settings.js").read_text(encoding="utf-8")
+    settings_js = _SETTINGS_LEGACY.read_text(encoding="utf-8")
     assert settings_js.count("s.hotkey_show_at_mouse === true") == 2
     assert "hotkey_show_at_mouse," in settings_js
 
@@ -556,9 +559,9 @@ def test_manifest_include_tags_settings_contract():
     from src.webui import HTML_DIR, SettingsApi
 
     assert Config.DEFAULTS.get("manifest_include_tags") is True
-    settings_html = (HTML_DIR / "settings.html").read_text(encoding="utf-8")
+    settings_html = _SETTINGS_BODY.read_text(encoding="utf-8")
     assert 'id="s-manifest-include-tags"' in settings_html
-    settings_js = (HTML_DIR / "settings.js").read_text(encoding="utf-8")
+    settings_js = _SETTINGS_LEGACY.read_text(encoding="utf-8")
     assert "s.manifest_include_tags !== false" in settings_js
     assert "manifest_include_tags," in settings_js
     import inspect
@@ -575,9 +578,9 @@ def test_manifest_include_favorites_settings_contract():
     from src.webui import HTML_DIR, SettingsApi
 
     assert Config.DEFAULTS.get("manifest_include_favorites") is True
-    settings_html = (HTML_DIR / "settings.html").read_text(encoding="utf-8")
+    settings_html = _SETTINGS_BODY.read_text(encoding="utf-8")
     assert 'id="s-manifest-include-favorites"' in settings_html
-    settings_js = (HTML_DIR / "settings.js").read_text(encoding="utf-8")
+    settings_js = _SETTINGS_LEGACY.read_text(encoding="utf-8")
     assert "s.manifest_include_favorites !== false" in settings_js
     assert "manifest_include_favorites," in settings_js
     import inspect
@@ -586,6 +589,69 @@ def test_manifest_include_favorites_settings_contract():
     assert '"manifest_include_favorites"' in src
     reset_src = inspect.getsource(SettingsApi.reset_settings)
     assert '"manifest_include_favorites": True' in reset_src
+
+
+def test_manifest_include_collections_settings_contract():
+    """设置页「将分组写入同步清单」开关（HTML + JS 读写 + 后端配置键 + 关闭确认）"""
+    import inspect
+
+    from src.config import Config
+    from src.webui import SettingsApi
+
+    assert Config.DEFAULTS.get("manifest_include_collections") is True
+    settings_html = _SETTINGS_BODY.read_text(encoding="utf-8")
+    assert 'id="s-manifest-include-collections"' in settings_html
+    assert "confirmManifestToggle(this, '分组')" in settings_html
+    settings_js = _SETTINGS_LEGACY.read_text(encoding="utf-8")
+    assert "s.manifest_include_collections !== false" in settings_js
+    assert "manifest_include_collections:" in settings_js
+    assert "关闭后将无法云同步" in settings_js
+    src = inspect.getsource(SettingsApi.get_settings)
+    assert '"manifest_include_collections"' in src
+    reset_src = inspect.getsource(SettingsApi.reset_settings)
+    assert '"manifest_include_collections": True' in reset_src
+
+
+def test_webdav_allow_insecure_settings_contract():
+    """WebDAV 自签名证书开关 + 测试连接确认分支（HTML + JS + 后端配置键）"""
+    import inspect
+
+    from src.config import Config
+    from src.webui import SettingsApi
+
+    assert Config.DEFAULTS.get("webdav_allow_insecure") is False
+    settings_html = _SETTINGS_BODY.read_text(encoding="utf-8")
+    assert 'id="s-webdav-insecure"' in settings_html
+    settings_js = _SETTINGS_LEGACY.read_text(encoding="utf-8")
+    assert "WEBDAV_SSL_UNTRUSTED" in settings_js
+    assert "继续使用" in settings_js
+    assert "webdav_allow_insecure" in settings_js
+    src = inspect.getsource(SettingsApi.get_settings)
+    assert '"webdav_allow_insecure"' in src
+    reset_src = inspect.getsource(SettingsApi.reset_settings)
+    assert '"webdav_allow_insecure": False' in reset_src
+
+
+def test_copy_mode_4_settings_contract():
+    """复制处理默认仅改后缀为 GIF（HTML 选项 + JS 默认 + 后端默认 + 转化函数）"""
+    import inspect
+
+    from src.clipboard_util import convert_image_mode_4
+    from src.config import Config
+    from src.webui import JsApi, SettingsApi
+
+    assert Config.DEFAULTS.get("copy_resize_mode") == 4
+    settings_html = _SETTINGS_BODY.read_text(encoding="utf-8")
+    assert '<option value="4">仅修改后缀为 GIF' in settings_html
+    settings_js = _SETTINGS_LEGACY.read_text(encoding="utf-8")
+    assert "s.copy_resize_mode ?? 4" in settings_js
+    assert "case 4:" in inspect.getsource(JsApi.copy_meme)
+    assert "resize_mode != 4" in inspect.getsource(JsApi.copy_meme)
+    assert "convert_image_mode_4" in inspect.getsource(JsApi.copy_meme)
+    assert callable(convert_image_mode_4)
+    assert '"copy_resize_mode": int(d.get("copy_resize_mode", 4) or 0)' in (
+        inspect.getsource(SettingsApi.get_settings)
+    )
 
 
 def test_cloud_thumb_auto_push_settings_contract():
@@ -597,9 +663,9 @@ def test_cloud_thumb_auto_push_settings_contract():
 
     assert Config.DEFAULTS.get("cloud_direct") is True
     assert Config.DEFAULTS.get("cloud_thumb_auto_push") is True
-    settings_html = (HTML_DIR / "settings.html").read_text(encoding="utf-8")
+    settings_html = _SETTINGS_BODY.read_text(encoding="utf-8")
     assert 'id="s-cloud-thumb-push"' in settings_html
-    settings_js = (HTML_DIR / "settings.js").read_text(encoding="utf-8")
+    settings_js = _SETTINGS_LEGACY.read_text(encoding="utf-8")
     assert "s.cloud_thumb_auto_push !== false" in settings_js
     assert "cloud_thumb_auto_push:" in settings_js
     src = inspect.getsource(SettingsApi.get_settings)
@@ -617,9 +683,9 @@ def test_disable_auto_hide_settings_contract():
     from src.webui import HTML_DIR, SettingsApi
 
     assert Config.DEFAULTS.get("disable_auto_hide") is False
-    settings_html = (HTML_DIR / "settings.html").read_text(encoding="utf-8")
+    settings_html = _SETTINGS_BODY.read_text(encoding="utf-8")
     assert 'id="s-disable-auto-hide"' in settings_html
-    settings_js = (HTML_DIR / "settings.js").read_text(encoding="utf-8")
+    settings_js = _SETTINGS_LEGACY.read_text(encoding="utf-8")
     assert settings_js.count("s.disable_auto_hide === true") == 2
     assert "disable_auto_hide," in settings_js
     src = inspect.getsource(SettingsApi.get_settings)
@@ -637,9 +703,9 @@ def test_window_resize_settings_contract():
 
     assert Config.DEFAULTS.get("window_resize_enabled") is False
     assert Config.DEFAULTS.get("settings_window_width") == 0
-    settings_html = (HTML_DIR / "settings.html").read_text(encoding="utf-8")
+    settings_html = _SETTINGS_BODY.read_text(encoding="utf-8")
     assert 'id="s-window-resize"' in settings_html
-    settings_js = (HTML_DIR / "settings.js").read_text(encoding="utf-8")
+    settings_js = _SETTINGS_LEGACY.read_text(encoding="utf-8")
     assert "s.window_resize_enabled === true" in settings_js
     assert "window_resize_enabled," in settings_js
     assert "applyWindowResizeHandles" in settings_js
@@ -658,6 +724,9 @@ def test_window_resize_settings_contract():
     assert "window_resize_enabled" in inspect.getsource(JsApi.get_init_data)
     assert hasattr(JsApi, "resize_window")
     assert hasattr(SettingsApi, "resize_window")
+    assert hasattr(SettingsApi, "reset_main_window_size")
+    assert "resetMainWindowSize()" in settings_html
+    assert "reset_main_window_size" in settings_js
     assert hasattr(SettingsApi, "plugin_pick_file")
     webui_src = inspect.getsource(WebUI._create_settings_window)
     assert "resizable=True" in webui_src
@@ -705,7 +774,7 @@ def test_cloud_direct_confirm_buttons_contract():
     """首次配置云端的弹窗按钮为「开启/关闭」（showConfirm 第 3/4 参），Esc/遮罩返回 null 不改动"""
     from src.webui import HTML_DIR
 
-    settings_js = (HTML_DIR / "settings.js").read_text(encoding="utf-8")
+    settings_js = _SETTINGS_LEGACY.read_text(encoding="utf-8")
     assert re.search(
         r"'云端直接使用'[\s\S]{0,400}?'开启'\s*,\s*'关闭'", settings_js
     ), "云端直接使用确认弹窗必须用「开启/关闭」按钮"
@@ -721,8 +790,8 @@ def test_about_links_static_contract():
     """关于页 GitHub/QQ 群外链按钮（HTML 按钮 + JS URL 常量 + open_url 接口）"""
     from src.webui import HTML_DIR
 
-    settings_html = (HTML_DIR / "settings.html").read_text(encoding="utf-8")
-    settings_js = (HTML_DIR / "settings.js").read_text(encoding="utf-8")
+    settings_html = _SETTINGS_BODY.read_text(encoding="utf-8")
+    settings_js = _SETTINGS_LEGACY.read_text(encoding="utf-8")
     assert "openAboutUrl('github')" in settings_html
     assert "openAboutUrl('qq')" in settings_html
     assert "https://github.com/TNTXZ/OhMyMeme" in settings_js
@@ -758,7 +827,7 @@ def test_wechat_dialog_user_agreement_warning():
     """微信导入对话框须常驻用户协议警告（合规提示，防被删）"""
     from src.webui import HTML_DIR
 
-    html = (HTML_DIR / "settings.html").read_text(encoding="utf-8")
+    html = _SETTINGS_BODY.read_text(encoding="utf-8")
     seg = html.split('id="wechat-config"', 1)
     assert len(seg) == 2
     warn_seg = seg[1].split('id="wechat-progress"', 1)[0]
@@ -1194,7 +1263,7 @@ def test_theme_frontend_races():
 const fs = require('fs');
 const vm = require('vm');
 const assert = require('assert/strict');
-const source = fs.readFileSync('src/webui/settings.js', 'utf8');
+const source = fs.readFileSync('src/vue-src/settings/legacy.js', 'utf8');
 const elements = new Proxy({}, {get: (o, k) => o[k] ||= {value: '', checked: false}});
 const calls = [], themes = [], toasts = [];
 let resolveSave;

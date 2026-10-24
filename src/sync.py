@@ -4,6 +4,7 @@ import json
 import logging
 import os
 import shutil
+import ssl
 import tempfile
 import threading
 import time
@@ -536,7 +537,14 @@ class _WebDAVBackend(_SyncBackend):
         if headers:
             for k, v in headers.items():
                 req.add_header(k, v)
-        return urllib.request.urlopen(req, timeout=self.timeout)
+        context = None
+        if url.lower().startswith("https://") and self.cfg.get(
+            "webdav_allow_insecure", False
+        ):
+            context = ssl._create_unverified_context()
+        if context is None:
+            return urllib.request.urlopen(req, timeout=self.timeout)
+        return urllib.request.urlopen(req, timeout=self.timeout, context=context)
 
     def ensure_remote_dir(self, path):
         rel = ""
@@ -652,6 +660,12 @@ class _WebDAVBackend(_SyncBackend):
                 ) from e
             raise SyncError("WebDAV 连接测试失败: HTTP %d" % e.code) from e
         except (urllib.error.URLError, OSError, TimeoutError) as e:
+            reason = getattr(e, "reason", e)
+            text = str(reason)
+            if isinstance(reason, ssl.SSLCertVerificationError) or (
+                "CERTIFICATE_VERIFY_FAILED" in text
+            ):
+                raise SyncError("WEBDAV_SSL_UNTRUSTED: %s" % text) from e
             raise SyncError("WebDAV 网络不可达: %s" % e) from e
 
     def delete_file(self, path):
