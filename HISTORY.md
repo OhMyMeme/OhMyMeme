@@ -29,6 +29,7 @@
 
 ## 修复
 - **云同步下载后多级分组丢失（#102）** — `_apply_remote_collections` 原仅创建顶层 `collections`，完全忽略 `children`，手机上传的多级分组在桌面下载后只剩空顶层分组（若成员都在子分组则看似全部丢失）；改为递归创建父子分组并按 `filenames` 关联成员，同时过滤非法/不安全文件名与条目
+- **Release 构建产物未上传** — `publish` 只执行 `gh release create`，没有把下载的 artifact 作为 Release 资产上传，正文里的下载链接因此指向不存在的文件；新增产物存在性校验与 `gh release upload <version> ... --clobber` 步骤。
 
 
 # v0.6.5

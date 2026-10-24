@@ -547,7 +547,7 @@ python scripts/build.py --lang en  # 指定语言构建
   - `build-windows`: InnoSetup 安装包 `dist/OhMyMeme-*-setup.exe` + MSIX `dist/OhMyMeme-*.msix`（`choco install innosetup`，`python scripts/build.py --installer-only --msix` 一次产出；打包前 download-artifact 取 ffmpeg-win64 到工作区 `ffmpeg-win64/`，打包后 `python scripts/build.py --verify-ffmpeg` 校验内置 ffmpeg）
   - `build-linux`: AppImage/deb/rpm（`--linux`）
   - `build-macos`: `.app` + `.dmg`（`--macos`，PyInstaller `--windowed` + iconutil 生成 icns）；矩阵双架构 `arm64`（macos-latest）+ `x86_64`（macos-15-intel），产物 `OhMyMeme-v*-{arch}.dmg`
-- **release.yml**: 手动触发的正式版发布——`prepare` job 从 `main` 的 `src/__init__.py` 读 `__version__`（校验格式、tag 不存在），三平台 job 构建（同 build.yml），`publish` job 汇总 artifact、生成三列下载表格正文、`gh release create <version> --target <main HEAD> --title <version>`（tag 与标题均不带 v）；正文仅下载表格，更新内容由维护者随后手动编辑
+- **release.yml**: 手动触发的正式版发布——`prepare` job 从 `main` 的 `src/__init__.py` 读 `__version__`（校验格式、tag 不存在），三平台 job 构建（同 build.yml），`publish` job 汇总 artifact、生成三列下载表格正文、`gh release create <version> --target <main HEAD> --title <version>` 创建 Release，随后 `gh release upload <version> artifacts/* --clobber` 上传全部构建产物（tag 与标题均不带 v）；正文仅下载表格，更新内容由维护者随后手动编辑
 - **nightly.yml**: Windows + Linux + macOS 三平台每日定时（UTC 20:00）+ `workflow_dispatch`，从 `dev` 分支构建非正式版（`--nightly`，版本号为 `nightly`）并发布为 `nightly` prerelease；`updater.py` 的 `_parse_release` 跳过 prerelease 与含 `nightly` 的 tag，**软件更新绝不会指向 nightly**；windows job 同样依赖 ffmpeg-win64 并跑 `--verify-ffmpeg`
 - 上传 `dist/OhMyMeme-*-setup.exe` / `dist/OhMyMeme-v*-x86_64.AppImage` 等作为 artifact
 
