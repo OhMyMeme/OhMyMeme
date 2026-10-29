@@ -584,6 +584,38 @@ body {
   border-color: var(--primary) !important;
 }
 
+/* 定位到已有表情：一次性脉冲高亮（只用 outline/box-shadow，避免与拖拽/FLIP 的 transform 冲突） */
+.meme-card.meme-locate {
+  border-color: var(--primary-strong);
+  animation: meme-locate-pulse 1.6s ease-out 1;
+}
+
+@keyframes meme-locate-pulse {
+  0% {
+    outline: 3px solid var(--primary);
+    outline-offset: 2px;
+    box-shadow: 0 0 0 0 rgba(59, 130, 246, 0.55);
+  }
+  60% {
+    outline: 3px solid var(--primary);
+    outline-offset: 6px;
+    box-shadow: 0 0 0 14px rgba(59, 130, 246, 0);
+  }
+  100% {
+    outline: 3px solid transparent;
+    outline-offset: 6px;
+    box-shadow: 0 0 0 14px rgba(59, 130, 246, 0);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .meme-card.meme-locate {
+    animation: none;
+    outline: 3px solid var(--primary);
+    outline-offset: 2px;
+  }
+}
+
 /* TransitionGroup FLIP 动画 */
 /* 仅保留 move（拖拽让位动画）；enter/leave 瞬时切换，避免标签筛选时
    整列卡片逐个淡入淡出导致卡顿 */

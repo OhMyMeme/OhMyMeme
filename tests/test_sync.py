@@ -937,5 +937,121 @@ class TestSafeRemoteFname(unittest.TestCase):
             self.assertFalse(sync._safe_remote_fname(name), name)
 
 
+class TestRemoteNameAndCollectionReconcile(unittest.TestCase):
+    """重命名与分组移动的远端应用：name 同步 + 成员差集"""
+
+    def test_apply_remote_names_updates_original_name(self):
+        class Db:
+            def __init__(self):
+                self.rows = {"a.png": {"id": 1, "original_name": "旧名"}}
+                self.updated = []
+
+            def get_by_filename(self, filename):
+                return self.rows.get(filename)
+
+            def set_original_name(self, meme_id, name):
+                self.updated.append((meme_id, name))
+
+        db = Db()
+        data = {"memes": [{"filename": "a.png", "name": "新名"}]}
+        with patch("src.sync.get_db", return_value=db):
+            changed = sync._apply_remote_names(data)
+        self.assertEqual(changed, 1)
+        self.assertEqual(db.updated, [(1, "新名")])
+
+    def test_apply_remote_names_skips_unchanged_and_missing(self):
+        class Db:
+            def __init__(self):
+                self.rows = {"a.png": {"id": 1, "original_name": "同名"}}
+                self.updated = []
+
+            def get_by_filename(self, filename):
+                return self.rows.get(filename)
+
+            def set_original_name(self, meme_id, name):
+                self.updated.append((meme_id, name))
+
+        db = Db()
+        data = {
+            "memes": [
+                {"filename": "a.png", "name": "同名"},
+                {"filename": "missing.png", "name": "任意"},
+                {"filename": "a.png"},
+            ]
+        }
+        with patch("src.sync.get_db", return_value=db):
+            changed = sync._apply_remote_names(data)
+        self.assertEqual(changed, 0)
+        self.assertEqual(db.updated, [])
+
+    def test_reconcile_removes_moved_out_member(self):
+        """分组 A 远端只保留 a.png：已在远端清单里的 b.png 被移出 A"""
+
+        class Db:
+            def __init__(self):
+                self.removed = []
+                self.added = []
+
+            def create_collection(self, name, parent_id=None):
+                return 5
+
+            def get_by_filename(self, filename):
+                return {"id": {"a.png": 11, "b.png": 12}.get(filename)}
+
+            def add_to_collection(self, meme_id, collection_id):
+                self.added.append((meme_id, collection_id))
+
+            def search(self, collection_id=None, limit=0, **kwargs):
+                return [
+                    {"id": 11, "filename": "a.png"},
+                    {"id": 12, "filename": "b.png"},
+                ]
+
+            def remove_from_collection(self, meme_id, collection_id):
+                self.removed.append((meme_id, collection_id))
+
+        db = Db()
+        data = {
+            "memes": [{"filename": "a.png"}, {"filename": "b.png"}],
+            "collections": [{"name": "A", "filenames": ["a.png"]}],
+        }
+        with patch("src.sync.get_db", return_value=db):
+            removed = sync._apply_remote_collections(data, reconcile=True)
+        self.assertEqual(removed, 1)
+        self.assertEqual(db.removed, [(12, 5)])
+
+    def test_reconcile_keeps_local_only_member(self):
+        """本地新增未上传（不在远端清单）的表情不被旧远端清单踢出分组"""
+
+        class Db:
+            def __init__(self):
+                self.removed = []
+
+            def create_collection(self, name, parent_id=None):
+                return 5
+
+            def get_by_filename(self, filename):
+                return {"id": 12} if filename == "b.png" else None
+
+            def add_to_collection(self, meme_id, collection_id):
+                pass
+
+            def search(self, collection_id=None, limit=0, **kwargs):
+                return [{"id": 12, "filename": "b.png"}]
+
+            def remove_from_collection(self, meme_id, collection_id):
+                self.removed.append((meme_id, collection_id))
+
+        db = Db()
+        data = {
+            "memes": [{"filename": "a.png"}],
+            "collections": [{"name": "A", "filenames": ["a.png"]}],
+        }
+        with patch("src.sync.get_db", return_value=db):
+            removed = sync._apply_remote_collections(data, reconcile=True)
+        self.assertEqual(removed, 0)
+        self.assertEqual(db.removed, [])
+
+
 if __name__ == "__main__":
     unittest.main()

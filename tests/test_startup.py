@@ -5,6 +5,8 @@ import re
 import subprocess
 import sys
 import tempfile
+import threading
+import time
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
@@ -19,6 +21,13 @@ from src.tray import _create_default_icon
 
 _SETTINGS_BODY = Path(__file__).resolve().parent.parent / "src" / "vue-src" / "settings" / "settings-body.html"
 _SETTINGS_LEGACY = Path(__file__).resolve().parent.parent / "src" / "vue-src" / "settings" / "legacy.js"
+
+
+def _wait_calls(target, count, timeout=2.0):
+    """等待后台窗口切换线程写入期望调用次数（托盘/热键回调改为异步执行）"""
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline and len(target.calls) < count:
+        time.sleep(0.01)
 
 
 class _FakeConfig:
@@ -517,11 +526,16 @@ def test_app_routes_hotkey_and_tray_to_separate_zero_argument_methods():
 
     app = OhMyMemeApp.__new__(OhMyMemeApp)
     app._webui = FakeWebUI()
+    app._toggle_busy = False
+    app._toggle_started_at = 0.0
+    app._toggle_lock = threading.Lock()
 
     app._on_hotkey()
+    _wait_calls(app._webui, 1)
     assert app._webui.calls == ["hotkey"]
 
     app._on_tray_show()
+    _wait_calls(app._webui, 2)
 
     assert app._webui.calls == ["hotkey", "tray"]
     assert len(inspect.signature(app._on_hotkey).parameters) == 0

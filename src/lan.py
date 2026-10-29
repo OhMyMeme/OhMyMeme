@@ -50,6 +50,13 @@ _lan_state = {
     "clients": [],  # 已连接设备列表
     "last_error": "",
     "allow_secret_config": False,  # 允许密钥传输（仅内存生效）
+    # 发现诊断：区分「广播没到（防火墙/端口）」与「回了但手机没收（接口）」
+    "discover_count": 0,
+    "last_discover_at": 0,
+    "last_discover_from": "",
+    "last_reply_at": 0,
+    "last_reply_error": "",
+    "iface_mode": "",  # pktinfo | sendto
 }
 _lan_lock = threading.Lock()
 _server = None
@@ -162,12 +169,21 @@ class LanServer:
             self._tcp_sock.settimeout(0.5)
         except OSError as e:
             self._cleanup_sockets()
+            logger.error("LAN 端口 %s 无法监听: %s", self._port, e)
             with _lan_lock:
                 _lan_state["status"] = "error"
                 _lan_state["last_error"] = f"端口 {self._port} 无法监听: {e}"
             with self._lock:
                 self._running = False
             return False
+        # 发现计数先清零再起线程：否则启动瞬间收到的广播会被随后的清零点抹掉
+        with _lan_lock:
+            _lan_state["discover_count"] = 0
+            _lan_state["last_discover_at"] = 0
+            _lan_state["last_discover_from"] = ""
+            _lan_state["last_reply_at"] = 0
+            _lan_state["last_reply_error"] = ""
+            _lan_state["iface_mode"] = "pktinfo" if self._udp_pktinfo else "sendto"
         self._spawn_thread(self._udp_loop)
         self._spawn_thread(self._tcp_loop)
         with _lan_lock:
@@ -178,21 +194,30 @@ class LanServer:
         logger.info(f"LAN 服务已启动，端口 {self._port}")
         return ok
 
+    def is_running(self):
+        """服务是否仍存活（UDP 发现线程异常退出后会置 False）"""
+        with self._lock:
+            return self._running
+
     def stop(self):
         with self._lock:
-            if not self._running:
-                return
+            running = self._running
             self._running = False
+        # socket 与线程无条件收尾：UDP 线程出错退出时 _running 已为假，但从「清运行态」
+        # 到「关 socket」之间有窗口，跳过清理会让随后替换的新实例绑不上端口
         self._cleanup_sockets()
         for t in self._threads:
             t.join(timeout=1)
         self._threads.clear()
+        # 状态无条件收敛：UDP 线程异常退出后 _running 已为假，若此时直接返回，
+        # 用户关掉开关后设置页会一直显示 error，已连接设备也留在列表里
         with _lan_lock:
             _lan_state["status"] = "stopped"
             _lan_state["port"] = 0
             _lan_state["start_time"] = 0
             _lan_state["clients"] = []
-        logger.info("LAN 服务已停止")
+        if running:
+            logger.info("LAN 服务已停止")
 
     def _cleanup_sockets(self):
         for s in (self._udp_sock, self._tcp_sock):
@@ -212,6 +237,7 @@ class LanServer:
     # --- UDP 发现 ---
 
     def _udp_loop(self):
+        errors = 0
         while self._running:
             try:
                 if self._udp_pktinfo:
@@ -224,15 +250,45 @@ class LanServer:
             except (AttributeError, NotImplementedError):
                 # recvmsg 不可用的平台：禁 pktinfo 退化 recvfrom，继续发现
                 self._udp_pktinfo = False
+                with _lan_lock:
+                    _lan_state["iface_mode"] = "sendto"
                 continue
-            except OSError:
-                break
+            except OSError as e:
+                # 单次错误（如 Windows 的 WSAECONNRESET）不能终止发现线程，
+                # 否则服务显示 running 而手机永远扫不到
+                errors += 1
+                if errors <= 3:
+                    logger.warning("LAN UDP 接收错误: %s", e)
+                if errors > 20:
+                    logger.error("LAN UDP 发现线程连续错误过多，已停止")
+                    # 先写 error 再清运行态：反序时模块级 start() 可能已经建了
+                    # 新实例并把状态写成 running，旧线程随后又把 error 盖回去
+                    with _lan_lock:
+                        _lan_state["status"] = "error"
+                        _lan_state["last_error"] = f"UDP 接收失败: {e}"
+                    with self._lock:
+                        self._running = False
+                    self._cleanup_sockets()
+                    break
+                time.sleep(0.2)
+                continue
+            errors = 0
             try:
                 msg = json.loads(data.decode("utf-8", errors="replace"))
             except Exception:
                 continue
             if not isinstance(msg, dict) or msg.get("t") != "discover":
                 continue
+            count = 0
+            with _lan_lock:
+                _lan_state["discover_count"] += 1
+                count = _lan_state["discover_count"]
+                _lan_state["last_discover_at"] = int(time.time())
+                _lan_state["last_discover_from"] = "%s:%s" % (addr[0], addr[1])
+            if count <= 5:
+                logger.info("LAN 收到设备发现请求: %s:%s", addr[0], addr[1])
+            else:
+                logger.debug("LAN 收到设备发现请求: %s:%s", addr[0], addr[1])
             reply = {
                 "t": "hello",
                 "name": platform.node(),
@@ -244,8 +300,13 @@ class LanServer:
             src_addr = self._extract_pktinfo_src(ancdata)
             try:
                 self._send_udp_reply(payload, addr, src_addr)
-            except OSError:
-                pass
+                with _lan_lock:
+                    _lan_state["last_reply_at"] = int(time.time())
+                    _lan_state["last_reply_error"] = ""
+            except OSError as e:
+                logger.warning("LAN 回包失败 %s:%s: %s", addr[0], addr[1], e)
+                with _lan_lock:
+                    _lan_state["last_reply_error"] = str(e)
 
     def _extract_pktinfo_src(self, ancdata):
         """提取广播到达的本地接口（Linux 返回 ("ip", ip)；Windows ("ifindex", n)）"""
@@ -348,6 +409,10 @@ class LanServer:
     def _sync_clients(self):
         now = time.time()
         with _lan_lock:
+            # 旧实例被替换后，它残留的连接在收尾时仍会走到这里；不校验所有权
+            # 会用旧的 _clients 覆盖全局列表，把新实例已连接的设备抹掉
+            if _server is not self:
+                return
             _lan_state["clients"] = [
                 {"addr": f"{addr[0]}:{addr[1]}", "connected_at": int(t)}
                 for addr, t in list(self._clients.items())
@@ -468,6 +533,7 @@ class LanServer:
         from .sync import (
             _apply_remote_collections,
             _apply_remote_favorites,
+            _apply_remote_names,
             _apply_remote_order,
             _apply_remote_tags,
         )
@@ -475,11 +541,16 @@ class LanServer:
         db = get_db()
         try:
             _apply_remote_order(manifest)
-            _apply_remote_collections(manifest)
+            _apply_remote_collections(manifest, reconcile=True)
+            _apply_remote_names(manifest)
             _apply_remote_tags(manifest)
             _apply_remote_favorites(manifest)
         except Exception as e:
             logger.warning(f"push_manifest apply error: {e}")
+            # 失败前的写入已提交，重建本地清单保持与 DB 一致；但不能对手机回报成功，
+            # 否则部分应用会被当成全部生效
+            build_manifest()
+            return {"ok": False, "error": f"应用清单失败: {e}", "applied": False}
         build_manifest()
         return {"ok": True, "local_count": db.count()}
 
@@ -691,8 +762,12 @@ def start(port: int = 17852, secret: str = "") -> bool:
     """启动局域网服务（设置页开关调用）"""
     global _server
     with _lan_lock:
-        if _lan_state["status"] == "running" and _server:
+        if _lan_state["status"] == "running" and _server and _server.is_running():
             return True
+    # 旧实例可能「对象还在、线程已退」：直接换实例会让旧 socket 与端口失去引用，
+    # 只能先停掉再新建，否则再次启动会卡在端口占用或一直无人监听
+    if _server:
+        _server.stop()
     _server = LanServer()
     return _server.start(port, secret)
 
@@ -719,6 +794,12 @@ def get_status() -> dict:
             "allow_secret_config": bool(_lan_state["allow_secret_config"]),
             "transfer": _transfer_snapshot(),
             "pending_confirm": dict(pending["device"]) if pending else None,
+            "discover_count": _lan_state["discover_count"],
+            "last_discover_at": _lan_state["last_discover_at"],
+            "last_discover_from": _lan_state["last_discover_from"],
+            "last_reply_at": _lan_state["last_reply_at"],
+            "last_reply_error": _lan_state["last_reply_error"],
+            "iface_mode": _lan_state["iface_mode"],
         }
 
 
