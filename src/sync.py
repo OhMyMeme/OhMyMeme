@@ -1495,12 +1495,13 @@ def push(delete_remote: bool = None) -> dict:
             local_names = {
                 m.get("filename"): (m.get("name") or "").strip() for m in local["memes"]
             }
+            # 只有远端确实带了非空名字、且与本地不同才算改名；远端缺 name
+            # （旧清单）不计，避免把「首次写入名字」误当改名
             results["renamed"] = sum(
                 1
                 for fname, m in remote_memes.items()
                 if isinstance(m, dict)
                 and (m.get("name") or "").strip()
-                and local_names.get(fname)
                 and (m.get("name") or "").strip() != local_names.get(fname)
             )
             ok = bk.upload_file(manifest_file, remote_manifest_path)
@@ -1790,11 +1791,16 @@ def pull(remove_local: bool = None) -> dict:
                                 pass
 
         _apply_remote_collections(remote_data, reconcile=True)
-        _apply_remote_names(remote_data)
+        renamed = _apply_remote_names(remote_data)
         _apply_remote_order(remote_data)
         _apply_remote_tags(remote_data)
         _apply_remote_favorites(remote_data)
         build_manifest()
+        # 只改分组/改名时文件数为 0，仍要把元数据变更回报给设置页
+        results["renamed"] = renamed
+        results["collections"] = _count_manifest_collections(
+            remote_data.get("collections")
+        )
         if aggregated["errors"] > 0:
             _update_sync_state(failed_items=aggregated["failed"])
             msg = "%d 个文件下载失败，本地清单仅包含成功项" % aggregated["errors"]

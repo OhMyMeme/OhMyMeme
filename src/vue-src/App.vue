@@ -483,6 +483,7 @@ async function jumpToMeme(id?: number | null, note = '已存在相同表情包')
   await search()
   if (gen !== locateGen) return
   if (pos.page > 1) await goToPage(pos.page)
+  if (gen !== locateGen) return
   await nextTick()
   await new Promise(r => requestAnimationFrame(() => requestAnimationFrame(r)))
   const card = document.querySelector<HTMLElement>(`.meme-card[data-meme-id="${mid}"]`)
