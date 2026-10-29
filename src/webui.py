@@ -1043,7 +1043,7 @@ class JsApi:
         )
         return total + len(self._cloud_filtered(keyword, tags, collection_id))
 
-    def locate_meme(self, meme_id: int, page_size: int = MEME_PAGE) -> dict:
+    def locate_meme(self, meme_id, page_size=MEME_PAGE):
         """定位表情在默认「全部」列表中的序号与页码（与 search_memes 默认视图同序）
 
         云清单合并顺序必须与 search_memes 的默认分支保持一致：改那里的
@@ -4585,8 +4585,13 @@ class WebUI:
             logger.debug("focus window: %s", e)
         self._ensure_window_on_screen(win)
 
+    # 窗口至少要有这么大的可见区域才算「在屏内」，否则移回主屏（1px 交集不算可见）
+    _MIN_VISIBLE_W = 200
+    _MIN_VISIBLE_H = 120
+    _MIN_VISIBLE_RATIO = 0.3
+
     def _ensure_window_on_screen(self, win=None):
-        """窗口完全落在所有显示器之外时移回主屏（换显示器/RDP/DPI 后常见）"""
+        """窗口可见区域过小时移回主屏（换显示器/RDP/DPI 后常见）"""
         win = win or self._window
         if win is None:
             return
@@ -4606,10 +4611,14 @@ class WebUI:
             return
         if width <= 0 or height <= 0:
             return
+        need_w = min(self._MIN_VISIBLE_W, width * self._MIN_VISIBLE_RATIO)
+        need_h = min(self._MIN_VISIBLE_H, height * self._MIN_VISIBLE_RATIO)
         for screen in screens:
             sx, sy = int(screen.x), int(screen.y)
             sw, sh = int(screen.width), int(screen.height)
-            if x + width > sx and x < sx + sw and y + height > sy and y < sy + sh:
+            visible_w = min(x + width, sx + sw) - max(x, sx)
+            visible_h = min(y + height, sy + sh) - max(y, sy)
+            if visible_w >= need_w and visible_h >= need_h:
                 return
         primary = screens[0]
         tx = int(primary.x) + max(0, (int(primary.width) - width) // 2)
@@ -4708,6 +4717,9 @@ class WebUI:
             self._show_on_gui()
             # 在锁内设置 _hotkey_session，避免 show 与 schedule_hide 之间的竞争窗口
             self._hotkey_session = True
+            win = self._window
+        # 聚焦搜索框放到锁外：evaluate_js 可能阻塞，不能占着窗口状态锁
+        self._focus_search_async(win)
 
     def schedule_hide(self):
         if self._cfg.get("disable_auto_hide", False):
@@ -5602,7 +5614,7 @@ class WebUI:
         return width, height
 
     def _saved_window_position(self):
-        """读取持久化窗口坐标；哨兵值/非法值交给系统摆放，避免窗口落在屏幕外"""
+        """读取持久化窗口坐标；哨兵值交给系统摆放，负坐标合法（副屏在主屏左侧/上方）"""
         try:
             wx = int(self._cfg.get("window_x", -1))
             wy = int(self._cfg.get("window_y", -1))
@@ -5613,28 +5625,27 @@ class WebUI:
             return None, None
         if not (_WINDOW_COORD_MIN < wy <= _WINDOW_COORD_MAX):
             return None, None
-        if wx < 0 or wy < 0:
-            return None, None
         return wx, wy
 
     def _save_window_position(self):
         if not self._window:
             return
         try:
-            wx = self._window.x
-            wy = self._window.y
-            # 最小化/隐藏态下拿到的哨兵坐标不写盘，否则下次启动窗口不可见
-            if wx is None or wy is None or wx <= _WINDOW_COORD_MIN:
-                return
-            if wy <= _WINDOW_COORD_MIN:
-                return
-            if wx > _WINDOW_COORD_MAX or wy > _WINDOW_COORD_MAX:
-                return
-            self._cfg.set("window_x", wx)
-            self._cfg.set("window_y", wy)
+            # 尺寸与坐标分开判断：最小化态下坐标是哨兵值，但尺寸仍应保存
             if self._window.width and self._window.height:
                 self._cfg.set("window_width", int(self._window.width))
                 self._cfg.set("window_height", int(self._window.height))
+            wx = self._window.x
+            wy = self._window.y
+            # 最小化/隐藏态下拿到的哨兵坐标不写盘，否则下次启动窗口不可见
+            if (
+                wx is not None
+                and wy is not None
+                and _WINDOW_COORD_MIN < wx <= _WINDOW_COORD_MAX
+                and _WINDOW_COORD_MIN < wy <= _WINDOW_COORD_MAX
+            ):
+                self._cfg.set("window_x", wx)
+                self._cfg.set("window_y", wy)
             self._cfg.save()
         except Exception:
             pass
