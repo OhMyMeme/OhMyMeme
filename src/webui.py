@@ -5646,6 +5646,8 @@ class WebUI:
             ):
                 self._cfg.set("window_x", wx)
                 self._cfg.set("window_y", wy)
+                # 标记坐标确实写过：否则下次加载无法区分 -1 是旧哨兵还是副屏上的合法坐标
+                self._cfg.set("window_pos_set", True)
             self._cfg.save()
         except Exception:
             pass
