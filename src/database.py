@@ -863,7 +863,10 @@ class MemeDB:
             ), m.id LIMIT ? OFFSET ?"""
             params.extend([primary_cid, limit, offset])
         else:
-            sql += " ORDER BY m.sort_order ASC, m.updated_at DESC LIMIT ? OFFSET ?"
+            sql += (
+                " ORDER BY m.sort_order ASC, m.updated_at DESC, m.id ASC"
+                " LIMIT ? OFFSET ?"
+            )
             params.extend([limit, offset])
 
         rows = conn.execute(sql, params).fetchall()
@@ -958,6 +961,23 @@ class MemeDB:
             (limit, offset),
         ).fetchall()
         return [dict(r) for r in rows]
+
+    def set_original_name(self, meme_id: int, name: str):
+        """只改显示名，不动 updated_at（同步重命名不改变本机列表排序）"""
+        with self._lock:
+            conn = self._get_conn()
+            conn.execute("UPDATE memes SET original_name=? WHERE id=?", (name, meme_id))
+            conn.commit()
+
+    def ordered_ids(self) -> List[tuple]:
+        """默认「全部」列表的行顺序（id, filename），与 search() 无筛选分支同序"""
+        conn = self._get_conn()
+        rows = conn.execute(
+            "SELECT id, filename FROM memes "
+            "WHERE (stego_of_hash IS NULL OR stego_of_hash = '') "
+            "ORDER BY sort_order ASC, updated_at DESC, id ASC"
+        ).fetchall()
+        return [(r[0], r[1]) for r in rows]
 
     def get_all_phash(self) -> List[dict]:
         """返回所有可见 meme 的感知哈希快照，供全库相似度比对（排除隐写载体）"""
