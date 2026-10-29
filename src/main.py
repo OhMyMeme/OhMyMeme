@@ -7,6 +7,7 @@ import signal
 import subprocess
 import sys
 import threading
+import time
 from pathlib import Path
 
 from . import __app_name__, __version__
@@ -67,6 +68,10 @@ class OhMyMemeApp:
         self._webui = None
         self._running = False
         self._hotkey_str = self._cfg.get("hotkey", "Ctrl+Alt+N")
+        self._toggle_busy = False
+        self._toggle_started_at = 0.0
+        self._toggle_gen = 0
+        self._toggle_lock = threading.Lock()
 
     def run(self):
         self._running = True
@@ -161,12 +166,47 @@ class OhMyMemeApp:
             logger.warning(f"快捷键注册失败: {e}")
 
     def _on_hotkey(self):
-        if self._webui:
-            self._webui.toggle_hotkey_safe()
+        self._dispatch_window_toggle("hotkey")
 
     def _on_tray_show(self):
-        if self._webui:
-            self._webui.toggle_safe()
+        self._dispatch_window_toggle("tray")
+
+    _TOGGLE_STUCK_S = 5.0
+
+    def _dispatch_window_toggle(self, source):
+        """独立线程执行窗口切换：pywebview 原生调用可能长时间阻塞，
+        直接占用托盘消息线程或键盘监听线程会让托盘/热键永久无响应
+        （source 为 "hotkey"/"tray"，决定是否按鼠标位置摆放窗口）"""
+        now = time.monotonic()
+        with self._toggle_lock:
+            if (
+                self._toggle_busy
+                and now - self._toggle_started_at < self._TOGGLE_STUCK_S
+            ):
+                return
+            self._toggle_busy = True
+            self._toggle_started_at = now
+            self._toggle_gen = getattr(self, "_toggle_gen", 0) + 1
+            gen = self._toggle_gen
+        threading.Thread(
+            target=self._run_window_toggle, args=(source, gen), daemon=True
+        ).start()
+
+    def _run_window_toggle(self, source, gen=0):
+        """在独立线程里切换窗口；只有最后一次派发才能清占用标记（卡死的旧线程不误清）"""
+        try:
+            if not self._webui:
+                return
+            if source == "hotkey":
+                self._webui.toggle_hotkey_safe()
+            else:
+                self._webui.toggle_safe()
+        except Exception as e:
+            logger.warning("窗口切换失败: %s", e)
+        finally:
+            with self._toggle_lock:
+                if gen == getattr(self, "_toggle_gen", 0):
+                    self._toggle_busy = False
 
     def _on_hotkey_change(self, new_hotkey: str):
         self._hotkey_str = new_hotkey

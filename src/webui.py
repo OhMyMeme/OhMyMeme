@@ -89,6 +89,10 @@ _LOG_MAX = 5000
 # 分页：主窗口单页展示的表情包数量（与前端 index.js MEME_PAGE 保持一致）
 MEME_PAGE = 200
 
+# 窗口坐标合法范围：最小化时系统返回 -32000 之类哨兵值，超出即视为无效坐标
+_WINDOW_COORD_MIN = -10000
+_WINDOW_COORD_MAX = 20000
+
 # 贡献者 SVG 缓存：TTL 1 小时，避免每次打开设置页都请求外网；刷新失败退避
 # 重试，避免上游不可用时每个请求都反复触发 10s 慢抓取
 _CONTRIBUTORS_TTL = 3600
@@ -4382,6 +4386,7 @@ class WebUI:
         self._pending_hide = False
         self._hotkey_session = False
         self._last_toggle_ms = 0
+        self._last_tray_toggle_ms = 0
         self._window_state_lock = threading.Lock()
         self._on_hotkey_change_cb = None
         self._update_debug = update_debug
@@ -4487,20 +4492,96 @@ class WebUI:
         with self._window_state_lock:
             self._visible = True
             self._hotkey_session = False
+            self._pending_hide = False
             self._show_on_gui()
+            win = self._window
+        self._focus_search_async(win)
 
     def _show_on_gui(self):
         """必须在 _window_state_lock 内调用（状态与窗口操作原子化）"""
+        win = self._window
+        if win is None:
+            return
+        # 先撤销最小化：Show/Activate 不重置 WindowState，Win+D/显示桌面/任务栏
+        # 最小化后只 show 会让窗口"以最小化状态显示"，屏幕上永远看不到内容
         try:
-            self._window.on_top = True  # 置顶一下提升 z-order，随即复位不长期置顶
-            self._window.on_top = False
-            if callable(self._window.show):
-                self._window.show()
-            if callable(self._window.focus):
-                self._window.focus()
-            self._window.evaluate_js("focusSearch()")
-        except Exception:
-            pass
+            shown = getattr(getattr(win, "events", None), "shown", None)
+            if hasattr(win, "restore") and (shown is None or shown.is_set()):
+                win.restore()
+        except Exception as e:
+            logger.debug("restore window: %s", e)
+        # 置顶一下提升 z-order，随即复位不长期置顶；失败绝不能阻断后续 show
+        try:
+            win.on_top = True
+            win.on_top = False
+        except Exception as e:
+            logger.debug("raise window z-order: %s", e)
+        try:
+            if callable(getattr(win, "show", None)):
+                win.show()
+        except Exception as e:
+            logger.warning("show window error: %s", e)
+        try:
+            if callable(getattr(win, "focus", None)):
+                win.focus()
+        except Exception as e:
+            logger.debug("focus window: %s", e)
+        self._ensure_window_on_screen(win)
+
+    def _ensure_window_on_screen(self, win=None):
+        """窗口完全落在所有显示器之外时移回主屏（换显示器/RDP/DPI 后常见）"""
+        win = win or self._window
+        if win is None:
+            return
+        try:
+            events = getattr(win, "events", None)
+            shown = getattr(events, "shown", None)
+            if shown is not None and not shown.is_set():
+                return
+            screens = getattr(webview, "screens", None) if HAS_WEBVIEW else None
+            screens = screens() if callable(screens) else screens
+            if not screens:
+                return
+            x, y = int(win.x), int(win.y)
+            width, height = int(win.width), int(win.height)
+        except Exception as e:
+            logger.debug("window geometry read: %s", e)
+            return
+        if width <= 0 or height <= 0:
+            return
+        for screen in screens:
+            sx, sy = int(screen.x), int(screen.y)
+            sw, sh = int(screen.width), int(screen.height)
+            if x + width > sx and x < sx + sw and y + height > sy and y < sy + sh:
+                return
+        primary = screens[0]
+        tx = int(primary.x) + max(0, (int(primary.width) - width) // 2)
+        ty = int(primary.y) + max(0, (int(primary.height) - height) // 2)
+        try:
+            win.move(tx, ty)
+            logger.warning("window off-screen (%s,%s), moved to (%s,%s)", x, y, tx, ty)
+        except Exception as e:
+            logger.warning("move off-screen window failed: %s", e)
+
+    def _focus_search_async(self, win=None):
+        """搜索框聚焦放独立线程：JS 求值挂起时不占用窗口状态锁与托盘/热键线程"""
+        win = win or self._window
+        if win is None:
+            return
+
+        def _run():
+            try:
+                win.evaluate_js("focusSearch()")
+            except Exception:
+                pass
+
+        threading.Thread(target=_run, daemon=True).start()
+
+    def _on_window_minimized(self):
+        """系统最小化（Win+D/显示桌面）后同步可见状态，使托盘/热键一次即可还原"""
+        with self._window_state_lock:
+            self._visible = False
+            self._hotkey_session = False
 
     def hide(self):
         """隐藏主窗口（线程安全：持锁完成状态更新 + 原生窗口操作）"""
@@ -4509,6 +4590,7 @@ class WebUI:
         with self._window_state_lock:
             self._visible = False
             self._hotkey_session = False
+            self._pending_hide = False
             self._hide_on_gui()
 
     def _hide_on_gui(self):
@@ -4528,9 +4610,18 @@ class WebUI:
         else:
             self.show()
 
+    _TRAY_DEBOUNCE_S = 0.4
+
     def toggle_safe(self):
-        if self._window:
-            self.toggle()
+        """托盘切换：去抖避免左键双击先显示后立刻隐藏"""
+        if not self._window:
+            return
+        now = time.monotonic()
+        with self._window_state_lock:
+            if now - self._last_tray_toggle_ms < self._TRAY_DEBOUNCE_S:
+                return
+            self._last_tray_toggle_ms = now
+        self.toggle()
 
     _HOTKEY_DEBOUNCE_S = 0.25
 
@@ -5301,8 +5392,7 @@ class WebUI:
         time.sleep(0.3)
 
         url = f"http://127.0.0.1:{self._port}/"
-        wx = self._cfg.get("window_x", -1)
-        wy = self._cfg.get("window_y", -1)
+        wx, wy = self._saved_window_position()
         width, height = self._resolve_window_size()
         self._window = webview.create_window(
             "OhMyMeme",
@@ -5310,8 +5400,8 @@ class WebUI:
             js_api=self._api,
             width=width,
             height=height,
-            x=wx if (wx is not None and wx >= 0) else None,
-            y=wy if (wy is not None and wy >= 0) else None,
+            x=wx,
+            y=wy,
             resizable=True,
             frameless=True,
             easy_drag=False,
@@ -5321,6 +5411,12 @@ class WebUI:
             ),
         )
         self._visible = not self._silent_start
+        try:
+            # 首次显示后校正屏幕外坐标；被系统最小化时同步可见状态
+            self._window.events.shown += lambda: self._ensure_window_on_screen()
+            self._window.events.minimized += self._on_window_minimized
+        except Exception as e:
+            logger.debug("bind window events: %s", e)
 
         self._started = True
         # 注册 LAN 设备确认回调（窗口创建完成后）
@@ -5444,12 +5540,37 @@ class WebUI:
             height = _norm(self._cfg.get("window_height", 0), 640, 360, 6000)
         return width, height
 
+    def _saved_window_position(self):
+        """读取持久化窗口坐标；哨兵值/非法值交给系统摆放，避免窗口落在屏幕外"""
+        try:
+            wx = int(self._cfg.get("window_x", -1))
+            wy = int(self._cfg.get("window_y", -1))
+        except (TypeError, ValueError):
+            return None, None
+        # 最小化时系统返回 -32000 之类哨兵坐标，写盘后下次启动会在屏幕外
+        if not (_WINDOW_COORD_MIN < wx <= _WINDOW_COORD_MAX):
+            return None, None
+        if not (_WINDOW_COORD_MIN < wy <= _WINDOW_COORD_MAX):
+            return None, None
+        if wx < 0 or wy < 0:
+            return None, None
+        return wx, wy
+
     def _save_window_position(self):
         if not self._window:
             return
         try:
-            self._cfg.set("window_x", self._window.x)
-            self._cfg.set("window_y", self._window.y)
+            wx = self._window.x
+            wy = self._window.y
+            # 最小化/隐藏态下拿到的哨兵坐标不写盘，否则下次启动窗口不可见
+            if wx is None or wy is None or wx <= _WINDOW_COORD_MIN:
+                return
+            if wy <= _WINDOW_COORD_MIN:
+                return
+            if wx > _WINDOW_COORD_MAX or wy > _WINDOW_COORD_MAX:
+                return
+            self._cfg.set("window_x", wx)
+            self._cfg.set("window_y", wy)
             if self._window.width and self._window.height:
                 self._cfg.set("window_width", int(self._window.width))
                 self._cfg.set("window_height", int(self._window.height))
