@@ -1161,3 +1161,43 @@ def test_sync_status_worker_discards_stale_generation(js, monkeypatch):
     with webui_module._sync_status_lock:
         assert webui_module._sync_status_state["manifest"] is None
         assert webui_module._sync_status_state["checked"] is False
+
+def test_locate_meme_returns_page_and_index(js):
+    """定位到默认「全部」列表：返回 1 基页码与页内序号，非法 id 返回失败"""
+    ids = []
+    for name in ("a.png", "b.png", "c.png"):
+        js.db.add_meme(filename=name, file_hash=hashlib.sha256(name.encode()).hexdigest())
+        ids.append(js.db.get_by_filename(name)["id"])
+
+    first = js.api.locate_meme(ids[0], 2)
+    assert first["ok"] is True
+    assert first["index"] == 0 and first["page"] == 1 and first["index_in_page"] == 0
+    assert first["total"] == 3 and first["page_size"] == 2
+
+    third = js.api.locate_meme(ids[2], 2)
+    assert third["page"] == 2 and third["index_in_page"] == 0
+
+    assert js.api.locate_meme(0)["ok"] is False
+    assert js.api.locate_meme(99999)["ok"] is False
+
+
+def test_locate_meme_follows_cloud_manifest_order(js):
+    """云清单可用时按清单序合并后定位，云条目（无 id）不参与命中"""
+    for name in ("a.png", "b.png"):
+        js.db.add_meme(filename=name, file_hash=hashlib.sha256(name.encode()).hexdigest())
+    a_id = js.db.get_by_filename("a.png")["id"]
+    b_id = js.db.get_by_filename("b.png")["id"]
+    _set_cloud(
+        js,
+        {
+            "memes": [
+                {"filename": "b.png", "name": "b", "sha256": "b" * 64},
+                {"filename": "a.png", "name": "a", "sha256": "a" * 64},
+                {"filename": "c.png", "name": "云端c", "sha256": "c" * 64},
+            ]
+        },
+    )
+
+    assert js.api.locate_meme(b_id)["index"] == 0
+    assert js.api.locate_meme(a_id)["index"] == 1
+    assert js.api.locate_meme(a_id)["total"] == 3

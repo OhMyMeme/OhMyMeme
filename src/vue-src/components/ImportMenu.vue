@@ -7,6 +7,7 @@ const emit = defineEmits<{
   importing: []
   error: [msg: string]
   overlimit: [token: string]
+  locate: [id: number]
 }>()
 
 const visible = ref(false)
@@ -71,6 +72,7 @@ async function importClipboard() {
     const result = await api('import_from_clipboard')
     if (!result) { showToast('导入失败'); return }
     if (result.over_limit) { emit('overlimit', result.token); return }
+    if (result.duplicate && result.existing_id > 0) { emit('locate', result.existing_id); return }
     if (!result.ok) { showToast(result.error || '导入失败'); return }
     if (result.id > 0) {
       emit('imported')

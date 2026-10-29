@@ -1043,6 +1043,42 @@ class JsApi:
         )
         return total + len(self._cloud_filtered(keyword, tags, collection_id))
 
+    def locate_meme(self, meme_id: int, page_size: int = MEME_PAGE) -> dict:
+        """定位表情在默认「全部」列表中的序号与页码（与 search_memes 默认视图同序）
+
+        云清单合并顺序必须与 search_memes 的默认分支保持一致：改那里的
+        `_cloud_filtered`/`_cloud_order`/`_merge_manifest_order` 时同步改这里。
+        """
+        try:
+            mid = int(meme_id)
+        except (TypeError, ValueError):
+            return {"ok": False, "error": "无效的表情 id"}
+        if mid <= 0:
+            return {"ok": False, "error": "无效的表情 id"}
+        try:
+            size = int(page_size)
+        except (TypeError, ValueError):
+            size = MEME_PAGE
+        size = size if size > 0 else MEME_PAGE
+        rows = [{"id": i, "filename": f} for i, f in self._db.ordered_ids()]
+        cloud = self._cloud_filtered("", None, None)
+        if cloud:
+            order = self._cloud_order(None)
+            if order is not None:
+                rows = self._merge_manifest_order(rows, cloud, order)
+        for idx, r in enumerate(rows):
+            if r.get("id") == mid:
+                return {
+                    "ok": True,
+                    "id": mid,
+                    "index": idx,
+                    "page": idx // size + 1,
+                    "index_in_page": idx % size,
+                    "total": len(rows),
+                    "page_size": size,
+                }
+        return {"ok": False, "id": mid, "error": "表情不在默认列表中"}
+
     def get_tags(self) -> list:
         """标签列表（云端直接使用开启时并入云端独有标签）"""
         local = self._db.get_all_tags()
@@ -1644,18 +1680,23 @@ class JsApi:
             return {"ok": False, "error": "决策已过期，请重新导入"}
         path = item["path"]
         action = action or "keep_new"
+        # 取最相似候选（distance 最小）作为"旧图"：定位跳转与 keep_new 替换共用
+        cands = item.get("candidates") or []
+        best_id = (
+            min(cands, key=lambda c: c.get("distance", 99))["id"] if cands else None
+        )
         if action in ("discard", "keep_old"):
             # 丢弃/仅保留旧图：删掉待决策临时文件，不导入
             try:
                 os.unlink(path)
             except OSError:
                 pass
-            return {"ok": True, "action": action, "imported": False}
-        # 取最相似候选（distance 最小）作为"旧图"，用于 keep_new 替换
-        cands = item.get("candidates") or []
-        best_id = (
-            min(cands, key=lambda c: c.get("distance", 99))["id"] if cands else None
-        )
+            return {
+                "ok": True,
+                "action": action,
+                "imported": False,
+                "existing_id": best_id or 0,
+            }
         try:
             r = self._webui._do_import(
                 [path], [item.get("oname")] if item.get("oname") else None
@@ -1718,7 +1759,12 @@ class JsApi:
         if ids:
             return {"ok": True, "id": ids[0], "imported": True}
         if r.get("skipped_dup"):
-            return {"ok": False, "duplicate": True, "error": "已存在相同表情包"}
+            return {
+                "ok": False,
+                "duplicate": True,
+                "existing_id": (r.get("dup_ids") or [0])[0],
+                "error": "已存在相同表情包",
+            }
         return {"ok": False, "error": "导入失败"}
 
     def get_sync_progress(self) -> dict:
@@ -2019,7 +2065,12 @@ class JsApi:
                         "rejected": rejected,
                     }
                 if r.get("skipped_dup"):
-                    return {"ok": False, "duplicate": True, "error": "已存在相同表情包"}
+                    return {
+                        "ok": False,
+                        "duplicate": True,
+                        "existing_id": (r.get("dup_ids") or [0])[0],
+                        "error": "已存在相同表情包",
+                    }
                 return {"ok": True, "id": 0, "name": "未命名", "rejected": rejected}
             img = clip
             tmp = tempfile.NamedTemporaryFile(suffix=".png", delete=False)
@@ -2031,8 +2082,14 @@ class JsApi:
                 with open(tmp_path, "rb") as f:
                     for chunk in iter(lambda: f.read(65536), b""):
                         sha256.update(chunk)
-                if self._db.get_by_hash(sha256.hexdigest()):
-                    return {"ok": False, "duplicate": True, "error": "已存在相同表情包"}
+                dup_row = self._db.get_by_hash(sha256.hexdigest())
+                if dup_row:
+                    return {
+                        "ok": False,
+                        "duplicate": True,
+                        "existing_id": dup_row["id"],
+                        "error": "已存在相同表情包",
+                    }
                 if exceeds_import_limit(
                     os.path.getsize(tmp_path), img.width, img.height
                 ):
@@ -4858,6 +4915,7 @@ class WebUI:
         rejected = 0
         skipped_dup = 0
         imported_ids = []
+        dup_ids = []
         total = len(file_paths)
         done = 0
         stop_import = False
@@ -4900,8 +4958,10 @@ class WebUI:
                     src_phash = _perceptual_hash_path(path)
                     # 去重检查 + 落盘 + 入库 在同一临界区：并发导入同图时不产生重复记录
                     with _IMPORT_LOCK:
-                        if db.get_by_hash(fhash):
+                        dup_row = db.get_by_hash(fhash)
+                        if dup_row:
                             skipped_dup += 1
+                            dup_ids.append(dup_row["id"])
                             continue
                         dst = cache_dir / f"{fhash[:16]}{ext}"
                         shutil.copy2(path, dst)
@@ -4942,7 +5002,12 @@ class WebUI:
         if imported:
             build_manifest()
         logger.info(f"导入完成: {imported} 个")
-        return {"ids": imported_ids, "rejected": rejected, "skipped_dup": skipped_dup}
+        return {
+            "ids": imported_ids,
+            "rejected": rejected,
+            "skipped_dup": skipped_dup,
+            "dup_ids": dup_ids,
+        }
 
     def _import_with_similar_decision(self, path, oname=""):
         """单图导入决策：哈希命中提示已存在；内容近似转相似（URL 拖放与文件上传复用）"""
@@ -4960,6 +5025,7 @@ class WebUI:
                 return {
                     "ok": False,
                     "duplicate": True,
+                    "existing_id": (r.get("dup_ids") or [0])[0],
                     "error": "已存在相同表情包",
                 }
             if r.get("rejected"):

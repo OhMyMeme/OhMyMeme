@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { ref, onMounted, onUnmounted, computed, watch } from 'vue'
+import { ref, onMounted, onUnmounted, computed, watch, nextTick } from 'vue'
 import { useMemes } from './composables/useMemes'
 import { useDragSort } from './composables/useDragSort'
 import { useContextMenu, type MenuItem } from './composables/useContextMenu'
@@ -21,7 +21,7 @@ import UpdateDialog from './components/UpdateDialog.vue'
 import { applyTheme } from './utils/api'
 import type { Meme } from './types'
 
-const { state, setMemes, search, goToPage, setSearch, toggleTag, setActiveCollection, refreshTags, refreshCollections, copyMeme, reorderMemes, canReorder, startNativeDrag, selectAllVisible, clearSelection, loadInitData } = useMemes()
+const { state, setMemes, search, goToPage, setSearch, toggleTag, setActiveCollection, refreshTags, refreshCollections, copyMeme, reorderMemes, canReorder, startNativeDrag, selectAllVisible, clearSelection, loadInitData, MEME_PAGE } = useMemes()
 const ctx = useContextMenu()
 const cb = useCollectionBuilder()
 const tagEditor = ref<InstanceType<typeof TagEditor> | null>(null)
@@ -405,7 +405,7 @@ async function handleOverlimitImport(token: string) {
   )
   const rr = await window.pywebview?.api?.resolve_overlimit_import(token, keep ? 'keep' : 'cancel')
   if (rr?.ok && rr.imported) { showToast('导入成功'); search(); refreshCollections(); return }
-  if (rr?.duplicate) { showToast('已存在相同表情包'); return }
+  if (rr?.duplicate) { jumpToMeme(rr.existing_id); return }
   if (rr?.ok) return  // 取消导入：静默
   showToast(rr?.error || '处理失败')
 }
@@ -436,13 +436,63 @@ function clearSearch() {
   search()
 }
 
-// 点击标题栏 logo 返回主页：清空搜索/标签/分组筛选
-function goHome() {
+// 清空搜索/标签/分组筛选与当前选择（返回主页与定位跳转共用）
+function resetListFilters() {
   setSearch('')
   state.activeTags.clear()
   state.activeCollection = null
   clearSelection()
+}
+
+// 点击标题栏 logo 返回主页：清空搜索/标签/分组筛选
+function goHome() {
+  resetListFilters()
   search()
+}
+
+// 相似图决策回执：导入并定位新图，或定位保留的旧图
+async function resolveSimilar(token: string, candidates: any[]) {
+  const action = await similarImportDialog.value?.open(candidates || [])
+  if (!action) return
+  const rr = await window.pywebview?.api?.resolve_similar_import(token, action)
+  if (rr?.ok && rr.imported) {
+    showToast('导入成功'); search(); refreshCollections()
+    if (rr.id) jumpToMeme(rr.id, '导入成功')
+  } else if (rr?.ok) {
+    if (action === 'keep_old') jumpToMeme(rr.existing_id || candidates?.[0]?.id)
+    else showToast('已跳过该图片')
+  } else {
+    showToast(rr?.error || '处理失败')
+  }
+}
+
+// 定位到指定表情：清空筛选 → 跳到所在页 → 滚动并高亮该卡片
+let locateGen = 0
+async function jumpToMeme(id?: number | null, note = '已存在相同表情包') {
+  const mid = Number(id) || 0
+  if (mid <= 0) return
+  const gen = ++locateGen
+  let pos: any = null
+  try { pos = await window.pywebview?.api?.locate_meme(mid, MEME_PAGE) } catch (_) {}
+  if (gen !== locateGen) return
+  if (!pos || !pos.ok) { showToast(note); return }
+  clearTimeout(searchTimer)
+  resetListFilters()
+  if (sortEnabled.value) { sortEnabled.value = false; drag.disable() }
+  if (selectMode.value) { selectMode.value = false }
+  await search()
+  if (gen !== locateGen) return
+  if (pos.page > 1) await goToPage(pos.page)
+  await nextTick()
+  await new Promise(r => requestAnimationFrame(() => requestAnimationFrame(r)))
+  const card = document.querySelector<HTMLElement>(`.meme-card[data-meme-id="${mid}"]`)
+  if (!card) { showToast(note); return }
+  card.scrollIntoView({ block: 'center', inline: 'nearest', behavior: 'smooth' })
+  card.classList.remove('meme-locate')
+  void card.offsetWidth
+  card.classList.add('meme-locate')
+  setTimeout(() => card.classList.remove('meme-locate'), 1800)
+  showToast(`${note}，已定位到第 ${pos.page} 页`)
 }
 
 let searchTimer: ReturnType<typeof setTimeout>
@@ -1085,18 +1135,9 @@ async function onDrop(e: DragEvent) {
     try {
       const r = await window.pywebview?.api?.download_original_image(uri)
       if (r?.ok) { showToast('导入成功'); search(); refreshCollections(); return }
-      if (r?.duplicate) { showToast('已存在相同表情包'); return }
+      if (r?.duplicate) { jumpToMeme(r.existing_id); return }
       if (r?.over_limit) { await handleOverlimitImport(r.token); return }
-      if (r?.similar_pending) {
-        const action = await similarImportDialog.value?.open(r.candidates || [])
-        if (action) {
-          const rr = await window.pywebview?.api?.resolve_similar_import(r.token, action)
-          if (rr?.ok && rr.imported) { showToast('导入成功'); search(); refreshCollections() }
-          else if (rr?.ok) { showToast('已跳过该图片') }
-          else { showToast(rr?.error || '处理失败') }
-        }
-        return
-      }
+      if (r?.similar_pending) { await resolveSimilar(r.token, r.candidates); return }
       showToast(r?.error || '导入失败')
       return
     } catch (_) {
@@ -1121,17 +1162,8 @@ async function onDrop(e: DragEvent) {
       const res = await fetch('/api/upload/', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ files: [{ name: file.name, data: b64 }] }) })
       let j: any = null
       try { j = await res.json() } catch (_) { j = null }
-      if (j?.similar_pending) {
-        const action = await similarImportDialog.value?.open(j.candidates || [])
-        if (action) {
-          const rr = await window.pywebview?.api?.resolve_similar_import(j.token, action)
-          if (rr?.ok && rr.imported) { showToast('导入成功'); search(); refreshCollections() }
-          else if (rr?.ok) { showToast('已跳过该图片') }
-          else { showToast(rr?.error || '处理失败') }
-        }
-        return
-      }
-      if (j?.duplicate) { showToast('已存在相同表情包'); return }
+      if (j?.similar_pending) { await resolveSimilar(j.token, j.candidates); return }
+      if (j?.duplicate) { jumpToMeme(j.existing_id); return }
       if (j?.over_limit) { await handleOverlimitImport(j.token); return }
       if (res.ok || j?.ok) { showToast('导入成功'); search(); refreshCollections() }
       else { showToast(j?.error || '导入失败：服务器返回错误') }
@@ -1468,7 +1500,7 @@ onUnmounted(() => {
   </div>
 
   <CollectionBuilder />
-  <ImportMenu ref="importMenu" @imported="onImportDone" @importing="onImporting" @overlimit="handleOverlimitImport" />
+  <ImportMenu ref="importMenu" @imported="onImportDone" @importing="onImporting" @overlimit="handleOverlimitImport" @locate="jumpToMeme" />
   <ImportProgressOverlay ref="importProgress" @imported="onImportDone" />
   <SyncOverlay ref="syncOverlay" @synced="onSyncDone" />
   <TagEditor ref="tagEditor" />
