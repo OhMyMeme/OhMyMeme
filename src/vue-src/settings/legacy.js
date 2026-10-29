@@ -261,6 +261,9 @@ async function refreshLanStatus() {
   const ip = await api('lan_get_ip');
   const cc = document.getElementById('s-lan-secret-config');
   if (cc && r) cc.checked = r.allow_secret_config === true;
+  // 开关按后端真实状态回填：关掉设置页不再停服，重开时不能误显示为未开启
+  const en = document.getElementById('s-lan-enable');
+  if (en && r) en.checked = r.status === 'running';
   if (!r || r.status === 'stopped') {
     el.innerHTML = '● 已停止 <span style="opacity:.6">(端口 ' + (r ? r.port : 17852) + ')</span>';
     setStatusColor(el, '');
@@ -280,6 +283,16 @@ async function refreshLanStatus() {
     return;
   }
   let html = '● 运行中 <span style="opacity:.6">(端口 ' + r.port + '，IP ' + esc(ip) + ')</span>';
+  // 发现诊断：区分「广播没到」与「回了但手机没收」，避免只能盲猜防火墙
+  if (!r.discover_count) {
+    html += '<br><span style="opacity:.6">尚未收到手机发现广播。请确认手机与电脑在同一网段，并在系统防火墙放行 UDP/TCP 端口 ' + r.port + '。</span>';
+  } else if (r.last_reply_error) {
+    html += '<br><span class="status-error">回包失败：' + esc(r.last_reply_error) + '</span>';
+  } else {
+    html += '<br><span style="opacity:.6">已收到 ' + r.discover_count + ' 次发现请求';
+    if (r.last_discover_from) html += '（最近来自 ' + esc(r.last_discover_from) + '）';
+    html += '</span>';
+  }
   if (r.clients && r.clients.length) {
     html += '<br>已连接设备：' + r.clients.map(c => '<code>' + esc(c.addr) + '</code>').join('、');
   }

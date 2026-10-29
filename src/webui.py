@@ -5510,13 +5510,8 @@ class WebUI:
             except Exception as e:
                 logger.warning(f"destroy settings error: {e}")
             self._settings_window = None
-        # 关闭设置页时自动停止局域网服务
-        try:
-            from . import lan
-
-            lan.stop()
-        except Exception:
-            pass
+        # 关闭设置页不停止局域网服务：手机发现/传输通常在设置页关闭后进行，
+        # 停服由开关关闭、恢复默认或程序退出负责（main.shutdown 兜底 lan.stop）
 
     def _resolve_window_size(self):
         """主窗口尺寸：插件 window 覆盖 > 持久化尺寸 > 默认 960x640"""

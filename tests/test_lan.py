@@ -936,3 +936,87 @@ def test_get_status_exposes_pending_confirm(lan_env):
         sock.close()
     finally:
         lan.set_confirm_callback(old)
+
+
+class _ManifestDb:
+    """push_manifest 的最小 DB 桩：记录成员增删、改名与排序"""
+
+    def __init__(self):
+        self.ids = {"a.png": 11, "b.png": 12}
+        self.names = {"a.png": "旧名A", "b.png": "b"}
+        self.members = {5: {11, 12}, 6: set()}
+        self.added = []
+        self.removed = []
+        self.renamed = []
+        self.reordered = []
+        self.next_cid = 5
+
+    def get_by_filename(self, filename):
+        mid = self.ids.get(filename)
+        if not mid:
+            return None
+        return {"id": mid, "original_name": self.names.get(filename, "")}
+
+    def create_collection(self, name, parent_id=None):
+        cid = self.next_cid
+        self.next_cid += 1
+        self.members.setdefault(cid, set())
+        return cid
+
+    def add_to_collection(self, meme_id, collection_id):
+        self.members.setdefault(collection_id, set()).add(meme_id)
+        self.added.append((meme_id, collection_id))
+
+    def remove_from_collection(self, meme_id, collection_id):
+        self.members.setdefault(collection_id, set()).discard(meme_id)
+        self.removed.append((meme_id, collection_id))
+
+    def search(self, collection_id=None, limit=0, **kwargs):
+        names = {v: k for k, v in self.ids.items()}
+        return [
+            {"id": mid, "filename": names[mid]}
+            for mid in sorted(self.members.get(collection_id, set()))
+        ]
+
+    def reorder_memes(self, meme_ids):
+        self.reordered = list(meme_ids)
+
+    def set_original_name(self, meme_id, name):
+        self.renamed.append((meme_id, name))
+
+    def count(self):
+        return len(self.ids)
+
+
+def test_push_manifest_applies_names_and_moves(monkeypatch):
+    """手机推清单：改名生效、移出分组的成员按远端差集移除、重建本地清单"""
+    import src.sync as sync_module
+
+    db = _ManifestDb()
+    built = []
+    monkeypatch.setattr(lan, "get_db", lambda: db)
+    monkeypatch.setattr(lan, "build_manifest", lambda: built.append(1))
+    monkeypatch.setattr(sync_module, "get_db", lambda: db)
+
+    manifest = {
+        "version": 3,
+        "memes": [
+            {"filename": "a.png", "name": "新名A"},
+            {"filename": "b.png", "name": "b"},
+        ],
+        "collections": [
+            {
+                "name": "G",
+                "filenames": ["a.png"],
+                "children": [{"name": "子", "filenames": []}],
+            }
+        ],
+    }
+
+    result = lan.LanServer()._cmd_push_manifest(manifest)
+
+    assert result == {"ok": True, "local_count": 2}
+    assert db.added == [(11, 5)]
+    assert db.removed == [(12, 5)]
+    assert db.renamed == [(11, "新名A")]
+    assert built == [1]

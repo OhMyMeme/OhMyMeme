@@ -50,6 +50,13 @@ _lan_state = {
     "clients": [],  # 已连接设备列表
     "last_error": "",
     "allow_secret_config": False,  # 允许密钥传输（仅内存生效）
+    # 发现诊断：区分「广播没到（防火墙/端口）」与「回了但手机没收（接口）」
+    "discover_count": 0,
+    "last_discover_at": 0,
+    "last_discover_from": "",
+    "last_reply_at": 0,
+    "last_reply_error": "",
+    "iface_mode": "",  # pktinfo | sendto
 }
 _lan_lock = threading.Lock()
 _server = None
@@ -162,6 +169,7 @@ class LanServer:
             self._tcp_sock.settimeout(0.5)
         except OSError as e:
             self._cleanup_sockets()
+            logger.error("LAN 端口 %s 无法监听: %s", self._port, e)
             with _lan_lock:
                 _lan_state["status"] = "error"
                 _lan_state["last_error"] = f"端口 {self._port} 无法监听: {e}"
@@ -175,6 +183,12 @@ class LanServer:
             _lan_state["port"] = self._port
             _lan_state["start_time"] = int(time.time())
             _lan_state["last_error"] = ""
+            _lan_state["discover_count"] = 0
+            _lan_state["last_discover_at"] = 0
+            _lan_state["last_discover_from"] = ""
+            _lan_state["last_reply_at"] = 0
+            _lan_state["last_reply_error"] = ""
+            _lan_state["iface_mode"] = "pktinfo" if self._udp_pktinfo else "sendto"
         logger.info(f"LAN 服务已启动，端口 {self._port}")
         return ok
 
@@ -212,6 +226,7 @@ class LanServer:
     # --- UDP 发现 ---
 
     def _udp_loop(self):
+        errors = 0
         while self._running:
             try:
                 if self._udp_pktinfo:
@@ -224,15 +239,40 @@ class LanServer:
             except (AttributeError, NotImplementedError):
                 # recvmsg 不可用的平台：禁 pktinfo 退化 recvfrom，继续发现
                 self._udp_pktinfo = False
+                with _lan_lock:
+                    _lan_state["iface_mode"] = "sendto"
                 continue
-            except OSError:
-                break
+            except OSError as e:
+                # 单次错误（如 Windows 的 WSAECONNRESET）不能终止发现线程，
+                # 否则服务显示 running 而手机永远扫不到
+                errors += 1
+                if errors <= 3:
+                    logger.warning("LAN UDP 接收错误: %s", e)
+                if errors > 20:
+                    logger.error("LAN UDP 发现线程连续错误过多，已停止")
+                    with _lan_lock:
+                        _lan_state["status"] = "error"
+                        _lan_state["last_error"] = f"UDP 接收失败: {e}"
+                    break
+                time.sleep(0.2)
+                continue
+            errors = 0
             try:
                 msg = json.loads(data.decode("utf-8", errors="replace"))
             except Exception:
                 continue
             if not isinstance(msg, dict) or msg.get("t") != "discover":
                 continue
+            count = 0
+            with _lan_lock:
+                _lan_state["discover_count"] += 1
+                count = _lan_state["discover_count"]
+                _lan_state["last_discover_at"] = int(time.time())
+                _lan_state["last_discover_from"] = "%s:%s" % (addr[0], addr[1])
+            if count <= 5:
+                logger.info("LAN 收到设备发现请求: %s:%s", addr[0], addr[1])
+            else:
+                logger.debug("LAN 收到设备发现请求: %s:%s", addr[0], addr[1])
             reply = {
                 "t": "hello",
                 "name": platform.node(),
@@ -244,8 +284,13 @@ class LanServer:
             src_addr = self._extract_pktinfo_src(ancdata)
             try:
                 self._send_udp_reply(payload, addr, src_addr)
-            except OSError:
-                pass
+                with _lan_lock:
+                    _lan_state["last_reply_at"] = int(time.time())
+                    _lan_state["last_reply_error"] = ""
+            except OSError as e:
+                logger.warning("LAN 回包失败 %s:%s: %s", addr[0], addr[1], e)
+                with _lan_lock:
+                    _lan_state["last_reply_error"] = str(e)
 
     def _extract_pktinfo_src(self, ancdata):
         """提取广播到达的本地接口（Linux 返回 ("ip", ip)；Windows ("ifindex", n)）"""
@@ -468,6 +513,7 @@ class LanServer:
         from .sync import (
             _apply_remote_collections,
             _apply_remote_favorites,
+            _apply_remote_names,
             _apply_remote_order,
             _apply_remote_tags,
         )
@@ -475,7 +521,8 @@ class LanServer:
         db = get_db()
         try:
             _apply_remote_order(manifest)
-            _apply_remote_collections(manifest)
+            _apply_remote_collections(manifest, reconcile=True)
+            _apply_remote_names(manifest)
             _apply_remote_tags(manifest)
             _apply_remote_favorites(manifest)
         except Exception as e:
@@ -719,6 +766,12 @@ def get_status() -> dict:
             "allow_secret_config": bool(_lan_state["allow_secret_config"]),
             "transfer": _transfer_snapshot(),
             "pending_confirm": dict(pending["device"]) if pending else None,
+            "discover_count": _lan_state["discover_count"],
+            "last_discover_at": _lan_state["last_discover_at"],
+            "last_discover_from": _lan_state["last_discover_from"],
+            "last_reply_at": _lan_state["last_reply_at"],
+            "last_reply_error": _lan_state["last_reply_error"],
+            "iface_mode": _lan_state["iface_mode"],
         }
 
 
