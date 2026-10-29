@@ -201,19 +201,22 @@ class LanServer:
 
     def stop(self):
         with self._lock:
-            if not self._running:
-                return
+            running = self._running
             self._running = False
-        self._cleanup_sockets()
-        for t in self._threads:
-            t.join(timeout=1)
-        self._threads.clear()
+        if running:
+            self._cleanup_sockets()
+            for t in self._threads:
+                t.join(timeout=1)
+            self._threads.clear()
+        # 状态无条件收敛：UDP 线程异常退出后 _running 已为假，若此时直接返回，
+        # 用户关掉开关后设置页会一直显示 error，已连接设备也留在列表里
         with _lan_lock:
             _lan_state["status"] = "stopped"
             _lan_state["port"] = 0
             _lan_state["start_time"] = 0
             _lan_state["clients"] = []
-        logger.info("LAN 服务已停止")
+        if running:
+            logger.info("LAN 服务已停止")
 
     def _cleanup_sockets(self):
         for s in (self._udp_sock, self._tcp_sock):
@@ -257,14 +260,14 @@ class LanServer:
                     logger.warning("LAN UDP 接收错误: %s", e)
                 if errors > 20:
                     logger.error("LAN UDP 发现线程连续错误过多，已停止")
-                    # 运行状态与 socket 必须一并清掉：只置 error 会让实例仍以为
-                    # 自己在跑、端口被占住，LAN 再也起不来（须先 stop 才能恢复）
-                    with self._lock:
-                        self._running = False
-                    self._cleanup_sockets()
+                    # 先写 error 再清运行态：反序时模块级 start() 可能已经建了
+                    # 新实例并把状态写成 running，旧线程随后又把 error 盖回去
                     with _lan_lock:
                         _lan_state["status"] = "error"
                         _lan_state["last_error"] = f"UDP 接收失败: {e}"
+                    with self._lock:
+                        self._running = False
+                    self._cleanup_sockets()
                     break
                 time.sleep(0.2)
                 continue
@@ -405,6 +408,10 @@ class LanServer:
     def _sync_clients(self):
         now = time.time()
         with _lan_lock:
+            # 旧实例被替换后，它残留的连接在收尾时仍会走到这里；不校验所有权
+            # 会用旧的 _clients 覆盖全局列表，把新实例已连接的设备抹掉
+            if _server is not self:
+                return
             _lan_state["clients"] = [
                 {"addr": f"{addr[0]}:{addr[1]}", "connected_at": int(t)}
                 for addr, t in list(self._clients.items())

@@ -1495,14 +1495,16 @@ def push(delete_remote: bool = None) -> dict:
             local_names = {
                 m.get("filename"): (m.get("name") or "").strip() for m in local["memes"]
             }
-            # 只有远端确实带了非空名字、且与本地不同才算改名；远端缺 name
-            # （旧清单）不计，避免把「首次写入名字」误当改名
+            # 只有远端确实带了非空字符串名字、且与本地不同才算改名；远端缺
+            # name（旧清单）或本地没有该文件（远端独有）都不计
             results["renamed"] = sum(
                 1
                 for fname, m in remote_memes.items()
                 if isinstance(m, dict)
-                and (m.get("name") or "").strip()
-                and (m.get("name") or "").strip() != local_names.get(fname)
+                and fname in local_names
+                and isinstance(m.get("name"), str)
+                and m["name"].strip()
+                and m["name"].strip() != local_names.get(fname)
             )
             ok = bk.upload_file(manifest_file, remote_manifest_path)
             if not ok:

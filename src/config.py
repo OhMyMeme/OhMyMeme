@@ -162,8 +162,8 @@ class Config:
         "tg_tdata_path": "",  # 手动指定的 Telegram tdata 目录
         # UI
         "theme": "dark",
-        "window_x": -1,
-        "window_y": -1,
+        "window_x": None,  # None=未保存，交给系统居中（负坐标合法，不能用 -1 当哨兵）
+        "window_y": None,
         "window_width": 0,  # 主窗口宽度持久化（0=默认 960）
         "window_height": 0,  # 主窗口高度持久化（0=默认 640）
         "window_resize_enabled": False,  # 允许拖窗口边框调整大小（主/设置窗口）
@@ -251,6 +251,12 @@ class Config:
                 for k in self.DEFAULTS:
                     if k in raw:
                         self._data[k] = raw[k]
+                # 旧默认值 -1 是「未保存」哨兵；负坐标已放开后它会通过范围校验，
+                # 升级用户窗口会落在 (-1,-1) 而非系统居中，这里清成 None
+                if self._data.get("window_x") == -1:
+                    self._data["window_x"] = None
+                if self._data.get("window_y") == -1:
+                    self._data["window_y"] = None
                 self._migrate(raw)
             except (json.JSONDecodeError, OSError):
                 pass
