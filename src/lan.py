@@ -203,11 +203,12 @@ class LanServer:
         with self._lock:
             running = self._running
             self._running = False
-        if running:
-            self._cleanup_sockets()
-            for t in self._threads:
-                t.join(timeout=1)
-            self._threads.clear()
+        # socket 与线程无条件收尾：UDP 线程出错退出时 _running 已为假，但从「清运行态」
+        # 到「关 socket」之间有窗口，跳过清理会让随后替换的新实例绑不上端口
+        self._cleanup_sockets()
+        for t in self._threads:
+            t.join(timeout=1)
+        self._threads.clear()
         # 状态无条件收敛：UDP 线程异常退出后 _running 已为假，若此时直接返回，
         # 用户关掉开关后设置页会一直显示 error，已连接设备也留在列表里
         with _lan_lock:
