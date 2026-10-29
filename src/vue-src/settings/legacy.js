@@ -1187,15 +1187,21 @@ async function doSyncWithProgress(method, title, progressSetting, doneSetting, b
   }
 
   if (r && r.ok) {
-    const uploaded = r.uploaded || r.downloaded || 0;
+    const transferred = r.uploaded || r.downloaded || 0;
     const skipped = r.skipped || 0;
     const errors = r.errors || 0;
-    status.textContent = '完成: 成功 ' + uploaded + ', 跳过 ' + skipped + ', 错误 ' + errors;
+    // 只改分组/改名时文件数为 0，但清单确实已上传：单独说明，避免误判为失败
+    const extra = [];
+    if (r.manifest_updated) extra.push('清单已更新');
+    if (r.collections) extra.push('分组 ' + r.collections + ' 个');
+    if (r.renamed) extra.push('改名 ' + r.renamed + ' 个');
+    const done = '传输 ' + transferred + ' 个文件' + (extra.length ? '，' + extra.join('，') : '');
+    status.textContent = '完成: ' + done + '，跳过 ' + skipped + '，错误 ' + errors;
 
     if (showDone) {
       rememberSettingsFocus();
       document.getElementById('sync-done-title').textContent = title + '完成';
-      document.getElementById('sync-done-detail').textContent = '成功 ' + uploaded + ' 个';
+      document.getElementById('sync-done-detail').textContent = done;
       document.getElementById('sync-done-overlay').style.display = 'flex';
       const closeBtn = document.querySelector('#sync-done-overlay .btn');
       if (closeBtn) closeBtn.focus();

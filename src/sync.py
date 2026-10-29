@@ -1486,6 +1486,23 @@ def push(delete_remote: bool = None) -> dict:
                     json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8"
                 )
                 manifest_file = merged_file
+            # 清单总会重传：只改分组/改名/排序时文件不动，但分组与名称仍会生效，
+            # 需把这一点回报给设置页，避免显示「成功 0 个」让人误判失败
+            results["manifest_updated"] = True
+            results["collections"] = _count_manifest_collections(
+                data.get("collections")
+            )
+            local_names = {
+                m.get("filename"): (m.get("name") or "").strip() for m in local["memes"]
+            }
+            results["renamed"] = sum(
+                1
+                for fname, m in remote_memes.items()
+                if isinstance(m, dict)
+                and (m.get("name") or "").strip()
+                and local_names.get(fname)
+                and (m.get("name") or "").strip() != local_names.get(fname)
+            )
             ok = bk.upload_file(manifest_file, remote_manifest_path)
             if not ok:
                 raise SyncError("远端 manifest 上传失败")
@@ -1527,10 +1544,61 @@ def sync_test() -> str:
         return str(e)
 
 
-def _apply_remote_collections(remote_data: dict):
+# 遍历「全部成员」时的 limit：取全量行，避免默认分页截断差集判断
+_SCAN_LIMIT = 999999
+
+
+def _iter_remote_entries(remote_data):
+    """遍历远端清单里文件名安全的条目，产出 (条目, 文件名)"""
+    for m in remote_data.get("memes", []):
+        if not isinstance(m, dict):
+            continue
+        fname = m.get("filename", "")
+        if _safe_remote_fname(fname):
+            yield m, fname
+
+
+def _apply_remote_names(remote_data: dict) -> int:
+    """按远端清单条目的 name 更新本地显示名（重命名同步，不动物理文件名）
+
+    远端为准（`pull` 是「从云端下载」语义）：本地改完名尚未上传就 pull 会被改回，
+    需要本地名称优先时应先 push 再 pull。
+    """
     db = get_db()
+    changed = 0
+    for m, fname in _iter_remote_entries(remote_data):
+        name = m.get("name")
+        if not isinstance(name, str):
+            continue
+        name = name.strip()
+        if not name:
+            continue
+        row = db.get_by_filename(fname)
+        if not row:
+            continue
+        if (row.get("original_name") or "").strip() == name:
+            continue
+        try:
+            db.set_original_name(row["id"], name)
+            changed += 1
+        except Exception as e:
+            logger.warning("apply remote name %s failed: %s", fname, e)
+    return changed
+
+
+def _apply_remote_collections(remote_data: dict, reconcile: bool = False) -> int:
+    """应用远端分组树；reconcile 时按远端清单做成员差集，支持移动/移出分组
+
+    只移除「远端清单里确实存在、且不在该分组 filenames 中」的本地成员——
+    本地新增尚未上传的表情不会被旧远端清单误踢出分组。
+    """
+    db = get_db()
+    remote_memes = {fname for _, fname in _iter_remote_entries(remote_data)}
+
+    removed = 0
 
     def walk(nodes, parent_id=None):
+        nonlocal removed
         if not isinstance(nodes, list):
             return
         for rc in nodes:
@@ -1546,16 +1614,37 @@ def _apply_remote_collections(remote_data: dict):
             if cid < 0:
                 continue
             filenames = rc.get("filenames")
+            wanted = set()
             if isinstance(filenames, list):
                 for fname in filenames:
                     if not isinstance(fname, str) or not _safe_remote_fname(fname):
                         continue
+                    wanted.add(fname)
                     row = db.get_by_filename(fname)
                     if row:
                         db.add_to_collection(row["id"], cid)
+            if reconcile and isinstance(filenames, list):
+                for row in db.search(collection_id=cid, limit=_SCAN_LIMIT):
+                    fname = row.get("filename", "")
+                    if fname in wanted or fname not in remote_memes:
+                        continue
+                    db.remove_from_collection(row["id"], cid)
+                    removed += 1
             walk(rc.get("children"), cid)
 
     walk(remote_data.get("collections"))
+    return removed
+
+
+def _count_manifest_collections(nodes) -> int:
+    """统计分组树节点数（供同步结果展示）"""
+    total = 0
+    if not isinstance(nodes, list):
+        return 0
+    for rc in nodes:
+        if isinstance(rc, dict):
+            total += 1 + _count_manifest_collections(rc.get("children"))
+    return total
 
 
 def _apply_remote_order(remote_data: dict):
@@ -1700,7 +1789,8 @@ def pull(remove_local: bool = None) -> dict:
                             except Exception:
                                 pass
 
-        _apply_remote_collections(remote_data)
+        _apply_remote_collections(remote_data, reconcile=True)
+        _apply_remote_names(remote_data)
         _apply_remote_order(remote_data)
         _apply_remote_tags(remote_data)
         _apply_remote_favorites(remote_data)
