@@ -176,6 +176,14 @@ class LanServer:
             with self._lock:
                 self._running = False
             return False
+        # 发现计数先清零再起线程：否则启动瞬间收到的广播会被随后的清零点抹掉
+        with _lan_lock:
+            _lan_state["discover_count"] = 0
+            _lan_state["last_discover_at"] = 0
+            _lan_state["last_discover_from"] = ""
+            _lan_state["last_reply_at"] = 0
+            _lan_state["last_reply_error"] = ""
+            _lan_state["iface_mode"] = "pktinfo" if self._udp_pktinfo else "sendto"
         self._spawn_thread(self._udp_loop)
         self._spawn_thread(self._tcp_loop)
         with _lan_lock:
@@ -183,14 +191,13 @@ class LanServer:
             _lan_state["port"] = self._port
             _lan_state["start_time"] = int(time.time())
             _lan_state["last_error"] = ""
-            _lan_state["discover_count"] = 0
-            _lan_state["last_discover_at"] = 0
-            _lan_state["last_discover_from"] = ""
-            _lan_state["last_reply_at"] = 0
-            _lan_state["last_reply_error"] = ""
-            _lan_state["iface_mode"] = "pktinfo" if self._udp_pktinfo else "sendto"
         logger.info(f"LAN 服务已启动，端口 {self._port}")
         return ok
+
+    def is_running(self):
+        """服务是否仍存活（UDP 发现线程异常退出后会置 False）"""
+        with self._lock:
+            return self._running
 
     def stop(self):
         with self._lock:
@@ -250,6 +257,11 @@ class LanServer:
                     logger.warning("LAN UDP 接收错误: %s", e)
                 if errors > 20:
                     logger.error("LAN UDP 发现线程连续错误过多，已停止")
+                    # 运行状态与 socket 必须一并清掉：只置 error 会让实例仍以为
+                    # 自己在跑、端口被占住，LAN 再也起不来（须先 stop 才能恢复）
+                    with self._lock:
+                        self._running = False
+                    self._cleanup_sockets()
                     with _lan_lock:
                         _lan_state["status"] = "error"
                         _lan_state["last_error"] = f"UDP 接收失败: {e}"
@@ -527,6 +539,10 @@ class LanServer:
             _apply_remote_favorites(manifest)
         except Exception as e:
             logger.warning(f"push_manifest apply error: {e}")
+            # 失败前的写入已提交，重建本地清单保持与 DB 一致；但不能对手机回报成功，
+            # 否则部分应用会被当成全部生效
+            build_manifest()
+            return {"ok": False, "error": f"应用清单失败: {e}", "applied": False}
         build_manifest()
         return {"ok": True, "local_count": db.count()}
 
@@ -738,8 +754,12 @@ def start(port: int = 17852, secret: str = "") -> bool:
     """启动局域网服务（设置页开关调用）"""
     global _server
     with _lan_lock:
-        if _lan_state["status"] == "running" and _server:
+        if _lan_state["status"] == "running" and _server and _server.is_running():
             return True
+    # 旧实例可能「对象还在、线程已退」：直接换实例会让旧 socket 与端口失去引用，
+    # 只能先停掉再新建，否则再次启动会卡在端口占用或一直无人监听
+    if _server:
+        _server.stop()
     _server = LanServer()
     return _server.start(port, secret)
 
