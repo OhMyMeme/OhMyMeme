@@ -604,15 +604,16 @@ class TestHotkeyWatchdog(unittest.TestCase):
         hk._last_probe_at = 0.0
         hk._probe_pending_at = None
         hk._hook_observer = lambda event: None  # 模拟观察者已注册
+        hk._session_is_locked = lambda: False  # 锁屏检测与真实桌面状态解耦
         return hk
 
     def test_hook_health_check_probe_timeout_detects_dead_hook(self):
-        """探针注入后超时未见任何键盘事件判死；用户按键即视为存活。"""
-        from src.hotkey import KEYBOARD_PROBE_TIMEOUT
+        """连续多轮探针未见事件才判死；用户按键即视为存活并清零计数。"""
+        from src.hotkey import KEYBOARD_PROBE_INTERVAL, KEYBOARD_PROBE_MISS_LIMIT, KEYBOARD_PROBE_TIMEOUT
 
         hk = self._fresh_hotkey()
         calls = []
-        hk._inject_probe_key = lambda: calls.append(1)
+        hk._inject_probe_key = lambda: (calls.append(1), True)[1]
 
         # 第一轮：注入探针，待确认
         self.assertFalse(hk._hook_health_check(now=100.0))
@@ -622,40 +623,108 @@ class TestHotkeyWatchdog(unittest.TestCase):
         hk._hook_last_seen = 100.5
         self.assertFalse(hk._hook_health_check(now=105.0))
         self.assertIsNone(hk._probe_pending_at)
-        # 距上次探针满间隔再次注入
-        self.assertFalse(hk._hook_health_check(now=130.0))
-        self.assertEqual(len(calls), 2)
-        # 注入后超时无任何事件 → 判死
+        self.assertEqual(hk._probe_miss_streak, 0)
+        # 注入后超时无任何事件：单轮不判死（注入可能被系统静默丢弃）
         hk._hook_last_seen = 0.0
-        self.assertTrue(hk._hook_health_check(now=130.0 + KEYBOARD_PROBE_TIMEOUT))
+        now = 130.0
+        self.assertFalse(hk._hook_health_check(now=now))
+        now += KEYBOARD_PROBE_TIMEOUT
+        self.assertFalse(hk._hook_health_check(now=now))
+        self.assertEqual(hk._probe_miss_streak, 1)
+        # 连续 MISS_LIMIT 轮后才判死
+        dead = False
+        for _ in range(KEYBOARD_PROBE_MISS_LIMIT + 1):
+            now += KEYBOARD_PROBE_INTERVAL
+            hk._hook_health_check(now=now)
+            now += KEYBOARD_PROBE_TIMEOUT
+            dead = hk._hook_health_check(now=now)
+            if dead:
+                break
+        self.assertTrue(dead)
         self.assertIsNone(hk._probe_pending_at)
 
+    def test_hook_health_check_inject_failure_does_not_kill_hook(self):
+        """探针注入失败（提权前台窗口等）不得计入失效，否则会无限重启。"""
+        from src.hotkey import KEYBOARD_PROBE_INTERVAL
+
+        hk = self._fresh_hotkey()
+        hk._inject_probe_key = lambda: False
+
+        now = 100.0
+        dead = False
+        for _ in range(10):
+            now += KEYBOARD_PROBE_INTERVAL
+            dead = hk._hook_health_check(now=now) or dead
+        self.assertFalse(dead)
+        self.assertIsNone(hk._probe_pending_at)
+        self.assertEqual(hk._probe_miss_streak, 0)
+
+    def test_probe_is_armed_before_injection(self):
+        """注入前必须已布防：低层钩子在 SendInput 返回前同步回调，否则 F15 泄漏到前台"""
+        hk = self._fresh_hotkey()
+        now = 100.0
+        seen = {}
+
+        def _inject():
+            # 模拟注入瞬间阻塞钩子被同步调用：此刻吞键窗口与待确认必须已生效
+            seen["swallow"] = hk._probe_swallow_until
+            seen["pending"] = hk._probe_pending_at
+            # 钩子吞掉探针并刷新心跳；用同一测试时钟，避免依赖真实 monotonic 绝对值
+            hk._hook_last_seen = now + 0.5
+            return True
+
+        hk._inject_probe_key = _inject
+        self.assertFalse(hk._hook_health_check(now=now))
+        self.assertEqual(seen["pending"], now)
+        self.assertGreater(seen["swallow"], now)
+        # 探针已被钩子确认 → 下一轮清零、不计漏检
+        self.assertFalse(hk._hook_health_check(now=now + 1))
+        self.assertIsNone(hk._probe_pending_at)
+        self.assertEqual(hk._probe_miss_streak, 0)
+
+    def test_probe_injection_failure_clears_arming(self):
+        """注入失败时撤回布防，避免把「没注入」记成未见事件或留下吞键窗口"""
+        from src.hotkey import KEYBOARD_PROBE_INTERVAL
+
+        hk = self._fresh_hotkey()
+        hk._inject_probe_key = lambda: False
+        self.assertFalse(hk._hook_health_check(now=200.0))
+        self.assertIsNone(hk._probe_pending_at)
+        self.assertEqual(hk._probe_swallow_until, 0.0)
+        # 之后正常注入仍能布防
+        hk._inject_probe_key = lambda: True
+        hk._hook_health_check(now=200.0 + KEYBOARD_PROBE_INTERVAL)
+        self.assertIsNotNone(hk._probe_pending_at)
+
     def test_probe_blocker_swallows_pending_probe_and_refreshes(self):
-        """pending 窗口内的 F15 探针被阻塞钩子吞掉并刷新心跳，防止泄漏到前台（issue #95）。"""
+        """探针吞键窗口内的 F15 被阻塞钩子吞掉并刷新心跳，防止泄漏到前台（issue #95）。"""
+        import time
         import types
 
         hk = self._fresh_hotkey()
         blocker = hk._make_probe_blocker()
 
-        # 无 pending：F15（真实宏键盘按键）正常放行
-        hk._probe_pending_at = None
+        # 无吞键窗口：F15（真实宏键盘按键）正常放行
+        hk._probe_swallow_until = 0.0
         self.assertTrue(blocker(types.SimpleNamespace(name="f15", scan_code=-126)))
 
-        # pending 窗口内：注入探针（scan_code=-126）被吞并刷新 _hook_last_seen 完成确认
-        hk._probe_pending_at = 100.0
+        # 吞键窗口内：注入探针（scan_code=-126）被吞并刷新 _hook_last_seen 完成确认
+        hk._probe_swallow_until = time.monotonic() + 1.0
         hk._hook_last_seen = 0.0
         self.assertFalse(blocker(types.SimpleNamespace(name="f15", scan_code=-126)))
-        self.assertGreaterEqual(hk._hook_last_seen, 100.0)
+        self.assertGreater(hk._hook_last_seen, 0.0)
 
-        # pending 窗口内：真实按键事件放行
+        # 吞键窗口内：真实按键事件放行
         self.assertTrue(blocker(types.SimpleNamespace(name="a", scan_code=30)))
         self.assertTrue(blocker(types.SimpleNamespace(name="ctrl", scan_code=29)))
 
     def test_probe_blocker_passes_on_malformed_event(self):
         """事件属性访问异常时阻塞钩子回退放行，绝不拦截正常按键。"""
+        import time
+
         hk = self._fresh_hotkey()
         blocker = hk._make_probe_blocker()
-        hk._probe_pending_at = 100.0
+        hk._probe_swallow_until = time.monotonic() + 1.0
 
         class BrokenEvent(object):
             def __getattr__(self, name):
