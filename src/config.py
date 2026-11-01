@@ -168,6 +168,7 @@ class Config:
         "window_width": 0,  # 主窗口宽度持久化（0=默认 960）
         "window_height": 0,  # 主窗口高度持久化（0=默认 640）
         "window_resize_enabled": False,  # 允许拖窗口边框调整大小（主/设置窗口）
+        "sort_mode": "manifest",  # 主窗口排序（manifest/name，可带 _desc）
         "settings_window_width": 0,  # 设置窗口宽度持久化（0=默认 720）
         "settings_window_height": 0,  # 设置窗口高度持久化（0=默认 560）
         "auto_play_gif": True,

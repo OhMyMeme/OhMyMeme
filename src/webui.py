@@ -75,8 +75,9 @@ from .config import (
     guide_ok,
     set_guide_ok,
 )
-from .database import get_db
+from .database import _name_sort_key, get_db, pinyin_matches
 from .manifest import build as build_manifest
+from .manifest import index_order, index_path
 from .plugin_manager import get_plugin_manager, route_content_type
 
 logger = logging.getLogger(__name__)
@@ -319,6 +320,30 @@ _cloud_state = {
 }
 _cloud_inflight = set()
 _cloud_inflight_lock = threading.Lock()
+
+# 主窗口排序模式：manifest=清单序（默认）/manifest_desc 反向/name_asc|name_desc 显示名
+_SORT_MODES = ("manifest", "manifest_desc", "name_asc", "name_desc")
+
+# 本地清单顺序缓存（按文件 mtime+size 失效），避免每次排序查询都重解析 JSON
+_local_manifest_cache = {"key": None, "order": []}
+_local_manifest_lock = threading.Lock()
+
+
+def _local_manifest_order():
+    """本地清单 memes 文件名顺序（不可用时空列表）"""
+    try:
+        st = index_path().stat()
+    except OSError:
+        return []
+    key = (st.st_mtime_ns, st.st_size)
+    with _local_manifest_lock:
+        if _local_manifest_cache["key"] == key:
+            return _local_manifest_cache["order"]
+    order = index_order()
+    with _local_manifest_lock:
+        _local_manifest_cache["key"] = key
+        _local_manifest_cache["order"] = order
+    return order
 
 
 def _cloud_ensure_loaded():
@@ -871,7 +896,9 @@ class JsApi:
                 hay = (
                     it["name"] + " " + it["filename"] + " " + " ".join(it["tags"])
                 ).lower()
-                if kw not in hay:
+                if kw not in hay and not pinyin_matches(
+                    kw, it["name"], it["filename"], *it["tags"]
+                ):
                     continue
             if path_prefix and not any(
                 cp == path_prefix or cp.startswith(path_prefix + "/")
@@ -916,6 +943,24 @@ class JsApi:
         rest = [c for c in cloud_out if c["filename"] not in pos]
         return extras + [r for _, r in paired] + rest
 
+    def _sort_rows(self, rows, order, mode):
+        """按 manifest/名称模式排序行（本地+云混合）；order 为空时保持原查询序"""
+        if mode in ("manifest", "manifest_desc"):
+            if not order:
+                return rows
+            pos = {fname: i for i, fname in enumerate(order)}
+            extras = [r for r in rows if r["filename"] not in pos]
+            paired = [(pos[r["filename"]], r) for r in rows if r["filename"] in pos]
+            paired.sort(key=lambda t: t[0], reverse=(mode == "manifest_desc"))
+            if mode == "manifest_desc":
+                return [r for _, r in paired] + extras
+            return extras + [r for _, r in paired]
+        return sorted(
+            rows,
+            key=lambda r: _name_sort_key(r.get("name") or r["filename"]),
+            reverse=(mode == "name_desc"),
+        )
+
     def _cloud_row(self, it) -> dict:
         """云条目 → 前端行（无 id，cloud 标记，file_hash 为 sha256）"""
         fname = it["filename"].lower()
@@ -936,20 +981,37 @@ class JsApi:
         }
 
     def search_memes(
-        self, keyword="", tags=None, collection_id=None, offset=0, limit=200
+        self,
+        keyword="",
+        tags=None,
+        collection_id=None,
+        offset=0,
+        limit=200,
+        sort_mode="",
     ):
-        """搜索表情，支持 offset/limit 分页；有云行时按清单序与本地穿插后切片"""
+        """搜索表情，支持分页与 manifest/名称排序；有云行时按清单序穿插后切片"""
         if tags is not None and len(tags) == 0:
             tags = None
+        mode = sort_mode if sort_mode in _SORT_MODES else ""
         fav_only = collection_id == -2
         recent_only = collection_id == -3
         uncategorized = collection_id == -4
         cid = None if (fav_only or recent_only or uncategorized) else collection_id
         cloud = self._cloud_filtered(keyword, tags, collection_id)
         order = self._cloud_order(collection_id) if cloud else None
+        if mode in ("manifest", "manifest_desc"):
+            # 云清单不可用时回退本地清单序（仍为空则退化为默认查询序）
+            if not order:
+                order = _local_manifest_order() or None
+        elif mode:
+            order = None
+        sorting = bool(mode)
         merging = bool(cloud) and order is not None
+        fetch_all = merging or sorting
         if recent_only:
-            rows = self._db.get_recent(limit, offset)
+            rows = self._db.get_recent(
+                -1 if fetch_all else limit, 0 if fetch_all else offset
+            )
         else:
             if cid is not None and cid > 0:
                 cid = self._get_collection_ids_recursive(cid)
@@ -959,8 +1021,8 @@ class JsApi:
                 collection_id=cid,
                 favorite_only=fav_only,
                 uncategorized_only=uncategorized,
-                offset=0 if merging else offset,
-                limit=-1 if merging else limit,
+                offset=0 if fetch_all else offset,
+                limit=-1 if fetch_all else limit,
             )
         favorited_ids = set()
         try:
@@ -1003,6 +1065,13 @@ class JsApi:
                     "hover_to_play": hover_play,
                 }
             )
+        if sorting:
+            # manifest/名称排序后统一切片（本地全量+云行已取回）
+            combined = result
+            if cloud:
+                combined = combined + [self._cloud_row(it) for it in cloud]
+            combined = self._sort_rows(combined, order, mode)
+            return combined[offset : offset + limit]
         if merging:
             # 清单序穿插合并后统一切片（本地全量已取回）
             merged = self._merge_manifest_order(result, cloud, order)
@@ -1060,12 +1129,33 @@ class JsApi:
         except (TypeError, ValueError):
             size = MEME_PAGE
         size = size if size > 0 else MEME_PAGE
-        rows = [{"id": i, "filename": f} for i, f in self._db.ordered_ids()]
-        cloud = self._cloud_filtered("", None, None)
-        if cloud:
-            order = self._cloud_order(None)
-            if order is not None:
-                rows = self._merge_manifest_order(rows, cloud, order)
+        mode = self._cfg.get("sort_mode", "")
+        mode = mode if mode in _SORT_MODES else ""
+        if mode:
+            # 排序模式下与 search_memes 同序计算页码（本地全量+云行）
+            rows = [
+                {
+                    "id": r["id"],
+                    "filename": r["filename"],
+                    "name": r.get("original_name")
+                    or os.path.splitext(r["filename"])[0],
+                }
+                for r in self._db.search(limit=-1)
+            ]
+            cloud = self._cloud_filtered("", None, None)
+            if cloud:
+                rows = rows + [self._cloud_row(it) for it in cloud]
+            order = self._cloud_order(None) if cloud else None
+            if mode in ("manifest", "manifest_desc") and not order:
+                order = _local_manifest_order() or None
+            rows = self._sort_rows(rows, order, mode)
+        else:
+            rows = [{"id": i, "filename": f} for i, f in self._db.ordered_ids()]
+            cloud = self._cloud_filtered("", None, None)
+            if cloud:
+                order = self._cloud_order(None)
+                if order is not None:
+                    rows = self._merge_manifest_order(rows, cloud, order)
         for idx, r in enumerate(rows):
             if r.get("id") == mid:
                 return {
@@ -1110,11 +1200,13 @@ class JsApi:
 
     def get_init_data(self) -> dict:
         """批返回初始化所需数据，减少 JS bridge 往返"""
-        memes = self.search_memes("", None, None, 0, MEME_PAGE)
+        sort_mode = self._cfg.get("sort_mode", "manifest")
+        memes = self.search_memes("", None, None, 0, MEME_PAGE, sort_mode)
         collections = self._sys_collections() + self._build_collection_tree()
         fields = get_plugin_manager().init_fields()
         return {
             "theme": self._cfg.get("theme", "dark"),
+            "sort_mode": sort_mode,
             "memes": memes,
             "tags": self.get_tags(),
             "collections": collections,
@@ -1554,13 +1646,31 @@ class JsApi:
 
     # 非阻塞检查更新：新鲜缓存即返，首次/过期/force 触发后台检查返回 pending
     def check_update(self, debug=False, force=False) -> dict:
-        from . import __version__ as cur_ver
-
-        info = updater.check_latest_cached(force=bool(debug) or bool(force))
-        info["current"] = cur_ver
+        info = updater.update_info(force=bool(debug) or bool(force))
         if debug or self._webui._update_debug:
             info["has_update"] = True
         return info
+
+    def open_url(self, url: str) -> bool:
+        """用系统默认浏览器打开外链（更新跳商店/关于页），仅允许 http(s)"""
+        from urllib.parse import urlparse
+
+        if urlparse(url or "").scheme not in ("http", "https"):
+            return False
+        try:
+            if platform.system() == "Windows":
+                os.startfile(url)
+            elif platform.system() == "Darwin":
+                import subprocess
+
+                subprocess.Popen(["open", url])
+            else:
+                import subprocess
+
+                subprocess.Popen(["xdg-open", url])
+            return True
+        except Exception:
+            return False
 
     def start_download(self, url: str) -> bool:
         return updater.start_download(url)
@@ -1569,9 +1679,20 @@ class JsApi:
         return updater.get_download_progress()
 
     def run_downloaded_installer(self) -> bool:
+        path = updater.last_downloaded_path()
         ok = updater.run_downloaded_installer()
         if ok:
-            self._webui._schedule_quit()
+            self._webui._schedule_quit(path)
+        return ok
+
+    def rerun_installer(self) -> bool:
+        """重新运行已下载的安装包（启动失败后不必重新下载）"""
+        path = updater.last_downloaded_path()
+        if not path:
+            return False
+        ok = updater.run_installer(path)
+        if ok:
+            self._webui._schedule_quit(path)
         return ok
 
     def download_update(self, url: str) -> dict:
@@ -2185,6 +2306,14 @@ class JsApi:
             "disable_auto_hide": d.get("disable_auto_hide", False),
             "window_resize_enabled": d.get("window_resize_enabled", False),
         }
+
+    def save_sort_mode(self, mode) -> dict:
+        """保存主窗口排序模式（_SORT_MODES 之一）"""
+        if mode not in _SORT_MODES:
+            return {"ok": False, "error": "invalid sort mode"}
+        self._cfg.set("sort_mode", mode)
+        self._cfg.save()
+        return {"ok": True}
 
     def save_settings(self, settings: dict):
         if isinstance(settings, dict):
@@ -2830,6 +2959,42 @@ class SettingsApi:
         from . import lan
 
         return lan.get_lan_ip()
+
+    def lan_qr(self) -> dict:
+        """生成连接二维码（IP + 端口 + 密钥，仅局域网服务运行时）"""
+        import base64
+        import json
+
+        import qrcode
+
+        from . import lan
+
+        st = lan.get_status()
+        if st.get("status") != "running":
+            return {"ok": False, "error": "局域网服务未运行"}
+        ip = lan.get_lan_ip()
+        if not ip:
+            return {"ok": False, "error": "未获取到局域网 IP"}
+        # 用握手实际使用的密钥（设置页可能用未保存的输入值启动服务）
+        secret = lan.runtime_secret()
+        if secret is None:
+            secret = self._cfg.get("lan_secret", "")
+        payload = json.dumps(
+            {
+                "v": 1,
+                "app": "ohmymeme",
+                "ip": ip,
+                "port": st.get("port"),
+                "secret": secret,
+            },
+            ensure_ascii=False,
+            separators=(",", ":"),
+        )
+        img = qrcode.make(payload, box_size=8, border=2)
+        buf = io.BytesIO()
+        img.save(buf, "PNG")
+        b64 = base64.b64encode(buf.getvalue()).decode("ascii")
+        return {"ok": True, "qr": "data:image/png;base64," + b64}
 
     def lan_set_allow_secret_config(self, enabled: bool) -> dict:
         from . import lan
@@ -3695,10 +3860,7 @@ class SettingsApi:
 
     # 非阻塞检查更新：新鲜缓存即返，首次/过期/force 触发后台检查返回 pending
     def check_update(self, debug=False, force=False) -> dict:
-        from . import __version__ as cur_ver
-
-        info = updater.check_latest_cached(force=bool(debug) or bool(force))
-        info["current"] = cur_ver
+        info = updater.update_info(force=bool(debug) or bool(force))
         if debug or self._webui._update_debug:
             info["has_update"] = True
         return info
@@ -3710,9 +3872,20 @@ class SettingsApi:
         return updater.get_download_progress()
 
     def run_downloaded_installer(self) -> bool:
+        path = updater.last_downloaded_path()
         ok = updater.run_downloaded_installer()
         if ok:
-            self._webui._schedule_quit()
+            self._webui._schedule_quit(path)
+        return ok
+
+    def rerun_installer(self) -> bool:
+        """重新运行已下载的安装包（启动失败后不必重新下载）"""
+        path = updater.last_downloaded_path()
+        if not path:
+            return False
+        ok = updater.run_installer(path)
+        if ok:
+            self._webui._schedule_quit(path)
         return ok
 
     def download_update(self, url: str) -> dict:
@@ -4748,10 +4921,13 @@ class WebUI:
         t.daemon = True
         t.start()
 
-    def _schedule_quit(self):
-        """更新安装程序启动后，短暂等待并强制结束当前进程（确保 exe 不被占用）"""
+    def _schedule_quit(self, watch_path: str = ""):
+        """等安装程序进程确认已启动后再结束当前进程（未启动则保留运行以便重试）"""
 
         def _force_kill():
+            if watch_path and not updater.wait_installer_started(watch_path):
+                logger.warning("installer not started, keep running: %s", watch_path)
+                return
             time.sleep(1.5)
             if os.name == "nt":
                 try:

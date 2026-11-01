@@ -61,6 +61,8 @@ _lan_state = {
 _lan_lock = threading.Lock()
 _server = None
 _confirm_cb = None  # 设备连接确认回调，由 WebUI 注入（阻塞等待用户决定）
+_DEVICES_FILENAME = "lan_devices.json"  # 已配对设备记录（data_dir 下，跨重启保留）
+_DEVICES_MAX = 50
 
 # 手机↔电脑传输进度（供设置页轮询，样式对齐云端 _sync_state）
 _transfer_lock = threading.Lock()
@@ -76,6 +78,70 @@ _transfer_state = {
     "updated": 0.0,
 }
 _TRANSFER_IDLE = 5  # 秒，超过无更新视为传输结束
+
+
+def _devices_path() -> Path:
+    return Path(get_config().data_dir) / _DEVICES_FILENAME
+
+
+def load_devices() -> list:
+    """读取已配对设备列表（文件缺失/损坏时返回空列表）"""
+    try:
+        data = json.loads(_devices_path().read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return []
+    if not isinstance(data, list):
+        return []
+    return [d for d in data if isinstance(d, dict) and d.get("ip")]
+
+
+def _save_devices(devices: list):
+    """原子写已配对设备列表，失败仅告警"""
+    path = _devices_path()
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        tmp = path.with_name(path.name + ".tmp")
+        tmp.write_text(
+            json.dumps(devices, ensure_ascii=False, indent=2), encoding="utf-8"
+        )
+        os.replace(tmp, path)
+    except OSError as e:
+        logger.warning(f"save lan devices failed: {e}")
+
+
+def record_device(ip: str, device: dict) -> list:
+    """记录一台已确认设备（按 IP 去重，更新名称/系统与最近配对时间）"""
+    ip = (ip or "").strip()
+    if not ip:
+        return load_devices()
+    now = int(time.time())
+    devices = load_devices()
+    entry = next((d for d in devices if d.get("ip") == ip), None)
+    if entry is None:
+        entry = {"ip": ip, "first_seen": now}
+        devices.append(entry)
+    entry.update(
+        {
+            "name": str(device.get("name") or "未知设备"),
+            "model": str(device.get("model") or ""),
+            "os": str(device.get("os") or ""),
+            "ver": str(device.get("ver") or ""),
+            "last_seen": now,
+        }
+    )
+    devices.sort(key=lambda d: int(d.get("last_seen") or 0), reverse=True)
+    devices = devices[:_DEVICES_MAX]
+    _save_devices(devices)
+    return devices
+
+
+def _devices_snapshot() -> list:
+    """已配对设备 + 当前在线标记（clients 里的 addr 形如 ip:port）"""
+    online = {str(c.get("addr", "")).split(":")[0] for c in _lan_state["clients"]}
+    devices = load_devices()
+    for d in devices:
+        d["online"] = d.get("ip") in online
+    return devices
 
 
 def _transfer_update(direction, current_file, nbytes, meta=None):
@@ -135,6 +201,7 @@ class LanServer:
         self._secret = ""
         self._clients = {}
         self._udp_pktinfo = False
+        self._tls = threading.local()
 
     # --- 生命周期 ---
 
@@ -387,6 +454,8 @@ class LanServer:
             if not key:
                 return
             conn.settimeout(_IDLE_TIMEOUT)
+            # 设备信息不含对端地址，按线程记录会话来源（同设备换端口重连按 IP 归并）
+            self._tls.peer_ip = str(addr[0])
             self._clients[addr] = time.time()
             self._sync_clients()
             confirmed = threading.Event()
@@ -493,6 +562,9 @@ class LanServer:
             with _lan_lock:
                 _lan_state.pop("pending_confirm", None)
         confirmed.set()
+        if approved:
+            # 记入互联设备列表（按 IP 去重，设置页可长期查看最近配对过的设备）
+            record_device(getattr(self._tls, "peer_ip", ""), device)
         with _lan_lock:
             allow_secret = bool(_lan_state["allow_secret_config"])
         return {
@@ -782,14 +854,18 @@ def stop():
 
 
 def get_status() -> dict:
-    """返回服务状态（设置页轮询），含传输进度与待确认设备"""
+    """返回服务状态（设置页轮询），含传输进度、待确认设备与已配对设备列表"""
+    devices = _devices_snapshot()
     with _lan_lock:
         pending = _lan_state.get("pending_confirm")
+        clients = list(_lan_state["clients"])
+
         return {
             "status": _lan_state["status"],
             "port": _lan_state["port"],
             "start_time": _lan_state["start_time"],
-            "clients": list(_lan_state["clients"]),
+            "clients": clients,
+            "devices": devices,
             "last_error": _lan_state["last_error"],
             "allow_secret_config": bool(_lan_state["allow_secret_config"]),
             "transfer": _transfer_snapshot(),
@@ -824,6 +900,18 @@ def confirm_device(approved: bool):
         with _lan_lock:
             entry["approved"] = bool(approved)
             entry["done"].set()
+
+
+def runtime_secret():
+    """当前运行中服务的互联密钥（未运行时返回 None）
+
+    设置页开启服务时用输入框里的值启动（可能尚未保存），二维码必须用
+    握手实际使用的密钥，否则手机扫码会因 challenge 不匹配被拒。
+    """
+    srv = _server
+    if srv is None:
+        return None
+    return str(getattr(srv, "_secret", "") or "")
 
 
 def get_lan_ip() -> str:

@@ -44,6 +44,7 @@ JsApi / SettingsApi → SQLite (WAL) + 本地缓存 + 远端同步
 ## 关键目录
 ```
 src/              # 主代码
+  __init__.py     # __version__ + __build_source__（构建来源标记 dev/github/nightly/msstore，scripts/build.py 打包前重写）
   main.py         # CLI 入口, OhMyMemeApp 编排
   webui.py        # pywebview 窗口 + JsApi/SettingsApi + Bottle 路由
   updater.py      # 版本检查 + 并发镜像下载
@@ -181,6 +182,7 @@ tests/
   - `tags`/`meme_tags`：DB 层方法（`get_all_tags`/`set_meme_tags`/`get_meme_tags`/`search` 标签筛选），已启用；右键表情「打标签」弹出标签编辑器（`showTagEditor`：点选已有标签/搜索过滤/输入新建，回车添加），`_set_tags` 覆盖式写入；`_prune_orphan_tags` 在 `_set_tags` 与 `delete_meme` 中清理无任何表情使用的孤儿标签（tagbar 不残留幽灵标签）
 - `PRAGMA journal_mode=WAL`, `PRAGMA foreign_keys=ON`
 - `MemeDB.search()`: 动态 WHERE, 多标签交集用 `HAVING COUNT = len(tags)`；keyword 除 `filename`/`original_name` LIKE 外同时匹配标签名（`meme_tags` JOIN `tags` 子查询 LIKE），`count()` 同步该逻辑
+- **拼音检索**：`database.pinyin_text(text)` 生成检索串（`lazy_pinyin` 全拼连写 + 空格 + 首字母，如「表情包」→`biaoqingbao bqb`），按原文缓存（上限 20000 条整体清空）；`pinyin_matches(keyword, *texts)` 供非 SQL 场景（云端行）使用。`MemeDB._pinyin_match_ids(keyword)` 仅在关键词为**纯字母**（`^[a-z]+$`）时工作：扫 `memes.filename/original_name` 与 `tags.name` 找到命中 id（标签命中再取关联 meme id），`_keyword_filter(keyword, prefix)` 把这些 id 以 `OR ... id IN (...)`（每 500 个一片）并进 keyword 条件，因此分页/计数/标签交集等其余 WHERE 语义完全不变；pypinyin 缺失时 `pinyin_text` 返回空串、拼音分支自动失效。中文关键词仍走原 LIKE 路径
 - `MemeDB.add_tags_to_memes(meme_ids, tags)`: 批量合并追加标签（get-or-create + `INSERT OR IGNORE`，不清空各表情已有标签），返回实际存在的表情数；先过滤出实际存在的 meme id（外键开启时对缺失 id 写 `meme_tags` 会整批失败），批量写包 try/rollback/re-raise；供 JsApi `batch_add_tags` 使用
 - `MemeDB.add_memes_to_collection(meme_ids, collection_id)` / `MemeDB.move_memes_to_collection(meme_ids, from_ids, to_id)`: 批量加组/移动的单事务实现（先校验表情 id 与目标分组存在，写入失败 rollback 后抛出）；按 `INSERT OR IGNORE` 实际新增关联计数（重复加入目标不计）；move 仅纳入实际属于 `from_ids` 子树的成员（非成员不受删除或移动影响），从子树删除后再加入目标，提交前级联清理源子树内变空的分组（迭代删除无成员且无子分组的叶子空组直到不动点，支持子组先空父组后空；仅限 from_ids 范围，子树外空分组保留；两处 FK 均 ON DELETE CASCADE，故只删叶子防波及）；供 JsApi `batch_add_to_collection`/`batch_move_to_collection` 使用（JsApi 负责目标解析/创建与「不能移入源分组自身或其子分组」校验——`create_collection` 会复用同名顶层分组，故该校验在目标解析后统一执行；move 成功后无条件重建 manifest——`moved==0` 时成员关系仍可能变化，如成员已在目标、仅从源移除）
 - `memes.sort_order`: 自定义排序（拖拽更新），默认 0，查询 `ORDER BY sort_order ASC, updated_at DESC, m.id ASC`（`m.id ASC` 兜底并列项，保证「定位到某表情」页码稳定）
@@ -250,6 +252,11 @@ tests/
 - 镜像并发: `_urlopen_mirror` / `_urlretrieve_mirror` 用 `ThreadPoolExecutor` + `as_completed`
 - 镜像列表: `github.dpik.top` → `gh.dpik.top` → `gh-proxy.org` → 直连 GitHub（已移除 `proxy.starsfire.top`——该代理仅浏览器可访问，程序化请求 404）
 - 下载进度: `start_download()` → 后台线程 → JS 每 500ms 轮询 `get_download_progress()`
+- Windows 资产选择（防错包）: `_pick_asset_url` 优先 `-setup.exe`，其次才回退任意 `.exe`。Release 的 `assets` 按上传顺序返回，`ffmpeg.exe` 可能排在安装包之前（0.7.0 即如此），旧逻辑命中首个 `.exe` 会下载到 ffmpeg → 启动后弹出一个看不到内容的控制台窗口、软件自行关闭且安装向导不出现
+- Windows 启动安装: `run_installer` 先 `_is_windows_executable` 校验 PE `MZ` 头（镜像返回的 HTML 错误页不会被当安装包），再 `_shell_execute` 经 `ctypes` 调 `ShellExecuteW`（保留 `PrivilegesRequired=admin` 的 UAC 提权；`Popen`/`CreateProcess` 无法提权，会以 740 失败），返回码 ≤32 时记 `lasterror` 并判失败
+- 退出时序: `WebUI._schedule_quit(watch_path)` 先 `updater.wait_installer_started`（Windows `tasklist /FI IMAGENAME`，8s 内未出现即放弃退出并保留程序运行，便于「重新运行安装程序」），确认进程存在后 sleep 1.5s 再 `TerminateProcess`+`os._exit(0)`
+- 启动失败重试: `updater.last_downloaded_path()` 保留已下载安装包路径，`JsApi/SettingsApi.rerun_installer()` 直接重跑该文件（不重新下载）；`UpdateDialog` 与设置页更新弹窗在启动失败时展示「重新运行安装程序」
+- 构建来源: `updater.update_info()` 在 `check_latest_cached` 结果上补 `current`，`__build_source__ == "msstore"` 时加 `store: true` / `store_url`（`STORE_URL`），前端据此把「更新」按钮换成「前往 Microsoft Store」（`JsApi.open_url` 仅放行 http(s)）
 - Linux 更新: `_pick_asset_url` 选取 `.AppImage` 资产；`run_installer` Linux 分支 chmod +x 后直接 `Popen`（AppImage 是 ELF 非 shell 脚本），无 `/dev/fuse` 时追加 `--appimage-extract-and-run` 回退（`_needs_appimage_fallback`）；下载默认文件名走 `_default_asset_name()`（Linux 为 `OhMyMeme-v{version}-x86_64.AppImage`）
 - macOS 更新: `_pick_asset_url` 按当前架构选取 `.dmg` 资产（arm64/x86_64）；`run_installer` 走 `_install_dmg_macos`（`hdiutil attach` → `ditto` 复制 `.app` 到 `/Applications` → 打开应用程序目录）；`_default_asset_name()` 为 `OhMyMeme-v{version}-{arch}.dmg`
 
@@ -264,6 +271,8 @@ tests/
 - **配置同步（双向，电脑为权威源）**: `get_config` 由手机拉取、`send_config` 由手机推送；两端均剔除 `_SECRET_KEYS`（FTP/S3/R2/WebDAV 密码等）；设置页「允许密钥传输」开关（`lan_set_allow_secret_config`，仅内存生效）开启后配置同步才包含密钥字段，开启前弹窗警示「请勿在公共网络或不信任的网络进行此操作！」；`device_info` 确认响应携带 `allow_secret_config` bool，手机端据此动态显示密钥拉取/推送按钮
 - **文件安全（与手机端对称）**: `_safe_fname` 拒绝路径穿越/绝对路径；`push_file` 四重校验：文件名安全 → 字节 ≤`MAX_FILE_SIZE`（64MB）→ 可选 `sha256` 与本地计算一致 → `_import_bytes` 先解码校验宽高>0 合法才写盘；**不合法字节绝不落盘**（杜绝孤儿缓存文件）；合法图片按 SHA-256 去重后存 `cache_dir/{hash[:16]}{ext}` 并入库
 - **生命周期**: 设置页开关临时启动（重启默认关，不写入 config）；**关闭设置窗口不停服**（`WebUI.close_settings` 不再调 `lan.stop()`——手机发现/传输通常在设置页关闭后进行，停服只由关开关、恢复默认与 `main.py` `shutdown()` 负责）；设置页 `refreshLanStatus()` 按后端 `status==='running'` 回填 `s-lan-enable`；`lan_port`/`lan_secret` 持久化（`lan_secret` 加密存储）。**发现诊断**：`_lan_state` 记 `discover_count/last_discover_at/last_discover_from/last_reply_at/last_reply_error/iface_mode`，`get_status()` 一并返回，设置页据此显示「已收到 N 次发现请求」或「尚未收到手机发现广播（请同网段并放行防火墙 UDP/TCP 端口）」或「回包失败: …」；`_udp_loop` 对 `OSError` 记录并继续（连续 20 次才停并置 `status=error`，不再单次错误就静默退出线程）——Windows 的 `WSAECONNRESET` 由此兜住；**不用 `ioctl(SIO_UDP_CONNRESET)`**：CPython 的 `socket.ioctl` 只放行 `SIO_RCVALL`/`SIO_KEEPALIVE_VALS`/`SIO_LOOPBACK_FAST_PATH`，对 `0x9800000C` 直接抛 `ValueError: invalid ioctl command`；`start()` 绑定失败写 `logger.error` + `last_error`
+- **连接二维码（扫码直连）**: `SettingsApi.lan_qr()` 仅在 `lan.get_status()["status"] == "running"` 且有局域网 IP 时生成——载荷 `{"v":1,"app":"ohmymeme","ip","port","secret"}`（JSON、紧凑分隔符），`secret` 取 `lan.runtime_secret()`（运行中服务握手实际使用的密钥；设置页开启服务用的是输入框当前值，可能尚未保存，读配置会造出握手被拒的二维码），`qrcode.make(...)` 出 PNG 后 base64 成 `data:image/png;base64,...`；设置页 LAN 区块 `#btn-lan-qr` 仅在服务运行中可见（`setLanQrUi`），点击 `showLanQr()` 渲染到 `#lan-qr-wrap`；手机端扫码取得 ip/port/secret 后直接 `LanClient.connect` 跳过 UDP 发现（密钥自动填入手机端密钥框）；依赖 `qrcode>=7.4`（纯 Python，PNG 编码走 Pillow）已登记 `requirements.txt`
+- **互联设备列表**: `lan.record_device(ip, device)` 在设备确认通过后写入 `data_dir/lan_devices.json`（按 IP 去重，字段 `ip/name/model/os/ver/first_seen/last_seen`，`_DEVICES_MAX`=50 条按 `last_seen` 倒序截断，`os.replace` 原子写）；对端 IP 由 `_handle_conn` 写入 `self._tls.peer_ip`（`threading.local`，设备信息帧本身不含地址），同一设备换端口重连按 IP 归并；`get_status()` 先取 `_devices_snapshot()`（在 `_lan_lock` 外做文件 IO，`online` 由当前 `clients` 的 `ip:port` 前缀判定）再拼进返回值；设置页 `#lan-devices` 由 `renderLanDevices(devices)` 渲染（名称/系统/版本、IP、在线或最近配对时间），5s 轮询里同步刷新
 
 ### 本地 HTTP 安全加固
 - Bottle 只绑 `127.0.0.1` 随机端口；`before_request` 校验 `Host` 必须为本机回环（`_host_allowed`），POST 额外校验 `Origin` 同源且 `Sec-Fetch-Site` 非 `cross-site`，拒绝则 403（阻断 DNS rebinding / 跨站注入）
@@ -351,6 +360,13 @@ tests/
 - 排序相关的 `reorder_memes`/`reorder_collections`/`reorder_collection_members` 更新 DB 后即调 `build_manifest()`，本地 `meme-index.json` 保持最新
 - push：末尾 `build_manifest()` 按 DB 当前 `sort_order` 重建并上传，云端 manifest 顺序反映本地排序
 - pull：`_apply_remote_order` 按云端 manifest 顺序回写本地 `sort_order`，实现双向闭环
+
+### 列表排序（主窗口显示顺序）
+- 配置 `sort_mode`（默认 `manifest`，取值 `manifest`/`manifest_desc`/`name_asc`/`name_desc`，`config.py` 默认值 + `get_init_data` 下发 + `JsApi.save_sort_mode` 持久化，`_SORT_MODES` 白名单校验）；重启后保留
+- 前端 `App.vue` 的 `.sort-toggle` 两段式按钮（`#search-wrap` 内、搜索框左侧）：左块 manifest 正/反向（`ic` 3 向下/向上箭头，正序 `--primary`、反向 `--primary-strong`），右块名称 A-Z/Z-A 文本块；`useMemes.setSortMode` 更新 `state.sortMode` → `search()` → `save_sort_mode`
+- 后端 `JsApi.search_memes(..., sort_mode="")`：manifest 模式取顺序源 `order`（有云行用 `_cloud_order`，无云行回退 `_local_manifest_order()`——按 `index_path()` 的 `st_mtime_ns`+`st_size` 缓存 `manifest.index_order()`），不再依赖有云行；名称模式用 `database._name_sort_key`（数字感知 + 拼音）。排序模式一律取全量行（`fetch_all`）后 `_sort_rows` 排序再 `[offset:offset+limit]` 切片
+- `_sort_rows`：manifest 下不在清单的本地行（新导入未推送）保持原序排最前，反向模式清单内行倒序、清单外行放尾部；名称模式对本地+云行统一按显示名排序
+- 分页一致性：`JsApi.locate_meme` 排序模式下按同一 `_sort_rows` 口径计算页码；`count_memes` 不受排序影响
 
 ### Manifest
 - `build()` 递归遍历嵌套分组树，空分组自动 `delete_collection`

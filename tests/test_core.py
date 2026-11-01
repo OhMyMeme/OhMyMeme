@@ -131,9 +131,7 @@ class TestConfig(unittest.TestCase):
 
         cfg.set("manifest_include_favorites", False)
         cfg.save()
-        self.assertIs(
-            Config(self.config_path).get("manifest_include_favorites"), False
-        )
+        self.assertIs(Config(self.config_path).get("manifest_include_favorites"), False)
 
     def test_manifest_include_collections_default_on(self):
         cfg = Config(self.config_path)
@@ -551,6 +549,34 @@ class TestDatabase(unittest.TestCase):
         self.assertEqual(len(results), 0)
         self.assertEqual(self.db.count(), 0)
 
+    def test_search_pinyin_full_and_initials(self):
+        # 拼音检索：显示名全拼（biaoqingbao）与首字母（bqb）都能命中中文名
+        mid = self.db.add_meme("a.png", original_name="表情包")
+        self.db.add_meme("b.png", original_name="风景")
+        self.assertEqual([r["id"] for r in self.db.search("biaoqingbao")], [mid])
+        self.assertEqual([r["id"] for r in self.db.search("bqb")], [mid])
+        self.assertEqual(self.db.count("bq"), 1)  # 仅「表情包」首字母含 bq
+        # 纯中文关键词仍走原 LIKE 路径
+        self.assertEqual([r["id"] for r in self.db.search("表情")], [mid])
+
+    def test_search_pinyin_tag_name(self):
+        # 标签名也支持拼音：搜索 gaoxiao 命中打了「搞笑」标签的表情
+        mid = self.db.add_meme("a.png", tags=["搞笑"])
+        self.db.add_meme("b.png", tags=["其他"])
+        self.assertEqual([r["id"] for r in self.db.search("gaoxiao")], [mid])
+        self.assertEqual([r["id"] for r in self.db.search("gx")], [mid])
+
+    def test_search_pinyin_respects_other_filters(self):
+        # 拼音命中仍受标签/分组/收藏过滤约束（条件以 OR 合并，不越过其余 WHERE）
+        mid1 = self.db.add_meme("a.png", original_name="表情包", tags=["tag1"])
+        mid2 = self.db.add_meme("b.png", original_name="表情包2", tags=["tag2"])
+        self.assertEqual(
+            [r["id"] for r in self.db.search("bqb", tags=["tag1"])], [mid1]
+        )
+        self.assertEqual(self.db.count("bqb", tags=["tag2"]), 1)
+        self.assertEqual(len(self.db.search("bqb")), 2)
+        self.assertIsNotNone(mid2)
+
 
 class TestHotkeyWatchdog(unittest.TestCase):
     """GlobalHotkey 键盘监听线程守护：自动重注册逻辑（mock keyboard 模块）"""
@@ -609,7 +635,11 @@ class TestHotkeyWatchdog(unittest.TestCase):
 
     def test_hook_health_check_probe_timeout_detects_dead_hook(self):
         """连续多轮探针未见事件才判死；用户按键即视为存活并清零计数。"""
-        from src.hotkey import KEYBOARD_PROBE_INTERVAL, KEYBOARD_PROBE_MISS_LIMIT, KEYBOARD_PROBE_TIMEOUT
+        from src.hotkey import (
+            KEYBOARD_PROBE_INTERVAL,
+            KEYBOARD_PROBE_MISS_LIMIT,
+            KEYBOARD_PROBE_TIMEOUT,
+        )
 
         hk = self._fresh_hotkey()
         calls = []

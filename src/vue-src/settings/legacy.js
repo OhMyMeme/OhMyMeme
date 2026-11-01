@@ -271,6 +271,8 @@ async function refreshLanStatus() {
     if (lanPollTimer) { clearTimeout(lanPollTimer); lanPollTimer = null; }
     updateLanTransfer(null);
     handleLanConfirm(null);
+    setLanQrUi(false);
+    renderLanDevices(r ? r.devices : []);
     return;
   }
   if (r.status === 'error') {
@@ -280,6 +282,8 @@ async function refreshLanStatus() {
     if (lanPollTimer) { clearTimeout(lanPollTimer); lanPollTimer = null; }
     updateLanTransfer(null);
     handleLanConfirm(null);
+    setLanQrUi(false);
+    renderLanDevices(r.devices);
     return;
   }
   let html = '● 运行中 <span style="opacity:.6">(端口 ' + r.port + '，IP ' + esc(ip) + ')</span>';
@@ -298,16 +302,80 @@ async function refreshLanStatus() {
   }
   el.innerHTML = html;
   setStatusColor(el, 'ok');
+  setLanQrUi(true);
+  renderLanDevices(r.devices);
   if (lanPollTimer) { clearTimeout(lanPollTimer); lanPollTimer = null; }
   lanPollStatus = async () => {
     lanPollTimer = null;
     const r2 = await api('lan_get_status');
     if (!r2 || r2.status !== 'running') { refreshLanStatus(); return; }
     handleLanConfirm(r2.pending_confirm);
+    renderLanDevices(r2.devices);
     const fast = updateLanTransfer(r2.transfer);
     lanPollTimer = setTimeout(lanPollStatus, fast ? 300 : 5000);
   };
   lanPollTimer = setTimeout(lanPollStatus, 5000);
+}
+
+/* 互联设备列表（lan.py 持久化，按最近配对时间排序，在线状态来自当前连接） */
+function renderLanDevices(devices) {
+  const box = document.getElementById('lan-devices');
+  if (!box) return;
+  const list = Array.isArray(devices) ? devices : [];
+  if (!list.length) {
+    box.style.display = 'none';
+    box.innerHTML = '';
+    return;
+  }
+  const rows = list.map(d => {
+    const info = [d.name || '未知设备', d.os, d.ver, d.model].filter(Boolean).map(esc).join(' · ');
+    const stateText = d.online ? '在线' : (d.last_seen ? lanSeenText(d.last_seen) : '离线');
+    const stateColor = d.online ? 'var(--success)' : 'var(--muted)';
+    return '<div style="display:flex;align-items:center;gap:8px;padding:4px 8px;border:1px solid var(--border);border-radius:6px;margin-bottom:4px;font-size:11.5px">'
+      + '<span style="width:6px;height:6px;border-radius:50%;flex:none;background:' + stateColor + '"></span>'
+      + '<span style="flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:var(--fg-secondary)">' + info + '</span>'
+      + '<code style="color:var(--muted)">' + esc(d.ip) + '</code>'
+      + '<span style="color:' + stateColor + '">' + stateText + '</span>'
+      + '</div>';
+  }).join('');
+  box.style.display = 'block';
+  box.innerHTML = '<div style="font-size:11.5px;color:var(--fg-secondary);margin-bottom:4px">互联设备（' + list.length + '）</div>' + rows;
+}
+
+/* 最近配对时间：今天显示时分，其他显示月日 */
+function lanSeenText(ts) {
+  const d = new Date(ts * 1000);
+  if (!ts || isNaN(d.getTime())) return '离线';
+  const now = new Date();
+  const pad = (n) => String(n).padStart(2, '0');
+  if (d.toDateString() === now.toDateString()) return '今天 ' + pad(d.getHours()) + ':' + pad(d.getMinutes());
+  return (d.getMonth() + 1) + '月' + d.getDate() + '日';
+}
+
+/* 局域网连接二维码（仅服务运行时可生成，内容 = IP + 端口 + 密钥） */
+function setLanQrUi(running) {
+  const btn = document.getElementById('btn-lan-qr');
+  if (btn) btn.style.display = running ? '' : 'none';
+  if (!running) {
+    const wrap = document.getElementById('lan-qr-wrap');
+    if (wrap) { wrap.style.display = 'none'; wrap.innerHTML = ''; }
+  }
+}
+
+async function showLanQr() {
+  const wrap = document.getElementById('lan-qr-wrap');
+  if (!wrap) return;
+  wrap.style.display = 'block';
+  wrap.innerHTML = '<div style="font-size:12px;color:var(--fg-secondary)">正在生成二维码…</div>';
+  const r = await api('lan_qr');
+  if (!r || !r.ok) {
+    wrap.style.display = 'none';
+    wrap.innerHTML = '';
+    showToast((r && r.error) || '生成二维码失败');
+    return;
+  }
+  wrap.innerHTML = '<img src="' + r.qr + '" alt="局域网连接二维码" style="width:180px;height:180px;border-radius:8px;background:#fff;padding:8px">'
+    + '<div style="font-size:11.5px;color:var(--muted);margin-top:8px">用手机 OhMyMeme 扫描连接（设置 → 局域网互联 → 扫码连接）</div>';
 }
 
 /* LAN 传输进度与设备确认（设置页，轮询 lan_get_status） */
@@ -2315,13 +2383,13 @@ async function checkUpdate() {
   if (r.error) { status.textContent = '检查失败: ' + r.error; return; }
   if (!r.latest) { status.textContent = '暂无版本信息'; return; }
   if (r.has_update) {
-    showUpdateDialog(r.current, r.latest, r.download_url, r.notes);
+    showUpdateDialog(r.current, r.latest, r.download_url, r.notes, r.store_url);
   } else {
     status.textContent = '已是最新版本 (' + r.latest + ')';
   }
 }
 
-function showUpdateDialog(current, latest, url, notes) {
+function showUpdateDialog(current, latest, url, notes, storeUrl) {
   const overlay = document.createElement('div');
   overlay.id = 'update-overlay';
   overlay.style.cssText = 'position:fixed;inset:0;background:rgba(0,0,0,.55);display:flex;align-items:center;justify-content:center;z-index:300;animation:fadeIn .15s';
@@ -2335,7 +2403,7 @@ function showUpdateDialog(current, latest, url, notes) {
     + '<p style="font-size:13px;color:var(--fg-secondary);line-height:1.6">当前版本: ' + esc(current) + '<br>最新版本: ' + esc(latest) + '</p></div>'
     + (notes ? '<div style="margin-bottom:16px"><div style="font-size:13px;font-weight:600;color:var(--fg);margin-bottom:6px">更新内容</div><div class="upd-notes" style="font-size:12px;color:var(--fg-secondary);line-height:1.7;background:var(--bg-secondary);border:1px solid var(--border);border-radius:var(--radius-sm);padding:10px 12px;max-height:220px;overflow-y:auto;overflow-x:hidden">' + renderMarkdown(notes) + '</div></div>' : '')
     + '<div style="display:flex;flex-direction:column;gap:8px">'
-    + '<button id="upd-update" class="btn btn-primary" style="width:100%">更新</button>'
+    + '<button id="upd-update" class="btn btn-primary" style="width:100%">' + (storeUrl ? '前往 Microsoft Store' : '更新') + '</button>'
     + '<div style="display:flex;gap:8px">'
     + '<button id="upd-later" class="btn btn-secondary btn-flex">稍后提示</button>'
     + '</div></div>';
@@ -2346,6 +2414,11 @@ function showUpdateDialog(current, latest, url, notes) {
   const updCleanup = () => { overlay.remove(); restoreSettingsFocus(); };
 
    document.getElementById('upd-update').onclick = async () => {
+    if (storeUrl) {
+      await api('open_url', storeUrl);
+      updCleanup();
+      return;
+    }
     const btn = document.getElementById('upd-update');
     btn.disabled = true;
     btn.textContent = '准备下载...';
@@ -2370,17 +2443,27 @@ function showUpdateDialog(current, latest, url, notes) {
         clearInterval(poll);
         document.getElementById('upd-progress-text').textContent = '下载完成，启动安装...';
         const r = await api('run_downloaded_installer');
-        updCleanup();
         if (r) {
+          updCleanup();
           showToast('安装程序已启动，安装完成后将自动更新');
         } else {
-          showToast('启动安装程序失败');
+          document.getElementById('upd-progress-text').textContent = '启动安装程序失败';
+          container.innerHTML += '<button id="upd-rerun" class="btn btn-primary" style="width:100%;margin-top:8px">重新运行安装程序</button>';
+          document.getElementById('upd-rerun').onclick = async () => {
+            const ok2 = await api('rerun_installer');
+            if (ok2) {
+              updCleanup();
+              showToast('安装程序已启动，安装完成后将自动更新');
+            } else {
+              showToast('无法启动安装程序，请重新下载');
+            }
+          };
         }
       } else if (s.status === 'error') {
         clearInterval(poll);
         document.getElementById('upd-progress-text').textContent = '下载失败: ' + (s.error || '未知错误');
         container.innerHTML += '<button id="upd-retry" class="btn btn-primary" style="width:100%;margin-top:8px">重试</button>';
-        document.getElementById('upd-retry').onclick = () => { updCleanup(); showUpdateDialog(current, latest, url); };
+        document.getElementById('upd-retry').onclick = () => { updCleanup(); showUpdateDialog(current, latest, url, notes, storeUrl); };
       }
     }, 500);
   };
@@ -2393,7 +2476,7 @@ async function checkUpdateBackground() {
   if (!r || !r.has_update) return;
   const ignored = localStorage.getItem('update_ignored_' + r.latest);
   if (ignored) return;
-  showUpdateDialog(r.current, r.latest, r.download_url, r.notes);
+  showUpdateDialog(r.current, r.latest, r.download_url, r.notes, r.store_url);
 }
 
 /* Danger zone */

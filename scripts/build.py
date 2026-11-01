@@ -308,6 +308,19 @@ def set_version(v: str):
     init_py.write_text(new_content, encoding="utf-8")
 
 
+def set_build_source(v: str):
+    """临时改写 src/__init__.py 的 __build_source__（按构建渠道，构建后恢复 dev）"""
+    init_py = SRC_DIR / "__init__.py"
+    content = init_py.read_text(encoding="utf-8")
+    new_content = re.sub(
+        r'__build_source__\s*=\s*"[^"]*"',
+        '__build_source__ = "%s"' % v,
+        content,
+        count=1,
+    )
+    init_py.write_text(new_content, encoding="utf-8")
+
+
 def build_keyfinder_helper(allow_missing=False):
     """编译 wechat_keyfinder helper（Windows 专用，cmake + MSVC）
 
@@ -968,7 +981,13 @@ def _msix_attr(tag, name):
     return m.group(1) if m else ""
 
 
-def build_msix(version, target=None, filename_version=None):
+def build_msix(
+    version,
+    target=None,
+    filename_version=None,
+    ffmpeg=None,
+    allow_missing_ffmpeg=False,
+):
     """生成 MSIX 包（Microsoft Store / 侧载）；version 为三段式数字版本"""
     if target is None:
         target = platform.system()
@@ -980,6 +999,13 @@ def build_msix(version, target=None, filename_version=None):
     if not makeappx:
         print(L("makeappx_not_found"))
         return
+
+    # MSIX 走商店渠道：以 msstore 来源标记重建 onedir（nightly 保留 nightly 标记）
+    if ffmpeg is None:
+        ffmpeg = ensure_ffmpeg(allow_missing=allow_missing_ffmpeg)
+    source = "nightly" if filename_version == "nightly" else "msstore"
+    set_build_source(source)
+    build_pyinstaller(target="Windows", ffmpeg=ffmpeg)
 
     dist_dir = BUILD_DIR / APP_NAME
     if not dist_dir.is_dir():
@@ -1057,13 +1083,23 @@ def build_msix(version, target=None, filename_version=None):
 
 
 def build_windows_installers(
-    app_version, filename_version, want_msix=False
+    app_version,
+    filename_version,
+    want_msix=False,
+    ffmpeg=None,
+    allow_missing_ffmpeg=False,
 ):
     """构建 Windows 安装包集合：InnoSetup .exe 始终构建（工具缺失仅告警），
     可选追加 MSIX（--msix）"""
     build_installer(app_version, target="Windows", filename_version=filename_version)
     if want_msix:
-        build_msix(app_version, target="Windows", filename_version=filename_version)
+        build_msix(
+            app_version,
+            target="Windows",
+            filename_version=filename_version,
+            ffmpeg=ffmpeg,
+            allow_missing_ffmpeg=allow_missing_ffmpeg,
+        )
 
 
 def build_linux_packages(version, package="all", pkg_version=None, arch=None):
@@ -1339,9 +1375,11 @@ if __name__ == "__main__":
 
     # nightly / 指定版本时临时改写 __init__.py，构建后恢复
     patched = build_version != base_version
+    build_source = "nightly" if args.nightly else "github"
     keyfinder_original = None
     if patched:
         set_version(build_version)
+    set_build_source(build_source)
 
     try:
         if args.installer_only:
@@ -1350,6 +1388,7 @@ if __name__ == "__main__":
                     app_version,
                     build_version,
                     want_msix=args.msix,
+                    allow_missing_ffmpeg=args.allow_missing_ffmpeg,
                 )
             elif target == "Linux":
                 build_linux_packages(
@@ -1380,6 +1419,8 @@ if __name__ == "__main__":
                     app_version,
                     build_version,
                     want_msix=args.msix,
+                    ffmpeg=ffmpeg,
+                    allow_missing_ffmpeg=args.allow_missing_ffmpeg,
                 )
             elif target == "Linux":
                 build_linux_packages(
@@ -1394,3 +1435,4 @@ if __name__ == "__main__":
             unpin_keyfinder_hash(keyfinder_original)
         if patched:
             set_version(base_version)
+        set_build_source("dev")

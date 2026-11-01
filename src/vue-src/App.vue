@@ -21,7 +21,7 @@ import UpdateDialog from './components/UpdateDialog.vue'
 import { applyTheme } from './utils/api'
 import type { Meme } from './types'
 
-const { state, setMemes, search, goToPage, setSearch, toggleTag, setActiveCollection, refreshTags, refreshCollections, copyMeme, reorderMemes, canReorder, startNativeDrag, selectAllVisible, clearSelection, loadInitData, MEME_PAGE } = useMemes()
+const { state, setMemes, search, goToPage, setSearch, setSortMode, toggleTag, setActiveCollection, refreshTags, refreshCollections, copyMeme, reorderMemes, canReorder, startNativeDrag, selectAllVisible, clearSelection, loadInitData, MEME_PAGE } = useMemes()
 const ctx = useContextMenu()
 const cb = useCollectionBuilder()
 const tagEditor = ref<InstanceType<typeof TagEditor> | null>(null)
@@ -63,9 +63,19 @@ async function checkUpdateResult() {
 function maybeShowUpdate(upd) {
   try {
     if (upd && upd.has_update) {
-      updateDialog.value?.show(upd.current, upd.latest, upd.download_url, upd.notes)
+      updateDialog.value?.show(upd.current, upd.latest, upd.download_url, upd.notes, upd.store_url)
     }
   } catch (_) {}
+}
+
+// 排序按钮：左块 manifest 正/反向切换，右块名称 A-Z/Z-A 切换
+function onManifestSort() {
+  if (state.sortMode === 'manifest') setSortMode('manifest_desc')
+  else setSortMode('manifest')
+}
+function onNameSort() {
+  if (state.sortMode === 'name_asc') setSortMode('name_desc')
+  else setSortMode('name_asc')
 }
 
 const sortEnabled = ref(false)
@@ -1358,6 +1368,35 @@ onUnmounted(() => {
               <line x1="3" y1="6" x2="21" y2="6"/><line x1="3" y1="12" x2="21" y2="12"/><line x1="3" y1="18" x2="21" y2="18"/>
             </svg>
           </button>
+          <div class="sort-toggle" role="group" aria-label="排序">
+            <button
+              class="sort-half"
+              :class="{ active: state.sortMode.startsWith('manifest'), desc: state.sortMode === 'manifest_desc' }"
+              @click="onManifestSort"
+              :title="state.sortMode === 'manifest_desc' ? 'manifest 反向排序（点击回到正序）' : 'manifest 排序（点击切换反向）'"
+              :aria-label="state.sortMode === 'manifest_desc' ? 'manifest 反向排序' : 'manifest 排序'"
+            >
+              <svg v-if="state.sortMode !== 'manifest_desc'" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                <path d="M12 3v6"/><path d="m9.5 6.5 2.5 2.5 2.5-2.5"/>
+                <path d="M12 9v6"/><path d="m9.5 12.5 2.5 2.5 2.5-2.5"/>
+                <path d="M12 15v6"/><path d="m9.5 18.5 2.5 2.5 2.5-2.5"/>
+              </svg>
+              <svg v-else viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                <path d="M12 3v6"/><path d="m9.5 5.5 2.5-2.5 2.5 2.5"/>
+                <path d="M12 9v6"/><path d="m9.5 11.5 2.5-2.5 2.5 2.5"/>
+                <path d="M12 15v6"/><path d="m9.5 17.5 2.5-2.5 2.5 2.5"/>
+              </svg>
+            </button>
+            <button
+              class="sort-half"
+              :class="{ active: state.sortMode.startsWith('name'), desc: state.sortMode === 'name_desc' }"
+              @click="onNameSort"
+              :title="state.sortMode === 'name_desc' ? '名称 Z-A（点击回到 A-Z）' : '名称 A-Z（点击切换 Z-A）'"
+              :aria-label="state.sortMode === 'name_desc' ? '名称 Z 到 A 排序' : '名称 A 到 Z 排序'"
+            >
+              <span class="sort-letters">{{ state.sortMode === 'name_desc' ? 'Z-A' : 'A-Z' }}</span>
+            </button>
+          </div>
           <input id="search" type="text" placeholder="搜索表情包..." :value="state.searchQuery" @input="onSearchInput" autofocus spellcheck="false">
           <button v-if="state.searchQuery" class="search-clear" title="清除搜索" aria-label="清除搜索" @click="clearSearch">×</button>
         </div>

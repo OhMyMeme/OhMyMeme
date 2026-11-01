@@ -106,6 +106,19 @@ def build() -> List[Dict]:
     return memes
 
 
+def index_path() -> Path:
+    return get_config().data_dir / INDEX_FILENAME
+
+
+def index_order() -> List[str]:
+    """本地清单 memes 的文件名顺序（不可用时空列表）"""
+    order = []
+    for m in load().get("memes") or []:
+        if isinstance(m, dict) and isinstance(m.get("filename"), str):
+            order.append(m["filename"])
+    return order
+
+
 def load() -> Dict:
     """加载索引文件，不存在时返回空结构"""
     path = _index_path()

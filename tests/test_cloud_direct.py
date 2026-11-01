@@ -303,8 +303,7 @@ def test_push_deletes_remote_thumb_on_delete_remote(sync_env):
 
     assert result["deleted"] == 1
     assert any(
-        p.endswith("/thumbnails/" + SHA_A + ".webp")
-        for p in sync_env.bk.delete_calls
+        p.endswith("/thumbnails/" + SHA_A + ".webp") for p in sync_env.bk.delete_calls
     )
 
 
@@ -394,6 +393,9 @@ def _reset_cloud_state():
             )
         with webui_module._cloud_inflight_lock:
             webui_module._cloud_inflight.clear()
+        with webui_module._local_manifest_lock:
+            webui_module._local_manifest_cache["key"] = None
+            webui_module._local_manifest_cache["order"] = []
         webui_module._sync_status_reset()
 
     _reset()
@@ -513,12 +515,8 @@ def test_cloud_merge_extras_first_and_collection_order(js):
     js.db.add_meme(filename="b.png", file_hash=SHA_B)
     js.db.add_meme(filename="a.png", file_hash=SHA_C)
     top = js.db.create_collection("动物")
-    js.db.add_memes_to_collection(
-        [r["id"] for r in js.db.search(keyword="b.png")], top
-    )
-    js.db.add_memes_to_collection(
-        [r["id"] for r in js.db.search(keyword="a.png")], top
-    )
+    js.db.add_memes_to_collection([r["id"] for r in js.db.search(keyword="b.png")], top)
+    js.db.add_memes_to_collection([r["id"] for r in js.db.search(keyword="a.png")], top)
     _set_cloud(
         js,
         {
@@ -557,6 +555,107 @@ def test_search_memes_recent_excludes_cloud(js):
     )
     assert js.api.search_memes("", None, -3, 0, 10) == []
     assert js.api.count_memes(collection_id=-3) == 0
+
+
+# ─── 排序模式（sort_mode） ───
+
+
+def _write_local_manifest(js, filenames):
+    import src.manifest as manifest_module
+
+    manifest_module.index_path().write_text(
+        json.dumps({"version": 3, "memes": [{"filename": f} for f in filenames]}),
+        encoding="utf-8",
+    )
+
+
+def test_sort_mode_name_asc_desc(js):
+    js.db.add_meme(filename="a.png", file_hash=SHA_A, original_name="cat")
+    js.db.add_meme(filename="b.png", file_hash=SHA_B, original_name="dog")
+    js.db.add_meme(filename="c.png", file_hash=SHA_C, original_name="apple")
+    api = js.api
+    assert _names(api.search_memes("", None, None, 0, 10, "name_asc")) == [
+        "c.png",
+        "a.png",
+        "b.png",
+    ]
+    assert _names(api.search_memes("", None, None, 0, 10, "name_desc")) == [
+        "b.png",
+        "a.png",
+        "c.png",
+    ]
+    assert _names(api.search_memes("", None, None, 1, 2, "name_asc")) == [
+        "a.png",
+        "b.png",
+    ]
+    # 无效模式回退默认查询序（全量返回）
+    rows = api.search_memes("", None, None, 0, 10, "bogus")
+    assert set(_names(rows)) == {"a.png", "b.png", "c.png"}
+
+
+def test_sort_mode_manifest_local_fallback(js):
+    js.db.add_meme(filename="a.png", file_hash=SHA_A)
+    js.db.add_meme(filename="b.png", file_hash=SHA_B)
+    _write_local_manifest(js, ["b.png", "a.png"])
+    api = js.api
+    assert _names(api.search_memes("", None, None, 0, 10, "manifest")) == [
+        "b.png",
+        "a.png",
+    ]
+    assert _names(api.search_memes("", None, None, 0, 10, "manifest_desc")) == [
+        "a.png",
+        "b.png",
+    ]
+
+
+def test_sort_mode_manifest_extras(js):
+    js.db.add_meme(filename="a.png", file_hash=SHA_A)
+    js.db.add_meme(filename="b.png", file_hash=SHA_B)
+    js.db.add_meme(filename="new.png", file_hash=SHA_D)
+    _write_local_manifest(js, ["b.png", "a.png"])
+    api = js.api
+    # 不在清单的本地行：正序排最前、反向排最后
+    assert _names(api.search_memes("", None, None, 0, 10, "manifest")) == [
+        "new.png",
+        "b.png",
+        "a.png",
+    ]
+    assert _names(api.search_memes("", None, None, 0, 10, "manifest_desc")) == [
+        "a.png",
+        "b.png",
+        "new.png",
+    ]
+
+
+def test_sort_mode_with_cloud(js):
+    js.db.add_meme(filename="a.png", file_hash=SHA_A, original_name="apple")
+    _set_cloud(
+        js,
+        {"memes": [{"filename": "c.png", "name": "cat", "sha256": SHA_C}]},
+    )
+    api = js.api
+    rows = api.search_memes("", None, None, 0, 10, "name_asc")
+    assert _names(rows) == ["a.png", "c.png"]
+    assert rows[1]["cloud"] is True
+    assert "id" not in rows[1]
+    # manifest 序：本地 a.png 不在清单排最前；云清单序为 c.png
+    assert _names(api.search_memes("", None, None, 0, 10, "manifest")) == [
+        "a.png",
+        "c.png",
+    ]
+    assert _names(api.search_memes("", None, None, 0, 10, "manifest_desc")) == [
+        "c.png",
+        "a.png",
+    ]
+
+
+def test_save_sort_mode(js):
+    assert js.api.save_sort_mode("name_asc") == {"ok": True}
+    assert js.api._cfg.get("sort_mode") == "name_asc"
+    assert js.api.save_sort_mode("bogus") == {
+        "ok": False,
+        "error": "invalid sort mode",
+    }
 
 
 def test_cloud_filters(js):
@@ -632,9 +731,7 @@ def test_init_data_and_collection_counts_include_cloud(js):
                 {"filename": "grp.png", "name": "grp", "sha256": SHA_C},
             ],
             "favorite": ["fav.png"],
-            "collections": [
-                {"name": "动物", "filenames": ["grp.png"], "children": []}
-            ],
+            "collections": [{"name": "动物", "filenames": ["grp.png"], "children": []}],
         },
     )
     init = js.api.get_init_data()
@@ -1162,11 +1259,14 @@ def test_sync_status_worker_discards_stale_generation(js, monkeypatch):
         assert webui_module._sync_status_state["manifest"] is None
         assert webui_module._sync_status_state["checked"] is False
 
+
 def test_locate_meme_returns_page_and_index(js):
     """定位到默认「全部」列表：返回 1 基页码与页内序号，非法 id 返回失败"""
     ids = []
     for name in ("a.png", "b.png", "c.png"):
-        js.db.add_meme(filename=name, file_hash=hashlib.sha256(name.encode()).hexdigest())
+        js.db.add_meme(
+            filename=name, file_hash=hashlib.sha256(name.encode()).hexdigest()
+        )
         ids.append(js.db.get_by_filename(name)["id"])
 
     first = js.api.locate_meme(ids[0], 2)
@@ -1184,7 +1284,9 @@ def test_locate_meme_returns_page_and_index(js):
 def test_locate_meme_follows_cloud_manifest_order(js):
     """云清单可用时按清单序合并后定位，云条目（无 id）不参与命中"""
     for name in ("a.png", "b.png"):
-        js.db.add_meme(filename=name, file_hash=hashlib.sha256(name.encode()).hexdigest())
+        js.db.add_meme(
+            filename=name, file_hash=hashlib.sha256(name.encode()).hexdigest()
+        )
     a_id = js.db.get_by_filename("a.png")["id"]
     b_id = js.db.get_by_filename("b.png")["id"]
     _set_cloud(
@@ -1201,3 +1303,92 @@ def test_locate_meme_follows_cloud_manifest_order(js):
     assert js.api.locate_meme(b_id)["index"] == 0
     assert js.api.locate_meme(a_id)["index"] == 1
     assert js.api.locate_meme(a_id)["total"] == 3
+
+
+def _add_local(js, *names):
+    """建本地行（文件名 + sha），返回 {filename: id}"""
+    out = {}
+    for name in names:
+        js.db.add_meme(
+            filename=name, file_hash=hashlib.sha256(name.encode()).hexdigest()
+        )
+        out[name] = js.db.get_by_filename(name)["id"]
+    return out
+
+
+def test_sort_mode_name_asc_desc(js):
+    """名称排序 A-Z / Z-A 对本地行生效，且排序发生在分页切片之前"""
+    _add_local(js, "b.png", "a.png", "c.png")
+
+    asc = [
+        r["filename"] for r in js.api.search_memes("", None, None, 0, 10, "name_asc")
+    ]
+    assert asc == ["a.png", "b.png", "c.png"]
+
+    desc = [
+        r["filename"] for r in js.api.search_memes("", None, None, 0, 10, "name_desc")
+    ]
+    assert desc == ["c.png", "b.png", "a.png"]
+
+    page = [
+        r["filename"] for r in js.api.search_memes("", None, None, 1, 1, "name_asc")
+    ]
+    assert page == ["b.png"]
+
+
+def test_sort_mode_manifest_falls_back_to_local_index(js):
+    """无云清单时 manifest 模式回退本地 meme-index.json 顺序，新增本地行排最前"""
+    from src.manifest import index_path
+
+    _add_local(js, "a.png", "b.png", "c.png")
+    local_index = {
+        "version": 3,
+        "memes": [{"filename": "c.png"}, {"filename": "a.png"}],
+        "collections": [],
+        "favorite": [],
+    }
+    index_path().write_text(json.dumps(local_index), encoding="utf-8")
+
+    asc = [
+        r["filename"] for r in js.api.search_memes("", None, None, 0, 10, "manifest")
+    ]
+    assert asc == ["b.png", "c.png", "a.png"]
+
+    desc = [
+        r["filename"]
+        for r in js.api.search_memes("", None, None, 0, 10, "manifest_desc")
+    ]
+    assert desc == ["a.png", "c.png", "b.png"]
+
+
+def test_sort_mode_locate_meme_same_order(js):
+    """排序模式下 locate_meme 与 search_memes 用同一序计算页码"""
+    ids = _add_local(js, "b.png", "a.png")
+    js.cfg.set("sort_mode", "name_asc")
+
+    assert js.api.locate_meme(ids["a.png"])["index"] == 0
+    assert js.api.locate_meme(ids["b.png"])["index"] == 1
+
+
+def test_sort_mode_invalid_falls_back_to_default(js):
+    """非法 sort_mode 视为未指定，退回默认查询序（不报错）"""
+    _add_local(js, "b.png", "a.png")
+    rows = js.api.search_memes("", None, None, 0, 10, "bogus")
+    assert len(rows) == 2
+
+
+def test_cloud_rows_match_pinyin_keyword(js):
+    """云端行也支持拼音检索：全拼与首字母都能命中中文显示名"""
+    _set_cloud(
+        js,
+        {
+            "memes": [
+                {"filename": "x.png", "name": "表情包", "sha256": "a" * 64},
+            ]
+        },
+    )
+
+    for keyword in ("biaoqingbao", "bqb"):
+        rows = js.api.search_memes(keyword, None, None, 0, 10)
+        assert [r["filename"] for r in rows] == ["x.png"]
+    assert js.api.count_memes(keyword="bqb") == 1

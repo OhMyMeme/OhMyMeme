@@ -1,6 +1,8 @@
 """updater 模块单测：非阻塞版本检查缓存机制"""
 
+import os
 import sys
+import tempfile
 import time
 import unittest
 from pathlib import Path
@@ -192,6 +194,88 @@ class TestCheckLatestCached(unittest.TestCase):
                     break
                 time.sleep(0.05)
             self.assertIsNone(r2.get("pending"))
+
+
+class TestPickAssetUrl(unittest.TestCase):
+    # 发布资产按上传顺序返回：ffmpeg.exe 排在安装包前面时不得被选为更新包
+    def test_prefers_setup_exe_over_other_exes(self):
+        assets = [
+            {
+                "name": "ffmpeg.exe",
+                "browser_download_url": "http://x/ffmpeg.exe",
+            },
+            {
+                "name": "OhMyMeme-0.7.0-setup.exe",
+                "browser_download_url": "http://x/setup.exe",
+            },
+            {
+                "name": "OhMyMeme-0.7.0.msix",
+                "browser_download_url": "http://x/app.msix",
+            },
+        ]
+        with mock.patch.object(updater.platform, "system", return_value="Windows"):
+            self.assertEqual(updater._pick_asset_url(assets), "http://x/setup.exe")
+
+    # 没有 -setup.exe 时回退首个 .exe（保持旧行为）
+    def test_falls_back_to_first_exe(self):
+        assets = [
+            {"name": "a.exe", "browser_download_url": "http://x/a.exe"},
+            {"name": "b.exe", "browser_download_url": "http://x/b.exe"},
+        ]
+        with mock.patch.object(updater.platform, "system", return_value="Windows"):
+            self.assertEqual(updater._pick_asset_url(assets), "http://x/a.exe")
+
+    # 非 Windows 系统不选 exe
+    def test_no_exe_on_other_platforms(self):
+        assets = [{"name": "ffmpeg.exe", "browser_download_url": "http://x/ffmpeg"}]
+        with mock.patch.object(updater.platform, "system", return_value="Darwin"):
+            self.assertEqual(updater._pick_asset_url(assets), "")
+
+
+class TestRunInstaller(unittest.TestCase):
+    def setUp(self):
+        self._tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self._tmp.cleanup)
+
+    # 镜像返回 HTML 错误页时不得当安装包启动
+    def test_rejects_non_pe_file(self):
+        path = os.path.join(self._tmp.name, "bad-setup.exe")
+        with open(path, "wb") as f:
+            f.write(b"<!DOCTYPE html><html>404</html>")
+        with mock.patch.object(updater.platform, "system", return_value="Windows"):
+            self.assertFalse(updater.run_installer(path))
+
+    # 合法 PE 头通过校验（ShellExecute 打桩）
+    def test_accepts_pe_and_calls_shell_execute(self):
+        path = os.path.join(self._tmp.name, "good-setup.exe")
+        with open(path, "wb") as f:
+            f.write(b"MZ" + b"\x00" * 62)
+        with mock.patch.object(updater.platform, "system", return_value="Windows"):
+            with mock.patch.object(updater, "_shell_execute", return_value=True) as m:
+                self.assertTrue(updater.run_installer(path))
+        self.assertEqual(m.call_args[0][0], path)
+
+    # 未下载完成时 last_downloaded_path 返回空串
+    def test_last_downloaded_path_empty(self):
+        with updater._download_lock:
+            updater._download_state["path"] = None
+        self.assertEqual(updater.last_downloaded_path(), "")
+
+    # 已下载文件存在时 last_downloaded_path 返回路径
+    def test_last_downloaded_path_hits_file(self):
+        path = os.path.join(self._tmp.name, "kept-setup.exe")
+        with open(path, "wb") as f:
+            f.write(b"MZ")
+        with updater._download_lock:
+            updater._download_state["path"] = path
+        self.addCleanup(self._reset_download_state)
+        self.assertEqual(updater.last_downloaded_path(), path)
+
+    # 还原下载状态，避免污染其他用例
+    def _reset_download_state(self):
+        with updater._download_lock:
+            updater._download_state["path"] = None
+            updater._download_state["status"] = "idle"
 
 
 if __name__ == "__main__":

@@ -228,6 +228,57 @@ body {
   transition: border-color 0.15s;
 }
 
+/* 排序按钮（两块式：manifest 序 / 名称序） */
+.sort-toggle {
+  display: flex;
+  height: 30px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  overflow: hidden;
+}
+
+.sort-half {
+  width: 36px;
+  padding: 0;
+  border: none;
+  background: transparent;
+  color: var(--fg-secondary);
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  transition: color 0.15s, background 0.15s;
+}
+
+.sort-half + .sort-half {
+  border-left: 1px solid var(--border);
+}
+
+.sort-half:hover {
+  background: var(--surface-2);
+  color: var(--fg);
+}
+
+.sort-half.active {
+  background: var(--primary);
+  color: #fff;
+}
+
+.sort-half.active.desc {
+  background: var(--primary-strong);
+}
+
+.sort-half svg {
+  width: 15px;
+  height: 15px;
+}
+
+.sort-letters {
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: -0.5px;
+}
+
 .search-clear {
   width: 26px;
   height: 26px;
