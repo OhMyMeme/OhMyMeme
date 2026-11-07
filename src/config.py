@@ -17,7 +17,6 @@ _CONFIG_VERSION = __version__
 # 已移除设置页开关的固定默认值（无 UI，行为保持默认）
 _FIXED_CLOUD_TOGGLES = {
     "sync_auto_fetch_index": False,
-    "sync_delete_remote": False,
     "sync_remove_local": False,
     "sync_hide_upload_warning": False,
     "show_upload_progress": True,

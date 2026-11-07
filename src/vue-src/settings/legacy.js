@@ -523,6 +523,8 @@ async function getSettings() {
   const sa = document.getElementById('s-sync-auto');
   const st = document.getElementById('s-sync-type');
   if (sa) sa.checked = s.sync_auto_sync === true;
+  const dr = document.getElementById('s-delete-remote');
+  if (dr) dr.checked = s.sync_delete_remote === true;
   const mit = document.getElementById('s-manifest-include-tags');
   if (mit) mit.checked = s.manifest_include_tags !== false;
   const mic = document.getElementById('s-manifest-include-collections');
@@ -760,7 +762,7 @@ function collectSyncSettings() {
     sync_auto_fetch_index: false,
     sync_auto_sync: document.getElementById('s-sync-auto')?.checked === true,
     sync_type: document.getElementById('s-sync-type')?.value || '',
-    sync_delete_remote: false,
+    sync_delete_remote: document.getElementById('s-delete-remote')?.checked === true,
     sync_remove_local: false,
     sync_hide_upload_warning: false,
     show_upload_progress: true,
@@ -997,6 +999,8 @@ async function resetSettingsNow() {
     const sa = document.getElementById('s-sync-auto');
     const st = document.getElementById('s-sync-type');
     if (sa) sa.checked = false;
+    const dr2 = document.getElementById('s-delete-remote');
+    if (dr2) dr2.checked = false;
     const mit2 = document.getElementById('s-manifest-include-tags');
     if (mit2) mit2.checked = true;
     const mic2 = document.getElementById('s-manifest-include-collections');

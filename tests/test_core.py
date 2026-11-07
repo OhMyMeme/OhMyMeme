@@ -154,7 +154,6 @@ class TestConfig(unittest.TestCase):
             json.dumps(
                 {
                     "sync_auto_fetch_index": True,
-                    "sync_delete_remote": True,
                     "sync_remove_local": True,
                     "sync_hide_upload_warning": True,
                     "show_upload_progress": False,
@@ -168,7 +167,6 @@ class TestConfig(unittest.TestCase):
         )
         cfg = Config(self.config_path)
         self.assertIs(cfg.get("sync_auto_fetch_index"), False)
-        self.assertIs(cfg.get("sync_delete_remote"), False)
         self.assertIs(cfg.get("sync_remove_local"), False)
         self.assertIs(cfg.get("sync_hide_upload_warning"), False)
         self.assertIs(cfg.get("show_upload_progress"), True)
@@ -177,7 +175,16 @@ class TestConfig(unittest.TestCase):
         self.assertIs(cfg.get("show_download_done"), True)
         # 新增的 WebDAV 信任开关不受固定默认值影响，可由用户配置
         self.assertIs(cfg.get("webdav_allow_insecure"), True)
-        cfg.update_from_dict({"sync_delete_remote": True})
+        cfg.update_from_dict({"sync_remove_local": True})
+        self.assertIs(cfg.get("sync_remove_local"), False)
+
+    def test_sync_delete_remote_is_user_configurable(self):
+        self.config_path.write_text(
+            json.dumps({"sync_delete_remote": True}), encoding="utf-8"
+        )
+        cfg = Config(self.config_path)
+        self.assertIs(cfg.get("sync_delete_remote"), True)
+        cfg.update_from_dict({"sync_delete_remote": False})
         self.assertIs(cfg.get("sync_delete_remote"), False)
 
     def test_removed_auto_paste_setting_is_not_retained(self):
