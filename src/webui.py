@@ -76,6 +76,7 @@ from .config import (
     set_guide_ok,
 )
 from .database import _name_sort_key, get_db, pinyin_matches
+from .env_check import accept_agreement, agreement_accepted
 from .manifest import build as build_manifest
 from .manifest import index_order, index_path
 from .plugin_manager import get_plugin_manager, route_content_type
@@ -1222,11 +1223,18 @@ class JsApi:
             "plugin_button_constraints": fields.get("plugin_button_constraints")
             or {"hide": [], "order": {}},
             "guide_ok": guide_ok(),
+            "agreement_required": getattr(self._webui, "_init_debug", False)
+            or not agreement_accepted(),
         }
 
     def complete_guide(self) -> dict:
         """设置向导完成：写入配置 guide=ok 标记"""
         set_guide_ok()
+        return {"ok": True}
+
+    def accept_agreement(self) -> dict:
+        """用户协议同意：写入 agreement.json 标记（同首次环境检测模式）"""
+        accept_agreement()
         return {"ok": True}
 
     def get_meme_path(self, meme_id: int) -> str:
@@ -4603,7 +4611,12 @@ def _try_decode_stego(gif_path):
 class WebUI:
     """PyWebView UI 管理器"""
 
-    def __init__(self, update_debug: bool = False, silent_start: bool = False):
+    def __init__(
+        self,
+        update_debug: bool = False,
+        silent_start: bool = False,
+        init_debug: bool = False,
+    ):
         self._cfg = get_config()
         self._window = None
         self._settings_window = None
@@ -4621,6 +4634,7 @@ class WebUI:
         self._on_hotkey_change_cb = None
         self._update_debug = update_debug
         self._silent_start = silent_start
+        self._init_debug = init_debug
 
     def _init_lan(self):
         from . import lan
@@ -5394,7 +5408,7 @@ class WebUI:
                         try:
                             from urllib.request import Request, urlopen
 
-                            url = "https://contributor.starsfire.top/TNTXZ/OhMyMeme"
+                            url = "https://contributor.starsfire.top/OhMyMeme/OhMyMeme"
                             req = Request(url, headers={"User-Agent": "OhMyMeme"})
                             with urlopen(req, timeout=10) as resp:
                                 svg = resp.read().decode("utf-8", "replace")

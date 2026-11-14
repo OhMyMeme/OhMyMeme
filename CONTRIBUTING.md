@@ -49,6 +49,7 @@ yay -S webkit2gtk   # 依赖 libsoup，通过 yay 安装
 | `--debug-startup` | 输出开机自启检测详情（注册表键、启动文件夹） |
 | `--debug-adb` | 输出 ADB 检测详情及运行时日志（路径、版本、adb 命令） |
 | `--debug-env` | 输出环境检测详情（WebView2/.NET）并强制打开检测窗口 |
+| `--debug-init` | 模拟首次运行：强制显示用户协议同意弹窗（调试一次性功能用） |
 
 ## 代码规范
 

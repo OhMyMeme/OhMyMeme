@@ -56,7 +56,7 @@
 
 Windows 除 `.exe` 安装包外另提供 `.msix`（Microsoft Store 上架 / 侧载）格式。
 
-隐私策略见 [docs/privacy.md](docs/privacy.md)。
+隐私策略见 [docs/privacy.md](docs/privacy.md)，用户协议见 [docs/user_agreement.md](docs/user_agreement.md)。首次运行时需勾选同意《用户协议》与《隐私策略》后方可使用。
 
 ### 从源码运行
 

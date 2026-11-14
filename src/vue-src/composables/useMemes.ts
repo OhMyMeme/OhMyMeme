@@ -27,6 +27,7 @@ const state = reactive({
   pluginButtonConstraints: { hide: [] as string[], order: {} as Record<string, number> },
   hoverZoom: true,
   guideOk: true,
+  agreementRequired: false,
 })
 
 let searchGen = 0
@@ -63,6 +64,7 @@ export function useMemes() {
       }
       state.hoverZoom = data.hover_zoom !== false
       state.guideOk = data.guide_ok !== false
+      state.agreementRequired = data.agreement_required === true
       if (data.sort_mode) state.sortMode = data.sort_mode
     }
   }

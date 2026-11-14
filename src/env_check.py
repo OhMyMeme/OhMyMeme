@@ -44,6 +44,7 @@ _WV2_CLIENTS = (
     ("Canary", "{65C35B14-6C1D-4122-AC46-7148CC9D6497}"),
 )
 _MARKER_NAME = "env_check.json"
+_AGREEMENT_MARKER_NAME = "agreement.json"
 _OK_COLOR = "#16a34a"
 _FAIL_COLOR = "#dc2626"
 
@@ -70,6 +71,34 @@ def mark_done(checks, path=None) -> None:
         )
     except OSError as e:
         logger.warning("写入环境检测标记失败: %s", e)
+
+
+def agreement_path() -> Path:
+    """用户协议同意标记文件路径（%APPDATA%/OhMyMeme/agreement.json）"""
+    return _get_config_dir() / _AGREEMENT_MARKER_NAME
+
+
+def agreement_accepted(path=None) -> bool:
+    """用户协议是否已同意（与首次环境检测相同，标记文件存在即不再弹出）"""
+    p = Path(path) if path else agreement_path()
+    return p.is_file()
+
+
+def accept_agreement(path=None) -> None:
+    """「开始使用」写入协议同意标记（附带同意时间便于追溯）"""
+    p = Path(path) if path else agreement_path()
+    try:
+        p.parent.mkdir(parents=True, exist_ok=True)
+        p.write_text(
+            json.dumps(
+                {"time": time.strftime("%Y-%m-%d %H:%M:%S")},
+                ensure_ascii=False,
+                indent=2,
+            ),
+            encoding="utf-8",
+        )
+    except OSError as e:
+        logger.warning("写入用户协议标记失败: %s", e)
 
 
 def version_tuple(v: str) -> tuple:

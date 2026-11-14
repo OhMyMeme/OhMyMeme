@@ -98,6 +98,7 @@ class OhMyMemeApp:
         self._webui = WebUI(
             update_debug=getattr(self, "_update_debug", False),
             silent_start=getattr(self, "_silent_start", False),
+            init_debug=getattr(self, "_init_debug", False),
         )
         self._webui.set_on_hotkey_change(self._on_hotkey_change)
 
@@ -301,6 +302,12 @@ def main():
         help="Print environment check details and force show env check UI",
     )
     parser.add_argument(
+        "--debug-init",
+        action="store_true",
+        dest="init_debug",
+        help="模拟首次运行：强制显示用户协议同意弹窗（调试一次性功能用）",
+    )
+    parser.add_argument(
         "--env-check-ui",
         action="store_true",
         dest="env_check_ui",
@@ -425,6 +432,7 @@ def main():
     app = OhMyMemeApp()
     app._update_debug = args.update_debug
     app._silent_start = args.silent
+    app._init_debug = args.init_debug
     try:
         app.run()
     except Exception as e:

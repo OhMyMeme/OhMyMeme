@@ -2357,7 +2357,7 @@ document.addEventListener('keydown', (e) => {
 
 /* About external links */
 const ABOUT_URLS = {
-  github: 'https://github.com/TNTXZ/OhMyMeme',
+  github: 'https://github.com/OhMyMeme/OhMyMeme',
   qq: 'https://qm.qq.com/cgi-bin/qm/qr?k=xbstRIkSObzF5ng71yBXEkKZ0v8--KVV&jump_from=webapi&authKey=BEnDuk2KNpPJC0SgkZwCLQHUsbIRyM1iCp8DuPK2hihtVBvLG32WqIYMZ2ej5Gu0'
 };
 function openAboutUrl(kind) {

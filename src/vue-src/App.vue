@@ -18,6 +18,7 @@ import SyncOverlay from './components/SyncOverlay.vue'
 import SyncStatusBadge from './components/SyncStatusBadge.vue'
 import TagEditor from './components/TagEditor.vue'
 import UpdateDialog from './components/UpdateDialog.vue'
+import UserAgreement from './components/UserAgreement.vue'
 import { applyTheme } from './utils/api'
 import type { Meme } from './types'
 
@@ -30,6 +31,7 @@ const inputDialog = ref<InstanceType<typeof InputDialog> | null>(null)
 const confirmDialog = ref<InstanceType<typeof ConfirmDialog> | null>(null)
 const similarImportDialog = ref<InstanceType<typeof SimilarImportDialog> | null>(null)
 const setupGuide = ref<InstanceType<typeof SetupGuide> | null>(null)
+const userAgreement = ref<InstanceType<typeof UserAgreement> | null>(null)
 
 function showSetupGuide() {
   setupGuide.value?.show()
@@ -1278,6 +1280,8 @@ onUnmounted(() => {
   ;(window as any).__ommPluginsReadyResolve?.()
   // 配置无 guide=ok（新装或旧版升级）时启动即弹设置向导；启动动画遮罩 z-index 更高，动画结束后自然露出
   if (!state.guideOk) setupGuide.value?.show()
+  // 无协议同意标记（首次运行）或 --debug-init 时弹用户协议（z-index 高于向导，须先完成）
+  if (state.agreementRequired) userAgreement.value?.show()
   // 动画开启时：播放期间即加载后续内容（动画天然覆盖桥接稳定时间），去除 300ms 延时；
   // 动画关闭时：不播放动画，降级为 300ms 延时
   const runBackground = async () => {
@@ -1549,6 +1553,7 @@ onUnmounted(() => {
   <ConfirmDialog ref="confirmDialog" />
   <SimilarImportDialog ref="similarImportDialog" />
   <SetupGuide ref="setupGuide" @open-import-menu="showImportMenu" />
+  <UserAgreement ref="userAgreement" />
   <ContextMenu
     :visible="ctx.visible.value" :x="ctx.x.value" :y="ctx.y.value"
     :items="ctx.items.value" :trigger="ctx.trigger.value"
