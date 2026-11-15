@@ -254,6 +254,23 @@ async function toggleLan() {
   refreshLanStatus();
 }
 
+async function toggleUsb() {
+  const cb = document.getElementById('s-usb-enable');
+  if (cb.checked) {
+    const port = parseInt(document.getElementById('s-lan-port')?.value) || 17852;
+    const secret = document.getElementById('s-lan-secret')?.value || '';
+    const r = await api('usb_enable', true, port, secret);
+    if (!r || !r.ok) {
+      cb.checked = false;
+      const st = r && r.status ? r.status : {};
+      showToast('开启 USB 互联失败：' + (st.last_error || '未知错误'));
+    }
+  } else {
+    await api('usb_enable', false);
+  }
+  refreshLanStatus();
+}
+
 async function refreshLanStatus() {
   const el = document.getElementById('lan-status');
   if (!el) return;
@@ -263,7 +280,9 @@ async function refreshLanStatus() {
   if (cc && r) cc.checked = r.allow_secret_config === true;
   // 开关按后端真实状态回填：关掉设置页不再停服，重开时不能误显示为未开启
   const en = document.getElementById('s-lan-enable');
-  if (en && r) en.checked = r.status === 'running';
+  if (en && r) en.checked = r.lan_on === true;
+  const eu = document.getElementById('s-usb-enable');
+  if (eu && r) eu.checked = r.usb_on === true;
   if (!r || r.status === 'stopped') {
     el.innerHTML = '● 已停止 <span style="opacity:.6">(端口 ' + (r ? r.port : 17852) + ')</span>';
     setStatusColor(el, '');
@@ -272,6 +291,8 @@ async function refreshLanStatus() {
     updateLanTransfer(null);
     handleLanConfirm(null);
     setLanQrUi(false);
+    setUsbQrUi(false);
+    renderUsbStatus(r ? r.usb : null);
     renderLanDevices(r ? r.devices : []);
     return;
   }
@@ -283,26 +304,39 @@ async function refreshLanStatus() {
     updateLanTransfer(null);
     handleLanConfirm(null);
     setLanQrUi(false);
+    setUsbQrUi(false);
+    renderUsbStatus(r.usb);
     renderLanDevices(r.devices);
     return;
   }
-  let html = '● 运行中 <span style="opacity:.6">(端口 ' + r.port + '，IP ' + esc(ip) + ')</span>';
-  // 发现诊断：区分「广播没到」与「回了但手机没收」，避免只能盲猜防火墙
-  if (!r.discover_count) {
-    html += '<br><span style="opacity:.6">尚未收到手机发现广播。请确认手机与电脑在同一网段，并在系统防火墙放行 UDP/TCP 端口 ' + r.port + '。</span>';
-  } else if (r.last_reply_error) {
-    html += '<br><span class="status-error">回包失败：' + esc(r.last_reply_error) + '</span>';
+  const usbOnly = r.iface === '127.0.0.1';
+  if (usbOnly) {
+    let html = '● 运行中 <span style="opacity:.6">(USB 模式，回环端口 ' + r.port + '，无需网络)</span>';
+    if (r.clients && r.clients.length) {
+      html += '<br>已连接设备：' + r.clients.map(c => '<code>' + esc(c.addr) + '</code>').join('、');
+    }
+    el.innerHTML = html;
   } else {
-    html += '<br><span style="opacity:.6">已收到 ' + r.discover_count + ' 次发现请求';
-    if (r.last_discover_from) html += '（最近来自 ' + esc(r.last_discover_from) + '）';
-    html += '</span>';
+    let html = '● 运行中 <span style="opacity:.6">(端口 ' + r.port + '，IP ' + esc(ip) + ')</span>';
+    // 发现诊断：区分「广播没到」与「回了但手机没收」，避免只能盲猜防火墙
+    if (!r.discover_count) {
+      html += '<br><span style="opacity:.6">尚未收到手机发现广播。请确认手机与电脑在同一网段，并在系统防火墙放行 UDP/TCP 端口 ' + r.port + '。</span>';
+    } else if (r.last_reply_error) {
+      html += '<br><span class="status-error">回包失败：' + esc(r.last_reply_error) + '</span>';
+    } else {
+      html += '<br><span style="opacity:.6">已收到 ' + r.discover_count + ' 次发现请求';
+      if (r.last_discover_from) html += '（最近来自 ' + esc(r.last_discover_from) + '）';
+      html += '</span>';
+    }
+    if (r.clients && r.clients.length) {
+      html += '<br>已连接设备：' + r.clients.map(c => '<code>' + esc(c.addr) + '</code>').join('、');
+    }
+    el.innerHTML = html;
   }
-  if (r.clients && r.clients.length) {
-    html += '<br>已连接设备：' + r.clients.map(c => '<code>' + esc(c.addr) + '</code>').join('、');
-  }
-  el.innerHTML = html;
   setStatusColor(el, 'ok');
-  setLanQrUi(true);
+  setLanQrUi(!usbOnly);
+  setUsbQrUi(r.usb_on === true);
+  renderUsbStatus(r.usb);
   renderLanDevices(r.devices);
   if (lanPollTimer) { clearTimeout(lanPollTimer); lanPollTimer = null; }
   lanPollStatus = async () => {
@@ -311,6 +345,7 @@ async function refreshLanStatus() {
     if (!r2 || r2.status !== 'running') { refreshLanStatus(); return; }
     handleLanConfirm(r2.pending_confirm);
     renderLanDevices(r2.devices);
+    renderUsbStatus(r2.usb);
     const fast = updateLanTransfer(r2.transfer);
     lanPollTimer = setTimeout(lanPollStatus, fast ? 300 : 5000);
   };
@@ -318,13 +353,17 @@ async function refreshLanStatus() {
 }
 
 /* 互联设备列表（lan.py 持久化，按最近配对时间排序，在线状态来自当前连接） */
+let lanDevicesCache = [];
 function renderLanDevices(devices) {
+  lanDevicesCache = Array.isArray(devices) ? devices : [];
   const box = document.getElementById('lan-devices');
+  const section = document.getElementById('lan-devices-section');
   if (!box) return;
-  const list = Array.isArray(devices) ? devices : [];
+  const list = lanDevicesCache;
   if (!list.length) {
     box.style.display = 'none';
     box.innerHTML = '';
+    if (section) section.style.display = 'none';
     return;
   }
   const rows = list.map(d => {
@@ -339,7 +378,8 @@ function renderLanDevices(devices) {
       + '</div>';
   }).join('');
   box.style.display = 'block';
-  box.innerHTML = '<div style="font-size:11.5px;color:var(--fg-secondary);margin-bottom:4px">互联设备（' + list.length + '）</div>' + rows;
+  if (section) section.style.display = 'block';
+  box.innerHTML = rows;
 }
 
 /* 最近配对时间：今天显示时分，其他显示月日 */
@@ -375,7 +415,71 @@ async function showLanQr() {
     return;
   }
   wrap.innerHTML = '<img src="' + r.qr + '" alt="局域网连接二维码" style="width:180px;height:180px;border-radius:8px;background:#fff;padding:8px">'
-    + '<div style="font-size:11.5px;color:var(--muted);margin-top:8px">用手机 OhMyMeme 扫描连接（设置 → 局域网互联 → 扫码连接）</div>';
+    + '<div style="font-size:11.5px;color:var(--muted);margin-top:8px">用手机 OhMyMeme 扫描连接（设置 → 互联 → 扫码连接）</div>';
+}
+
+/* USB 互联状态（轮询 lan_get_status 的 usb 块：ADB 就绪 / 设备 / 端口转发） */
+function renderUsbStatus(u) {
+  const el = document.getElementById('usb-status');
+  if (!el) return;
+  if (!u || !u.enabled) {
+    el.innerHTML = '● 未开启 <span style="opacity:.6">(开启后自动检测 ADB 与 USB 设备)</span>';
+    return;
+  }
+  let html = '● 已开启';
+  if (!u.adb_ok) {
+    html += '<br><span class="status-error">' + esc(u.adb_error || 'ADB 准备中，请稍候…') + '</span>';
+    el.innerHTML = html;
+    return;
+  }
+  const devs = u.devices || [];
+  if (!devs.length) {
+    html += '<br><span style="opacity:.6">未检测到设备。请用 USB 线连接手机、开启 USB 调试，并在手机上允许「允许 USB 调试」。</span>';
+  } else {
+    devs.forEach(d => {
+      let stateText, stateColor;
+      if (d.state === 'device') {
+        stateText = d.forwarded ? '已连接 · 端口已转发' : '已连接 · 转发中…';
+        stateColor = 'var(--success)';
+      } else if (d.state === 'unauthorized') {
+        stateText = '未授权 · 请在手机上确认 USB 调试授权';
+        stateColor = 'var(--muted)';
+      } else {
+        stateText = '离线';
+        stateColor = 'var(--muted)';
+      }
+      html += '<br><span style="color:' + stateColor + '">● ' + esc(d.serial)
+        + (d.model ? ' <span style="opacity:.6">' + esc(d.model) + '</span>' : '')
+        + ' <span style="opacity:.8">' + stateText + '</span></span>';
+    });
+  }
+  el.innerHTML = html;
+}
+
+/* USB 二维码按钮与二维码区域（USB 互联开启且服务运行时可生成） */
+function setUsbQrUi(running) {
+  const btn = document.getElementById('btn-usb-qr');
+  if (btn) btn.style.display = running ? '' : 'none';
+  if (!running) {
+    const wrap = document.getElementById('usb-qr-wrap');
+    if (wrap) { wrap.style.display = 'none'; wrap.innerHTML = ''; }
+  }
+}
+
+async function showUsbQr() {
+  const wrap = document.getElementById('usb-qr-wrap');
+  if (!wrap) return;
+  wrap.style.display = 'block';
+  wrap.innerHTML = '<div style="font-size:12px;color:var(--fg-secondary)">正在生成二维码…</div>';
+  const r = await api('usb_qr');
+  if (!r || !r.ok) {
+    wrap.style.display = 'none';
+    wrap.innerHTML = '';
+    showToast((r && r.error) || '生成二维码失败');
+    return;
+  }
+  wrap.innerHTML = '<img src="' + r.qr + '" alt="USB 互联二维码" style="width:180px;height:180px;border-radius:8px;background:#fff;padding:8px">'
+    + '<div style="font-size:11.5px;color:var(--muted);margin-top:8px">用手机 OhMyMeme 扫描连接（设置 → 互联 → 扫码连接），经 USB 走 127.0.0.1，无需网络</div>';
 }
 
 /* LAN 传输进度与设备确认（设置页，轮询 lan_get_status） */
@@ -1047,7 +1151,10 @@ async function resetSettingsNow() {
     if (le) le.checked = false;
     const lcc = document.getElementById('s-lan-secret-config');
     if (lcc) lcc.checked = false;
+    const leu = document.getElementById('s-usb-enable');
+    if (leu) leu.checked = false;
     await api('lan_stop');
+    await api('usb_enable', false);
     await api('lan_set_allow_secret_config', false);
     refreshLanStatus();
     showToast('已恢复默认设置');
@@ -2823,6 +2930,8 @@ function switchSettingsGroup(group) {
   document.querySelectorAll('#settings-content .section').forEach(sec => {
     sec.style.display = (sec.dataset.group === group) ? 'block' : 'none';
   });
+  // 互联设备区整节可隐藏（空列表时），分组切换后按缓存重算一次
+  if (group === 'connect') renderLanDevices(lanDevicesCache);
   if (group === 'backup') loadBackupInfo();
   const content = document.getElementById('settings-content');
   if (content) content.scrollTop = 0;

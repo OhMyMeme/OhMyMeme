@@ -8,8 +8,10 @@ import json
 import logging
 import os
 import platform
+import re
 import socket
 import struct
+import subprocess
 import sys
 import threading
 import time
@@ -57,9 +59,14 @@ _lan_state = {
     "last_reply_at": 0,
     "last_reply_error": "",
     "iface_mode": "",  # pktinfo | sendto
+    # 互联开关与绑定模式：LAN 开→绑 0.0.0.0 带 UDP 发现；仅 USB→绑 127.0.0.1
+    "lan_on": False,
+    "usb_on": False,
+    "iface": "",  # 当前 TCP 绑定地址（运行中有效）
 }
 _lan_lock = threading.Lock()
 _server = None
+_server_cfg = {"port": 17852, "secret": ""}
 _confirm_cb = None  # 设备连接确认回调，由 WebUI 注入（阻塞等待用户决定）
 _DEVICES_FILENAME = "lan_devices.json"  # 已配对设备记录（data_dir 下，跨重启保留）
 _DEVICES_MAX = 50
@@ -78,6 +85,21 @@ _transfer_state = {
     "updated": 0.0,
 }
 _TRANSFER_IDLE = 5  # 秒，超过无更新视为传输结束
+
+# USB 互联状态：adb 端口转发管理（手机经 USB 连 127.0.0.1 复用同一 TCP 服务）
+_usb_lock = threading.Lock()
+_usb_mgr_lock = threading.Lock()
+_usb_state = {
+    "enabled": False,
+    "adb_ok": False,
+    "adb_error": "",
+    "devices": [],  # [{serial, model, state, forwarded}]
+    "last_poll": 0,
+}
+_usb_thread = None
+_usb_stop_evt = None
+_usb_active = ""  # 当前持有端口转发的设备 serial
+_USB_POLL_INTERVAL = 3  # 秒
 
 
 def _devices_path() -> Path:
@@ -199,13 +221,17 @@ class LanServer:
         self._threads = []
         self._port = 0
         self._secret = ""
+        self._iface = "0.0.0.0"
+        self._discover = True
         self._clients = {}
         self._udp_pktinfo = False
         self._tls = threading.local()
 
     # --- 生命周期 ---
 
-    def start(self, port: int, secret: str) -> bool:
+    def start(
+        self, port: int, secret: str, iface: str = "0.0.0.0", discover: bool = True
+    ) -> bool:
         if not HAS_AESGCM:
             with _lan_lock:
                 _lan_state["status"] = "error"
@@ -217,21 +243,24 @@ class LanServer:
             self._running = True
         self._port = int(port)
         self._secret = secret or ""
+        self._iface = iface
+        self._discover = discover
         ok = True
         try:
-            self._udp_sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-            self._udp_sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-            self._udp_sock.bind(("0.0.0.0", self._port))
-            self._udp_sock.settimeout(0.5)
-            self._udp_pktinfo = False
-            try:
-                self._udp_sock.setsockopt(socket.IPPROTO_IP, socket.IP_PKTINFO, 1)
-                self._udp_pktinfo = True
-            except (AttributeError, OSError):
-                pass
+            if discover:
+                self._udp_sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+                self._udp_sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+                self._udp_sock.bind((iface, self._port))
+                self._udp_sock.settimeout(0.5)
+                self._udp_pktinfo = False
+                try:
+                    self._udp_sock.setsockopt(socket.IPPROTO_IP, socket.IP_PKTINFO, 1)
+                    self._udp_pktinfo = True
+                except (AttributeError, OSError):
+                    pass
             self._tcp_sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
             self._tcp_sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-            self._tcp_sock.bind(("0.0.0.0", self._port))
+            self._tcp_sock.bind((iface, self._port))
             self._tcp_sock.listen(8)
             self._tcp_sock.settimeout(0.5)
         except OSError as e:
@@ -250,15 +279,20 @@ class LanServer:
             _lan_state["last_discover_from"] = ""
             _lan_state["last_reply_at"] = 0
             _lan_state["last_reply_error"] = ""
-            _lan_state["iface_mode"] = "pktinfo" if self._udp_pktinfo else "sendto"
-        self._spawn_thread(self._udp_loop)
+            if discover:
+                _lan_state["iface_mode"] = "pktinfo" if self._udp_pktinfo else "sendto"
+            else:
+                _lan_state["iface_mode"] = ""
+        if discover:
+            self._spawn_thread(self._udp_loop)
         self._spawn_thread(self._tcp_loop)
         with _lan_lock:
             _lan_state["status"] = "running"
             _lan_state["port"] = self._port
             _lan_state["start_time"] = int(time.time())
             _lan_state["last_error"] = ""
-        logger.info(f"LAN 服务已启动，端口 {self._port}")
+            _lan_state["iface"] = iface
+        logger.info(f"LAN 服务已启动，端口 {self._port}（绑定 {iface}）")
         return ok
 
     def is_running(self):
@@ -283,6 +317,7 @@ class LanServer:
             _lan_state["port"] = 0
             _lan_state["start_time"] = 0
             _lan_state["clients"] = []
+            _lan_state["iface"] = ""
         if running:
             logger.info("LAN 服务已停止")
 
@@ -831,31 +866,281 @@ def _detect_ext(data: bytes):
 
 
 def start(port: int = 17852, secret: str = "") -> bool:
-    """启动局域网服务（设置页开关调用）"""
-    global _server
+    """打开局域网互联开关（设置页开关调用），按双开关重算服务绑定"""
     with _lan_lock:
-        if _lan_state["status"] == "running" and _server and _server.is_running():
-            return True
-    # 旧实例可能「对象还在、线程已退」：直接换实例会让旧 socket 与端口失去引用，
-    # 只能先停掉再新建，否则再次启动会卡在端口占用或一直无人监听
-    if _server:
-        _server.stop()
-    _server = LanServer()
-    return _server.start(port, secret)
+        _server_cfg["port"] = int(port)
+        _server_cfg["secret"] = secret or ""
+        _lan_state["lan_on"] = True
+    return _recompute_server()
+
+
+def stop_lan():
+    """关闭局域网互联开关：USB 互联仍开启时服务保持 127.0.0.1 回环模式"""
+    with _lan_lock:
+        _lan_state["lan_on"] = False
+    return _recompute_server()
+
+
+def set_usb_enabled(on: bool, port: int = None, secret: str = None) -> bool:
+    """开关 USB 互联：起停 adb 管理线程并按双开关重算服务绑定"""
+    global _usb_thread, _usb_stop_evt
+    on = bool(on)
+    with _lan_lock:
+        _lan_state["usb_on"] = on
+        if port is not None:
+            _server_cfg["port"] = int(port)
+        if secret is not None:
+            _server_cfg["secret"] = secret or ""
+    if on:
+        with _usb_lock:
+            _usb_state["enabled"] = True
+            _usb_state["adb_ok"] = False
+            _usb_state["adb_error"] = ""
+            _usb_state["devices"] = []
+        # 先停旧管理线程再启新线程：重复开启时双轮询会各自持有转发决策
+        old_evt = _usb_stop_evt
+        if old_evt is not None:
+            old_evt.set()
+        _usb_stop_evt = threading.Event()
+        t = threading.Thread(target=_usb_loop, args=(_usb_stop_evt,), daemon=True)
+        _usb_thread = t
+        t.start()
+    else:
+        _stop_usb()
+    return _recompute_server()
 
 
 def stop():
-    """停止局域网服务"""
+    """停止全部互联服务（恢复默认/程序退出时调用）"""
+    with _lan_lock:
+        _lan_state["lan_on"] = False
+        _lan_state["usb_on"] = False
+    _stop_usb()
+    if _server is not None:
+        _server.stop()
+
+
+def _recompute_server() -> bool:
+    """按 LAN/USB 双开关重算服务：均关则停服；LAN 开绑全网卡带发现，仅 USB 绑回环"""
     global _server
     with _lan_lock:
-        if not _server:
+        lan_on = bool(_lan_state["lan_on"])
+        usb_on = bool(_lan_state["usb_on"])
+        port = int(_server_cfg["port"])
+        secret = str(_server_cfg["secret"] or "")
+    if not lan_on and not usb_on:
+        if _server is not None:
+            _server.stop()
+        return True
+    iface = "0.0.0.0" if lan_on else "127.0.0.1"
+    discover = lan_on
+    srv = _server
+    if (
+        srv is not None
+        and srv.is_running()
+        and (srv._iface, srv._port, srv._secret, srv._discover)
+        == (iface, port, secret, discover)
+    ):
+        return True
+    # 旧实例可能「对象还在、线程已退」：直接换实例会让旧 socket 与端口失去引用，
+    # 只能先停掉再新建，否则再次启动会卡在端口占用或一直无人监听
+    if srv is not None:
+        srv.stop()
+    _server = LanServer()
+    return _server.start(port, secret, iface=iface, discover=discover)
+
+
+# --- USB 互联（adb 端口转发管理） ---
+
+
+def _usb_loop(evt):
+    """USB 管理主循环：确保 adb 就绪后周期轮询在线设备并维护端口转发"""
+    from . import adb_util
+
+    adb_path = ""
+    while not evt.is_set():
+        try:
+            if not adb_path:
+                adb_path = adb_util.ensure_adb() or ""
+                with _usb_lock:
+                    _usb_state["adb_ok"] = bool(adb_path)
+                    if not adb_path:
+                        _usb_state["adb_error"] = "ADB 未就绪（正在自动下载或下载失败）"
+            if adb_path:
+                _usb_poll_once(adb_util, adb_path)
+        except Exception as e:
+            logger.warning("USB 互联管理异常: %s", e)
+            with _usb_lock:
+                _usb_state["adb_error"] = str(e)
+        evt.wait(_USB_POLL_INTERVAL)
+    logger.debug("USB 互联管理线程退出")
+
+
+def _usb_poll_once(adb_util, adb_path):
+    """单次轮询：解析在线设备，按需建立/切换 adb reverse 端口转发（与收尾共用管理锁）"""
+    global _usb_active
+    with _usb_mgr_lock:
+        with _lan_lock:
+            port = int(_server_cfg["port"])
+        spec = "tcp:%d" % port
+        try:
+            r = adb_util._run_adb(adb_path, ["devices", "-l"], timeout=15)
+        except subprocess.TimeoutExpired:
+            with _usb_lock:
+                _usb_state["adb_error"] = "ADB 响应超时"
             return
-    _server.stop()
+        except Exception as e:
+            with _usb_lock:
+                _usb_state["adb_error"] = str(e)
+            return
+        if r.returncode != 0:
+            err = (r.stderr or "").strip()[:200] or "ADB 返回错误"
+            with _usb_lock:
+                _usb_state["adb_error"] = err
+            return
+        devices = _usb_parse_devices(r.stdout or "")
+        online = [d["serial"] for d in devices if d["state"] == "device"]
+        with _usb_lock:
+            active = _usb_active
+        target = active if active in online else (online[0] if online else "")
+        has_entry = _usb_has_reverse(adb_util, adb_path, spec)
+        if target:
+            # reverse 条目按设备注册，已有条目（含上次 adb 服务重启后残留）即视为就绪
+            if not has_entry:
+                rr = _usb_add_reverse(adb_util, adb_path, target, spec)
+                if rr != 0:
+                    target = ""
+        elif has_entry:
+            # 无在线设备但条目还在（如设备刚断开），顺手清理
+            try:
+                adb_util._run_adb(adb_path, ["reverse", "--remove", spec], timeout=10)
+            except Exception:
+                pass
+        if target != active:
+            with _usb_lock:
+                _usb_active = target
+        with _usb_lock:
+            _usb_state["adb_ok"] = True
+            _usb_state["devices"] = [
+                {
+                    "serial": d["serial"],
+                    "model": d["model"],
+                    "state": d["state"],
+                    "forwarded": d["state"] == "device" and d["serial"] == _usb_active,
+                }
+                for d in devices
+            ]
+            _usb_state["last_poll"] = int(time.time())
+            _usb_state["adb_error"] = ""
+
+
+def _usb_has_reverse(adb_util, adb_path, spec):
+    """adb 当前是否已注册该端口的 reverse 转发条目"""
+    try:
+        r = adb_util._run_adb(adb_path, ["reverse", "--list"], timeout=10)
+    except Exception:
+        return False
+    if r is None or r.returncode != 0:
+        return False
+    return bool(re.search(re.escape(spec) + r"(?!\d)", r.stdout or ""))
+
+
+def _usb_add_reverse(adb_util, adb_path, serial, spec):
+    """注册 reverse 转发（手机侧监听→电脑），失败先清残留监听再重试，返回 adb 返回值"""
+    rr = None
+    try:
+        rr = adb_util._run_adb(
+            adb_path, ["-s", serial, "reverse", spec, spec], timeout=10
+        )
+    except Exception:
+        pass
+    if rr is not None and rr.returncode == 0:
+        return 0
+    try:
+        adb_util._run_adb(
+            adb_path, ["-s", serial, "reverse", "--remove", spec], timeout=10
+        )
+        rr = adb_util._run_adb(
+            adb_path, ["-s", serial, "reverse", spec, spec], timeout=10
+        )
+    except Exception:
+        return 1
+    return rr.returncode if rr is not None else 1
+
+
+def _usb_parse_devices(output: str):
+    """解析 `adb devices -l` 输出为 [{serial, model, state}]"""
+    devices = []
+    for line in (output or "").splitlines():
+        line = line.strip()
+        if not line or line.startswith("List of devices"):
+            continue
+        parts = line.split()
+        if len(parts) < 2:
+            continue
+        serial, state = parts[0], parts[1]
+        if serial.startswith("*"):
+            continue
+        model = ""
+        for p in parts[2:]:
+            if p.startswith("model:"):
+                model = p[len("model:") :].replace("_", " ")
+                break
+        devices.append({"serial": serial, "model": model, "state": state})
+    return devices
+
+
+def _usb_teardown():
+    """清除 adb reverse 端口转发并复位 USB 状态（与轮询共用管理锁，防关后残留转发）"""
+    global _usb_active
+    from . import adb_util
+
+    with _usb_mgr_lock:
+        with _usb_lock:
+            active = _usb_active
+            _usb_active = ""
+        if not active:
+            return
+        with _lan_lock:
+            port = int(_server_cfg["port"])
+        adb = adb_util.detect_adb()
+        if adb:
+            spec = "tcp:%d" % port
+            try:
+                adb_util._run_adb(
+                    adb, ["-s", active, "reverse", "--remove", spec], timeout=10
+                )
+            except Exception:
+                pass
+
+
+def _stop_usb():
+    """关闭 USB 互联：停管理线程、清端口转发并收敛状态"""
+    with _usb_lock:
+        _usb_state["enabled"] = False
+        _usb_state["devices"] = []
+        _usb_state["adb_error"] = ""
+    if _usb_stop_evt is not None:
+        _usb_stop_evt.set()
+    _usb_teardown()
+
+
+def _usb_snapshot() -> dict:
+    """USB 互联状态快照（设置页轮询）"""
+    with _usb_lock:
+        return {
+            "enabled": bool(_usb_state["enabled"]),
+            "adb_ok": bool(_usb_state["adb_ok"]),
+            "adb_error": _usb_state["adb_error"],
+            "devices": [dict(d) for d in _usb_state["devices"]],
+            "last_poll": _usb_state["last_poll"],
+        }
 
 
 def get_status() -> dict:
     """返回服务状态（设置页轮询），含传输进度、待确认设备与已配对设备列表"""
     devices = _devices_snapshot()
+    usb = _usb_snapshot()
     with _lan_lock:
         pending = _lan_state.get("pending_confirm")
         clients = list(_lan_state["clients"])
@@ -866,6 +1151,10 @@ def get_status() -> dict:
             "start_time": _lan_state["start_time"],
             "clients": clients,
             "devices": devices,
+            "lan_on": bool(_lan_state["lan_on"]),
+            "usb_on": bool(_lan_state["usb_on"]),
+            "iface": _lan_state["iface"],
+            "usb": usb,
             "last_error": _lan_state["last_error"],
             "allow_secret_config": bool(_lan_state["allow_secret_config"]),
             "transfer": _transfer_snapshot(),

@@ -169,9 +169,9 @@ python scripts/build.py --linux --installer-only --package deb  # Linux 包类�
 |----------|------|------|
 | `check.yml` | push/PR 到任意分支 | Ubuntu lint + test（含 `keyfinder-tests` C++ 测试 job，Windows） |
 | `ffmpeg-win64.yml` | 被 build/nightly/release 以 `needs` 拉起 | 交叉编译裁剪版 ffmpeg，artifact 上传（按脚本内容哈希缓存） |
-| `build.yml` | 手动 | Windows 安装包（exe + msix，含 ffmpeg/helper 校验）+ Linux 三格式 + macOS 双架构 `.dmg` |
-| `release.yml` | 手动 | 从 `main` 构建三平台产物、创建正式 Release 并上传全部产物（tag/标题为 `src/__init__.py` 的版本号，正文仅下载表格） |
-| `nightly.yml` | 每日 UTC 20:00 + 手动 | 从 `dev` 分支构建非正式版，发布为 `nightly` prerelease（软件更新不会指向 nightly） |
+| `build.yml` | 手动 | Windows 安装包（exe + msix，含 ffmpeg/helper 校验）+ Linux 三格式 + macOS 双架构 `.dmg`，各平台产物附 `sha256.txt` 校验和（coreutils 格式，`sha256sum -c` 可校验） |
+| `release.yml` | 手动 | 从 `main` 构建三平台产物、创建正式 Release 并上传全部产物（tag/标题为 `src/__init__.py` 的版本号，正文为下载表格 + `sha256.txt` 链接；另上传单一汇总 `sha256.txt` 作为资产供下载核对） |
+| `nightly.yml` | 每日 UTC 20:00 + 手动 | 从 `dev` 分支构建非正式版，发布为 `nightly` prerelease（软件更新不会指向 nightly），附单一汇总 `sha256.txt` 校验和 |
 
 ## 数据与配置路径
 

@@ -2955,8 +2955,16 @@ class SettingsApi:
     def lan_stop(self) -> dict:
         from . import lan
 
-        lan.stop()
+        lan.stop_lan()
         return {"ok": True, "status": lan.get_status()}
+
+    def usb_enable(self, on: bool, port: int = None, secret: str = None) -> dict:
+        from . import lan
+
+        p = int(port or self._cfg.get("lan_port", 17852))
+        s = secret if secret is not None else self._cfg.get("lan_secret", "")
+        ok = lan.set_usb_enabled(bool(on), p, s)
+        return {"ok": ok, "status": lan.get_status()}
 
     def lan_get_status(self) -> dict:
         from . import lan
@@ -2969,7 +2977,32 @@ class SettingsApi:
         return lan.get_lan_ip()
 
     def lan_qr(self) -> dict:
-        """生成连接二维码（IP + 端口 + 密钥，仅局域网服务运行时）"""
+        """生成局域网连接二维码（IP + 端口 + 密钥，仅局域网服务运行时）"""
+        from . import lan
+
+        st = lan.get_status()
+        if st.get("status") != "running":
+            return {"ok": False, "error": "局域网服务未运行"}
+        if st.get("usb_on") and not st.get("lan_on"):
+            return {"ok": False, "error": "仅 USB 模式请用 USB 二维码"}
+        ip = lan.get_lan_ip()
+        if not ip:
+            return {"ok": False, "error": "未获取到局域网 IP"}
+        return self._interconnect_qr(ip)
+
+    def usb_qr(self) -> dict:
+        """生成 USB 互联二维码（127.0.0.1 + 端口 + 密钥，USB 互联开启时）"""
+        from . import lan
+
+        st = lan.get_status()
+        if st.get("status") != "running":
+            return {"ok": False, "error": "互联服务未运行"}
+        if not st.get("usb_on"):
+            return {"ok": False, "error": "USB 互联未开启"}
+        return self._interconnect_qr("127.0.0.1")
+
+    def _interconnect_qr(self, ip: str) -> dict:
+        """按互联服务当前运行参数生成二维码（密钥取握手实际使用的值）"""
         import base64
         import json
 
@@ -2978,11 +3011,6 @@ class SettingsApi:
         from . import lan
 
         st = lan.get_status()
-        if st.get("status") != "running":
-            return {"ok": False, "error": "局域网服务未运行"}
-        ip = lan.get_lan_ip()
-        if not ip:
-            return {"ok": False, "error": "未获取到局域网 IP"}
         # 用握手实际使用的密钥（设置页可能用未保存的输入值启动服务）
         secret = lan.runtime_secret()
         if secret is None:
