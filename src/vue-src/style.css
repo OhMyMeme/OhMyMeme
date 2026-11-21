@@ -704,6 +704,12 @@ body {
   background: var(--surface-2);
 }
 
+/* #96 拖拽表情悬停到文件夹（左侧栏分组 / 右侧子分组卡片）时的落点高亮 */
+.drag-over-folder {
+  outline: 2px solid var(--accent);
+  outline-offset: -2px;
+}
+
 .folder-preview {
   width: 100%;
   height: 100%;

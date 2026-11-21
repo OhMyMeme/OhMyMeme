@@ -28,6 +28,7 @@ const state = reactive({
   hoverZoom: true,
   guideOk: true,
   agreementRequired: false,
+  hiddenCollections: new Set<number>(),
 })
 
 let searchGen = 0
@@ -66,6 +67,7 @@ export function useMemes() {
       state.guideOk = data.guide_ok !== false
       state.agreementRequired = data.agreement_required === true
       if (data.sort_mode) state.sortMode = data.sort_mode
+      state.hiddenCollections = new Set<number>(data.hidden_collections || [])
     }
   }
 

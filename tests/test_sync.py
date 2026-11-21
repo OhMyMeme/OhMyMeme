@@ -198,6 +198,20 @@ class _FakeDb:
     def reorder_memes(self, meme_ids):
         id_to_name = {i + 1: r["filename"] for i, r in enumerate(self.rows)}
         self.order = [id_to_name.get(i) for i in meme_ids]
+        # 模拟真实 DB：按新顺序写入 sort_order 并排序 rows（search 按 sort_order 返回）
+        name_to_row = {r["filename"]: r for r in self.rows}
+        included = {id_to_name.get(m) for m in meme_ids}
+        ordered = []
+        for i, mid in enumerate(meme_ids):
+            name = id_to_name.get(mid)
+            if name is not None and name in name_to_row:
+                row = dict(name_to_row[name])
+                row["sort_order"] = i
+                ordered.append(row)
+        for r in self.rows:
+            if r["filename"] not in included:
+                ordered.append(dict(r, sort_order=r.get("sort_order", 0)))
+        self.rows = ordered
 
     def add_meme(
         self,
@@ -289,14 +303,17 @@ class TestSyncPush(unittest.TestCase):
             fp = self.data_dir / "cache" / m["filename"]
             if not fp.exists():
                 fp.write_bytes(b"x" * int(m.get("file_size", 8)))
+        # 模拟已排序的本地库：写入连续 sort_order（拖拽排序结果），
+        # 使 build() 走「尊重自定义顺序」分支而非自然名重排
         self.fake_db.rows = [
             {
                 "filename": m["filename"],
                 "original_name": m["filename"],
                 "file_hash": m["sha256"],
                 "file_size": m.get("file_size", 8),
+                "sort_order": i,
             }
-            for m in memes
+            for i, m in enumerate(memes)
         ]
 
     def _manifest_filenames(self):

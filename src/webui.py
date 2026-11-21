@@ -1211,6 +1211,7 @@ class JsApi:
             "memes": memes,
             "tags": self.get_tags(),
             "collections": collections,
+            "hidden_collections": self._cfg.get("hidden_collections", []),
             "show_startup_animation": self._cfg.get("show_startup_animation", True),
             "hover_zoom": self._cfg.get("hover_zoom", True),
             "window_resize_enabled": self._cfg.get("window_resize_enabled", False),
@@ -1533,6 +1534,27 @@ class JsApi:
             if ids:
                 build_manifest()
             return {"ok": True, "moved": moved}
+        except Exception:
+            return {"ok": False}
+
+    def move_meme_to_folder(self, meme_id: int, to_id: int, from_id: int = 0) -> dict:
+        """拖拽移动单个表情到目标分组（支持拖入当前分组的子分组，不做源子树校验）"""
+        try:
+            mid = int(meme_id)
+            cid = int(to_id or 0)
+            if cid <= 0:
+                return {"ok": False, "error": "目标分组不存在"}
+            fid = int(from_id or 0)
+            if fid > 0:
+                from_ids = self._get_collection_ids_recursive(fid)
+                moved = self._db.move_memes_to_collection([mid], from_ids, cid)
+                if moved == 0:
+                    # 表情不在源子树（边界情况），直接追加到目标
+                    self._db.add_to_collection(mid, cid)
+            else:
+                self._db.add_to_collection(mid, cid)
+            build_manifest()
+            return {"ok": True}
         except Exception:
             return {"ok": False}
 
@@ -2128,27 +2150,52 @@ class JsApi:
             return {"ok": False, "error": "已有导入在进行中"}
         return {"ok": True, "async": True}
 
-    def import_folder(self, make_collection=True) -> dict:
-        """选择文件夹并导入其中全部图片；make_collection 时以文件夹名创建分组"""
-        result = self._dialog(webview.FileDialog.FOLDER)
-        if not result:
-            return {"ok": False, "cancelled": True}
-        folder = result[0] if isinstance(result, (tuple, list)) else result
+    def import_folder(self, make_collection=True, confirmed=False, folder="") -> dict:
+        """选择文件夹并按原始层级导入图片；make_collection 时按文件夹层级建分组
+
+        目前仅支持两级分类（顶层分组 + 一层子分组）：超过两级时若未确认
+        （confirmed=False），返回 need_confirm 由前端弹窗提醒后带原 folder 重试。
+        """
+        if folder:
+            path = folder
+        else:
+            result = self._dialog(webview.FileDialog.FOLDER)
+            if not result:
+                return {"ok": False, "cancelled": True}
+            path = result[0] if isinstance(result, (tuple, list)) else result
         try:
             files = []
             names = []
-            for root, _, fnames in os.walk(folder):
+            rels = []
+            deep = False
+            deep_count = 0
+            for root, _, fnames in os.walk(path):
                 for fn in sorted(fnames):
                     ext = os.path.splitext(fn)[1].lower()
                     if ext not in _ALLOWED_IMPORT_EXT:
                         continue
+                    rel_dir = os.path.relpath(root, path)
+                    parts = [] if rel_dir == os.curdir else rel_dir.split(os.sep)
+                    if len(parts) > 1:
+                        deep = True
+                        deep_count += 1
                     files.append(os.path.join(root, fn))
                     names.append(os.path.splitext(fn)[0])
+                    # 超过两级时截断到一级（并入所属子分组）
+                    rels.append("/".join(parts[:1]))
             if not files:
                 return {"ok": False, "error": "文件夹中没有支持的图片"}
-            folder_name = os.path.basename(os.path.normpath(folder))
+            folder_name = os.path.basename(os.path.normpath(path))
+            if make_collection and deep and not confirmed:
+                return {
+                    "ok": True,
+                    "need_confirm": True,
+                    "total": len(files),
+                    "deep_count": deep_count,
+                    "folder": path,
+                }
             if not start_import_job(
-                self._webui, files, names, make_collection, folder_name
+                self._webui, files, names, make_collection, folder_name, rels
             ):
                 return {"ok": False, "error": "已有导入在进行中"}
             return {"ok": True, "async": True, "total": len(files)}
@@ -2320,6 +2367,20 @@ class JsApi:
         if mode not in _SORT_MODES:
             return {"ok": False, "error": "invalid sort mode"}
         self._cfg.set("sort_mode", mode)
+        self._cfg.save()
+        return {"ok": True}
+
+    def save_hidden_collections(self, ids) -> dict:
+        """保存左侧栏隐藏的子分组 id 列表（右侧主页面子分组文件夹不受影响）"""
+        if not isinstance(ids, list):
+            return {"ok": False, "error": "invalid ids"}
+        cleaned = []
+        for i in ids:
+            try:
+                cleaned.append(int(i))
+            except (TypeError, ValueError):
+                return {"ok": False, "error": "invalid ids"}
+        self._cfg.set("hidden_collections", cleaned)
         self._cfg.save()
         return {"ok": True}
 
@@ -4143,7 +4204,9 @@ def _import_job_progress_cb(my_token, done, total, current):
     return False if cancel else None
 
 
-def _import_job_worker(webui, files, names, make_collection, folder_name, my_token):
+def _import_job_worker(
+    webui, files, names, make_collection, folder_name, rels, my_token
+):
     """后台执行交互式导入（folder/文件对话框/剪贴板），逐文件报进度"""
     global _IMPORT_JOB_CANCEL
     db = get_db()
@@ -4155,8 +4218,9 @@ def _import_job_worker(webui, files, names, make_collection, folder_name, my_tok
         if _IMPORT_JOB_CANCEL:
             _set_import_job_current(my_token, status="cancelled")
             return
-        r = webui._do_import(files, names, cb)
+        r = webui._do_import(files, names, cb, rels=rels)
         ids = r.get("ids") or []
+        imported_rels = r.get("imported_rels") or []
         imported = len(ids)
         rejected = r.get("rejected", 0)
         skipped_dup = r.get("skipped_dup", 0)
@@ -4189,8 +4253,13 @@ def _import_job_worker(webui, files, names, make_collection, folder_name, my_tok
         if make_collection and ids and folder_name:
             collection_id = db.create_collection(folder_name)
             if collection_id > 0:
-                for mid in ids:
-                    db.add_to_collection(mid, collection_id)
+                # 按原始文件夹层级归位：rel 为空→顶层分组，否则→对应子分组
+                sub_ids = {}
+                for mid, rel in zip(ids, imported_rels):
+                    if rel and rel not in sub_ids:
+                        sub_ids[rel] = db.create_collection(rel, collection_id)
+                    cid = sub_ids.get(rel) if rel else collection_id
+                    db.add_to_collection(mid, cid)
 
                 build_manifest()
         _set_import_job_current(
@@ -4213,7 +4282,9 @@ def _import_job_worker(webui, files, names, make_collection, folder_name, my_tok
                 _IMPORT_JOB_CANCEL = False
 
 
-def start_import_job(webui, files, names, make_collection=False, folder_name=""):
+def start_import_job(
+    webui, files, names, make_collection=False, folder_name="", rels=None
+):
     """启动后台导入，立即返回；前端轮询 get_import_progress()"""
     import secrets
 
@@ -4238,7 +4309,7 @@ def start_import_job(webui, files, names, make_collection=False, folder_name="")
         )
     threading.Thread(
         target=_import_job_worker,
-        args=(webui, files, names, make_collection, folder_name, token),
+        args=(webui, files, names, make_collection, folder_name, rels, token),
         daemon=True,
     ).start()
     return True
@@ -5134,7 +5205,12 @@ class WebUI:
         return ""
 
     def _do_import(
-        self, file_paths, names=None, progress_cb=None, allow_overlimit=False
+        self,
+        file_paths,
+        names=None,
+        progress_cb=None,
+        allow_overlimit=False,
+        rels=None,
     ):
         import shutil
 
@@ -5145,6 +5221,7 @@ class WebUI:
         rejected = 0
         skipped_dup = 0
         imported_ids = []
+        imported_rels = []
         dup_ids = []
         total = len(file_paths)
         done = 0
@@ -5210,6 +5287,9 @@ class WebUI:
                         row = db.get_by_hash(fhash)
                         if row:
                             imported_ids.append(row["id"])
+                            imported_rels.append(
+                                rels[i] if rels and i < len(rels) else ""
+                            )
                         imported += 1
                 if restored:
                     try:
@@ -5234,6 +5314,7 @@ class WebUI:
         logger.info(f"导入完成: {imported} 个")
         return {
             "ids": imported_ids,
+            "imported_rels": imported_rels,
             "rejected": rejected,
             "skipped_dup": skipped_dup,
             "dup_ids": dup_ids,

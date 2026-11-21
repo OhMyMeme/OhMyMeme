@@ -89,6 +89,7 @@ const drag = useDragSort(
   () => sortEnabled.value,
   reorderMemes,
   () => { showToast('排序保存失败'); search() },
+  onDropToFolder,
 )
 
 const sidebarCollapsed = ref(false)
@@ -272,6 +273,25 @@ const folderCards = computed(() => {
   return find(state.collections)
 })
 
+// 左侧栏可见分组：过滤掉用户隐藏的节点（右侧主页面子分组文件夹卡不受影响）
+const visibleCollections = computed(() => {
+  const filter = (items: any[]): any[] => {
+    const out: any[] = []
+    for (const c of items) {
+      if (state.hiddenCollections.has(c.id)) {
+        if (c.children && c.children.length) out.push(...filter(c.children))
+        continue
+      }
+      const node: any = { ...c }
+      if (c.children && c.children.length) node.children = filter(c.children)
+      else delete node.children
+      out.push(node)
+    }
+    return out
+  }
+  return filter(state.collections)
+})
+
 // 面包屑：当前分组从「全部」到自身的祖先链
 const breadcrumb = computed(() => {
   if (!state.activeCollection) return []
@@ -320,9 +340,26 @@ function onFolderCardClick(childId: number) {
 function onFolderCardContext(e: MouseEvent, childId: number, childName: string) {
   e.preventDefault()
   e.stopPropagation()
+  const hidden = state.hiddenCollections.has(childId)
   ctx.show([
+    { action: 'hide-collection', label: hidden ? '显示' : '隐藏' },
     { action: 'delete-folder', label: '删除小分组', danger: true },
   ], { folderId: childId, folderName: childName, isFolder: true }, e.clientX, e.clientY)
+}
+
+// #96 拖拽表情落入文件夹（左侧栏分组 / 右侧子分组卡片）
+async function onDropToFolder(memeId: number, folderId: number) {
+  // 拖到当前分组自身等于没移动，忽略
+  if (folderId === state.activeCollection) return
+  const fromId = state.activeCollection > 0 ? state.activeCollection : 0
+  const r: any = await window.pywebview?.api?.move_meme_to_folder(memeId, folderId, fromId)
+  if (r?.ok) {
+    showToast('已移入分组')
+    await refreshCollections()
+    search()
+  } else if (r?.error) {
+    showToast(r.error)
+  }
 }
 
 async function handleCopy(meme: Meme, e?: Event) {
@@ -420,6 +457,22 @@ async function handleOverlimitImport(token: string) {
   if (rr?.duplicate) { jumpToMeme(rr.existing_id); return }
   if (rr?.ok) return  // 取消导入：静默
   showToast(rr?.error || '处理失败')
+}
+
+// 文件夹层级超过两级：弹窗提醒后带 confirmed=true 重试同一文件夹
+async function onImportConfirmDeep(payload: { makeGroup: boolean; folder: string; total: number; deep_count: number }) {
+  const go = await confirmDialog.value?.open(
+    '文件夹层级超过两级',
+    `所选文件夹包含超过两级的子文件夹，目前仅支持两级分类，其中 ${payload.deep_count} 张位于更深层级的图片将并入所属的上级子分组，是否继续导入？`,
+    { confirmText: '继续导入', cancelText: '取消', variant: 'primary', focusConfirm: true }
+  )
+  if (!go) return
+  const r = await window.pywebview?.api?.import_folder(payload.makeGroup, true, payload.folder)
+  if (!r) return
+  if (r.ok && r.async) { importProgress.value?.start(); return }  // 后台导入，覆盖层轮询
+  if (r.ok) { onImportDone(); return }
+  if (r.cancelled) return
+  showToast(r.error || '导入失败')
 }
 
 // 卡片悬停快速收藏（右键菜单外的一键入口）
@@ -655,6 +708,10 @@ function onFolderRightClick(e: MouseEvent, folderId: number, folderName: string)
     items.push({ action: 'clear-recent', label: '清空最近使用', danger: true })
   } else if (folderId > 0) {
     items.push({ action: 'add-to-subgroup', label: '新建子分组' })
+    // 仅子分组（有父分组）可隐藏；顶层分组不受影响
+    if (findParentCollection(state.collections, folderId)) {
+      items.push({ action: 'hide-collection', label: '隐藏' })
+    }
     items.push({ action: 'delete-collection', label: '删除', danger: true })
   }
   ctx.show(items, { folderId, folderName, isFolder: true }, e.clientX, e.clientY)
@@ -796,6 +853,15 @@ async function onCtxAction(action: string) {
         if (state.activeCollection === t.folderId) setActiveCollection(parent ? parent.id : -4)
         refreshCollections(); search()
       }
+      break
+    }
+    case 'hide-collection': {
+      // 隐藏/显示子分组：仅影响左侧栏树，右侧主页面子分组文件夹卡不受影响
+      const next = new Set(state.hiddenCollections)
+      if (next.has(t.folderId)) next.delete(t.folderId)
+      else next.add(t.folderId)
+      state.hiddenCollections = next
+      try { await window.pywebview?.api?.save_hidden_collections([...next]) } catch { /* bridge failure: ignore */ }
       break
     }
     case 'clear-recent': {
@@ -1353,7 +1419,7 @@ onUnmounted(() => {
         <div id="sidebar-header"><span v-if="!sidebarCollapsed">分组</span></div>
         <div id="tree">
           <CollectionTreeNode
-            v-for="c in state.collections"
+            v-for="c in visibleCollections"
             :key="c.id"
             :node="c"
             :active-id="sidebarCollapsed ? activeTopLevel : state.activeCollection"
@@ -1455,6 +1521,7 @@ onUnmounted(() => {
               :key="'folder-' + child.id"
               class="meme-card folder-card"
               :data-folder-id="child.id"
+              :data-folder-drop="String(child.id)"
               role="button"
               tabindex="0"
               :aria-label="'打开分组 ' + child.name"
@@ -1544,7 +1611,7 @@ onUnmounted(() => {
   </div>
 
   <CollectionBuilder />
-  <ImportMenu ref="importMenu" @imported="onImportDone" @importing="onImporting" @overlimit="handleOverlimitImport" @locate="jumpToMeme" />
+  <ImportMenu ref="importMenu" @imported="onImportDone" @importing="onImporting" @overlimit="handleOverlimitImport" @locate="jumpToMeme" @confirm-deep="onImportConfirmDeep" />
   <ImportProgressOverlay ref="importProgress" @imported="onImportDone" />
   <SyncOverlay ref="syncOverlay" @synced="onSyncDone" />
   <TagEditor ref="tagEditor" />

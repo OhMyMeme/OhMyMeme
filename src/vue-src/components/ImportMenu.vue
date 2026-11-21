@@ -8,6 +8,7 @@ const emit = defineEmits<{
   error: [msg: string]
   overlimit: [token: string]
   locate: [id: number]
+  'confirm-deep': [payload: { makeGroup: boolean; folder: string; total: number; deep_count: number }]
 }>()
 
 const visible = ref(false)
@@ -54,6 +55,11 @@ async function importFolder() {
     if (!r.ok) {
       if (r.cancelled) return
       showToast(r.error || '导入失败')
+      return
+    }
+    // 超过两级：交 App 弹窗确认后用 confirmed=true 重试同一文件夹
+    if (r.need_confirm) {
+      emit('confirm-deep', { makeGroup, folder: r.folder, total: r.total, deep_count: r.deep_count })
       return
     }
     if (r.async) { emit('importing'); return }  // 后台导入，覆盖层轮询
