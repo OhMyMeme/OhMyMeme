@@ -1,6 +1,6 @@
 """OhMyMeme - 轻量化跨平台表情包管理系统"""
 
-__version__ = "0.7.0"
+__version__ = "0.7.1"
 __app_name__ = "OhMyMeme"
 __build_source__ = "dev"  # dev/github/nightly/msstore（build.py 按构建类型改写）
 __build_sha__ = ""  # 构建时注入的 git commit sha（build.py 改写，空=源码运行）
