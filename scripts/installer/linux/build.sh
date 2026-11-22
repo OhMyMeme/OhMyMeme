@@ -34,8 +34,8 @@ case "$ARCH" in
 esac
 
 clean() {
-    rm -rf "$DIST_DIR/OhMyMeme.AppDir" "$DIST_DIR/*.AppImage" \
-           "$DIST_DIR/*.deb" "$DIST_DIR/*.rpm"
+    rm -rf "$DIST_DIR/OhMyMeme.AppDir" "$DIST_DIR"/*.AppImage \
+           "$DIST_DIR"/*.deb "$DIST_DIR"/*.rpm
 }
 
 # 1. 用 PyInstaller 打包
@@ -148,6 +148,7 @@ CTRL
 # 4. 构建 .rpm
 build_rpm() {
     local rpm_root="$DIST_DIR/rpmbuild"
+    rm -rf "$rpm_root"
     mkdir -p "$rpm_root/BUILD" "$rpm_root/RPMS" "$rpm_root/SOURCES" \
              "$rpm_root/SPECS" "$rpm_root/SRPMS"
 
@@ -156,6 +157,10 @@ build_rpm() {
     tar czf "$src_tar" OhMyMeme/
 
     cat > "$rpm_root/SPECS/ohmymeme.spec" << 'SPEC'
+# 关闭 debuginfo 子包：部分 rpm 版本会额外产出 ohmymeme-debuginfo-*.rpm，
+# 与主包一起匹配通配符会让后面的 mv 把目标当成目录而失败。
+%global debug_package %{nil}
+
 Name: ohmymeme
 Version: 0.1.0
 Release: 1%{?dist}
@@ -197,8 +202,16 @@ SPEC
     sed -i "s/Source0: ohmymeme-0.1.0.tar.gz/Source0: ohmymeme-${PKG_VERSION}.tar.gz/" "$rpm_root/SPECS/ohmymeme.spec"
 
     rpmbuild --define "_topdir $rpm_root" -bb "$rpm_root/SPECS/ohmymeme.spec"
-    cp "$rpm_root/RPMS/$RPM_ARCH/"*.rpm "$DIST_DIR/"
-    mv "$DIST_DIR"/*.rpm "$DIST_DIR/OhMyMeme-v${APP_VERSION}-${RPM_ARCH}.rpm"
+
+    # 只取主包（ohmymeme-<数字版本>...），避免把 debuginfo 等附加包一起移动
+    local built_rpm
+    built_rpm="$(find "$rpm_root/RPMS/$RPM_ARCH" -maxdepth 1 \
+        -name 'ohmymeme-[0-9]*.rpm' -print -quit)"
+    if [ -z "$built_rpm" ]; then
+        echo "未找到 RPM 产物: $rpm_root/RPMS/$RPM_ARCH" >&2
+        return 1
+    fi
+    mv "$built_rpm" "$DIST_DIR/OhMyMeme-v${APP_VERSION}-${RPM_ARCH}.rpm"
     echo "rpm:  $DIST_DIR/OhMyMeme-v${APP_VERSION}-${RPM_ARCH}.rpm"
 }
 
