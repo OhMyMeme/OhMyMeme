@@ -254,6 +254,23 @@ async function toggleLan() {
   refreshLanStatus();
 }
 
+async function toggleUsb() {
+  const cb = document.getElementById('s-usb-enable');
+  if (cb.checked) {
+    const port = parseInt(document.getElementById('s-lan-port')?.value) || 17852;
+    const secret = document.getElementById('s-lan-secret')?.value || '';
+    const r = await api('usb_enable', true, port, secret);
+    if (!r || !r.ok) {
+      cb.checked = false;
+      const st = r && r.status ? r.status : {};
+      showToast('开启 USB 互联失败：' + (st.last_error || '未知错误'));
+    }
+  } else {
+    await api('usb_enable', false);
+  }
+  refreshLanStatus();
+}
+
 async function refreshLanStatus() {
   const el = document.getElementById('lan-status');
   if (!el) return;
@@ -261,6 +278,11 @@ async function refreshLanStatus() {
   const ip = await api('lan_get_ip');
   const cc = document.getElementById('s-lan-secret-config');
   if (cc && r) cc.checked = r.allow_secret_config === true;
+  // 开关按后端真实状态回填：关掉设置页不再停服，重开时不能误显示为未开启
+  const en = document.getElementById('s-lan-enable');
+  if (en && r) en.checked = r.lan_on === true;
+  const eu = document.getElementById('s-usb-enable');
+  if (eu && r) eu.checked = r.usb_on === true;
   if (!r || r.status === 'stopped') {
     el.innerHTML = '● 已停止 <span style="opacity:.6">(端口 ' + (r ? r.port : 17852) + ')</span>';
     setStatusColor(el, '');
@@ -268,6 +290,10 @@ async function refreshLanStatus() {
     if (lanPollTimer) { clearTimeout(lanPollTimer); lanPollTimer = null; }
     updateLanTransfer(null);
     handleLanConfirm(null);
+    setLanQrUi(false);
+    setUsbQrUi(false);
+    renderUsbStatus(r ? r.usb : null);
+    renderLanDevices(r ? r.devices : []);
     return;
   }
   if (r.status === 'error') {
@@ -277,24 +303,183 @@ async function refreshLanStatus() {
     if (lanPollTimer) { clearTimeout(lanPollTimer); lanPollTimer = null; }
     updateLanTransfer(null);
     handleLanConfirm(null);
+    setLanQrUi(false);
+    setUsbQrUi(false);
+    renderUsbStatus(r.usb);
+    renderLanDevices(r.devices);
     return;
   }
-  let html = '● 运行中 <span style="opacity:.6">(端口 ' + r.port + '，IP ' + esc(ip) + ')</span>';
-  if (r.clients && r.clients.length) {
-    html += '<br>已连接设备：' + r.clients.map(c => '<code>' + esc(c.addr) + '</code>').join('、');
+  const usbOnly = r.iface === '127.0.0.1';
+  if (usbOnly) {
+    let html = '● 运行中 <span style="opacity:.6">(USB 模式，回环端口 ' + r.port + '，无需网络)</span>';
+    if (r.clients && r.clients.length) {
+      html += '<br>已连接设备：' + r.clients.map(c => '<code>' + esc(c.addr) + '</code>').join('、');
+    }
+    el.innerHTML = html;
+  } else {
+    let html = '● 运行中 <span style="opacity:.6">(端口 ' + r.port + '，IP ' + esc(ip) + ')</span>';
+    // 发现诊断：区分「广播没到」与「回了但手机没收」，避免只能盲猜防火墙
+    if (!r.discover_count) {
+      html += '<br><span style="opacity:.6">尚未收到手机发现广播。请确认手机与电脑在同一网段，并在系统防火墙放行 UDP/TCP 端口 ' + r.port + '。</span>';
+    } else if (r.last_reply_error) {
+      html += '<br><span class="status-error">回包失败：' + esc(r.last_reply_error) + '</span>';
+    } else {
+      html += '<br><span style="opacity:.6">已收到 ' + r.discover_count + ' 次发现请求';
+      if (r.last_discover_from) html += '（最近来自 ' + esc(r.last_discover_from) + '）';
+      html += '</span>';
+    }
+    if (r.clients && r.clients.length) {
+      html += '<br>已连接设备：' + r.clients.map(c => '<code>' + esc(c.addr) + '</code>').join('、');
+    }
+    el.innerHTML = html;
   }
-  el.innerHTML = html;
   setStatusColor(el, 'ok');
+  setLanQrUi(!usbOnly);
+  setUsbQrUi(r.usb_on === true);
+  renderUsbStatus(r.usb);
+  renderLanDevices(r.devices);
   if (lanPollTimer) { clearTimeout(lanPollTimer); lanPollTimer = null; }
   lanPollStatus = async () => {
     lanPollTimer = null;
     const r2 = await api('lan_get_status');
     if (!r2 || r2.status !== 'running') { refreshLanStatus(); return; }
     handleLanConfirm(r2.pending_confirm);
+    renderLanDevices(r2.devices);
+    renderUsbStatus(r2.usb);
     const fast = updateLanTransfer(r2.transfer);
     lanPollTimer = setTimeout(lanPollStatus, fast ? 300 : 5000);
   };
   lanPollTimer = setTimeout(lanPollStatus, 5000);
+}
+
+/* 互联设备列表（lan.py 持久化，按最近配对时间排序，在线状态来自当前连接） */
+let lanDevicesCache = [];
+function renderLanDevices(devices) {
+  lanDevicesCache = Array.isArray(devices) ? devices : [];
+  const box = document.getElementById('lan-devices');
+  const section = document.getElementById('lan-devices-section');
+  if (!box) return;
+  const list = lanDevicesCache;
+  if (!list.length) {
+    box.style.display = 'none';
+    box.innerHTML = '';
+    if (section) section.style.display = 'none';
+    return;
+  }
+  const rows = list.map(d => {
+    const info = [d.name || '未知设备', d.os, d.ver, d.model].filter(Boolean).map(esc).join(' · ');
+    const stateText = d.online ? '在线' : (d.last_seen ? lanSeenText(d.last_seen) : '离线');
+    const stateColor = d.online ? 'var(--success)' : 'var(--muted)';
+    return '<div style="display:flex;align-items:center;gap:8px;padding:4px 8px;border:1px solid var(--border);border-radius:6px;margin-bottom:4px;font-size:11.5px">'
+      + '<span style="width:6px;height:6px;border-radius:50%;flex:none;background:' + stateColor + '"></span>'
+      + '<span style="flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:var(--fg-secondary)">' + info + '</span>'
+      + '<code style="color:var(--muted)">' + esc(d.ip) + '</code>'
+      + '<span style="color:' + stateColor + '">' + stateText + '</span>'
+      + '</div>';
+  }).join('');
+  box.style.display = 'block';
+  if (section) section.style.display = 'block';
+  box.innerHTML = rows;
+}
+
+/* 最近配对时间：今天显示时分，其他显示月日 */
+function lanSeenText(ts) {
+  const d = new Date(ts * 1000);
+  if (!ts || isNaN(d.getTime())) return '离线';
+  const now = new Date();
+  const pad = (n) => String(n).padStart(2, '0');
+  if (d.toDateString() === now.toDateString()) return '今天 ' + pad(d.getHours()) + ':' + pad(d.getMinutes());
+  return (d.getMonth() + 1) + '月' + d.getDate() + '日';
+}
+
+/* 局域网连接二维码（仅服务运行时可生成，内容 = IP + 端口 + 密钥） */
+function setLanQrUi(running) {
+  const btn = document.getElementById('btn-lan-qr');
+  if (btn) btn.style.display = running ? '' : 'none';
+  if (!running) {
+    const wrap = document.getElementById('lan-qr-wrap');
+    if (wrap) { wrap.style.display = 'none'; wrap.innerHTML = ''; }
+  }
+}
+
+async function showLanQr() {
+  const wrap = document.getElementById('lan-qr-wrap');
+  if (!wrap) return;
+  wrap.style.display = 'block';
+  wrap.innerHTML = '<div style="font-size:12px;color:var(--fg-secondary)">正在生成二维码…</div>';
+  const r = await api('lan_qr');
+  if (!r || !r.ok) {
+    wrap.style.display = 'none';
+    wrap.innerHTML = '';
+    showToast((r && r.error) || '生成二维码失败');
+    return;
+  }
+  wrap.innerHTML = '<img src="' + r.qr + '" alt="局域网连接二维码" style="width:180px;height:180px;border-radius:8px;background:#fff;padding:8px">'
+    + '<div style="font-size:11.5px;color:var(--muted);margin-top:8px">用手机 OhMyMeme 扫描连接（设置 → 互联 → 扫码连接）</div>';
+}
+
+/* USB 互联状态（轮询 lan_get_status 的 usb 块：ADB 就绪 / 设备 / 端口转发） */
+function renderUsbStatus(u) {
+  const el = document.getElementById('usb-status');
+  if (!el) return;
+  if (!u || !u.enabled) {
+    el.innerHTML = '● 未开启 <span style="opacity:.6">(开启后自动检测 ADB 与 USB 设备)</span>';
+    return;
+  }
+  let html = '● 已开启';
+  if (!u.adb_ok) {
+    html += '<br><span class="status-error">' + esc(u.adb_error || 'ADB 准备中，请稍候…') + '</span>';
+    el.innerHTML = html;
+    return;
+  }
+  const devs = u.devices || [];
+  if (!devs.length) {
+    html += '<br><span style="opacity:.6">未检测到设备。请用 USB 线连接手机、开启 USB 调试，并在手机上允许「允许 USB 调试」。</span>';
+  } else {
+    devs.forEach(d => {
+      let stateText, stateColor;
+      if (d.state === 'device') {
+        stateText = d.forwarded ? '已连接 · 端口已转发' : '已连接 · 转发中…';
+        stateColor = 'var(--success)';
+      } else if (d.state === 'unauthorized') {
+        stateText = '未授权 · 请在手机上确认 USB 调试授权';
+        stateColor = 'var(--muted)';
+      } else {
+        stateText = '离线';
+        stateColor = 'var(--muted)';
+      }
+      html += '<br><span style="color:' + stateColor + '">● ' + esc(d.serial)
+        + (d.model ? ' <span style="opacity:.6">' + esc(d.model) + '</span>' : '')
+        + ' <span style="opacity:.8">' + stateText + '</span></span>';
+    });
+  }
+  el.innerHTML = html;
+}
+
+/* USB 二维码按钮与二维码区域（USB 互联开启且服务运行时可生成） */
+function setUsbQrUi(running) {
+  const btn = document.getElementById('btn-usb-qr');
+  if (btn) btn.style.display = running ? '' : 'none';
+  if (!running) {
+    const wrap = document.getElementById('usb-qr-wrap');
+    if (wrap) { wrap.style.display = 'none'; wrap.innerHTML = ''; }
+  }
+}
+
+async function showUsbQr() {
+  const wrap = document.getElementById('usb-qr-wrap');
+  if (!wrap) return;
+  wrap.style.display = 'block';
+  wrap.innerHTML = '<div style="font-size:12px;color:var(--fg-secondary)">正在生成二维码…</div>';
+  const r = await api('usb_qr');
+  if (!r || !r.ok) {
+    wrap.style.display = 'none';
+    wrap.innerHTML = '';
+    showToast((r && r.error) || '生成二维码失败');
+    return;
+  }
+  wrap.innerHTML = '<img src="' + r.qr + '" alt="USB 互联二维码" style="width:180px;height:180px;border-radius:8px;background:#fff;padding:8px">'
+    + '<div style="font-size:11.5px;color:var(--muted);margin-top:8px">用手机 OhMyMeme 扫描连接（设置 → 互联 → 扫码连接），经 USB 走 127.0.0.1，无需网络</div>';
 }
 
 /* LAN 传输进度与设备确认（设置页，轮询 lan_get_status） */
@@ -442,6 +627,8 @@ async function getSettings() {
   const sa = document.getElementById('s-sync-auto');
   const st = document.getElementById('s-sync-type');
   if (sa) sa.checked = s.sync_auto_sync === true;
+  const dr = document.getElementById('s-delete-remote');
+  if (dr) dr.checked = s.sync_delete_remote === true;
   const mit = document.getElementById('s-manifest-include-tags');
   if (mit) mit.checked = s.manifest_include_tags !== false;
   const mic = document.getElementById('s-manifest-include-collections');
@@ -679,7 +866,7 @@ function collectSyncSettings() {
     sync_auto_fetch_index: false,
     sync_auto_sync: document.getElementById('s-sync-auto')?.checked === true,
     sync_type: document.getElementById('s-sync-type')?.value || '',
-    sync_delete_remote: false,
+    sync_delete_remote: document.getElementById('s-delete-remote')?.checked === true,
     sync_remove_local: false,
     sync_hide_upload_warning: false,
     show_upload_progress: true,
@@ -916,6 +1103,8 @@ async function resetSettingsNow() {
     const sa = document.getElementById('s-sync-auto');
     const st = document.getElementById('s-sync-type');
     if (sa) sa.checked = false;
+    const dr2 = document.getElementById('s-delete-remote');
+    if (dr2) dr2.checked = false;
     const mit2 = document.getElementById('s-manifest-include-tags');
     if (mit2) mit2.checked = true;
     const mic2 = document.getElementById('s-manifest-include-collections');
@@ -962,7 +1151,10 @@ async function resetSettingsNow() {
     if (le) le.checked = false;
     const lcc = document.getElementById('s-lan-secret-config');
     if (lcc) lcc.checked = false;
+    const leu = document.getElementById('s-usb-enable');
+    if (leu) leu.checked = false;
     await api('lan_stop');
+    await api('usb_enable', false);
     await api('lan_set_allow_secret_config', false);
     refreshLanStatus();
     showToast('已恢复默认设置');
@@ -1187,15 +1379,21 @@ async function doSyncWithProgress(method, title, progressSetting, doneSetting, b
   }
 
   if (r && r.ok) {
-    const uploaded = r.uploaded || r.downloaded || 0;
+    const transferred = r.uploaded || r.downloaded || 0;
     const skipped = r.skipped || 0;
     const errors = r.errors || 0;
-    status.textContent = '完成: 成功 ' + uploaded + ', 跳过 ' + skipped + ', 错误 ' + errors;
+    // 只改分组/改名时文件数为 0，但清单确实已上传：单独说明，避免误判为失败
+    const extra = [];
+    if (r.manifest_updated) extra.push('清单已更新');
+    if (r.collections) extra.push('分组 ' + r.collections + ' 个');
+    if (r.renamed) extra.push('改名 ' + r.renamed + ' 个');
+    const done = '传输 ' + transferred + ' 个文件' + (extra.length ? '，' + extra.join('，') : '');
+    status.textContent = '完成: ' + done + '，跳过 ' + skipped + '，错误 ' + errors;
 
     if (showDone) {
       rememberSettingsFocus();
       document.getElementById('sync-done-title').textContent = title + '完成';
-      document.getElementById('sync-done-detail').textContent = '成功 ' + uploaded + ' 个';
+      document.getElementById('sync-done-detail').textContent = done;
       document.getElementById('sync-done-overlay').style.display = 'flex';
       const closeBtn = document.querySelector('#sync-done-overlay .btn');
       if (closeBtn) closeBtn.focus();
@@ -2266,11 +2464,11 @@ document.addEventListener('keydown', (e) => {
 
 /* About external links */
 const ABOUT_URLS = {
-  github: 'https://github.com/TNTXZ/OhMyMeme',
+  github: 'https://github.com/OhMyMeme/OhMyMeme',
   qq: 'https://qm.qq.com/cgi-bin/qm/qr?k=xbstRIkSObzF5ng71yBXEkKZ0v8--KVV&jump_from=webapi&authKey=BEnDuk2KNpPJC0SgkZwCLQHUsbIRyM1iCp8DuPK2hihtVBvLG32WqIYMZ2ej5Gu0'
 };
 function openAboutUrl(kind) {
-  const url = ABOUT_URLS[kind];
+  const url = ABOUT_URLS[kind] || kind;
   if (!url) return;
   const r = api('open_url', url);
   if (!r) { showToast('无法打开链接'); return; }
@@ -2292,17 +2490,17 @@ async function checkUpdate() {
   }
   btn.disabled = false; btn.textContent = '检查更新';
   if (!r) { status.textContent = '检查失败'; return; }
-  document.getElementById('s-ver-current').textContent = '当前版本: ' + (r.current || '--');
+  renderCurrentVersion();
   if (r.error) { status.textContent = '检查失败: ' + r.error; return; }
   if (!r.latest) { status.textContent = '暂无版本信息'; return; }
   if (r.has_update) {
-    showUpdateDialog(r.current, r.latest, r.download_url, r.notes);
+    showUpdateDialog(r.current, r.latest, r.download_url, r.notes, r.store_url);
   } else {
     status.textContent = '已是最新版本 (' + r.latest + ')';
   }
 }
 
-function showUpdateDialog(current, latest, url, notes) {
+function showUpdateDialog(current, latest, url, notes, storeUrl) {
   const overlay = document.createElement('div');
   overlay.id = 'update-overlay';
   overlay.style.cssText = 'position:fixed;inset:0;background:rgba(0,0,0,.55);display:flex;align-items:center;justify-content:center;z-index:300;animation:fadeIn .15s';
@@ -2316,7 +2514,7 @@ function showUpdateDialog(current, latest, url, notes) {
     + '<p style="font-size:13px;color:var(--fg-secondary);line-height:1.6">当前版本: ' + esc(current) + '<br>最新版本: ' + esc(latest) + '</p></div>'
     + (notes ? '<div style="margin-bottom:16px"><div style="font-size:13px;font-weight:600;color:var(--fg);margin-bottom:6px">更新内容</div><div class="upd-notes" style="font-size:12px;color:var(--fg-secondary);line-height:1.7;background:var(--bg-secondary);border:1px solid var(--border);border-radius:var(--radius-sm);padding:10px 12px;max-height:220px;overflow-y:auto;overflow-x:hidden">' + renderMarkdown(notes) + '</div></div>' : '')
     + '<div style="display:flex;flex-direction:column;gap:8px">'
-    + '<button id="upd-update" class="btn btn-primary" style="width:100%">更新</button>'
+    + '<button id="upd-update" class="btn btn-primary" style="width:100%">' + (storeUrl ? '前往 Microsoft Store' : '更新') + '</button>'
     + '<div style="display:flex;gap:8px">'
     + '<button id="upd-later" class="btn btn-secondary btn-flex">稍后提示</button>'
     + '</div></div>';
@@ -2327,6 +2525,11 @@ function showUpdateDialog(current, latest, url, notes) {
   const updCleanup = () => { overlay.remove(); restoreSettingsFocus(); };
 
    document.getElementById('upd-update').onclick = async () => {
+    if (storeUrl) {
+      await api('open_url', storeUrl);
+      updCleanup();
+      return;
+    }
     const btn = document.getElementById('upd-update');
     btn.disabled = true;
     btn.textContent = '准备下载...';
@@ -2351,17 +2554,27 @@ function showUpdateDialog(current, latest, url, notes) {
         clearInterval(poll);
         document.getElementById('upd-progress-text').textContent = '下载完成，启动安装...';
         const r = await api('run_downloaded_installer');
-        updCleanup();
         if (r) {
+          updCleanup();
           showToast('安装程序已启动，安装完成后将自动更新');
         } else {
-          showToast('启动安装程序失败');
+          document.getElementById('upd-progress-text').textContent = '启动安装程序失败';
+          container.innerHTML += '<button id="upd-rerun" class="btn btn-primary" style="width:100%;margin-top:8px">重新运行安装程序</button>';
+          document.getElementById('upd-rerun').onclick = async () => {
+            const ok2 = await api('rerun_installer');
+            if (ok2) {
+              updCleanup();
+              showToast('安装程序已启动，安装完成后将自动更新');
+            } else {
+              showToast('无法启动安装程序，请重新下载');
+            }
+          };
         }
       } else if (s.status === 'error') {
         clearInterval(poll);
         document.getElementById('upd-progress-text').textContent = '下载失败: ' + (s.error || '未知错误');
         container.innerHTML += '<button id="upd-retry" class="btn btn-primary" style="width:100%;margin-top:8px">重试</button>';
-        document.getElementById('upd-retry').onclick = () => { updCleanup(); showUpdateDialog(current, latest, url); };
+        document.getElementById('upd-retry').onclick = () => { updCleanup(); showUpdateDialog(current, latest, url, notes, storeUrl); };
       }
     }, 500);
   };
@@ -2374,7 +2587,7 @@ async function checkUpdateBackground() {
   if (!r || !r.has_update) return;
   const ignored = localStorage.getItem('update_ignored_' + r.latest);
   if (ignored) return;
-  showUpdateDialog(r.current, r.latest, r.download_url, r.notes);
+  showUpdateDialog(r.current, r.latest, r.download_url, r.notes, r.store_url);
 }
 
 /* Danger zone */
@@ -2717,15 +2930,34 @@ function switchSettingsGroup(group) {
   document.querySelectorAll('#settings-content .section').forEach(sec => {
     sec.style.display = (sec.dataset.group === group) ? 'block' : 'none';
   });
+  // 互联设备区整节可隐藏（空列表时），分组切换后按缓存重算一次
+  if (group === 'connect') renderLanDevices(lanDevicesCache);
   if (group === 'backup') loadBackupInfo();
   const content = document.getElementById('settings-content');
   if (content) content.scrollTop = 0;
 }
 
-async function initVersion() {
+/* 版本号渲染：有 commit sha（构建注入 / 源码运行读本地 git HEAD）时显示 版本@sha 并可点击跳转对应 commit */
+async function renderCurrentVersion() {
   const ver = await api('get_current_version');
+  const sha = await api('get_build_sha');
   const el = document.getElementById('s-ver-current');
-  if (el) el.textContent = '当前版本: ' + (ver || '--');
+  if (!el) return;
+  if (sha) {
+    el.textContent = '当前版本: ' + (ver || '--') + '@' + sha.slice(0, 7);
+    el.style.cursor = 'pointer';
+    el.title = '点击打开对应 commit';
+    el.onclick = () => openAboutUrl(ABOUT_URLS.github + '/commit/' + sha);
+  } else {
+    el.textContent = '当前版本: ' + (ver || '--');
+    el.style.cursor = '';
+    el.title = '';
+    el.onclick = null;
+  }
+}
+
+async function initVersion() {
+  await renderCurrentVersion();
 }
 
 window.__ohmmSettingsLegacyReady = true;

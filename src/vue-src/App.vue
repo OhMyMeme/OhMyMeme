@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { ref, onMounted, onUnmounted, computed, watch } from 'vue'
+import { ref, onMounted, onUnmounted, computed, watch, nextTick } from 'vue'
 import { useMemes } from './composables/useMemes'
 import { useDragSort } from './composables/useDragSort'
 import { useContextMenu, type MenuItem } from './composables/useContextMenu'
@@ -18,10 +18,11 @@ import SyncOverlay from './components/SyncOverlay.vue'
 import SyncStatusBadge from './components/SyncStatusBadge.vue'
 import TagEditor from './components/TagEditor.vue'
 import UpdateDialog from './components/UpdateDialog.vue'
+import UserAgreement from './components/UserAgreement.vue'
 import { applyTheme } from './utils/api'
 import type { Meme } from './types'
 
-const { state, setMemes, search, goToPage, setSearch, toggleTag, setActiveCollection, refreshTags, refreshCollections, copyMeme, reorderMemes, canReorder, startNativeDrag, selectAllVisible, clearSelection, loadInitData } = useMemes()
+const { state, setMemes, search, goToPage, setSearch, setSortMode, toggleTag, setActiveCollection, refreshTags, refreshCollections, copyMeme, reorderMemes, canReorder, startNativeDrag, selectAllVisible, clearSelection, loadInitData, MEME_PAGE } = useMemes()
 const ctx = useContextMenu()
 const cb = useCollectionBuilder()
 const tagEditor = ref<InstanceType<typeof TagEditor> | null>(null)
@@ -30,6 +31,7 @@ const inputDialog = ref<InstanceType<typeof InputDialog> | null>(null)
 const confirmDialog = ref<InstanceType<typeof ConfirmDialog> | null>(null)
 const similarImportDialog = ref<InstanceType<typeof SimilarImportDialog> | null>(null)
 const setupGuide = ref<InstanceType<typeof SetupGuide> | null>(null)
+const userAgreement = ref<InstanceType<typeof UserAgreement> | null>(null)
 
 function showSetupGuide() {
   setupGuide.value?.show()
@@ -63,9 +65,19 @@ async function checkUpdateResult() {
 function maybeShowUpdate(upd) {
   try {
     if (upd && upd.has_update) {
-      updateDialog.value?.show(upd.current, upd.latest, upd.download_url, upd.notes)
+      updateDialog.value?.show(upd.current, upd.latest, upd.download_url, upd.notes, upd.store_url)
     }
   } catch (_) {}
+}
+
+// 排序按钮：左块 manifest 正/反向切换，右块名称 A-Z/Z-A 切换
+function onManifestSort() {
+  if (state.sortMode === 'manifest') setSortMode('manifest_desc')
+  else setSortMode('manifest')
+}
+function onNameSort() {
+  if (state.sortMode === 'name_asc') setSortMode('name_desc')
+  else setSortMode('name_asc')
 }
 
 const sortEnabled = ref(false)
@@ -77,6 +89,7 @@ const drag = useDragSort(
   () => sortEnabled.value,
   reorderMemes,
   () => { showToast('排序保存失败'); search() },
+  onDropToFolder,
 )
 
 const sidebarCollapsed = ref(false)
@@ -260,6 +273,25 @@ const folderCards = computed(() => {
   return find(state.collections)
 })
 
+// 左侧栏可见分组：过滤掉用户隐藏的节点（右侧主页面子分组文件夹卡不受影响）
+const visibleCollections = computed(() => {
+  const filter = (items: any[]): any[] => {
+    const out: any[] = []
+    for (const c of items) {
+      if (state.hiddenCollections.has(c.id)) {
+        if (c.children && c.children.length) out.push(...filter(c.children))
+        continue
+      }
+      const node: any = { ...c }
+      if (c.children && c.children.length) node.children = filter(c.children)
+      else delete node.children
+      out.push(node)
+    }
+    return out
+  }
+  return filter(state.collections)
+})
+
 // 面包屑：当前分组从「全部」到自身的祖先链
 const breadcrumb = computed(() => {
   if (!state.activeCollection) return []
@@ -308,9 +340,27 @@ function onFolderCardClick(childId: number) {
 function onFolderCardContext(e: MouseEvent, childId: number, childName: string) {
   e.preventDefault()
   e.stopPropagation()
+  const hidden = state.hiddenCollections.has(childId)
   ctx.show([
+    { action: 'export-collection', label: '导出' },
+    { action: 'hide-collection', label: hidden ? '显示' : '隐藏' },
     { action: 'delete-folder', label: '删除小分组', danger: true },
   ], { folderId: childId, folderName: childName, isFolder: true }, e.clientX, e.clientY)
+}
+
+// #96 拖拽表情落入文件夹（左侧栏分组 / 右侧子分组卡片）
+async function onDropToFolder(memeId: number, folderId: number) {
+  // 拖到当前分组自身等于没移动，忽略
+  if (folderId === state.activeCollection) return
+  const fromId = state.activeCollection > 0 ? state.activeCollection : 0
+  const r: any = await window.pywebview?.api?.move_meme_to_folder(memeId, folderId, fromId)
+  if (r?.ok) {
+    showToast('已移入分组')
+    await refreshCollections()
+    search()
+  } else if (r?.error) {
+    showToast(r.error)
+  }
 }
 
 async function handleCopy(meme: Meme, e?: Event) {
@@ -405,9 +455,25 @@ async function handleOverlimitImport(token: string) {
   )
   const rr = await window.pywebview?.api?.resolve_overlimit_import(token, keep ? 'keep' : 'cancel')
   if (rr?.ok && rr.imported) { showToast('导入成功'); search(); refreshCollections(); return }
-  if (rr?.duplicate) { showToast('已存在相同表情包'); return }
+  if (rr?.duplicate) { jumpToMeme(rr.existing_id); return }
   if (rr?.ok) return  // 取消导入：静默
   showToast(rr?.error || '处理失败')
+}
+
+// 文件夹层级超过两级：弹窗提醒后带 confirmed=true 重试同一文件夹
+async function onImportConfirmDeep(payload: { makeGroup: boolean; folder: string; total: number; deep_count: number }) {
+  const go = await confirmDialog.value?.open(
+    '文件夹层级超过两级',
+    `所选文件夹包含超过两级的子文件夹，目前仅支持两级分类，其中 ${payload.deep_count} 张位于更深层级的图片将并入所属的上级子分组，是否继续导入？`,
+    { confirmText: '继续导入', cancelText: '取消', variant: 'primary', focusConfirm: true }
+  )
+  if (!go) return
+  const r = await window.pywebview?.api?.import_folder(payload.makeGroup, true, payload.folder)
+  if (!r) return
+  if (r.ok && r.async) { importProgress.value?.start(); return }  // 后台导入，覆盖层轮询
+  if (r.ok) { onImportDone(); return }
+  if (r.cancelled) return
+  showToast(r.error || '导入失败')
 }
 
 // 卡片悬停快速收藏（右键菜单外的一键入口）
@@ -436,13 +502,64 @@ function clearSearch() {
   search()
 }
 
-// 点击标题栏 logo 返回主页：清空搜索/标签/分组筛选
-function goHome() {
+// 清空搜索/标签/分组筛选与当前选择（返回主页与定位跳转共用）
+function resetListFilters() {
   setSearch('')
   state.activeTags.clear()
   state.activeCollection = null
   clearSelection()
+}
+
+// 点击标题栏 logo 返回主页：清空搜索/标签/分组筛选
+function goHome() {
+  resetListFilters()
   search()
+}
+
+// 相似图决策回执：导入并定位新图，或定位保留的旧图
+async function resolveSimilar(token: string, candidates: any[]) {
+  const action = await similarImportDialog.value?.open(candidates || [])
+  if (!action) return
+  const rr = await window.pywebview?.api?.resolve_similar_import(token, action)
+  if (rr?.ok && rr.imported) {
+    showToast('导入成功'); search(); refreshCollections()
+    if (rr.id) jumpToMeme(rr.id, '导入成功')
+  } else if (rr?.ok) {
+    if (action === 'keep_old') jumpToMeme(rr.existing_id || candidates?.[0]?.id)
+    else showToast('已跳过该图片')
+  } else {
+    showToast(rr?.error || '处理失败')
+  }
+}
+
+// 定位到指定表情：清空筛选 → 跳到所在页 → 滚动并高亮该卡片
+let locateGen = 0
+async function jumpToMeme(id?: number | null, note = '已存在相同表情包') {
+  const mid = Number(id) || 0
+  if (mid <= 0) return
+  const gen = ++locateGen
+  let pos: any = null
+  try { pos = await window.pywebview?.api?.locate_meme(mid, MEME_PAGE) } catch (_) {}
+  if (gen !== locateGen) return
+  if (!pos || !pos.ok) { showToast(note); return }
+  clearTimeout(searchTimer)
+  resetListFilters()
+  if (sortEnabled.value) { sortEnabled.value = false; drag.disable() }
+  if (selectMode.value) { selectMode.value = false }
+  await search()
+  if (gen !== locateGen) return
+  if (pos.page > 1) await goToPage(pos.page)
+  if (gen !== locateGen) return
+  await nextTick()
+  await new Promise(r => requestAnimationFrame(() => requestAnimationFrame(r)))
+  const card = document.querySelector<HTMLElement>(`.meme-card[data-meme-id="${mid}"]`)
+  if (!card) { showToast(note); return }
+  card.scrollIntoView({ block: 'center', inline: 'nearest', behavior: 'smooth' })
+  card.classList.remove('meme-locate')
+  void card.offsetWidth
+  card.classList.add('meme-locate')
+  setTimeout(() => card.classList.remove('meme-locate'), 1800)
+  showToast(`${note}，已定位到第 ${pos.page} 页`)
 }
 
 let searchTimer: ReturnType<typeof setTimeout>
@@ -572,6 +689,7 @@ function onMemeRightClick(e: MouseEvent, meme: Meme) {
     { action: 'favorite', label: meme.favorited ? '取消收藏' : '收藏' },
     { action: 'tag', label: '打标签' },
     { action: 'collection', label: '添加分组' },
+    { action: 'export', label: '导出' },
   ]
   if (state.activeCollection && state.activeCollection > 0) {
     items.push({ action: 'remove-collection', label: '移出该分组' })
@@ -592,6 +710,11 @@ function onFolderRightClick(e: MouseEvent, folderId: number, folderName: string)
     items.push({ action: 'clear-recent', label: '清空最近使用', danger: true })
   } else if (folderId > 0) {
     items.push({ action: 'add-to-subgroup', label: '新建子分组' })
+    items.push({ action: 'export-collection', label: '导出' })
+    // 仅子分组（有父分组）可隐藏；顶层分组不受影响
+    if (findParentCollection(state.collections, folderId)) {
+      items.push({ action: 'hide-collection', label: '隐藏' })
+    }
     items.push({ action: 'delete-collection', label: '删除', danger: true })
   }
   ctx.show(items, { folderId, folderName, isFolder: true }, e.clientX, e.clientY)
@@ -735,10 +858,44 @@ async function onCtxAction(action: string) {
       }
       break
     }
+    case 'hide-collection': {
+      // 隐藏/显示子分组：仅影响左侧栏树，右侧主页面子分组文件夹卡不受影响
+      const next = new Set(state.hiddenCollections)
+      if (next.has(t.folderId)) next.delete(t.folderId)
+      else next.add(t.folderId)
+      state.hiddenCollections = next
+      try { await window.pywebview?.api?.save_hidden_collections([...next]) } catch { /* bridge failure: ignore */ }
+      break
+    }
     case 'clear-recent': {
       if (await confirmAsk('清空最近使用', '确定清空最近使用记录吗？')) {
         await window.pywebview?.api?.clear_recent()
         search()
+      }
+      break
+    }
+    case 'export': {
+      // 单个表情包导出：复用 export_memes（选目录 + 显示名命名）
+      try {
+        const res = await window.pywebview?.api?.export_memes('', [t.memeId], null)
+        if (!res) break
+        if (res.ok) {
+          const skip = res.skipped ? `，${res.skipped} 个文件缺失已跳过` : ''
+          showToast(res.exported ? `已导出 ${res.exported} 个文件到 ${res.dir}${skip}` : '没有可导出的表情包')
+        } else if (!res.cancelled) {
+          showToast(res.error || '导出失败')
+        }
+      } catch {
+        showToast('导出失败')
+      }
+      break
+    }
+    case 'export-collection': {
+      const res = await window.pywebview?.api?.export_memes('', null, t.folderId)
+      if (res?.ok) {
+        showToast(res.exported ? `已导出 ${res.exported} 个文件到 ${res.dir}` : '该分组下没有可导出的表情包')
+      } else if (!res?.cancelled) {
+        showToast(res?.error || '导出失败')
       }
       break
     }
@@ -788,6 +945,24 @@ async function batchDelete() {
   }
   refreshCollections()
   refreshTags()
+}
+
+// 批量导出选中的表情包（显示名命名 + 目录镜像分组结构）
+async function batchExport() {
+  const ids = [...state.selectedIds]
+  if (ids.length === 0) return
+  try {
+    const res = await window.pywebview?.api?.export_memes('', ids, null)
+    if (!res) return
+    if (res.ok) {
+      const skip = res.skipped ? `，${res.skipped} 个文件缺失已跳过` : ''
+      showToast(res.exported ? `已导出 ${res.exported} 个文件到 ${res.dir}${skip}` : '没有可导出的表情包')
+    } else if (!res.cancelled) {
+      showToast(res.error || '导出失败')
+    }
+  } catch {
+    showToast('导出失败')
+  }
 }
 
 // 批量加入分组：CollectionBuilder 选择模式，追加语义（不覆盖已有成员）
@@ -1085,18 +1260,9 @@ async function onDrop(e: DragEvent) {
     try {
       const r = await window.pywebview?.api?.download_original_image(uri)
       if (r?.ok) { showToast('导入成功'); search(); refreshCollections(); return }
-      if (r?.duplicate) { showToast('已存在相同表情包'); return }
+      if (r?.duplicate) { jumpToMeme(r.existing_id); return }
       if (r?.over_limit) { await handleOverlimitImport(r.token); return }
-      if (r?.similar_pending) {
-        const action = await similarImportDialog.value?.open(r.candidates || [])
-        if (action) {
-          const rr = await window.pywebview?.api?.resolve_similar_import(r.token, action)
-          if (rr?.ok && rr.imported) { showToast('导入成功'); search(); refreshCollections() }
-          else if (rr?.ok) { showToast('已跳过该图片') }
-          else { showToast(rr?.error || '处理失败') }
-        }
-        return
-      }
+      if (r?.similar_pending) { await resolveSimilar(r.token, r.candidates); return }
       showToast(r?.error || '导入失败')
       return
     } catch (_) {
@@ -1121,17 +1287,8 @@ async function onDrop(e: DragEvent) {
       const res = await fetch('/api/upload/', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ files: [{ name: file.name, data: b64 }] }) })
       let j: any = null
       try { j = await res.json() } catch (_) { j = null }
-      if (j?.similar_pending) {
-        const action = await similarImportDialog.value?.open(j.candidates || [])
-        if (action) {
-          const rr = await window.pywebview?.api?.resolve_similar_import(j.token, action)
-          if (rr?.ok && rr.imported) { showToast('导入成功'); search(); refreshCollections() }
-          else if (rr?.ok) { showToast('已跳过该图片') }
-          else { showToast(rr?.error || '处理失败') }
-        }
-        return
-      }
-      if (j?.duplicate) { showToast('已存在相同表情包'); return }
+      if (j?.similar_pending) { await resolveSimilar(j.token, j.candidates); return }
+      if (j?.duplicate) { jumpToMeme(j.existing_id); return }
       if (j?.over_limit) { await handleOverlimitImport(j.token); return }
       if (res.ok || j?.ok) { showToast('导入成功'); search(); refreshCollections() }
       else { showToast(j?.error || '导入失败：服务器返回错误') }
@@ -1235,6 +1392,8 @@ onUnmounted(() => {
   ;(window as any).__ommPluginsReadyResolve?.()
   // 配置无 guide=ok（新装或旧版升级）时启动即弹设置向导；启动动画遮罩 z-index 更高，动画结束后自然露出
   if (!state.guideOk) setupGuide.value?.show()
+  // 无协议同意标记（首次运行）或 --debug-init 时弹用户协议（z-index 高于向导，须先完成）
+  if (state.agreementRequired) userAgreement.value?.show()
   // 动画开启时：播放期间即加载后续内容（动画天然覆盖桥接稳定时间），去除 300ms 延时；
   // 动画关闭时：不播放动画，降级为 300ms 延时
   const runBackground = async () => {
@@ -1306,7 +1465,7 @@ onUnmounted(() => {
         <div id="sidebar-header"><span v-if="!sidebarCollapsed">分组</span></div>
         <div id="tree">
           <CollectionTreeNode
-            v-for="c in state.collections"
+            v-for="c in visibleCollections"
             :key="c.id"
             :node="c"
             :active-id="sidebarCollapsed ? activeTopLevel : state.activeCollection"
@@ -1325,6 +1484,35 @@ onUnmounted(() => {
               <line x1="3" y1="6" x2="21" y2="6"/><line x1="3" y1="12" x2="21" y2="12"/><line x1="3" y1="18" x2="21" y2="18"/>
             </svg>
           </button>
+          <div class="sort-toggle" role="group" aria-label="排序">
+            <button
+              class="sort-half"
+              :class="{ active: state.sortMode.startsWith('manifest'), desc: state.sortMode === 'manifest_desc' }"
+              @click="onManifestSort"
+              :title="state.sortMode === 'manifest_desc' ? 'manifest 反向排序（点击回到正序）' : 'manifest 排序（点击切换反向）'"
+              :aria-label="state.sortMode === 'manifest_desc' ? 'manifest 反向排序' : 'manifest 排序'"
+            >
+              <svg v-if="state.sortMode !== 'manifest_desc'" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                <path d="M12 3v6"/><path d="m9.5 6.5 2.5 2.5 2.5-2.5"/>
+                <path d="M12 9v6"/><path d="m9.5 12.5 2.5 2.5 2.5-2.5"/>
+                <path d="M12 15v6"/><path d="m9.5 18.5 2.5 2.5 2.5-2.5"/>
+              </svg>
+              <svg v-else viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                <path d="M12 3v6"/><path d="m9.5 5.5 2.5-2.5 2.5 2.5"/>
+                <path d="M12 9v6"/><path d="m9.5 11.5 2.5-2.5 2.5 2.5"/>
+                <path d="M12 15v6"/><path d="m9.5 17.5 2.5-2.5 2.5 2.5"/>
+              </svg>
+            </button>
+            <button
+              class="sort-half"
+              :class="{ active: state.sortMode.startsWith('name'), desc: state.sortMode === 'name_desc' }"
+              @click="onNameSort"
+              :title="state.sortMode === 'name_desc' ? '名称 Z-A（点击回到 A-Z）' : '名称 A-Z（点击切换 Z-A）'"
+              :aria-label="state.sortMode === 'name_desc' ? '名称 Z 到 A 排序' : '名称 A 到 Z 排序'"
+            >
+              <span class="sort-letters">{{ state.sortMode === 'name_desc' ? 'Z-A' : 'A-Z' }}</span>
+            </button>
+          </div>
           <input id="search" type="text" placeholder="搜索表情包..." :value="state.searchQuery" @input="onSearchInput" autofocus spellcheck="false">
           <button v-if="state.searchQuery" class="search-clear" title="清除搜索" aria-label="清除搜索" @click="clearSearch">×</button>
         </div>
@@ -1368,6 +1556,7 @@ onUnmounted(() => {
           <button class="btn btn-sm btn-secondary" :disabled="state.selectedIds.size === 0" @click="clearSelection">取消选择</button>
           <button class="btn btn-sm" :disabled="state.selectedIds.size === 0" @click="batchAddToCollection">加入分组</button>
           <button class="btn btn-sm" :disabled="state.selectedIds.size === 0" @click="batchTag">打标签</button>
+          <button class="btn btn-sm" :disabled="state.selectedIds.size === 0" @click="batchExport">导出</button>
           <button v-if="state.activeCollection && state.activeCollection > 0" class="btn btn-sm" :disabled="state.selectedIds.size === 0" @click="batchMoveToCollection">移动到分组</button>
           <button class="btn btn-sm btn-danger" :disabled="state.selectedIds.size === 0" @click="batchDelete">批量删除</button>
         </div>
@@ -1379,6 +1568,7 @@ onUnmounted(() => {
               :key="'folder-' + child.id"
               class="meme-card folder-card"
               :data-folder-id="child.id"
+              :data-folder-drop="String(child.id)"
               role="button"
               tabindex="0"
               :aria-label="'打开分组 ' + child.name"
@@ -1468,7 +1658,7 @@ onUnmounted(() => {
   </div>
 
   <CollectionBuilder />
-  <ImportMenu ref="importMenu" @imported="onImportDone" @importing="onImporting" @overlimit="handleOverlimitImport" />
+  <ImportMenu ref="importMenu" @imported="onImportDone" @importing="onImporting" @overlimit="handleOverlimitImport" @locate="jumpToMeme" @confirm-deep="onImportConfirmDeep" />
   <ImportProgressOverlay ref="importProgress" @imported="onImportDone" />
   <SyncOverlay ref="syncOverlay" @synced="onSyncDone" />
   <TagEditor ref="tagEditor" />
@@ -1477,6 +1667,7 @@ onUnmounted(() => {
   <ConfirmDialog ref="confirmDialog" />
   <SimilarImportDialog ref="similarImportDialog" />
   <SetupGuide ref="setupGuide" @open-import-menu="showImportMenu" />
+  <UserAgreement ref="userAgreement" />
   <ContextMenu
     :visible="ctx.visible.value" :x="ctx.x.value" :y="ctx.y.value"
     :items="ctx.items.value" :trigger="ctx.trigger.value"

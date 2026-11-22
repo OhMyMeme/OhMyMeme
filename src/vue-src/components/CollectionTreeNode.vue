@@ -42,6 +42,7 @@ function onMoreClick(e: MouseEvent) {
       class="tree-row"
       :class="{ active: activeId === node.id }"
       :style="{ paddingLeft: (8 + depth * 14) + 'px' }"
+      :data-folder-drop="node.id > 0 ? String(node.id) : null"
       role="treeitem"
       tabindex="0"
       :aria-selected="activeId === node.id"

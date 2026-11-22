@@ -1,4 +1,34 @@
-# v0.7.0（未发布）
+# v0.7.1（未发布）
+
+## 新增功能
+- **USB 互联** — 设置页新增独立「互联」分组（`data-group="connect"`）：共用端口（默认 17852）与连接密钥，「局域网互联」「USB 互联」两个开关分别控制。USB 模式经 `adb reverse tcp:端口 tcp:端口` 端口转发（不用 `forward`，避免监听端与电脑本机服务端口冲突），手机连接 `127.0.0.1:端口`，复用局域网的 challenge/HMAC 握手 + AES-GCM 加密帧 + 设备确认，协议零改动；`lan.set_usb_enabled()` 起 daemon 线程每 3s 执行 `adb devices -l`，自动检测/下载 ADB、为在线设备建立转发（失败先清理设备侧残留再重试）、清理已离线设备的条目，关闭开关或退出时移除转发；仅 USB 开启时服务只绑 `127.0.0.1`（局域网不可见、无 UDP 发现），与局域网同时开启时绑 `0.0.0.0` 两种方式并存。设置页显示 ADB 就绪状态、设备列表（型号/状态/是否已转发）与「USB 二维码」；新增 `SettingsApi.usb_enable`/`usb_qr`，`lan.get_status()` 增 `lan_on`/`usb_on`/`iface`/`usb`
+- **连接二维码与互联设备列表** — `SettingsApi.lan_qr()` 在局域网服务运行时生成 `{"v":1,"app":"ohmymeme","ip","port","secret"}` 二维码（`qrcode` 出 PNG 转 base64），密钥取运行中服务的实际值（`lan.runtime_secret()`），避免设置页输入框未保存时扫码握手被拒；`usb_qr()` 生成 `127.0.0.1` 版本。设备确认通过后 `lan.record_device()` 写入 `data_dir/lan_devices.json`（按 IP 去重、`last_seen` 倒序、上限 50、原子写），设置页 5s 轮询渲染名称/系统/版本、IP 与在线状态
+- **列表排序切换** — 搜索框左侧两段式按钮：manifest 正序/反序（`sort_mode=manifest/manifest_desc`）与显示名称 A-Z/Z-A（`name_asc/name_desc`，中文按拼音、数字按数值）。`get_init_data` 下发、`save_sort_mode` 持久化，重启保留；后端 `search_memes(..., sort_mode)` 排序后统一切片，`locate_meme` 用同一口径计算页码
+- **中文拼音搜索** — `database.pinyin_text()` 生成「全拼连写 + 空格 + 首字母」检索串（如「表情包」→ `biaoqingbao bqb`，按原文缓存、上限 2 万条）；`MemeDB._pinyin_match_ids()` 仅在纯字母关键词时触发，扫文件名/显示名与标签名，命中 id 以 `OR id IN (...)` 并入 keyword 条件（每 500 个分片），分页、计数、标签交集等其余语义不变；云端行用 `pinyin_matches()` 同样支持；缺 `pypinyin` 时自动退回 LIKE
+- **文件夹导入按原始层级建子分组** — `JsApi.import_folder` 按文件夹层级创建顶层分组与一层子分组并把成员归位；超过两级时返回 `need_confirm`，前端弹窗说明「更深层级将并入所属上级子分组」，确认后带 `confirmed=true` 重试同一文件夹
+- **拖拽表情入组与子分组隐藏** — 排序模式下可将表情直接拖入左侧分组/子分组或主页子分组文件夹卡：`useDragSort` 用 `elementFromPoint` 检测 `[data-folder-drop]` 落点并高亮，松手后先还原拖拽前顺序再调 `JsApi.move_meme_to_folder`（按源子树 `move_memes_to_collection` 移动，不在源子树则直接追加）；子分组右键新增「隐藏」，`hidden_collections` 配置经 `save_hidden_collections` 持久化，仅左侧栏树收起，主页文件夹卡仍显示
+- **表情包导出** — 右键单个表情/分组、或多选后点「导出」：`JsApi.export_memes(target_dir, meme_ids, collection_id)` 用显示名命名（非法字符替换为下划线、同目录重名追加序号），目录结构镜像分组树（多组归属取最深组），文件缺失计入 `skipped`；目标目录为空时弹目录选择
+- **重复表情自动定位** — 导入与库中完全相同（同 SHA-256）的表情时不再只提示，前端 `jumpToMeme(id)` 清空搜索/标签/分组筛选、退出排序与多选模式，翻到该表情所在页并滚动居中、加一次性脉冲高亮；`_prepare_image_import`/`_do_import`/`resolve_overlimit_import`/剪贴板导入均返回 `existing_id`，拖入文件、超限回执、剪贴板与相似图「保留旧图」都会自动定位；`JsApi.locate_meme` 按 `MemeDB.ordered_ids()`（有云清单时先合并清单序）返回页码，`locateGen` 代次丢弃过期跳转
+- **用户协议** — 首次运行（无 `agreement.json` 标记）弹 `UserAgreement.vue`，须同意后进入；`env_check.agreement_accepted()`/`accept_agreement()` 在 `%APPDATA%/OhMyMeme/agreement.json` 写入同意时间，`--debug-init` 可强制重弹
+- **完整首次运行模拟（`--debug-init`）** — 环境检测、用户协议、设置向导均按未完成处理，写入全部丢弃（`OMM_DEBUG_INIT=1` 随进程传给 env-check 子进程），不影响现有数据与真实标记
+- **构建 commit 溯源** — `src/__init__.py` 新增 `__build_sha__`，`scripts/build.py` 打包前用 `git rev-parse HEAD` 注入、结束恢复为空；`JsApi.get_build_sha()`（源码运行时读本地 git HEAD），设置页版本号显示为 `版本@sha` 并可点击跳转对应 commit
+- **发布产物 sha256 校验** — CI 构建生成 `dist/sha256.txt`（Windows `-setup.exe`/`.msix`，Linux AppImage/deb/rpm），随 Release 一起上传
+
+## 变更
+- **「上传时删除远端文件」恢复为可配置** — v0.7.0 曾固定为关，现恢复 `sync_delete_remote` 开关（设置页「云端同步」复选框 `s-delete-remote`，仅存储类型非空时显示）：开启后 push 删除远端多余文件，并保留上传前确认弹窗（`sync_hide_upload_warning` 可跳过）
+- **设置页「插件」入口暂时置灰** — 导航按钮加 `disabled` 与 title「开发中...」，插件代码与测试保留但暂不对用户开放
+- **默认展示顺序改为自然名称序** — 生成 `meme-index.json` 时若全库从未拖拽排序（`sort_order` 全 0），条目按 `_name_sort_key` 自然排序（数字按数值、中文按拼音，与 A-Z 排序同一套键）；用户拖拽排序后尊重自定义顺序
+- **仓库地址替换与文档同步** — 关于页贡献者地址等由旧仓库改为 `https://github.com/OhMyMeme/OhMyMeme`；README/AGENTS/CONTRIBUTING 同步互联、排序、二维码、设备列表、拼音检索、导出、构建来源等说明
+- **文档英文版拆分** — 隐私策略、用户协议、微信密钥提取协议分别拆出 `docs/privacy-en.md`、`docs/user_agreement-en.md`、`docs/wechat_keyfinder_protocol-en.md`，中文版顶部互链英文版
+
+## 修复
+- **WebDAV 301 重定向** — Apache mod_dav 对缺尾斜杠的已存在集合返回 301，而 urllib 只对 GET/HEAD 自动跟随，MKCOL/PROPFIND 因此报 HTTPError；`_WebDAVBackend._request` 对无请求体方法（GET/HEAD/DELETE/OPTIONS/PROPFIND/MKCOL/COPY/MOVE）按 `Location` 用 `urljoin` 解析后原样重发，上限 5 跳并拒绝自环，`test_connection`/`list_files` 的目录 URL 直接带尾斜杠省一跳；新增 `tests/test_webdav_backend.py`
+- **检查更新误下载 ffmpeg.exe** — Release 的 assets 按上传顺序返回，`ffmpeg.exe` 可能排在安装包之前，旧逻辑命中首个 `.exe` 导致下载到 ffmpeg、弹一个看不到内容的控制台后软件自行退出；`_pick_asset_url` 改为优先 `-setup.exe` 再回退任意 `.exe`，启动前校验 PE `MZ` 头，改用 `ShellExecuteW` 保留 UAC 提权；`_schedule_quit` 先用 `tasklist` 确认安装进程出现再退出（8s 内未出现则保留运行），失败时「重新运行安装程序」复用已下载文件
+- **局域网服务异常后无法重启** — UDP 发现线程连续出错退出后清理运行态并关闭 socket；模块级 `start()` 先停掉「对象还在、线程已死」的旧实例避免端口占用；停止时状态无条件收敛为 stopped；旧实例残留连接不再覆盖新实例的设备列表；远端清单应用失败返回 `ok:False`，不再对手机端假报成功
+- **窗口显示与热键聚焦** — 热键呼出后重新聚焦搜索框；允许副屏负坐标，屏内判定改为最小可见面积（200×120 或 30%），1px 交集不再算可见；新增 `window_pos_set` 标志区分旧配置的 -1 哨兵与副屏合法 -1，坐标无效时仍保存窗口尺寸
+- **同步结果回报与定位代次** — `pull()` 回报 `renamed`/`collections`，「仅改名/仅分组」不再显示成功 0 个；改名计数先判字符串类型并排除远端独有条目；定位跳页后复检请求代次，旧请求不再覆盖新定位
+
+# v0.7.0
 
 ## 新增功能
 - **插件系统** — 新增 `src/plugin_manager.py`：扫描插件目录（`<数据目录>/plugins/` + 配置 `plugin_dirs` 开发直连）加载第三方插件（`plugin.json` manifest，`api_version` 必须为 1）；单个插件 manifest 非法/依赖缺失/entry 异常/on_load 超时仅禁用该插件，宿主与其余插件不受影响；权限声明制（`route`/`main_api`/`settings_api`/`assets:serve`/`settings:section`/`buttons`/`startup`/`window`/`host:evaluate_js`），未声明的注册调用在 `on_load` 内抛 `PermissionError` 使该插件加载失败；回调超时熔断（on_load 15s / 普通回调 10s / JS API 120s）与回调异常自动停用（下次重启恢复）

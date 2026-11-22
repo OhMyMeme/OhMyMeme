@@ -77,6 +77,21 @@ def test_concurrent_different_images_both_imported(env):
     assert len(db.get_all()) == 2
 
 
+def test_reimport_duplicate_reports_existing_id(env):
+    """重复导入返回 dup_ids：前端据此定位到已存在的表情"""
+    db, cache_dir, ui = env
+    src = cache_dir / "dup.png"
+    _make_img(str(src), (200, 120, 40))
+
+    first = ui._do_import([str(src)], ["dup"])
+    assert len(first["ids"]) == 1 and first["dup_ids"] == []
+
+    again = ui._do_import([str(src)], ["dup"])
+    assert again["ids"] == []
+    assert again["skipped_dup"] == 1
+    assert again["dup_ids"] == first["ids"]
+
+
 def test_ensure_collection_same_name_reused(env):
     """同名分组复用：两次 ensure 返回同一 cid，且不产生重复空分组"""
     db, cache_dir, ui = env

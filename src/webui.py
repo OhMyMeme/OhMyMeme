@@ -75,8 +75,10 @@ from .config import (
     guide_ok,
     set_guide_ok,
 )
-from .database import get_db
+from .database import _name_sort_key, get_db, pinyin_matches
+from .env_check import accept_agreement, agreement_accepted
 from .manifest import build as build_manifest
+from .manifest import index_order, index_path
 from .plugin_manager import get_plugin_manager, route_content_type
 
 logger = logging.getLogger(__name__)
@@ -88,6 +90,10 @@ _LOG_MAX = 5000
 
 # 分页：主窗口单页展示的表情包数量（与前端 index.js MEME_PAGE 保持一致）
 MEME_PAGE = 200
+
+# 窗口坐标合法范围：最小化时系统返回 -32000 之类哨兵值，超出即视为无效坐标
+_WINDOW_COORD_MIN = -10000
+_WINDOW_COORD_MAX = 20000
 
 # 贡献者 SVG 缓存：TTL 1 小时，避免每次打开设置页都请求外网；刷新失败退避
 # 重试，避免上游不可用时每个请求都反复触发 10s 慢抓取
@@ -315,6 +321,30 @@ _cloud_state = {
 }
 _cloud_inflight = set()
 _cloud_inflight_lock = threading.Lock()
+
+# 主窗口排序模式：manifest=清单序（默认）/manifest_desc 反向/name_asc|name_desc 显示名
+_SORT_MODES = ("manifest", "manifest_desc", "name_asc", "name_desc")
+
+# 本地清单顺序缓存（按文件 mtime+size 失效），避免每次排序查询都重解析 JSON
+_local_manifest_cache = {"key": None, "order": []}
+_local_manifest_lock = threading.Lock()
+
+
+def _local_manifest_order():
+    """本地清单 memes 文件名顺序（不可用时空列表）"""
+    try:
+        st = index_path().stat()
+    except OSError:
+        return []
+    key = (st.st_mtime_ns, st.st_size)
+    with _local_manifest_lock:
+        if _local_manifest_cache["key"] == key:
+            return _local_manifest_cache["order"]
+    order = index_order()
+    with _local_manifest_lock:
+        _local_manifest_cache["key"] = key
+        _local_manifest_cache["order"] = order
+    return order
 
 
 def _cloud_ensure_loaded():
@@ -867,7 +897,9 @@ class JsApi:
                 hay = (
                     it["name"] + " " + it["filename"] + " " + " ".join(it["tags"])
                 ).lower()
-                if kw not in hay:
+                if kw not in hay and not pinyin_matches(
+                    kw, it["name"], it["filename"], *it["tags"]
+                ):
                     continue
             if path_prefix and not any(
                 cp == path_prefix or cp.startswith(path_prefix + "/")
@@ -912,6 +944,24 @@ class JsApi:
         rest = [c for c in cloud_out if c["filename"] not in pos]
         return extras + [r for _, r in paired] + rest
 
+    def _sort_rows(self, rows, order, mode):
+        """按 manifest/名称模式排序行（本地+云混合）；order 为空时保持原查询序"""
+        if mode in ("manifest", "manifest_desc"):
+            if not order:
+                return rows
+            pos = {fname: i for i, fname in enumerate(order)}
+            extras = [r for r in rows if r["filename"] not in pos]
+            paired = [(pos[r["filename"]], r) for r in rows if r["filename"] in pos]
+            paired.sort(key=lambda t: t[0], reverse=(mode == "manifest_desc"))
+            if mode == "manifest_desc":
+                return [r for _, r in paired] + extras
+            return extras + [r for _, r in paired]
+        return sorted(
+            rows,
+            key=lambda r: _name_sort_key(r.get("name") or r["filename"]),
+            reverse=(mode == "name_desc"),
+        )
+
     def _cloud_row(self, it) -> dict:
         """云条目 → 前端行（无 id，cloud 标记，file_hash 为 sha256）"""
         fname = it["filename"].lower()
@@ -932,20 +982,37 @@ class JsApi:
         }
 
     def search_memes(
-        self, keyword="", tags=None, collection_id=None, offset=0, limit=200
+        self,
+        keyword="",
+        tags=None,
+        collection_id=None,
+        offset=0,
+        limit=200,
+        sort_mode="",
     ):
-        """搜索表情，支持 offset/limit 分页；有云行时按清单序与本地穿插后切片"""
+        """搜索表情，支持分页与 manifest/名称排序；有云行时按清单序穿插后切片"""
         if tags is not None and len(tags) == 0:
             tags = None
+        mode = sort_mode if sort_mode in _SORT_MODES else ""
         fav_only = collection_id == -2
         recent_only = collection_id == -3
         uncategorized = collection_id == -4
         cid = None if (fav_only or recent_only or uncategorized) else collection_id
         cloud = self._cloud_filtered(keyword, tags, collection_id)
         order = self._cloud_order(collection_id) if cloud else None
+        if mode in ("manifest", "manifest_desc"):
+            # 云清单不可用时回退本地清单序（仍为空则退化为默认查询序）
+            if not order:
+                order = _local_manifest_order() or None
+        elif mode:
+            order = None
+        sorting = bool(mode)
         merging = bool(cloud) and order is not None
+        fetch_all = merging or sorting
         if recent_only:
-            rows = self._db.get_recent(limit, offset)
+            rows = self._db.get_recent(
+                -1 if fetch_all else limit, 0 if fetch_all else offset
+            )
         else:
             if cid is not None and cid > 0:
                 cid = self._get_collection_ids_recursive(cid)
@@ -955,8 +1022,8 @@ class JsApi:
                 collection_id=cid,
                 favorite_only=fav_only,
                 uncategorized_only=uncategorized,
-                offset=0 if merging else offset,
-                limit=-1 if merging else limit,
+                offset=0 if fetch_all else offset,
+                limit=-1 if fetch_all else limit,
             )
         favorited_ids = set()
         try:
@@ -999,6 +1066,13 @@ class JsApi:
                     "hover_to_play": hover_play,
                 }
             )
+        if sorting:
+            # manifest/名称排序后统一切片（本地全量+云行已取回）
+            combined = result
+            if cloud:
+                combined = combined + [self._cloud_row(it) for it in cloud]
+            combined = self._sort_rows(combined, order, mode)
+            return combined[offset : offset + limit]
         if merging:
             # 清单序穿插合并后统一切片（本地全量已取回）
             merged = self._merge_manifest_order(result, cloud, order)
@@ -1039,6 +1113,63 @@ class JsApi:
         )
         return total + len(self._cloud_filtered(keyword, tags, collection_id))
 
+    def locate_meme(self, meme_id, page_size=MEME_PAGE):
+        """定位表情在默认「全部」列表中的序号与页码（与 search_memes 默认视图同序）
+
+        云清单合并顺序必须与 search_memes 的默认分支保持一致：改那里的
+        `_cloud_filtered`/`_cloud_order`/`_merge_manifest_order` 时同步改这里。
+        """
+        try:
+            mid = int(meme_id)
+        except (TypeError, ValueError):
+            return {"ok": False, "error": "无效的表情 id"}
+        if mid <= 0:
+            return {"ok": False, "error": "无效的表情 id"}
+        try:
+            size = int(page_size)
+        except (TypeError, ValueError):
+            size = MEME_PAGE
+        size = size if size > 0 else MEME_PAGE
+        mode = self._cfg.get("sort_mode", "")
+        mode = mode if mode in _SORT_MODES else ""
+        if mode:
+            # 排序模式下与 search_memes 同序计算页码（本地全量+云行）
+            rows = [
+                {
+                    "id": r["id"],
+                    "filename": r["filename"],
+                    "name": r.get("original_name")
+                    or os.path.splitext(r["filename"])[0],
+                }
+                for r in self._db.search(limit=-1)
+            ]
+            cloud = self._cloud_filtered("", None, None)
+            if cloud:
+                rows = rows + [self._cloud_row(it) for it in cloud]
+            order = self._cloud_order(None) if cloud else None
+            if mode in ("manifest", "manifest_desc") and not order:
+                order = _local_manifest_order() or None
+            rows = self._sort_rows(rows, order, mode)
+        else:
+            rows = [{"id": i, "filename": f} for i, f in self._db.ordered_ids()]
+            cloud = self._cloud_filtered("", None, None)
+            if cloud:
+                order = self._cloud_order(None)
+                if order is not None:
+                    rows = self._merge_manifest_order(rows, cloud, order)
+        for idx, r in enumerate(rows):
+            if r.get("id") == mid:
+                return {
+                    "ok": True,
+                    "id": mid,
+                    "index": idx,
+                    "page": idx // size + 1,
+                    "index_in_page": idx % size,
+                    "total": len(rows),
+                    "page_size": size,
+                }
+        return {"ok": False, "id": mid, "error": "表情不在默认列表中"}
+
     def get_tags(self) -> list:
         """标签列表（云端直接使用开启时并入云端独有标签）"""
         local = self._db.get_all_tags()
@@ -1070,14 +1201,17 @@ class JsApi:
 
     def get_init_data(self) -> dict:
         """批返回初始化所需数据，减少 JS bridge 往返"""
-        memes = self.search_memes("", None, None, 0, MEME_PAGE)
+        sort_mode = self._cfg.get("sort_mode", "manifest")
+        memes = self.search_memes("", None, None, 0, MEME_PAGE, sort_mode)
         collections = self._sys_collections() + self._build_collection_tree()
         fields = get_plugin_manager().init_fields()
         return {
             "theme": self._cfg.get("theme", "dark"),
+            "sort_mode": sort_mode,
             "memes": memes,
             "tags": self.get_tags(),
             "collections": collections,
+            "hidden_collections": self._cfg.get("hidden_collections", []),
             "show_startup_animation": self._cfg.get("show_startup_animation", True),
             "hover_zoom": self._cfg.get("hover_zoom", True),
             "window_resize_enabled": self._cfg.get("window_resize_enabled", False),
@@ -1089,12 +1223,20 @@ class JsApi:
             "plugin_buttons": fields.get("plugin_buttons") or [],
             "plugin_button_constraints": fields.get("plugin_button_constraints")
             or {"hide": [], "order": {}},
-            "guide_ok": guide_ok(),
+            "guide_ok": guide_ok() and not getattr(self._webui, "_init_debug", False),
+            "agreement_required": getattr(self._webui, "_init_debug", False)
+            or not agreement_accepted(),
         }
 
     def complete_guide(self) -> dict:
-        """设置向导完成：写入配置 guide=ok 标记"""
-        set_guide_ok()
+        """设置向导完成：写入配置 guide=ok 标记（虚拟首次运行不落盘）"""
+        if not self._webui._init_debug:
+            set_guide_ok()
+        return {"ok": True}
+
+    def accept_agreement(self) -> dict:
+        """用户协议同意：写入 agreement.json 标记（同首次环境检测模式）"""
+        accept_agreement()
         return {"ok": True}
 
     def get_meme_path(self, meme_id: int) -> str:
@@ -1243,6 +1385,118 @@ class JsApi:
         for child in children:
             ids.extend(self._get_collection_ids_recursive(child["id"]))
         return ids
+
+    # ── 表情包导出：显示名命名 + 目录镜像分组树 ──────────────
+
+    def _export_name(self, name) -> str:
+        """导出文件/文件夹名净化：非法字符替换为下划线，去首尾点与空格"""
+        return (
+            re.sub(r'[\\/:*?"<>|\x00-\x1f]', "_", str(name or ""))
+            .strip()
+            .strip(".")
+            .strip()
+        )
+
+    def _export_base_name(self, row) -> str:
+        """表情导出基础名（不含扩展名）：优先显示名，缺失回退原文件名"""
+        name = (row.get("original_name") or "").strip()
+        if not name:
+            name = os.path.splitext(row["filename"])[0]
+        return self._export_name(name) or f"meme_{row['id']}"
+
+    def _export_rows(self, meme_ids, collection_id) -> list:
+        """解析待导出表情：多选 id 或整个分组（含子分组）"""
+        if meme_ids:
+            rows = []
+            for mid in dict.fromkeys(int(x) for x in meme_ids):
+                row = self._db.get_by_id(mid)
+                if row:
+                    rows.append(row)
+            return rows
+        if collection_id is not None:
+            return self._db.search(
+                collection_id=self._get_collection_ids_recursive(collection_id),
+                limit=100000,
+            )
+        return []
+
+    def _export_row_dirs(self, rows) -> dict:
+        """表情 id → 全分组路径（顶级→子级）；多组归属取最深组，未分组为空"""
+        by_id = {r[0]: r for r in self._db.get_collections()}
+
+        def walk(cid):
+            parts = []
+            cur = cid
+            seen = set()
+            while cur is not None and cur in by_id and cur not in seen:
+                seen.add(cur)
+                parts.append(self._export_name(by_id[cur][1]) or str(cur))
+                cur = by_id[cur][2]
+            return parts[::-1]
+
+        ids = [r["id"] for r in rows]
+        members = {}
+        if ids:
+            conn = self._db._get_conn()
+            for i in range(0, len(ids), 500):
+                chunk = ids[i : i + 500]
+                ph = ",".join("?" for _ in chunk)
+                sql = (
+                    "SELECT meme_id, collection_id FROM meme_collections "
+                    "WHERE meme_id IN (" + ph + ")"
+                )
+                for mid, cid in conn.execute(sql, chunk):
+                    members.setdefault(mid, []).append(cid)
+        dirs = {}
+        for r in rows:
+            cids = members.get(r["id"], [])
+            best = min(cids, key=lambda c: (-len(walk(c)), c)) if cids else None
+            dirs[r["id"]] = walk(best) if best is not None else []
+        return dirs
+
+    def export_memes(self, target_dir=None, meme_ids=None, collection_id=None) -> dict:
+        """导出表情包：文件名用显示名，目录结构镜像分组树；target_dir 为空弹目录选择"""
+        if not target_dir:
+            result = self._dialog(webview.FileDialog.FOLDER)
+            if not result:
+                return {"ok": False, "cancelled": True}
+            target_dir = result[0] if isinstance(result, (tuple, list)) else result
+        rows = self._export_rows(meme_ids, collection_id)
+        if not rows:
+            return {"ok": True, "exported": 0, "skipped": 0, "dir": target_dir}
+        file_map = {}
+        for root, _, files in os.walk(self._cfg.cache_dir):
+            for fn in files:
+                file_map.setdefault(fn, os.path.join(root, fn))
+        dirs = self._export_row_dirs(rows)
+        seen = {}
+        exported = 0
+        skipped = 0
+        import shutil
+
+        for row in rows:
+            src = file_map.get(row["filename"], "")
+            if not src or not os.path.isfile(src):
+                skipped += 1
+                continue
+            dest_dir = os.path.join(target_dir, *dirs[row["id"]])
+            try:
+                os.makedirs(dest_dir, exist_ok=True)
+                base = self._export_base_name(row)
+                ext = os.path.splitext(row["filename"])[1]
+                d = seen.setdefault(os.path.normcase(dest_dir), {})
+                k = os.path.normcase(base + ext)
+                if k in d:
+                    d[k] += 1
+                    fname = f"{base} ({d[k]}){ext}"
+                else:
+                    d[k] = 1
+                    fname = base + ext
+                shutil.copy2(src, os.path.join(dest_dir, fname))
+                exported += 1
+            except OSError:
+                skipped += 1
+        return {"ok": True, "exported": exported, "skipped": skipped, "dir": target_dir}
 
     # 虚拟分组（收藏/最近/未分类）计数，含云端贡献
     def _sys_collections(self) -> list:
@@ -1396,6 +1650,27 @@ class JsApi:
         except Exception:
             return {"ok": False}
 
+    def move_meme_to_folder(self, meme_id: int, to_id: int, from_id: int = 0) -> dict:
+        """拖拽移动单个表情到目标分组（支持拖入当前分组的子分组，不做源子树校验）"""
+        try:
+            mid = int(meme_id)
+            cid = int(to_id or 0)
+            if cid <= 0:
+                return {"ok": False, "error": "目标分组不存在"}
+            fid = int(from_id or 0)
+            if fid > 0:
+                from_ids = self._get_collection_ids_recursive(fid)
+                moved = self._db.move_memes_to_collection([mid], from_ids, cid)
+                if moved == 0:
+                    # 表情不在源子树（边界情况），直接追加到目标
+                    self._db.add_to_collection(mid, cid)
+            else:
+                self._db.add_to_collection(mid, cid)
+            build_manifest()
+            return {"ok": True}
+        except Exception:
+            return {"ok": False}
+
     def batch_add_tags(self, meme_ids: list, tags: list) -> dict:
         """批量合并追加标签（不清空各表情已有标签），返回 {ok, count}"""
         try:
@@ -1514,13 +1789,31 @@ class JsApi:
 
     # 非阻塞检查更新：新鲜缓存即返，首次/过期/force 触发后台检查返回 pending
     def check_update(self, debug=False, force=False) -> dict:
-        from . import __version__ as cur_ver
-
-        info = updater.check_latest_cached(force=bool(debug) or bool(force))
-        info["current"] = cur_ver
+        info = updater.update_info(force=bool(debug) or bool(force))
         if debug or self._webui._update_debug:
             info["has_update"] = True
         return info
+
+    def open_url(self, url: str) -> bool:
+        """用系统默认浏览器打开外链（更新跳商店/关于页），仅允许 http(s)"""
+        from urllib.parse import urlparse
+
+        if urlparse(url or "").scheme not in ("http", "https"):
+            return False
+        try:
+            if platform.system() == "Windows":
+                os.startfile(url)
+            elif platform.system() == "Darwin":
+                import subprocess
+
+                subprocess.Popen(["open", url])
+            else:
+                import subprocess
+
+                subprocess.Popen(["xdg-open", url])
+            return True
+        except Exception:
+            return False
 
     def start_download(self, url: str) -> bool:
         return updater.start_download(url)
@@ -1529,9 +1822,20 @@ class JsApi:
         return updater.get_download_progress()
 
     def run_downloaded_installer(self) -> bool:
+        path = updater.last_downloaded_path()
         ok = updater.run_downloaded_installer()
         if ok:
-            self._webui._schedule_quit()
+            self._webui._schedule_quit(path)
+        return ok
+
+    def rerun_installer(self) -> bool:
+        """重新运行已下载的安装包（启动失败后不必重新下载）"""
+        path = updater.last_downloaded_path()
+        if not path:
+            return False
+        ok = updater.run_installer(path)
+        if ok:
+            self._webui._schedule_quit(path)
         return ok
 
     def download_update(self, url: str) -> dict:
@@ -1640,18 +1944,23 @@ class JsApi:
             return {"ok": False, "error": "决策已过期，请重新导入"}
         path = item["path"]
         action = action or "keep_new"
+        # 取最相似候选（distance 最小）作为"旧图"：定位跳转与 keep_new 替换共用
+        cands = item.get("candidates") or []
+        best_id = (
+            min(cands, key=lambda c: c.get("distance", 99))["id"] if cands else None
+        )
         if action in ("discard", "keep_old"):
             # 丢弃/仅保留旧图：删掉待决策临时文件，不导入
             try:
                 os.unlink(path)
             except OSError:
                 pass
-            return {"ok": True, "action": action, "imported": False}
-        # 取最相似候选（distance 最小）作为"旧图"，用于 keep_new 替换
-        cands = item.get("candidates") or []
-        best_id = (
-            min(cands, key=lambda c: c.get("distance", 99))["id"] if cands else None
-        )
+            return {
+                "ok": True,
+                "action": action,
+                "imported": False,
+                "existing_id": best_id or 0,
+            }
         try:
             r = self._webui._do_import(
                 [path], [item.get("oname")] if item.get("oname") else None
@@ -1714,7 +2023,12 @@ class JsApi:
         if ids:
             return {"ok": True, "id": ids[0], "imported": True}
         if r.get("skipped_dup"):
-            return {"ok": False, "duplicate": True, "error": "已存在相同表情包"}
+            return {
+                "ok": False,
+                "duplicate": True,
+                "existing_id": (r.get("dup_ids") or [0])[0],
+                "error": "已存在相同表情包",
+            }
         return {"ok": False, "error": "导入失败"}
 
     def get_sync_progress(self) -> dict:
@@ -1949,27 +2263,52 @@ class JsApi:
             return {"ok": False, "error": "已有导入在进行中"}
         return {"ok": True, "async": True}
 
-    def import_folder(self, make_collection=True) -> dict:
-        """选择文件夹并导入其中全部图片；make_collection 时以文件夹名创建分组"""
-        result = self._dialog(webview.FileDialog.FOLDER)
-        if not result:
-            return {"ok": False, "cancelled": True}
-        folder = result[0] if isinstance(result, (tuple, list)) else result
+    def import_folder(self, make_collection=True, confirmed=False, folder="") -> dict:
+        """选择文件夹并按原始层级导入图片；make_collection 时按文件夹层级建分组
+
+        目前仅支持两级分类（顶层分组 + 一层子分组）：超过两级时若未确认
+        （confirmed=False），返回 need_confirm 由前端弹窗提醒后带原 folder 重试。
+        """
+        if folder:
+            path = folder
+        else:
+            result = self._dialog(webview.FileDialog.FOLDER)
+            if not result:
+                return {"ok": False, "cancelled": True}
+            path = result[0] if isinstance(result, (tuple, list)) else result
         try:
             files = []
             names = []
-            for root, _, fnames in os.walk(folder):
+            rels = []
+            deep = False
+            deep_count = 0
+            for root, _, fnames in os.walk(path):
                 for fn in sorted(fnames):
                     ext = os.path.splitext(fn)[1].lower()
                     if ext not in _ALLOWED_IMPORT_EXT:
                         continue
+                    rel_dir = os.path.relpath(root, path)
+                    parts = [] if rel_dir == os.curdir else rel_dir.split(os.sep)
+                    if len(parts) > 1:
+                        deep = True
+                        deep_count += 1
                     files.append(os.path.join(root, fn))
                     names.append(os.path.splitext(fn)[0])
+                    # 超过两级时截断到一级（并入所属子分组）
+                    rels.append("/".join(parts[:1]))
             if not files:
                 return {"ok": False, "error": "文件夹中没有支持的图片"}
-            folder_name = os.path.basename(os.path.normpath(folder))
+            folder_name = os.path.basename(os.path.normpath(path))
+            if make_collection and deep and not confirmed:
+                return {
+                    "ok": True,
+                    "need_confirm": True,
+                    "total": len(files),
+                    "deep_count": deep_count,
+                    "folder": path,
+                }
             if not start_import_job(
-                self._webui, files, names, make_collection, folder_name
+                self._webui, files, names, make_collection, folder_name, rels
             ):
                 return {"ok": False, "error": "已有导入在进行中"}
             return {"ok": True, "async": True, "total": len(files)}
@@ -2015,7 +2354,12 @@ class JsApi:
                         "rejected": rejected,
                     }
                 if r.get("skipped_dup"):
-                    return {"ok": False, "duplicate": True, "error": "已存在相同表情包"}
+                    return {
+                        "ok": False,
+                        "duplicate": True,
+                        "existing_id": (r.get("dup_ids") or [0])[0],
+                        "error": "已存在相同表情包",
+                    }
                 return {"ok": True, "id": 0, "name": "未命名", "rejected": rejected}
             img = clip
             tmp = tempfile.NamedTemporaryFile(suffix=".png", delete=False)
@@ -2027,8 +2371,14 @@ class JsApi:
                 with open(tmp_path, "rb") as f:
                     for chunk in iter(lambda: f.read(65536), b""):
                         sha256.update(chunk)
-                if self._db.get_by_hash(sha256.hexdigest()):
-                    return {"ok": False, "duplicate": True, "error": "已存在相同表情包"}
+                dup_row = self._db.get_by_hash(sha256.hexdigest())
+                if dup_row:
+                    return {
+                        "ok": False,
+                        "duplicate": True,
+                        "existing_id": dup_row["id"],
+                        "error": "已存在相同表情包",
+                    }
                 if exceeds_import_limit(
                     os.path.getsize(tmp_path), img.width, img.height
                 ):
@@ -2124,6 +2474,28 @@ class JsApi:
             "disable_auto_hide": d.get("disable_auto_hide", False),
             "window_resize_enabled": d.get("window_resize_enabled", False),
         }
+
+    def save_sort_mode(self, mode) -> dict:
+        """保存主窗口排序模式（_SORT_MODES 之一）"""
+        if mode not in _SORT_MODES:
+            return {"ok": False, "error": "invalid sort mode"}
+        self._cfg.set("sort_mode", mode)
+        self._cfg.save()
+        return {"ok": True}
+
+    def save_hidden_collections(self, ids) -> dict:
+        """保存左侧栏隐藏的子分组 id 列表（右侧主页面子分组文件夹不受影响）"""
+        if not isinstance(ids, list):
+            return {"ok": False, "error": "invalid ids"}
+        cleaned = []
+        for i in ids:
+            try:
+                cleaned.append(int(i))
+            except (TypeError, ValueError):
+                return {"ok": False, "error": "invalid ids"}
+        self._cfg.set("hidden_collections", cleaned)
+        self._cfg.save()
+        return {"ok": True}
 
     def save_settings(self, settings: dict):
         if isinstance(settings, dict):
@@ -2757,8 +3129,16 @@ class SettingsApi:
     def lan_stop(self) -> dict:
         from . import lan
 
-        lan.stop()
+        lan.stop_lan()
         return {"ok": True, "status": lan.get_status()}
+
+    def usb_enable(self, on: bool, port: int = None, secret: str = None) -> dict:
+        from . import lan
+
+        p = int(port or self._cfg.get("lan_port", 17852))
+        s = secret if secret is not None else self._cfg.get("lan_secret", "")
+        ok = lan.set_usb_enabled(bool(on), p, s)
+        return {"ok": ok, "status": lan.get_status()}
 
     def lan_get_status(self) -> dict:
         from . import lan
@@ -2769,6 +3149,62 @@ class SettingsApi:
         from . import lan
 
         return lan.get_lan_ip()
+
+    def lan_qr(self) -> dict:
+        """生成局域网连接二维码（IP + 端口 + 密钥，仅局域网服务运行时）"""
+        from . import lan
+
+        st = lan.get_status()
+        if st.get("status") != "running":
+            return {"ok": False, "error": "局域网服务未运行"}
+        if st.get("usb_on") and not st.get("lan_on"):
+            return {"ok": False, "error": "仅 USB 模式请用 USB 二维码"}
+        ip = lan.get_lan_ip()
+        if not ip:
+            return {"ok": False, "error": "未获取到局域网 IP"}
+        return self._interconnect_qr(ip)
+
+    def usb_qr(self) -> dict:
+        """生成 USB 互联二维码（127.0.0.1 + 端口 + 密钥，USB 互联开启时）"""
+        from . import lan
+
+        st = lan.get_status()
+        if st.get("status") != "running":
+            return {"ok": False, "error": "互联服务未运行"}
+        if not st.get("usb_on"):
+            return {"ok": False, "error": "USB 互联未开启"}
+        return self._interconnect_qr("127.0.0.1")
+
+    def _interconnect_qr(self, ip: str) -> dict:
+        """按互联服务当前运行参数生成二维码（密钥取握手实际使用的值）"""
+        import base64
+        import json
+
+        import qrcode
+
+        from . import lan
+
+        st = lan.get_status()
+        # 用握手实际使用的密钥（设置页可能用未保存的输入值启动服务）
+        secret = lan.runtime_secret()
+        if secret is None:
+            secret = self._cfg.get("lan_secret", "")
+        payload = json.dumps(
+            {
+                "v": 1,
+                "app": "ohmymeme",
+                "ip": ip,
+                "port": st.get("port"),
+                "secret": secret,
+            },
+            ensure_ascii=False,
+            separators=(",", ":"),
+        )
+        img = qrcode.make(payload, box_size=8, border=2)
+        buf = io.BytesIO()
+        img.save(buf, "PNG")
+        b64 = base64.b64encode(buf.getvalue()).decode("ascii")
+        return {"ok": True, "qr": "data:image/png;base64," + b64}
 
     def lan_set_allow_secret_config(self, enabled: bool) -> dict:
         from . import lan
@@ -3632,12 +4068,30 @@ class SettingsApi:
 
         return __version__
 
+    def get_build_sha(self) -> str:
+        """构建注入的 commit sha；空（源码运行）时读本地 git HEAD，失败返回空串"""
+        from . import __build_sha__
+
+        if __build_sha__:
+            return __build_sha__
+        import subprocess
+
+        try:
+            r = subprocess.run(
+                ["git", "rev-parse", "HEAD"],
+                cwd=os.path.dirname(os.path.abspath(__file__)),
+                capture_output=True,
+                text=True,
+                timeout=5,
+            )
+        except Exception:
+            return ""
+        sha = r.stdout.strip() if r.returncode == 0 else ""
+        return sha if re.fullmatch(r"[0-9a-f]{7,40}", sha) else ""
+
     # 非阻塞检查更新：新鲜缓存即返，首次/过期/force 触发后台检查返回 pending
     def check_update(self, debug=False, force=False) -> dict:
-        from . import __version__ as cur_ver
-
-        info = updater.check_latest_cached(force=bool(debug) or bool(force))
-        info["current"] = cur_ver
+        info = updater.update_info(force=bool(debug) or bool(force))
         if debug or self._webui._update_debug:
             info["has_update"] = True
         return info
@@ -3649,9 +4103,20 @@ class SettingsApi:
         return updater.get_download_progress()
 
     def run_downloaded_installer(self) -> bool:
+        path = updater.last_downloaded_path()
         ok = updater.run_downloaded_installer()
         if ok:
-            self._webui._schedule_quit()
+            self._webui._schedule_quit(path)
+        return ok
+
+    def rerun_installer(self) -> bool:
+        """重新运行已下载的安装包（启动失败后不必重新下载）"""
+        path = updater.last_downloaded_path()
+        if not path:
+            return False
+        ok = updater.run_installer(path)
+        if ok:
+            self._webui._schedule_quit(path)
         return ok
 
     def download_update(self, url: str) -> dict:
@@ -3873,7 +4338,9 @@ def _import_job_progress_cb(my_token, done, total, current):
     return False if cancel else None
 
 
-def _import_job_worker(webui, files, names, make_collection, folder_name, my_token):
+def _import_job_worker(
+    webui, files, names, make_collection, folder_name, rels, my_token
+):
     """后台执行交互式导入（folder/文件对话框/剪贴板），逐文件报进度"""
     global _IMPORT_JOB_CANCEL
     db = get_db()
@@ -3885,8 +4352,9 @@ def _import_job_worker(webui, files, names, make_collection, folder_name, my_tok
         if _IMPORT_JOB_CANCEL:
             _set_import_job_current(my_token, status="cancelled")
             return
-        r = webui._do_import(files, names, cb)
+        r = webui._do_import(files, names, cb, rels=rels)
         ids = r.get("ids") or []
+        imported_rels = r.get("imported_rels") or []
         imported = len(ids)
         rejected = r.get("rejected", 0)
         skipped_dup = r.get("skipped_dup", 0)
@@ -3919,8 +4387,13 @@ def _import_job_worker(webui, files, names, make_collection, folder_name, my_tok
         if make_collection and ids and folder_name:
             collection_id = db.create_collection(folder_name)
             if collection_id > 0:
-                for mid in ids:
-                    db.add_to_collection(mid, collection_id)
+                # 按原始文件夹层级归位：rel 为空→顶层分组，否则→对应子分组
+                sub_ids = {}
+                for mid, rel in zip(ids, imported_rels):
+                    if rel and rel not in sub_ids:
+                        sub_ids[rel] = db.create_collection(rel, collection_id)
+                    cid = sub_ids.get(rel) if rel else collection_id
+                    db.add_to_collection(mid, cid)
 
                 build_manifest()
         _set_import_job_current(
@@ -3943,7 +4416,9 @@ def _import_job_worker(webui, files, names, make_collection, folder_name, my_tok
                 _IMPORT_JOB_CANCEL = False
 
 
-def start_import_job(webui, files, names, make_collection=False, folder_name=""):
+def start_import_job(
+    webui, files, names, make_collection=False, folder_name="", rels=None
+):
     """启动后台导入，立即返回；前端轮询 get_import_progress()"""
     import secrets
 
@@ -3968,7 +4443,7 @@ def start_import_job(webui, files, names, make_collection=False, folder_name="")
         )
     threading.Thread(
         target=_import_job_worker,
-        args=(webui, files, names, make_collection, folder_name, token),
+        args=(webui, files, names, make_collection, folder_name, rels, token),
         daemon=True,
     ).start()
     return True
@@ -4369,7 +4844,12 @@ def _try_decode_stego(gif_path):
 class WebUI:
     """PyWebView UI 管理器"""
 
-    def __init__(self, update_debug: bool = False, silent_start: bool = False):
+    def __init__(
+        self,
+        update_debug: bool = False,
+        silent_start: bool = False,
+        init_debug: bool = False,
+    ):
         self._cfg = get_config()
         self._window = None
         self._settings_window = None
@@ -4382,10 +4862,12 @@ class WebUI:
         self._pending_hide = False
         self._hotkey_session = False
         self._last_toggle_ms = 0
+        self._last_tray_toggle_ms = 0
         self._window_state_lock = threading.Lock()
         self._on_hotkey_change_cb = None
         self._update_debug = update_debug
         self._silent_start = silent_start
+        self._init_debug = init_debug
 
     def _init_lan(self):
         from . import lan
@@ -4487,20 +4969,105 @@ class WebUI:
         with self._window_state_lock:
             self._visible = True
             self._hotkey_session = False
+            self._pending_hide = False
             self._show_on_gui()
+            win = self._window
+        self._focus_search_async(win)
 
     def _show_on_gui(self):
         """必须在 _window_state_lock 内调用（状态与窗口操作原子化）"""
+        win = self._window
+        if win is None:
+            return
+        # 先撤销最小化：Show/Activate 不重置 WindowState，Win+D/显示桌面/任务栏
+        # 最小化后只 show 会让窗口"以最小化状态显示"，屏幕上永远看不到内容
         try:
-            self._window.on_top = True  # 置顶一下提升 z-order，随即复位不长期置顶
-            self._window.on_top = False
-            if callable(self._window.show):
-                self._window.show()
-            if callable(self._window.focus):
-                self._window.focus()
-            self._window.evaluate_js("focusSearch()")
-        except Exception:
-            pass
+            shown = getattr(getattr(win, "events", None), "shown", None)
+            if hasattr(win, "restore") and (shown is None or shown.is_set()):
+                win.restore()
+        except Exception as e:
+            logger.debug("restore window: %s", e)
+        # 置顶一下提升 z-order，随即复位不长期置顶；失败绝不能阻断后续 show
+        try:
+            win.on_top = True
+            win.on_top = False
+        except Exception as e:
+            logger.debug("raise window z-order: %s", e)
+        try:
+            if callable(getattr(win, "show", None)):
+                win.show()
+        except Exception as e:
+            logger.warning("show window error: %s", e)
+        try:
+            if callable(getattr(win, "focus", None)):
+                win.focus()
+        except Exception as e:
+            logger.debug("focus window: %s", e)
+        self._ensure_window_on_screen(win)
+
+    # 窗口至少要有这么大的可见区域才算「在屏内」，否则移回主屏（1px 交集不算可见）
+    _MIN_VISIBLE_W = 200
+    _MIN_VISIBLE_H = 120
+    _MIN_VISIBLE_RATIO = 0.3
+
+    def _ensure_window_on_screen(self, win=None):
+        """窗口可见区域过小时移回主屏（换显示器/RDP/DPI 后常见）"""
+        win = win or self._window
+        if win is None:
+            return
+        try:
+            events = getattr(win, "events", None)
+            shown = getattr(events, "shown", None)
+            if shown is not None and not shown.is_set():
+                return
+            screens = getattr(webview, "screens", None) if HAS_WEBVIEW else None
+            screens = screens() if callable(screens) else screens
+            if not screens:
+                return
+            x, y = int(win.x), int(win.y)
+            width, height = int(win.width), int(win.height)
+        except Exception as e:
+            logger.debug("window geometry read: %s", e)
+            return
+        if width <= 0 or height <= 0:
+            return
+        need_w = min(self._MIN_VISIBLE_W, width * self._MIN_VISIBLE_RATIO)
+        need_h = min(self._MIN_VISIBLE_H, height * self._MIN_VISIBLE_RATIO)
+        for screen in screens:
+            sx, sy = int(screen.x), int(screen.y)
+            sw, sh = int(screen.width), int(screen.height)
+            visible_w = min(x + width, sx + sw) - max(x, sx)
+            visible_h = min(y + height, sy + sh) - max(y, sy)
+            if visible_w >= need_w and visible_h >= need_h:
+                return
+        primary = screens[0]
+        tx = int(primary.x) + max(0, (int(primary.width) - width) // 2)
+        ty = int(primary.y) + max(0, (int(primary.height) - height) // 2)
+        try:
+            win.move(tx, ty)
+            logger.warning("window off-screen (%s,%s), moved to (%s,%s)", x, y, tx, ty)
+        except Exception as e:
+            logger.warning("move off-screen window failed: %s", e)
+
+    def _focus_search_async(self, win=None):
+        """搜索框聚焦放独立线程：JS 求值挂起时不占用窗口状态锁与托盘/热键线程"""
+        win = win or self._window
+        if win is None:
+            return
+
+        def _run():
+            try:
+                win.evaluate_js("focusSearch()")
+            except Exception:
+                pass
+
+        threading.Thread(target=_run, daemon=True).start()
+
+    def _on_window_minimized(self):
+        """系统最小化（Win+D/显示桌面）后同步可见状态，使托盘/热键一次即可还原"""
+        with self._window_state_lock:
+            self._visible = False
+            self._hotkey_session = False
 
     def hide(self):
         """隐藏主窗口（线程安全：持锁完成状态更新 + 原生窗口操作）"""
@@ -4509,6 +5076,7 @@ class WebUI:
         with self._window_state_lock:
             self._visible = False
             self._hotkey_session = False
+            self._pending_hide = False
             self._hide_on_gui()
 
     def _hide_on_gui(self):
@@ -4528,9 +5096,18 @@ class WebUI:
         else:
             self.show()
 
+    _TRAY_DEBOUNCE_S = 0.4
+
     def toggle_safe(self):
-        if self._window:
-            self.toggle()
+        """托盘切换：去抖避免左键双击先显示后立刻隐藏"""
+        if not self._window:
+            return
+        now = time.monotonic()
+        with self._window_state_lock:
+            if now - self._last_tray_toggle_ms < self._TRAY_DEBOUNCE_S:
+                return
+            self._last_tray_toggle_ms = now
+        self.toggle()
 
     _HOTKEY_DEBOUNCE_S = 0.25
 
@@ -4560,6 +5137,9 @@ class WebUI:
             self._show_on_gui()
             # 在锁内设置 _hotkey_session，避免 show 与 schedule_hide 之间的竞争窗口
             self._hotkey_session = True
+            win = self._window
+        # 聚焦搜索框放到锁外：evaluate_js 可能阻塞，不能占着窗口状态锁
+        self._focus_search_async(win)
 
     def schedule_hide(self):
         if self._cfg.get("disable_auto_hide", False):
@@ -4588,10 +5168,13 @@ class WebUI:
         t.daemon = True
         t.start()
 
-    def _schedule_quit(self):
-        """更新安装程序启动后，短暂等待并强制结束当前进程（确保 exe 不被占用）"""
+    def _schedule_quit(self, watch_path: str = ""):
+        """等安装程序进程确认已启动后再结束当前进程（未启动则保留运行以便重试）"""
 
         def _force_kill():
+            if watch_path and not updater.wait_installer_started(watch_path):
+                logger.warning("installer not started, keep running: %s", watch_path)
+                return
             time.sleep(1.5)
             if os.name == "nt":
                 try:
@@ -4756,7 +5339,12 @@ class WebUI:
         return ""
 
     def _do_import(
-        self, file_paths, names=None, progress_cb=None, allow_overlimit=False
+        self,
+        file_paths,
+        names=None,
+        progress_cb=None,
+        allow_overlimit=False,
+        rels=None,
     ):
         import shutil
 
@@ -4767,6 +5355,8 @@ class WebUI:
         rejected = 0
         skipped_dup = 0
         imported_ids = []
+        imported_rels = []
+        dup_ids = []
         total = len(file_paths)
         done = 0
         stop_import = False
@@ -4809,8 +5399,10 @@ class WebUI:
                     src_phash = _perceptual_hash_path(path)
                     # 去重检查 + 落盘 + 入库 在同一临界区：并发导入同图时不产生重复记录
                     with _IMPORT_LOCK:
-                        if db.get_by_hash(fhash):
+                        dup_row = db.get_by_hash(fhash)
+                        if dup_row:
                             skipped_dup += 1
+                            dup_ids.append(dup_row["id"])
                             continue
                         dst = cache_dir / f"{fhash[:16]}{ext}"
                         shutil.copy2(path, dst)
@@ -4829,6 +5421,9 @@ class WebUI:
                         row = db.get_by_hash(fhash)
                         if row:
                             imported_ids.append(row["id"])
+                            imported_rels.append(
+                                rels[i] if rels and i < len(rels) else ""
+                            )
                         imported += 1
                 if restored:
                     try:
@@ -4851,7 +5446,13 @@ class WebUI:
         if imported:
             build_manifest()
         logger.info(f"导入完成: {imported} 个")
-        return {"ids": imported_ids, "rejected": rejected, "skipped_dup": skipped_dup}
+        return {
+            "ids": imported_ids,
+            "imported_rels": imported_rels,
+            "rejected": rejected,
+            "skipped_dup": skipped_dup,
+            "dup_ids": dup_ids,
+        }
 
     def _import_with_similar_decision(self, path, oname=""):
         """单图导入决策：哈希命中提示已存在；内容近似转相似（URL 拖放与文件上传复用）"""
@@ -4869,6 +5470,7 @@ class WebUI:
                 return {
                     "ok": False,
                     "duplicate": True,
+                    "existing_id": (r.get("dup_ids") or [0])[0],
                     "error": "已存在相同表情包",
                 }
             if r.get("rejected"):
@@ -5049,7 +5651,7 @@ class WebUI:
                         try:
                             from urllib.request import Request, urlopen
 
-                            url = "https://contributor.starsfire.top/TNTXZ/OhMyMeme"
+                            url = "https://contributor.starsfire.top/OhMyMeme/OhMyMeme"
                             req = Request(url, headers={"User-Agent": "OhMyMeme"})
                             with urlopen(req, timeout=10) as resp:
                                 svg = resp.read().decode("utf-8", "replace")
@@ -5301,8 +5903,7 @@ class WebUI:
         time.sleep(0.3)
 
         url = f"http://127.0.0.1:{self._port}/"
-        wx = self._cfg.get("window_x", -1)
-        wy = self._cfg.get("window_y", -1)
+        wx, wy = self._saved_window_position()
         width, height = self._resolve_window_size()
         self._window = webview.create_window(
             "OhMyMeme",
@@ -5310,8 +5911,8 @@ class WebUI:
             js_api=self._api,
             width=width,
             height=height,
-            x=wx if (wx is not None and wx >= 0) else None,
-            y=wy if (wy is not None and wy >= 0) else None,
+            x=wx,
+            y=wy,
             resizable=True,
             frameless=True,
             easy_drag=False,
@@ -5321,6 +5922,12 @@ class WebUI:
             ),
         )
         self._visible = not self._silent_start
+        try:
+            # 首次显示后校正屏幕外坐标；被系统最小化时同步可见状态
+            self._window.events.shown += lambda: self._ensure_window_on_screen()
+            self._window.events.minimized += self._on_window_minimized
+        except Exception as e:
+            logger.debug("bind window events: %s", e)
 
         self._started = True
         # 注册 LAN 设备确认回调（窗口创建完成后）
@@ -5414,13 +6021,8 @@ class WebUI:
             except Exception as e:
                 logger.warning(f"destroy settings error: {e}")
             self._settings_window = None
-        # 关闭设置页时自动停止局域网服务
-        try:
-            from . import lan
-
-            lan.stop()
-        except Exception:
-            pass
+        # 关闭设置页不停止局域网服务：手机发现/传输通常在设置页关闭后进行，
+        # 停服由开关关闭、恢复默认或程序退出负责（main.shutdown 兜底 lan.stop）
 
     def _resolve_window_size(self):
         """主窗口尺寸：插件 window 覆盖 > 持久化尺寸 > 默认 960x640"""
@@ -5444,15 +6046,41 @@ class WebUI:
             height = _norm(self._cfg.get("window_height", 0), 640, 360, 6000)
         return width, height
 
+    def _saved_window_position(self):
+        """读取持久化窗口坐标；哨兵值交给系统摆放，负坐标合法（副屏在主屏左侧/上方）"""
+        try:
+            wx = int(self._cfg.get("window_x", -1))
+            wy = int(self._cfg.get("window_y", -1))
+        except (TypeError, ValueError):
+            return None, None
+        # 最小化时系统返回 -32000 之类哨兵坐标，写盘后下次启动会在屏幕外
+        if not (_WINDOW_COORD_MIN < wx <= _WINDOW_COORD_MAX):
+            return None, None
+        if not (_WINDOW_COORD_MIN < wy <= _WINDOW_COORD_MAX):
+            return None, None
+        return wx, wy
+
     def _save_window_position(self):
         if not self._window:
             return
         try:
-            self._cfg.set("window_x", self._window.x)
-            self._cfg.set("window_y", self._window.y)
+            # 尺寸与坐标分开判断：最小化态下坐标是哨兵值，但尺寸仍应保存
             if self._window.width and self._window.height:
                 self._cfg.set("window_width", int(self._window.width))
                 self._cfg.set("window_height", int(self._window.height))
+            wx = self._window.x
+            wy = self._window.y
+            # 最小化/隐藏态下拿到的哨兵坐标不写盘，否则下次启动窗口不可见
+            if (
+                wx is not None
+                and wy is not None
+                and _WINDOW_COORD_MIN < wx <= _WINDOW_COORD_MAX
+                and _WINDOW_COORD_MIN < wy <= _WINDOW_COORD_MAX
+            ):
+                self._cfg.set("window_x", wx)
+                self._cfg.set("window_y", wy)
+                # 标记坐标确实写过：否则下次加载无法区分 -1 是旧哨兵还是副屏上的合法坐标
+                self._cfg.set("window_pos_set", True)
             self._cfg.save()
         except Exception:
             pass

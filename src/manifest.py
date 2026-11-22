@@ -7,7 +7,7 @@ from pathlib import Path
 from typing import Dict, List
 
 from .config import get_config
-from .database import get_db
+from .database import _name_sort_key, get_db
 
 logger = logging.getLogger(__name__)
 
@@ -53,6 +53,16 @@ def build() -> List[Dict]:
     """从数据库重建完整索引并写入磁盘"""
     db = get_db()
     rows = db.search(keyword="", tags=None, limit=999999)
+    # 默认展示序：未拖拽排序过（sort_order 全 0）时，
+    # 按自然名称序（数字按数值、中文按拼音），与 A-Z 排序同一套键；
+    # 用户拖拽排序后尊重自定义顺序
+    if rows and not any(r.get("sort_order") for r in rows):
+        rows = sorted(
+            rows,
+            key=lambda r: _name_sort_key(
+                r.get("original_name") or os.path.splitext(r["filename"])[0]
+            ),
+        )
     include_tags = bool(get_config().get("manifest_include_tags", True))
     tags_map = db.get_tags_map() if include_tags else {}
 
@@ -104,6 +114,19 @@ def build() -> List[Dict]:
     )
 
     return memes
+
+
+def index_path() -> Path:
+    return get_config().data_dir / INDEX_FILENAME
+
+
+def index_order() -> List[str]:
+    """本地清单 memes 的文件名顺序（不可用时空列表）"""
+    order = []
+    for m in load().get("memes") or []:
+        if isinstance(m, dict) and isinstance(m.get("filename"), str):
+            order.append(m["filename"])
+    return order
 
 
 def load() -> Dict:

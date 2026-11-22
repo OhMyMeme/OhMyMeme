@@ -7,21 +7,30 @@ const visible = ref(false)
 const current = ref('')
 const latest = ref('')
 const url = ref('')
+const store = ref('')
 const notesHtml = ref('')
 
 const phase = ref<'idle' | 'downloading' | 'done' | 'error'>('idle')
 const progress = ref(0)
 const errorMsg = ref('')
+const canRerun = ref(false)
 let pollTimer: ReturnType<typeof setInterval> | null = null
 
-function show(cur: string, latestVer: string, dlUrl: string, notes: string) {
+function show(cur: string, latestVer: string, dlUrl: string, notes: string, storeUrl = '') {
   current.value = cur
   latest.value = latestVer
   url.value = dlUrl
+  store.value = storeUrl || ''
   notesHtml.value = renderMarkdown(notes)
   phase.value = 'idle'
   progress.value = 0
+  canRerun.value = false
   visible.value = true
+}
+
+function openStore() {
+  api('open_url', store.value)
+  visible.value = false
 }
 
 function close() {
@@ -40,6 +49,7 @@ function showToast(msg: string) {
 async function startDownload() {
   phase.value = 'downloading'
   progress.value = 0
+  canRerun.value = false
   const ok = await api('start_download', url.value)
   if (!ok) { phase.value = 'error'; errorMsg.value = '启动下载失败'; return }
 
@@ -53,14 +63,27 @@ async function startDownload() {
       clearInterval(pollTimer); pollTimer = null
       phase.value = 'done'
       const r = await api('run_downloaded_installer')
-      visible.value = false
-      showToast(r ? '安装程序已启动，安装完成后将自动更新' : '启动安装程序失败')
+      if (r) {
+        visible.value = false
+        showToast('安装程序已启动，安装完成后将自动更新')
+      } else {
+        phase.value = 'error'
+        canRerun.value = true
+        errorMsg.value = '启动安装程序失败（安装包可能已损坏，请重试）'
+      }
     } else if (s.status === 'error') {
       clearInterval(pollTimer); pollTimer = null
       phase.value = 'error'
-      errorMsg.value = s.error || '未知错误'
+      errorMsg.value = '下载失败: ' + (s.error || '未知错误')
     }
   }, 500)
+}
+
+async function rerun() {
+  const r = await api('rerun_installer')
+  if (!r) { showToast('无法启动安装程序，请重新下载'); return }
+  visible.value = false
+  showToast('安装程序已启动，安装完成后将自动更新')
 }
 
 function retry() {
@@ -97,13 +120,15 @@ defineExpose({ show })
       </div>
       <div v-if="phase === 'done'" class="upd-progress-text">下载完成，启动安装...</div>
       <div v-if="phase === 'error'" class="upd-error">
-        下载失败: {{ errorMsg }}
+        {{ errorMsg }}
+        <button v-if="canRerun" class="btn btn-primary" style="width:100%;margin-top:8px" @click="rerun">重新运行安装程序</button>
         <button class="btn btn-primary" style="width:100%;margin-top:8px" @click="retry">重试</button>
       </div>
 
       <!-- 操作按钮 -->
       <div v-if="phase === 'idle'" class="upd-actions">
-        <button class="btn btn-primary btn-block" @click="startDownload">更新</button>
+        <button v-if="store" class="btn btn-primary btn-block" @click="openStore">前往 Microsoft Store</button>
+        <button v-else class="btn btn-primary btn-block" @click="startDownload">更新</button>
         <button class="btn btn-secondary btn-block" @click="close">稍后提示</button>
       </div>
     </div>

@@ -228,6 +228,57 @@ body {
   transition: border-color 0.15s;
 }
 
+/* 排序按钮（两块式：manifest 序 / 名称序） */
+.sort-toggle {
+  display: flex;
+  height: 30px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  overflow: hidden;
+}
+
+.sort-half {
+  width: 36px;
+  padding: 0;
+  border: none;
+  background: transparent;
+  color: var(--fg-secondary);
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  transition: color 0.15s, background 0.15s;
+}
+
+.sort-half + .sort-half {
+  border-left: 1px solid var(--border);
+}
+
+.sort-half:hover {
+  background: var(--surface-2);
+  color: var(--fg);
+}
+
+.sort-half.active {
+  background: var(--primary);
+  color: #fff;
+}
+
+.sort-half.active.desc {
+  background: var(--primary-strong);
+}
+
+.sort-half svg {
+  width: 15px;
+  height: 15px;
+}
+
+.sort-letters {
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: -0.5px;
+}
+
 .search-clear {
   width: 26px;
   height: 26px;
@@ -584,6 +635,38 @@ body {
   border-color: var(--primary) !important;
 }
 
+/* 定位到已有表情：一次性脉冲高亮（只用 outline/box-shadow，避免与拖拽/FLIP 的 transform 冲突） */
+.meme-card.meme-locate {
+  border-color: var(--primary-strong);
+  animation: meme-locate-pulse 1.6s ease-out 1;
+}
+
+@keyframes meme-locate-pulse {
+  0% {
+    outline: 3px solid var(--primary);
+    outline-offset: 2px;
+    box-shadow: 0 0 0 0 rgba(59, 130, 246, 0.55);
+  }
+  60% {
+    outline: 3px solid var(--primary);
+    outline-offset: 6px;
+    box-shadow: 0 0 0 14px rgba(59, 130, 246, 0);
+  }
+  100% {
+    outline: 3px solid transparent;
+    outline-offset: 6px;
+    box-shadow: 0 0 0 14px rgba(59, 130, 246, 0);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .meme-card.meme-locate {
+    animation: none;
+    outline: 3px solid var(--primary);
+    outline-offset: 2px;
+  }
+}
+
 /* TransitionGroup FLIP 动画 */
 /* 仅保留 move（拖拽让位动画）；enter/leave 瞬时切换，避免标签筛选时
    整列卡片逐个淡入淡出导致卡顿 */
@@ -619,6 +702,12 @@ body {
 .folder-card:hover {
   border-color: var(--accent);
   background: var(--surface-2);
+}
+
+/* #96 拖拽表情悬停到文件夹（左侧栏分组 / 右侧子分组卡片）时的落点高亮 */
+.drag-over-folder {
+  outline: 2px solid var(--accent);
+  outline-offset: -2px;
 }
 
 .folder-preview {

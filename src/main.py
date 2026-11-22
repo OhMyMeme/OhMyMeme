@@ -7,6 +7,7 @@ import signal
 import subprocess
 import sys
 import threading
+import time
 from pathlib import Path
 
 from . import __app_name__, __version__
@@ -67,6 +68,10 @@ class OhMyMemeApp:
         self._webui = None
         self._running = False
         self._hotkey_str = self._cfg.get("hotkey", "Ctrl+Alt+N")
+        self._toggle_busy = False
+        self._toggle_started_at = 0.0
+        self._toggle_gen = 0
+        self._toggle_lock = threading.Lock()
 
     def run(self):
         self._running = True
@@ -93,6 +98,7 @@ class OhMyMemeApp:
         self._webui = WebUI(
             update_debug=getattr(self, "_update_debug", False),
             silent_start=getattr(self, "_silent_start", False),
+            init_debug=getattr(self, "_init_debug", False),
         )
         self._webui.set_on_hotkey_change(self._on_hotkey_change)
 
@@ -161,12 +167,47 @@ class OhMyMemeApp:
             logger.warning(f"快捷键注册失败: {e}")
 
     def _on_hotkey(self):
-        if self._webui:
-            self._webui.toggle_hotkey_safe()
+        self._dispatch_window_toggle("hotkey")
 
     def _on_tray_show(self):
-        if self._webui:
-            self._webui.toggle_safe()
+        self._dispatch_window_toggle("tray")
+
+    _TOGGLE_STUCK_S = 5.0
+
+    def _dispatch_window_toggle(self, source):
+        """独立线程执行窗口切换：pywebview 原生调用可能长时间阻塞，
+        直接占用托盘消息线程或键盘监听线程会让托盘/热键永久无响应
+        （source 为 "hotkey"/"tray"，决定是否按鼠标位置摆放窗口）"""
+        now = time.monotonic()
+        with self._toggle_lock:
+            if (
+                self._toggle_busy
+                and now - self._toggle_started_at < self._TOGGLE_STUCK_S
+            ):
+                return
+            self._toggle_busy = True
+            self._toggle_started_at = now
+            self._toggle_gen = getattr(self, "_toggle_gen", 0) + 1
+            gen = self._toggle_gen
+        threading.Thread(
+            target=self._run_window_toggle, args=(source, gen), daemon=True
+        ).start()
+
+    def _run_window_toggle(self, source, gen=0):
+        """在独立线程里切换窗口；只有最后一次派发才能清占用标记（卡死的旧线程不误清）"""
+        try:
+            if not self._webui:
+                return
+            if source == "hotkey":
+                self._webui.toggle_hotkey_safe()
+            else:
+                self._webui.toggle_safe()
+        except Exception as e:
+            logger.warning("窗口切换失败: %s", e)
+        finally:
+            with self._toggle_lock:
+                if gen == getattr(self, "_toggle_gen", 0):
+                    self._toggle_busy = False
 
     def _on_hotkey_change(self, new_hotkey: str):
         self._hotkey_str = new_hotkey
@@ -261,12 +302,22 @@ def main():
         help="Print environment check details and force show env check UI",
     )
     parser.add_argument(
+        "--debug-init",
+        action="store_true",
+        dest="init_debug",
+        help="模拟首次运行：环境检测/用户协议/设置向导均按未完成处理，写入不落盘（虚拟环境，不影响现有数据）",
+    )
+    parser.add_argument(
         "--env-check-ui",
         action="store_true",
         dest="env_check_ui",
         help=argparse.SUPPRESS,
     )
     args, _ = parser.parse_known_args()
+
+    if args.init_debug:
+        # 虚拟首次运行标记：环境变量随进程传递给 env-check 检测 UI 子进程
+        os.environ["OMM_DEBUG_INIT"] = "1"
 
     # 根 logger 固定 DEBUG（内存缓冲始终收集）；控制台级别按 --debug 调整
     root = logging.getLogger()
@@ -385,6 +436,7 @@ def main():
     app = OhMyMemeApp()
     app._update_debug = args.update_debug
     app._silent_start = args.silent
+    app._init_debug = args.init_debug
     try:
         app.run()
     except Exception as e:

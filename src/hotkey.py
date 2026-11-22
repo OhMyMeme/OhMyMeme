@@ -18,6 +18,14 @@ KEYBOARD_WATCH_INTERVAL = 5.0
 # dwExtraInfo 标记，并由阻塞钩子吞掉防止泄漏到前台窗口（issue #95）。
 KEYBOARD_PROBE_INTERVAL = 30.0
 KEYBOARD_PROBE_TIMEOUT = 15.0
+# 连续多少轮探针「注入成功但未见事件」才判定钩子失效：注入在提权前台窗口、
+# 锁屏/安全桌面、全屏独占游戏等场景会被静默丢弃，单轮判死会造成 20s 一次的
+# 自愈重启循环（实测一夜 592 次），每次重启都会短暂丢失热键
+KEYBOARD_PROBE_MISS_LIMIT = 3
+# 两次重启监听线程的最小间隔（秒）：真失效时会持续失败，退避避免反复拆装钩子
+KEYBOARD_RESTART_BACKOFF = 60.0
+# 探针吞键窗口（秒）：只覆盖注入后极短时间，避免长时间吞掉用户真实 F15
+_PROBE_SWALLOW_WINDOW = 1.5
 
 # 探针事件 dwExtraInfo 标记（ASCII "OHMM"），带此标记的键盘事件为本程序注入，
 # 供阻塞钩子与外部诊断工具（如 issue #95 附带的 f15_listener）溯源识别
@@ -102,6 +110,11 @@ class GlobalHotkey:
         self._hook_last_seen = 0.0
         self._last_probe_at = 0.0
         self._probe_pending_at = None
+        # 连续「注入成功但未见事件」计数；探针吞键窗口截止时间；上次重启时间
+        self._probe_miss_streak = 0
+        self._probe_swallow_until = 0.0
+        self._last_restart_at = 0.0
+        self._inject_fail_logged = 0.0
         self._hook_observer = None
         self._probe_blocker = None
 
@@ -304,9 +317,13 @@ class GlobalHotkey:
                 self._reregister_pending = False
                 logger.info(f"全局快捷键已自动重新注册: {self._hotkey}")
                 _log_hotkey_event("info", "热键已自动重新注册: %s" % self._hotkey)
-                # 重置心跳状态，下轮立即重新注入探针验证钩子
-                self._last_probe_at = 0.0
+                # 重置心跳状态但保留探测间隔：置 0 会在下一 tick 立刻再注入，
+                # 注入持续失败时形成 20s 一次的自愈重启循环
+                self._last_probe_at = time.monotonic()
+                self._last_restart_at = time.monotonic()
                 self._probe_pending_at = None
+                self._probe_miss_streak = 0
+                self._hook_last_seen = time.monotonic()
                 return True
             except Exception:
                 logger.exception("自动重新注册快捷键失败")
@@ -413,7 +430,7 @@ class GlobalHotkey:
                 _make(_PROBE_VK_F15, 0x0002),  # KEYEVENTF_KEYUP
             )
             if user32.SendInput(2, arr, ctypes.sizeof(INPUT)) == 2:
-                return
+                return True
         except Exception:
             pass
         # SendInput 不可用（结构尺寸不符/系统拒绝）时回退 keybd_event，同样携带标记
@@ -423,8 +440,36 @@ class GlobalHotkey:
             user32 = ctypes.windll.user32
             user32.keybd_event(_PROBE_VK_F15, 0, 0, _PROBE_EXTRA_INFO)
             user32.keybd_event(_PROBE_VK_F15, 0, 0x0002, _PROBE_EXTRA_INFO)
+            return True
         except Exception:
-            pass
+            return False
+
+    def _session_is_locked(self) -> bool:
+        """当前是否处于锁屏/安全桌面（此时模拟输入被系统丢弃，不能据此判钩子失效）"""
+        if sys.platform != "win32":
+            return False
+        try:
+            import ctypes
+            from ctypes import wintypes
+
+            user32 = ctypes.windll.user32
+            # HDESK 是指针大小的句柄，不声明 restype 会被截断成 32 位
+            user32.OpenInputDesktop.restype = wintypes.HANDLE
+            user32.OpenInputDesktop.argtypes = (
+                wintypes.DWORD,
+                wintypes.BOOL,
+                wintypes.DWORD,
+            )
+            user32.CloseDesktop.argtypes = (wintypes.HANDLE,)
+            hdesk = user32.OpenInputDesktop(0, False, 0x0001)
+            if not hdesk:
+                return True
+            try:
+                return False
+            finally:
+                user32.CloseDesktop(hdesk)
+        except Exception:
+            return False
 
     def _make_probe_blocker(self):
         """构造探针阻塞钩子（suppress=True 注册），返回回调。
@@ -437,7 +482,7 @@ class GlobalHotkey:
 
         def _block_probe(event):
             try:
-                if self._probe_pending_at is not None and (
+                if time.monotonic() <= self._probe_swallow_until and (
                     event.name == "f15" or event.scan_code == -126
                 ):
                     self._hook_last_seen = time.monotonic()
@@ -452,7 +497,10 @@ class GlobalHotkey:
         """Windows 钩子心跳：探针注入后未见任何键盘事件（含用户按键）即钩子已失效。
 
         返回 True 表示本轮检测到钩子死亡；探针每 KEYBOARD_PROBE_INTERVAL 秒注入，
-        超时 KEYBOARD_PROBE_TIMEOUT 秒未确认则判死。钩子存活时任何按键都会刷新
+        超时 KEYBOARD_PROBE_TIMEOUT 秒未确认记为一次「未见事件」，连续
+        KEYBOARD_PROBE_MISS_LIMIT 次才判死（注入被系统静默丢弃时会误判），且两次
+        重启之间至少间隔 KEYBOARD_RESTART_BACKOFF，避免自愈重启循环。锁屏/安全
+        桌面下模拟输入本就会被丢弃，直接跳过本轮。钩子存活时任何按键都会刷新
         _hook_last_seen，用户正常打字即视为存活，无需依赖探针本身；探针被阻塞
         钩子吞掉时由钩子内刷新时间戳完成确认。观察者未注册（hook 失败的降级
         模式）时无法观测任何事件，直接返回 False 避免探针永远"未见事件"造成
@@ -463,13 +511,39 @@ class GlobalHotkey:
         if self._probe_pending_at is not None:
             if self._hook_last_seen >= self._probe_pending_at:
                 self._probe_pending_at = None
+                self._probe_miss_streak = 0
             elif now - self._probe_pending_at >= KEYBOARD_PROBE_TIMEOUT:
                 self._probe_pending_at = None
-                return True
+                self._probe_miss_streak += 1
+                logger.warning(
+                    "钩子探针未确认（连续 %s/%s 次）",
+                    self._probe_miss_streak,
+                    KEYBOARD_PROBE_MISS_LIMIT,
+                )
+                if self._probe_miss_streak >= KEYBOARD_PROBE_MISS_LIMIT:
+                    if now - self._last_restart_at < KEYBOARD_RESTART_BACKOFF:
+                        return False
+                    self._probe_miss_streak = 0
+                    return True
         if now - self._last_probe_at >= KEYBOARD_PROBE_INTERVAL:
             self._last_probe_at = now
+            if self._session_is_locked():
+                return False
+            # 必须先布防再注入：低层键盘钩子在 SendInput 返回前同步回调，
+            # 注入后才设吞键窗口会让探针以真实 F15 泄漏到前台（issue #95 回归）
             self._probe_pending_at = now
-            self._inject_probe_key()
+            self._probe_swallow_until = now + _PROBE_SWALLOW_WINDOW
+            if not self._inject_probe_key():
+                # 注入失败（提权前台窗口/安全软件）：撤回待确认与吞键窗口，
+                # 否则「没注入」会被记成一次未见事件
+                self._probe_pending_at = None
+                self._probe_swallow_until = 0.0
+                if now - self._inject_fail_logged >= 300:
+                    self._inject_fail_logged = now
+                    logger.warning(
+                        "探针注入失败（可能前台为提权窗口），本轮跳过心跳判定"
+                    )
+                    _log_hotkey_event("warning", "探针注入失败，跳过本轮钩子心跳判定")
         return False
 
     def _kill_listening_thread(self, listener):
@@ -518,8 +592,12 @@ class GlobalHotkey:
                 self._ensure_listener_threads(listener)
                 keyboard.add_hotkey(self._hotkey, self._safe_callback, suppress=False)
                 self._reregister_pending = False
-                self._last_probe_at = 0.0
+                now = time.monotonic()
+                self._last_probe_at = now
+                self._last_restart_at = now
                 self._probe_pending_at = None
+                self._probe_miss_streak = 0
+                self._hook_last_seen = now
                 logger.info(f"键盘钩子已重启并重新注册: {self._hotkey}")
                 _log_hotkey_event("info", "钩子已重启并重新注册: %s" % self._hotkey)
                 return True
@@ -642,17 +720,28 @@ class GlobalHotkey:
             if self._backend == "keyboard":
                 try:
                     import keyboard
-
-                    if self._hotkey:
-                        keyboard.remove_hotkey(self._hotkey)
-                    if self._hook_observer is not None:
-                        keyboard.unhook(self._hook_observer)
-                    if self._probe_blocker is not None:
-                        keyboard.unhook(self._probe_blocker)
                 except Exception:
-                    pass
+                    keyboard = None
+                # 三个解绑各自独立 try：remove_hotkey 抛错时不能让 hook 泄漏
+                if keyboard is not None and self._hotkey:
+                    try:
+                        keyboard.remove_hotkey(self._hotkey)
+                    except Exception as e:
+                        logger.debug("remove_hotkey 失败（忽略）: %s", e)
+                if keyboard is not None and self._hook_observer is not None:
+                    try:
+                        keyboard.unhook(self._hook_observer)
+                    except Exception as e:
+                        logger.debug("unhook observer 失败（忽略）: %s", e)
+                if keyboard is not None and self._probe_blocker is not None:
+                    try:
+                        keyboard.unhook(self._probe_blocker)
+                    except Exception as e:
+                        logger.debug("unhook blocker 失败（忽略）: %s", e)
                 self._hook_observer = None
                 self._probe_blocker = None
+                # 清空热键名：旧实例迟到的 __del__ 不能再 remove 新实例的同名热键
+                self._hotkey = None
             elif self._backend == "pynput":
                 if self._listener:
                     try:

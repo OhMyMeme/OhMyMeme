@@ -39,6 +39,40 @@ jobs:
           echo "ISCC_DIR=C:\Program Files (x86)\Inno Setup 6\ISCC.exe" | Out-File -FilePath $env:GITHUB_ENV -Append
       - name: Build installers (exe + msix)
         run: python scripts/build.py --installer-only --msix
+      - name: Generate sha256.txt
+        shell: bash
+        run: |
+          python - <<'PY'
+          import glob
+          import hashlib
+          import os
+
+          patterns = [
+              "dist/OhMyMeme-*-setup.exe",
+              "dist/OhMyMeme-*.msix",
+          ]
+          seen = set()
+          files = []
+          for pattern in patterns:
+              for path in sorted(glob.glob(pattern)):
+                  if path not in seen:
+                      seen.add(path)
+                      files.append(path)
+          if not files:
+              raise SystemExit("ERROR: 未找到待校验的 dist 产物")
+
+          def sha256(path):
+              digest = hashlib.sha256()
+              with open(path, "rb") as handle:
+                  for chunk in iter(lambda: handle.read(1 << 20), b""):
+                      digest.update(chunk)
+              return digest.hexdigest()
+
+          with open("dist/sha256.txt", "w", encoding="utf-8", newline="\n") as out:
+              for path in files:
+                  out.write(f"{sha256(path)}  {os.path.basename(path)}\n")
+          print(open("dist/sha256.txt", encoding="utf-8").read())
+          PY
       - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
@@ -46,6 +80,7 @@ jobs:
           path: |
             dist/OhMyMeme-*-setup.exe
             dist/OhMyMeme-*.msix
+            dist/sha256.txt
 
   build-linux:
     strategy:
@@ -72,6 +107,40 @@ jobs:
           pip install PyGObject
       - name: Build Linux packages
         run: python scripts/build.py --linux --arch ${{ matrix.arch }}
+      - name: Generate sha256.txt
+        run: |
+          python - <<'PY'
+          import glob
+          import hashlib
+          import os
+
+          patterns = [
+              "dist/OhMyMeme-v*-${{ matrix.arch }}.AppImage",
+              "dist/OhMyMeme-v*-${{ matrix.arch == 'x86_64' && 'amd64' || 'arm64' }}.deb",
+              "dist/OhMyMeme-v*-${{ matrix.arch }}.rpm",
+          ]
+          seen = set()
+          files = []
+          for pattern in patterns:
+              for path in sorted(glob.glob(pattern)):
+                  if path not in seen:
+                      seen.add(path)
+                      files.append(path)
+          if not files:
+              raise SystemExit("ERROR: 未找到待校验的 dist 产物")
+
+          def sha256(path):
+              digest = hashlib.sha256()
+              with open(path, "rb") as handle:
+                  for chunk in iter(lambda: handle.read(1 << 20), b""):
+                      digest.update(chunk)
+              return digest.hexdigest()
+
+          with open("dist/sha256.txt", "w", encoding="utf-8", newline="\n") as out:
+              for path in files:
+                  out.write(f"{sha256(path)}  {os.path.basename(path)}\n")
+          print(open("dist/sha256.txt", encoding="utf-8").read())
+          PY
       - name: Upload artifacts
         uses: actions/upload-artifact@v4
         with:
@@ -80,6 +149,7 @@ jobs:
             dist/OhMyMeme-v*-${{ matrix.arch }}.AppImage
             dist/OhMyMeme-v*-${{ matrix.arch == 'x86_64' && 'amd64' || 'arm64' }}.deb
             dist/OhMyMeme-v*-${{ matrix.arch }}.rpm
+            dist/sha256.txt
 
   build-macos:
     strategy:
@@ -103,8 +173,42 @@ jobs:
           pip install pyinstaller
       - name: Build macOS packages (.app + .dmg)
         run: python scripts/build.py --macos --arch ${{ matrix.arch }}
+      - name: Generate sha256.txt
+        run: |
+          python - <<'PY'
+          import glob
+          import hashlib
+          import os
+
+          patterns = [
+              "dist/OhMyMeme-v*-${{ matrix.arch }}.dmg",
+          ]
+          seen = set()
+          files = []
+          for pattern in patterns:
+              for path in sorted(glob.glob(pattern)):
+                  if path not in seen:
+                      seen.add(path)
+                      files.append(path)
+          if not files:
+              raise SystemExit("ERROR: 未找到待校验的 dist 产物")
+
+          def sha256(path):
+              digest = hashlib.sha256()
+              with open(path, "rb") as handle:
+                  for chunk in iter(lambda: handle.read(1 << 20), b""):
+                      digest.update(chunk)
+              return digest.hexdigest()
+
+          with open("dist/sha256.txt", "w", encoding="utf-8", newline="\n") as out:
+              for path in files:
+                  out.write(f"{sha256(path)}  {os.path.basename(path)}\n")
+          print(open("dist/sha256.txt", encoding="utf-8").read())
+          PY
       - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
           name: OhMyMeme-macOS-${{ matrix.arch }}
-          path: dist/OhMyMeme-v*-${{ matrix.arch }}.dmg
+          path: |
+            dist/OhMyMeme-v*-${{ matrix.arch }}.dmg
+            dist/sha256.txt

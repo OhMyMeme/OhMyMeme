@@ -19,6 +19,7 @@ logger = logging.getLogger(__name__)
 
 _GITHUB_LATEST = "https://api.github.com/repos/OhMyMeme/OhMyMeme/releases/latest"
 _GITHUB_LIST = "https://api.github.com/repos/OhMyMeme/OhMyMeme/releases?per_page=5"
+STORE_URL = "https://apps.microsoft.com/detail/9PD2TD8H8ZH0"
 
 # GitHub 镜像（按顺序逐个尝试）
 _GH_MIRRORS = [
@@ -42,10 +43,16 @@ def _parse_version(v: str):
 def _pick_asset_url(assets: list) -> str:
     """从 assets 列表中选取当前系统的安装包下载 URL"""
     if platform.system() == "Windows":
+        # 优先 Inno 安装包（-setup.exe）：资产列表可能含其他 .exe（如 ffmpeg.exe）
+        fallback = ""
         for a in assets:
             name = a.get("name", "")
-            if name.endswith("-setup.exe") or name.endswith(".exe"):
-                return a.get("browser_download_url", "")
+            url = a.get("browser_download_url", "")
+            if name.endswith("-setup.exe"):
+                return url
+            if not fallback and name.endswith(".exe"):
+                fallback = url
+        return fallback
     elif platform.system() == "Linux":
         for a in assets:
             name = a.get("name", "")
@@ -127,6 +134,13 @@ def run_downloaded_installer() -> bool:
         path = _download_state["path"]
         _download_state["status"] = "idle"
     return run_installer(path)
+
+
+def last_downloaded_path() -> str:
+    """上次下载完成的安装包路径（文件已不存在时返回空串）"""
+    with _download_lock:
+        path = _download_state.get("path") or ""
+    return path if path and os.path.isfile(path) else ""
 
 
 def _try_fetch(url: str, timeout: int) -> bytes:
@@ -310,6 +324,18 @@ def reset_check_cache():
         _check_generation += 1
 
 
+# 版本检查 + 构建来源：msstore 构建把更新入口指向 Microsoft Store
+def update_info(force=False) -> dict:
+    from . import __build_source__, __version__
+
+    info = check_latest_cached(force=force)
+    info["current"] = __version__
+    if __build_source__ == "msstore":
+        info["store"] = True
+        info["store_url"] = STORE_URL
+    return info
+
+
 def _macos_arch() -> str:
     """当前 macOS 机器架构（arm64 / x86_64）"""
     machine = platform.machine().lower()
@@ -404,14 +430,45 @@ def download_release(url: str) -> Optional[str]:
         return None
 
 
+def _is_windows_executable(path: str) -> bool:
+    """校验文件为合法 PE 可执行文件（MZ 头），防镜像返回的 HTML 错误页被当安装包"""
+    try:
+        with open(path, "rb") as f:
+            return f.read(2) == b"MZ"
+    except OSError:
+        return False
+
+
+def _shell_execute(path: str) -> bool:
+    """Windows 经 ShellExecute 打开安装包（保留 UAC 提权），失败记录返回码"""
+    import ctypes
+
+    shell32 = ctypes.windll.shell32
+    shell32.ShellExecuteW.restype = ctypes.c_void_p
+    ret = shell32.ShellExecuteW(None, "open", path, None, os.path.dirname(path), 1)
+    code = int(ret or 0)
+    if code <= 32:
+        logger.error(
+            "shell execute failed: path=%s code=%s lasterror=%s",
+            path,
+            code,
+            ctypes.windll.kernel32.GetLastError(),
+        )
+        return False
+    logger.info("installer launched: %s", path)
+    return True
+
+
 def run_installer(path: str) -> bool:
     """启动安装程序（有 UI，非静默）"""
     if not path or not os.path.isfile(path):
         return False
+    if platform.system() == "Windows" and not _is_windows_executable(path):
+        logger.error("installer not a valid Windows executable: %s", path)
+        return False
     try:
         if platform.system() == "Windows":
-            os.startfile(path)
-            return True
+            return _shell_execute(path)
         elif platform.system() == "Linux":
             # AppImage 是 ELF 可执行文件：chmod +x 后直接运行；
             # 无 FUSE 环境（容器/某些发行版）回退 --appimage-extract-and-run
@@ -428,6 +485,34 @@ def run_installer(path: str) -> bool:
     except Exception as e:
         logger.error("run installer failed: %s", e)
         return False
+
+
+def wait_installer_started(path: str, timeout: float = 8.0) -> bool:
+    """等待安装包进程出现在进程表里（Windows tasklist 判定），超时返回 False"""
+    if platform.system() != "Windows" or not path:
+        return True
+    exe = os.path.basename(path)
+    if not exe:
+        return True
+    flags = getattr(subprocess, "CREATE_NO_WINDOW", 0)
+    deadline = time.time() + timeout
+    while time.time() < deadline:
+        try:
+            out = subprocess.run(
+                ["tasklist", "/FI", "IMAGENAME eq %s" % exe, "/NH"],
+                capture_output=True,
+                text=True,
+                timeout=10,
+                creationflags=flags,
+            ).stdout
+        except Exception as e:
+            logger.warning("tasklist unavailable: %s", e)
+            return True
+        if exe.lower() in (out or "").lower():
+            return True
+        time.sleep(0.4)
+    logger.warning("installer process not found: %s", exe)
+    return False
 
 
 def _install_dmg_macos(path: str) -> bool:

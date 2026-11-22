@@ -91,7 +91,27 @@ export function useDragSort(
   getSortEnabled: () => boolean,
   persistFn: (ids: number[]) => Promise<boolean>,
   onPersistFail?: () => void,
+  onDropFolder?: (memeId: number, folderId: number) => Promise<void>,
 ) {
+  // #96 拖拽入文件夹：当前悬停的文件夹元素、拖拽前顺序（松手后还原）
+  let hoverEl: HTMLElement | null = null
+  let preDragMemes: Meme[] | null = null
+
+  // 文件夹落点检测：被拖卡片跟随指针，需临时隐藏后才能取到下方元素
+  function updateHoverFolder(e: PointerEvent) {
+    const card = dragState.card as HTMLElement
+    card.style.pointerEvents = 'none'
+    const el = document
+      .elementFromPoint(e.clientX, e.clientY)
+      ?.closest('[data-folder-drop]') as HTMLElement | null
+    card.style.pointerEvents = ''
+    if (el !== hoverEl) {
+      if (hoverEl) hoverEl.classList.remove('drag-over-folder')
+      hoverEl = el
+      if (hoverEl) hoverEl.classList.add('drag-over-folder')
+    }
+  }
+
   function enable() { dragSortEnabled.value = true }
   function disable() { dragSortEnabled.value = false }
   function toggle() { dragSortEnabled.value = !dragSortEnabled.value }
@@ -109,6 +129,8 @@ export function useDragSort(
       startY: e.clientY,
       curIndex: getMemes().findIndex(m => m.id === memeId),
     })
+    // 记录拖拽前顺序，落入文件夹时还原（moveInArray 只改副本，原数组未变）
+    preDragMemes = getMemes()
   }
 
   function onPointerMove(e: PointerEvent) {
@@ -128,6 +150,9 @@ export function useDragSort(
         if (e.pointerId != null) d.card.setPointerCapture(e.pointerId)
       } catch (_) {}
     }
+
+    // 检测是否悬停在文件夹上（左侧栏分组 / 右侧子分组卡片）
+    updateHoverFolder(e)
 
     const grid = d.card.closest('#meme-grid') as HTMLElement
     if (!grid) return
@@ -156,11 +181,19 @@ export function useDragSort(
     const d = dragState
     if (!d.memeId) return
     const wasActive = d.active
+    const dropEl = hoverEl
+    const dropMemeId = d.memeId
     if (wasActive) {
-      // 云行无本地 id，不参与排序持久化（重搜后云端仍会附加在尾部）
-      const ids = getMemes().filter(m => !m.cloud).map(m => m.id)
-      const ok = await persistFn(ids)
-      if (!ok && onPersistFail) onPersistFail()
+      if (dropEl && onDropFolder) {
+        // 落入文件夹：还原拖拽前的顺序，再执行跨分组移动
+        if (preDragMemes) setMemesFn(preDragMemes)
+        await onDropFolder(dropMemeId, Number((dropEl as HTMLElement).dataset.folderDrop))
+      } else {
+        // 云行无本地 id，不参与排序持久化（重搜后云端仍会附加在尾部）
+        const ids = getMemes().filter(m => !m.cloud).map(m => m.id)
+        const ok = await persistFn(ids)
+        if (!ok && onPersistFail) onPersistFail()
+      }
     }
     cleanup()
     return wasActive
@@ -176,7 +209,13 @@ export function useDragSort(
       d.card.classList.remove('dragging')
       d.card.style.transform = ''
       d.card.style.zIndex = ''
+      d.card.style.pointerEvents = ''
     }
+    if (hoverEl) {
+      hoverEl.classList.remove('drag-over-folder')
+      hoverEl = null
+    }
+    preDragMemes = null
     const grid = document.getElementById('meme-grid')
     if (grid) grid.classList.remove('drag-active')
     Object.assign(d, {

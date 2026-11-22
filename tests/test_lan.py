@@ -7,6 +7,7 @@ import os
 import socket
 import struct
 import sys
+import time
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
@@ -156,6 +157,56 @@ def _reset_transfer_state():
 
 
 # --- 测试 ---
+
+
+def test_record_device_dedup_by_ip(lan_env):
+    """互联设备列表：按 IP 去重、更新名称/系统与最近配对时间，持久化可重读"""
+    cfg, db, tmp = lan_env
+    lan.record_device(
+        "192.168.1.20",
+        {"name": "Pixel 8", "model": "Pixel 8", "os": "Android 15", "ver": "0.6.0"},
+    )
+    lan.record_device(
+        "192.168.1.20",
+        {
+            "name": "Pixel 8 Pro",
+            "model": "Pixel 8 Pro",
+            "os": "Android 15",
+            "ver": "0.6.1",
+        },
+    )
+    devices = lan.load_devices()
+    assert len(devices) == 1
+    assert devices[0]["ip"] == "192.168.1.20"
+    assert devices[0]["name"] == "Pixel 8 Pro"
+    assert devices[0]["ver"] == "0.6.1"
+    assert devices[0]["last_seen"] > 0
+    # 文件落在隔离后的 data_dir，下次启动仍可读到
+    assert (tmp / "data" / "lan_devices.json").is_file()
+
+
+def test_devices_snapshot_marks_online(lan_env):
+    """设备列表按当前连接标记在线；get_status 一并下发"""
+    cfg, db, tmp = lan_env
+    lan.record_device("10.0.0.5", {"name": "Phone", "os": "Android 14", "ver": "0.6.0"})
+    lan.record_device(
+        "10.0.0.6", {"name": "Tablet", "os": "Android 14", "ver": "0.6.0"}
+    )
+    with lan._lan_lock:
+        lan._lan_state["clients"] = [{"addr": "10.0.0.5:41000", "connected_at": 1}]
+    devices = {d["ip"]: d for d in lan.get_status()["devices"]}
+    assert devices["10.0.0.5"]["online"] is True
+    assert devices["10.0.0.6"]["online"] is False
+    # 清理，避免影响后续“已连接设备”断言
+    with lan._lan_lock:
+        lan._lan_state["clients"] = []
+
+
+def test_record_device_ignores_empty_ip(lan_env):
+    """缺少对端地址时不写入列表"""
+    cfg, db, tmp = lan_env
+    lan.record_device("", {"name": "Ghost"})
+    assert lan.load_devices() == []
 
 
 def test_udp_discovery(lan_env):
@@ -801,7 +852,11 @@ def test_transfer_completes_when_all_files_done(lan_env):
     _send_frame(
         sock,
         key,
-        {"cmd": "push_file", "filename": "c.png", "data": base64.b64encode(png).decode()},
+        {
+            "cmd": "push_file",
+            "filename": "c.png",
+            "data": base64.b64encode(png).decode(),
+        },
     )
     pushed = _recv_frame(sock, key)
     assert pushed["ok"] is True
@@ -835,7 +890,11 @@ def test_transfer_without_meta_degrades(lan_env):
     _send_frame(
         sock,
         key,
-        {"cmd": "push_file", "filename": "d.png", "data": base64.b64encode(png).decode()},
+        {
+            "cmd": "push_file",
+            "filename": "d.png",
+            "data": base64.b64encode(png).decode(),
+        },
     )
     pushed = _recv_frame(sock, key)
     assert pushed["ok"] is True
@@ -936,3 +995,287 @@ def test_get_status_exposes_pending_confirm(lan_env):
         sock.close()
     finally:
         lan.set_confirm_callback(old)
+
+
+class _ManifestDb:
+    """push_manifest 的最小 DB 桩：记录成员增删、改名与排序"""
+
+    def __init__(self):
+        self.ids = {"a.png": 11, "b.png": 12}
+        self.names = {"a.png": "旧名A", "b.png": "b"}
+        self.members = {5: {11, 12}, 6: set()}
+        self.added = []
+        self.removed = []
+        self.renamed = []
+        self.reordered = []
+        self.next_cid = 5
+
+    def get_by_filename(self, filename):
+        mid = self.ids.get(filename)
+        if not mid:
+            return None
+        return {"id": mid, "original_name": self.names.get(filename, "")}
+
+    def create_collection(self, name, parent_id=None):
+        cid = self.next_cid
+        self.next_cid += 1
+        self.members.setdefault(cid, set())
+        return cid
+
+    def add_to_collection(self, meme_id, collection_id):
+        self.members.setdefault(collection_id, set()).add(meme_id)
+        self.added.append((meme_id, collection_id))
+
+    def remove_from_collection(self, meme_id, collection_id):
+        self.members.setdefault(collection_id, set()).discard(meme_id)
+        self.removed.append((meme_id, collection_id))
+
+    def search(self, collection_id=None, limit=0, **kwargs):
+        names = {v: k for k, v in self.ids.items()}
+        return [
+            {"id": mid, "filename": names[mid]}
+            for mid in sorted(self.members.get(collection_id, set()))
+        ]
+
+    def reorder_memes(self, meme_ids):
+        self.reordered = list(meme_ids)
+
+    def set_original_name(self, meme_id, name):
+        self.renamed.append((meme_id, name))
+
+    def count(self):
+        return len(self.ids)
+
+
+def test_push_manifest_applies_names_and_moves(monkeypatch):
+    """手机推清单：改名生效、移出分组的成员按远端差集移除、重建本地清单"""
+    import src.sync as sync_module
+
+    db = _ManifestDb()
+    built = []
+    monkeypatch.setattr(lan, "get_db", lambda: db)
+    monkeypatch.setattr(lan, "build_manifest", lambda: built.append(1))
+    monkeypatch.setattr(sync_module, "get_db", lambda: db)
+
+    manifest = {
+        "version": 3,
+        "memes": [
+            {"filename": "a.png", "name": "新名A"},
+            {"filename": "b.png", "name": "b"},
+        ],
+        "collections": [
+            {
+                "name": "G",
+                "filenames": ["a.png"],
+                "children": [{"name": "子", "filenames": []}],
+            }
+        ],
+    }
+
+    result = lan.LanServer()._cmd_push_manifest(manifest)
+
+    assert result == {"ok": True, "local_count": 2}
+    assert db.added == [(11, 5)]
+    assert db.removed == [(12, 5)]
+    assert db.renamed == [(11, "新名A")]
+    assert built == [1]
+
+
+# --- USB 互联（adb 端口转发） ---
+
+
+class _FakeAdbResult:
+    """adb 命令结果替身"""
+
+    def __init__(self, returncode=0, stdout="", stderr=""):
+        self.returncode = returncode
+        self.stdout = stdout
+        self.stderr = stderr
+
+
+def _usb_stub_adb(monkeypatch, devices_output=""):
+    """打桩 adb_util：模拟 devices 列表与 reverse 注册表，返回 (calls, holder)"""
+    import src.adb_util as adb_util_module
+
+    calls = []
+    holder = {"output": devices_output, "reverses": {}}
+
+    def _fake_run_adb(path, args, timeout=30):
+        calls.append(list(args))
+        if args[:2] == ["devices", "-l"]:
+            return _FakeAdbResult(0, holder["output"])
+        if args[:2] == ["reverse", "--list"]:
+            lines = ["UsbFfs %s %s" % (s, s) for s in holder["reverses"]]
+            return _FakeAdbResult(0, "\n".join(lines))
+        if args[0] == "-s" and len(args) >= 3 and args[2] == "reverse":
+            spec = args[-1]
+            if args[3] == "--remove":
+                if spec in holder["reverses"]:
+                    del holder["reverses"][spec]
+                    return _FakeAdbResult(0)
+                return _FakeAdbResult(1, stderr="no such listener")
+            if spec in holder["reverses"]:
+                port = spec.split(":")[1]
+                return _FakeAdbResult(
+                    1,
+                    stderr="error: cannot bind listener: (10048) on %s" % port,
+                )
+            holder["reverses"][spec] = args[1]
+            return _FakeAdbResult(0, spec.split(":")[1])
+        if args[:2] == ["reverse", "--remove"]:
+            if args[2] in holder["reverses"]:
+                del holder["reverses"][args[2]]
+                return _FakeAdbResult(0)
+            return _FakeAdbResult(1, stderr="no such listener")
+        return _FakeAdbResult(0)
+
+    monkeypatch.setattr(adb_util_module, "ensure_adb", lambda: "adb-fake")
+    monkeypatch.setattr(adb_util_module, "detect_adb", lambda: "adb-fake")
+    monkeypatch.setattr(adb_util_module, "_run_adb", _fake_run_adb)
+    return calls, holder
+
+
+def test_usb_parse_devices():
+    """解析 adb devices -l 输出（model 下划线转空格，跳过 daemon 行）"""
+    out = (
+        "List of devices attached\n"
+        "emulator-5554\t\tdevice model:sdk_gphone64_x86_64 transport_id:1\n"
+        "AAAA1234\t\toffline\n"
+        "* daemon started successfully *\n"
+    )
+    assert lan._usb_parse_devices(out) == [
+        {"serial": "emulator-5554", "model": "sdk gphone64 x86 64", "state": "device"},
+        {"serial": "AAAA1234", "model": "", "state": "offline"},
+    ]
+    assert lan._usb_parse_devices("") == []
+    empty = "List of devices attached\n* daemon started successfully *\n"
+    assert lan._usb_parse_devices(empty) == []
+
+
+def test_usb_only_binds_loopback(lan_env, monkeypatch):
+    """仅 USB：服务绑 127.0.0.1、无 UDP 发现，回环握手仍可用"""
+    _usb_stub_adb(monkeypatch)
+    try:
+        lan.stop_lan()
+        assert lan.set_usb_enabled(True, TEST_PORT, "test-secret")
+        st = lan.get_status()
+        assert st["status"] == "running"
+        assert st["lan_on"] is False
+        assert st["usb_on"] is True
+        assert st["iface"] == "127.0.0.1"
+        srv = lan._server
+        assert srv is not None
+        assert srv._udp_sock is None
+        assert srv._tcp_sock.getsockname()[0] == "127.0.0.1"
+        sock = _connect()
+        key = _handshake(sock, "test-secret")
+        _send_frame(sock, key, {"cmd": "ping"})
+        assert _recv_frame(sock, key)["ok"] is True
+        sock.close()
+    finally:
+        lan.stop()
+
+
+def test_switch_between_modes(lan_env, monkeypatch):
+    """双开关重算绑定：LAN 开 0.0.0.0+发现，关 LAN 回落 127.0.0.1，全关停服"""
+    _usb_stub_adb(monkeypatch)
+    lan.stop_lan()
+    try:
+        assert lan.set_usb_enabled(True, TEST_PORT, "test-secret")
+        assert lan._server._tcp_sock.getsockname()[0] == "127.0.0.1"
+        assert lan._server._udp_sock is None
+        assert lan.start(TEST_PORT, "test-secret")
+        assert lan._server._tcp_sock.getsockname()[0] == "0.0.0.0"
+        assert lan._server._udp_sock is not None
+        lan.stop_lan()
+        assert lan._server._tcp_sock.getsockname()[0] == "127.0.0.1"
+        assert lan._server._udp_sock is None
+    finally:
+        lan.stop()
+    assert lan.get_status()["status"] == "stopped"
+    assert lan.get_status()["usb_on"] is False
+
+
+def test_usb_poll_once_forward_management(lan_env, monkeypatch):
+    """轮询转发管理：上线建转发、离线移除、目标切换、收尾清理"""
+    import src.adb_util as adb_util_module
+
+    spec = "tcp:%d" % TEST_PORT
+    calls, holder = _usb_stub_adb(
+        monkeypatch,
+        "List of devices attached\nSERIAL1\t\tdevice model:Pixel_7 transport_id:1\n",
+    )
+    lan._usb_active = ""
+    lan._usb_poll_once(adb_util_module, "adb-fake")
+    assert lan._usb_active == "SERIAL1"
+    assert ["-s", "SERIAL1", "reverse", spec, spec] in calls
+    with lan._usb_lock:
+        devs = [dict(d) for d in lan._usb_state["devices"]]
+    assert devs == [
+        {"serial": "SERIAL1", "model": "Pixel 7", "state": "device", "forwarded": True}
+    ]
+
+    holder["output"] = "List of devices attached\nSERIAL1\t\toffline\n"
+    calls.clear()
+    lan._usb_poll_once(adb_util_module, "adb-fake")
+    assert ["reverse", "--remove", spec] in calls
+    assert lan._usb_active == ""
+
+    holder["output"] = (
+        "List of devices attached\nSERIAL2\t\tdevice model:Pixel_7 transport_id:2\n"
+    )
+    calls.clear()
+    lan._usb_poll_once(adb_util_module, "adb-fake")
+    assert lan._usb_active == "SERIAL2"
+    assert ["-s", "SERIAL2", "reverse", spec, spec] in calls
+
+    calls.clear()
+    lan._usb_teardown()
+    assert ["-s", "SERIAL2", "reverse", "--remove", spec] in calls
+    assert lan._usb_active == ""
+
+
+def test_usb_enable_disable(lan_env, monkeypatch):
+    """set_usb_enabled 启停：管理线程上线、转发建立、关闭后转发移除"""
+    calls, _holder = _usb_stub_adb(
+        monkeypatch,
+        "List of devices attached\nSERIAL1\t\tdevice model:Pixel_7 transport_id:1\n",
+    )
+    lan.stop_lan()
+    try:
+        assert lan.set_usb_enabled(True, TEST_PORT, "test-secret") is True
+        assert lan.get_status()["usb_on"] is True
+        deadline = time.time() + 5
+        while time.time() < deadline:
+            with lan._usb_lock:
+                ok = lan._usb_state["adb_ok"]
+            if ok:
+                break
+            time.sleep(0.05)
+        assert ok, "USB 管理线程未在 5s 内报告 ADB 就绪"
+        deadline = time.time() + 5
+        devs = []
+        while time.time() < deadline:
+            with lan._usb_lock:
+                devs = [dict(d) for d in lan._usb_state["devices"]]
+            if devs and devs[0]["forwarded"]:
+                break
+            time.sleep(0.05)
+        assert devs == [
+            {
+                "serial": "SERIAL1",
+                "model": "Pixel 7",
+                "state": "device",
+                "forwarded": True,
+            }
+        ]
+    finally:
+        lan.stop()
+    assert lan.get_status()["usb_on"] is False
+    assert [
+        "-s",
+        "SERIAL1",
+        "reverse",
+        "--remove",
+        "tcp:%d" % TEST_PORT,
+    ] in calls

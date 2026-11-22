@@ -86,6 +86,63 @@ def _name_sort_key(name):
     return key
 
 
+# 拼音检索文本缓存（原文 → 全拼 + 首字母）；超限整体清空，避免极端名称撑爆内存
+_pinyin_cache = {}
+_pinyin_cache_lock = threading.Lock()
+_PINYIN_CACHE_MAX = 20000
+_PINYIN_KEYWORD_RE = re.compile(r"^[a-z]+$")
+
+
+def _load_lazy_pinyin():
+    global _lazy_pinyin
+    if _lazy_pinyin is None:
+        try:
+            from pypinyin import lazy_pinyin as _lp
+
+            _lazy_pinyin = _lp
+        except Exception:
+            _lazy_pinyin = False
+    return _lazy_pinyin
+
+
+def pinyin_text(text):
+    """检索用拼音文本（小写全拼 + 空格 + 首字母）；pypinyin 缺失时返回空串"""
+    raw = str(text or "")
+    if not raw:
+        return ""
+    with _pinyin_cache_lock:
+        cached = _pinyin_cache.get(raw)
+    if cached is not None:
+        return cached
+    value = ""
+    lp = _load_lazy_pinyin()
+    if lp:
+        try:
+            parts = [p for p in lp(raw) if p]
+        except Exception:
+            parts = []
+        if parts:
+            full = "".join(parts).lower()
+            initials = "".join(p[0] for p in parts).lower()
+            value = full + " " + initials
+    with _pinyin_cache_lock:
+        if len(_pinyin_cache) >= _PINYIN_CACHE_MAX:
+            _pinyin_cache.clear()
+        _pinyin_cache[raw] = value
+    return value
+
+
+def pinyin_matches(keyword, *texts):
+    """纯字母关键词是否命中任一文本的拼音（全拼或首字母）；非纯字母一律 False"""
+    kw = str(keyword or "").strip().lower()
+    if not kw or not _PINYIN_KEYWORD_RE.match(kw):
+        return False
+    for text in texts:
+        if kw in pinyin_text(text):
+            return True
+    return False
+
+
 class MemeDB:
     """SQLite元数据存储，线程安全"""
 
@@ -790,6 +847,53 @@ class MemeDB:
 
     # --- 搜索 ---
 
+    def _pinyin_match_ids(self, keyword) -> Optional[List[int]]:
+        """纯字母关键词的拼音命中（名称/标签名全拼或首字母）；非纯字母返回 None"""
+        kw = str(keyword or "").strip().lower()
+        if not kw or not _PINYIN_KEYWORD_RE.match(kw):
+            return None
+        conn = self._get_conn()
+        ids = set()
+        for r in conn.execute("SELECT id, filename, original_name FROM memes"):
+            if kw in pinyin_text(r["filename"]) or kw in pinyin_text(
+                r["original_name"]
+            ):
+                ids.add(r["id"])
+        tag_ids = [
+            r["id"]
+            for r in conn.execute("SELECT id, name FROM tags")
+            if kw in pinyin_text(r["name"])
+        ]
+        for i in range(0, len(tag_ids), 500):
+            chunk = tag_ids[i : i + 500]
+            ph = ",".join("?" for _ in chunk)
+            ids.update(
+                r["meme_id"]
+                for r in conn.execute(
+                    f"SELECT DISTINCT meme_id FROM meme_tags WHERE tag_id IN ({ph})",
+                    chunk,
+                )
+            )
+        return sorted(ids)
+
+    def _keyword_filter(self, keyword, prefix: str = "") -> Tuple[str, list]:
+        """关键词 WHERE 片段与参数：文件名/显示名/标签名 LIKE + 拼音命中 id"""
+        kw = f"%{keyword}%"
+        conds = [
+            f"{prefix}filename LIKE ?",
+            f"{prefix}original_name LIKE ?",
+            f"{prefix}id IN (SELECT mt.meme_id FROM meme_tags mt "
+            f"JOIN tags t ON t.id = mt.tag_id WHERE t.name LIKE ?)",
+        ]
+        params = [kw, kw, kw]
+        pids = self._pinyin_match_ids(keyword) or []
+        for i in range(0, len(pids), 500):
+            chunk = pids[i : i + 500]
+            ph = ",".join("?" for _ in chunk)
+            conds.append(f"{prefix}id IN ({ph})")
+            params.extend(chunk)
+        return "(" + " OR ".join(conds) + ")", params
+
     def search(
         self,
         keyword: str = "",
@@ -805,13 +909,9 @@ class MemeDB:
         params = []
 
         if keyword:
-            kw = f"%{keyword}%"
-            where.append(
-                "(m.filename LIKE ? OR m.original_name LIKE ? OR m.id IN ("
-                "SELECT mt.meme_id FROM meme_tags mt "
-                "JOIN tags t ON t.id = mt.tag_id WHERE t.name LIKE ?))"
-            )
-            params.extend([kw, kw, kw])
+            cond, kparams = self._keyword_filter(keyword, "m.")
+            where.append(cond)
+            params.extend(kparams)
 
         if tags:
             placeholders = ",".join("?" for _ in tags)
@@ -863,7 +963,10 @@ class MemeDB:
             ), m.id LIMIT ? OFFSET ?"""
             params.extend([primary_cid, limit, offset])
         else:
-            sql += " ORDER BY m.sort_order ASC, m.updated_at DESC LIMIT ? OFFSET ?"
+            sql += (
+                " ORDER BY m.sort_order ASC, m.updated_at DESC, m.id ASC"
+                " LIMIT ? OFFSET ?"
+            )
             params.extend([limit, offset])
 
         rows = conn.execute(sql, params).fetchall()
@@ -881,13 +984,9 @@ class MemeDB:
         where = ["(stego_of_hash IS NULL OR stego_of_hash = '')"]
         params = []
         if keyword:
-            kw = f"%{keyword}%"
-            where.append(
-                "(filename LIKE ? OR original_name LIKE ? OR memes.id IN ("
-                "SELECT mt.meme_id FROM meme_tags mt "
-                "JOIN tags t ON t.id = mt.tag_id WHERE t.name LIKE ?))"
-            )
-            params.extend([kw, kw, kw])
+            cond, kparams = self._keyword_filter(keyword)
+            where.append(cond)
+            params.extend(kparams)
         if tags:
             placeholders = ",".join("?" for _ in tags)
             where.append(f"""id IN (
@@ -958,6 +1057,23 @@ class MemeDB:
             (limit, offset),
         ).fetchall()
         return [dict(r) for r in rows]
+
+    def set_original_name(self, meme_id: int, name: str):
+        """只改显示名，不动 updated_at（同步重命名不改变本机列表排序）"""
+        with self._lock:
+            conn = self._get_conn()
+            conn.execute("UPDATE memes SET original_name=? WHERE id=?", (name, meme_id))
+            conn.commit()
+
+    def ordered_ids(self) -> List[tuple]:
+        """默认「全部」列表的行顺序（id, filename），与 search() 无筛选分支同序"""
+        conn = self._get_conn()
+        rows = conn.execute(
+            "SELECT id, filename FROM memes "
+            "WHERE (stego_of_hash IS NULL OR stego_of_hash = '') "
+            "ORDER BY sort_order ASC, updated_at DESC, id ASC"
+        ).fetchall()
+        return [(r[0], r[1]) for r in rows]
 
     def get_all_phash(self) -> List[dict]:
         """返回所有可见 meme 的感知哈希快照，供全库相似度比对（排除隐写载体）"""

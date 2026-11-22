@@ -10,10 +10,11 @@
       <button class="nav-item active" data-group="base" onclick="switchSettingsGroup('base')">基础设置</button>
       <button class="nav-item" data-group="import" onclick="switchSettingsGroup('import')">导入</button>
       <button class="nav-item" data-group="network" onclick="switchSettingsGroup('network')">联网</button>
+      <button class="nav-item" data-group="connect" onclick="switchSettingsGroup('connect')">互联</button>
       <button class="nav-item danger" data-group="danger" onclick="switchSettingsGroup('danger')">危险操作</button>
       <button class="nav-item" data-group="logs" onclick="switchSettingsGroup('logs')">日志</button>
       <button class="nav-item" data-group="backup" onclick="switchSettingsGroup('backup')">备份与恢复</button>
-      <button class="nav-item" data-group="plugin" onclick="switchSettingsGroup('plugin')">插件</button>
+      <button class="nav-item" data-group="plugin" disabled title="开发中..." onclick="switchSettingsGroup('plugin')">插件</button>
       <button class="nav-item" data-group="about" onclick="switchSettingsGroup('about')">关于</button>
     </nav>
     <div id="settings-content">
@@ -202,27 +203,52 @@
       </button>
     </div>
 
-    <div class="section" data-group="network">
-      <div class="section-title">局域网互联</div>
-      <p style="font-size:11.5px;color:var(--muted);margin-bottom:10px;line-height:1.6">与手机版 OhMyMeme 在同一局域网内配对，互相同步表情包与配置</p>
+    <div class="section" data-group="connect">
+      <div class="section-title">互联设置</div>
+      <p style="font-size:11.5px;color:var(--muted);margin-bottom:10px;line-height:1.6">与手机版 OhMyMeme 配对，互相同步表情包与配置。局域网互联需处于同一网段；USB 互联经数据线连接，无需网络</p>
       <div class="form-group">
         <label>端口</label>
         <input id="s-lan-port" value="17852">
       </div>
       <div class="form-group">
         <label>连接密钥</label>
-        <input id="s-lan-secret" type="password" placeholder="留空表示同一局域网无需密钥">
+        <input id="s-lan-secret" type="password" placeholder="留空表示无需密钥">
       </div>
-      <label class="check-row" style="margin-bottom:12px">
-        <input id="s-lan-enable" type="checkbox" onchange="toggleLan()">开启互联访问<span class="immediate-hint">立即生效</span>
-      </label>
       <label class="check-row" style="margin-bottom:12px">
         <input id="s-lan-secret-config" type="checkbox" onchange="toggleLanSecretConfig()">允许密钥传输（配置同步时包含 FTP/S3/R2/WebDAV 密码等密钥字段）<span class="immediate-hint">立即生效，仅本次会话</span>
       </label>
+    </div>
+
+    <div class="section" data-group="connect">
+      <div class="section-title">局域网互联</div>
+      <label class="check-row" style="margin-bottom:12px">
+        <input id="s-lan-enable" type="checkbox" onchange="toggleLan()">开启局域网互联<span class="immediate-hint">立即生效</span>
+      </label>
       <div style="display:flex;gap:8px">
         <button id="btn-lan-refresh" class="btn btn-secondary btn-sm btn-flex" onclick="refreshLanStatus()">刷新状态</button>
+        <button id="btn-lan-qr" class="btn btn-secondary btn-sm btn-flex" style="display:none" onclick="showLanQr()">显示连接二维码</button>
       </div>
       <div id="lan-status" style="font-size:11.5px;color:var(--muted);margin-top:6px;line-height:1.8"></div>
+      <div id="lan-qr-wrap" style="display:none;margin-top:10px;padding:12px;background:var(--surface);border:1px solid var(--border);border-radius:8px;text-align:center"></div>
+    </div>
+
+    <div class="section" data-group="connect">
+      <div class="section-title">USB 互联</div>
+      <p style="font-size:11.5px;color:var(--muted);margin-bottom:10px;line-height:1.6">用 USB 数据线连接手机并开启 USB 调试，电脑经 ADB 端口转发在本机回环上提供服务，无需网络</p>
+      <label class="check-row" style="margin-bottom:12px">
+        <input id="s-usb-enable" type="checkbox" onchange="toggleUsb()">开启 USB 互联<span class="immediate-hint">立即生效</span>
+      </label>
+      <div style="display:flex;gap:8px">
+        <button id="btn-usb-qr" class="btn btn-secondary btn-sm btn-flex" style="display:none" onclick="showUsbQr()">显示 USB 二维码</button>
+      </div>
+      <div id="usb-status" style="font-size:11.5px;color:var(--muted);margin-top:6px;line-height:1.8"></div>
+      <div id="usb-qr-wrap" style="display:none;margin-top:10px;padding:12px;background:var(--surface);border:1px solid var(--border);border-radius:8px;text-align:center"></div>
+    </div>
+
+    <div class="section" id="lan-devices-section" data-group="connect" style="display:none">
+      <div class="section-title">互联设备</div>
+      <p style="font-size:11.5px;color:var(--muted);margin-bottom:8px;line-height:1.6">已完成配对的设备记录（局域网与 USB 共用）</p>
+      <div id="lan-devices" style="display:none;margin-top:8px"></div>
     </div>
 
     <div class="section" data-group="network">
@@ -261,7 +287,11 @@
         </select>
       </div>
 
-      <div id="s-sync-options" style="display:none"></div>
+      <div id="s-sync-options" style="display:none">
+        <label class="check-row" style="margin-bottom:12px">
+          <input id="s-delete-remote" type="checkbox">上传时删除远端文件
+        </label>
+      </div>
 
       <div id="s-sync-ftp" style="display:none">
         <div class="form-group">

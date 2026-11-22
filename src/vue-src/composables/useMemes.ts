@@ -12,6 +12,7 @@ const state = reactive({
   selectedIds: new Set<number>(),
   allTags: [] as string[],
   searchQuery: '',
+  sortMode: 'manifest',
   total: 0,
   page: 1,
   pageCount: 1,
@@ -26,6 +27,8 @@ const state = reactive({
   pluginButtonConstraints: { hide: [] as string[], order: {} as Record<string, number> },
   hoverZoom: true,
   guideOk: true,
+  agreementRequired: false,
+  hiddenCollections: new Set<number>(),
 })
 
 let searchGen = 0
@@ -62,6 +65,9 @@ export function useMemes() {
       }
       state.hoverZoom = data.hover_zoom !== false
       state.guideOk = data.guide_ok !== false
+      state.agreementRequired = data.agreement_required === true
+      if (data.sort_mode) state.sortMode = data.sort_mode
+      state.hiddenCollections = new Set<number>(data.hidden_collections || [])
     }
   }
 
@@ -75,7 +81,7 @@ export function useMemes() {
     try {
       const [countResult, memesResult] = await Promise.all([
         api('count_memes', state.searchQuery, [...state.activeTags], state.activeCollection),
-        api('search_memes', state.searchQuery, [...state.activeTags], state.activeCollection, offset, MEME_PAGE),
+        api('search_memes', state.searchQuery, [...state.activeTags], state.activeCollection, offset, MEME_PAGE, state.sortMode),
       ])
       if (gen !== searchGen) return
       // 桥接失败（null/非数组）时保留当前分页与结果，避免暂时性故障触发空页回退或清空网格
@@ -106,6 +112,11 @@ export function useMemes() {
   }
 
   function setSearch(q: string) { state.searchQuery = q }
+  async function setSortMode(mode: string) {
+    state.sortMode = mode
+    await search()
+    try { await api('save_sort_mode', mode) } catch { /* bridge failure: ignore */ }
+  }
   function toggleTag(tag: string) {
     if (state.activeTags.has(tag)) state.activeTags.delete(tag)
     else state.activeTags.add(tag)
@@ -183,6 +194,7 @@ export function useMemes() {
     search,
     goToPage,
     setSearch,
+    setSortMode,
     toggleTag,
     setActiveCollection,
     refreshTags,

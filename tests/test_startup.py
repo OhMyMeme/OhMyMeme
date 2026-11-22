@@ -5,6 +5,8 @@ import re
 import subprocess
 import sys
 import tempfile
+import threading
+import time
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
@@ -19,6 +21,13 @@ from src.tray import _create_default_icon
 
 _SETTINGS_BODY = Path(__file__).resolve().parent.parent / "src" / "vue-src" / "settings" / "settings-body.html"
 _SETTINGS_LEGACY = Path(__file__).resolve().parent.parent / "src" / "vue-src" / "settings" / "legacy.js"
+
+
+def _wait_calls(target, count, timeout=2.0):
+    """等待后台窗口切换线程写入期望调用次数（托盘/热键回调改为异步执行）"""
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline and len(target.calls) < count:
+        time.sleep(0.01)
 
 
 class _FakeConfig:
@@ -517,11 +526,16 @@ def test_app_routes_hotkey_and_tray_to_separate_zero_argument_methods():
 
     app = OhMyMemeApp.__new__(OhMyMemeApp)
     app._webui = FakeWebUI()
+    app._toggle_busy = False
+    app._toggle_started_at = 0.0
+    app._toggle_lock = threading.Lock()
 
     app._on_hotkey()
+    _wait_calls(app._webui, 1)
     assert app._webui.calls == ["hotkey"]
 
     app._on_tray_show()
+    _wait_calls(app._webui, 2)
 
     assert app._webui.calls == ["hotkey", "tray"]
     assert len(inspect.signature(app._on_hotkey).parameters) == 0
@@ -733,6 +747,47 @@ def test_window_resize_settings_contract():
     assert "settings_window_width" in inspect.getsource(WebUI._save_settings_window_size)
 
 
+def test_agreement_marker_roundtrip():
+    """用户协议同意标记（与首次环境检测相同的标记文件模式）：accept 写入 / is_file 判定"""
+    import json
+    import tempfile
+
+    from src.env_check import accept_agreement, agreement_accepted
+
+    with tempfile.TemporaryDirectory(prefix="ohmm_agree_") as d:
+        p = Path(d) / "agreement.json"
+        assert not agreement_accepted(p)
+        accept_agreement(p)
+        assert agreement_accepted(p)
+        data = json.loads(p.read_text(encoding="utf-8"))
+        assert "time" in data
+
+
+def test_user_agreement_contract():
+    """首次运行用户协议弹窗：get_init_data 字段 + accept_agreement API + 前端组件静态契约"""
+    import inspect
+
+    from src.webui import HTML_DIR, JsApi
+
+    assert "agreement_required" in inspect.getsource(JsApi.get_init_data)
+    assert hasattr(JsApi, "accept_agreement")
+    vue_dir = HTML_DIR.parent / "vue-src"
+    comp = (vue_dir / "components" / "UserAgreement.vue").read_text(encoding="utf-8")
+    assert "我已阅读" in comp
+    assert "《用户协议》" in comp
+    assert "《隐私策略》" in comp
+    assert "开始使用" in comp
+    assert "docs/user_agreement.md" in comp
+    assert "docs/privacy.md" in comp
+    assert "open_url" in comp
+    assert "accept_agreement" in comp
+    app_vue = (vue_dir / "App.vue").read_text(encoding="utf-8")
+    assert "agreementRequired" in app_vue
+    assert "UserAgreement" in app_vue
+    use_memes = (vue_dir / "composables" / "useMemes.ts").read_text(encoding="utf-8")
+    assert "agreement_required" in use_memes
+
+
 def test_resize_window_api_clamps():
     """resize_window 尺寸钳制（主窗 480-8000x360-6000，设置窗 600-8000x480-6000）"""
     from src.webui import JsApi, SettingsApi
@@ -794,7 +849,7 @@ def test_about_links_static_contract():
     settings_js = _SETTINGS_LEGACY.read_text(encoding="utf-8")
     assert "openAboutUrl('github')" in settings_html
     assert "openAboutUrl('qq')" in settings_html
-    assert "https://github.com/TNTXZ/OhMyMeme" in settings_js
+    assert "https://github.com/OhMyMeme/OhMyMeme" in settings_js
     assert "qm.qq.com/cgi-bin/qm/qr" in settings_js
     assert "api('open_url'" in settings_js
 
@@ -818,9 +873,9 @@ def test_open_url_dispatches_to_default_browser(monkeypatch):
     calls = []
     monkeypatch.setattr(webui_module.platform, "system", lambda: "Windows")
     monkeypatch.setattr(os, "startfile", lambda u: calls.append(u), raising=False)
-    ok = webui_module.SettingsApi.open_url(None, "https://github.com/TNTXZ/OhMyMeme")
+    ok = webui_module.SettingsApi.open_url(None, "https://github.com/OhMyMeme/OhMyMeme")
     assert ok is True
-    assert calls == ["https://github.com/TNTXZ/OhMyMeme"]
+    assert calls == ["https://github.com/OhMyMeme/OhMyMeme"]
 
 
 def test_wechat_dialog_user_agreement_warning():

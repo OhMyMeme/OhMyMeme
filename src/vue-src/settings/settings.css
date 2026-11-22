@@ -192,6 +192,9 @@ body {
 
 .nav-item.danger.active { color: var(--danger); background: rgba(239,68,68,.1); }
 
+.nav-item:disabled { background: transparent; color: var(--muted); cursor: not-allowed; }
+.nav-item:disabled:hover { background: transparent; color: var(--muted); }
+
 
 
 /* 右栏内容 */
