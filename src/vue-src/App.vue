@@ -342,6 +342,7 @@ function onFolderCardContext(e: MouseEvent, childId: number, childName: string) 
   e.stopPropagation()
   const hidden = state.hiddenCollections.has(childId)
   ctx.show([
+    { action: 'export-collection', label: '导出' },
     { action: 'hide-collection', label: hidden ? '显示' : '隐藏' },
     { action: 'delete-folder', label: '删除小分组', danger: true },
   ], { folderId: childId, folderName: childName, isFolder: true }, e.clientX, e.clientY)
@@ -688,6 +689,7 @@ function onMemeRightClick(e: MouseEvent, meme: Meme) {
     { action: 'favorite', label: meme.favorited ? '取消收藏' : '收藏' },
     { action: 'tag', label: '打标签' },
     { action: 'collection', label: '添加分组' },
+    { action: 'export', label: '导出' },
   ]
   if (state.activeCollection && state.activeCollection > 0) {
     items.push({ action: 'remove-collection', label: '移出该分组' })
@@ -708,6 +710,7 @@ function onFolderRightClick(e: MouseEvent, folderId: number, folderName: string)
     items.push({ action: 'clear-recent', label: '清空最近使用', danger: true })
   } else if (folderId > 0) {
     items.push({ action: 'add-to-subgroup', label: '新建子分组' })
+    items.push({ action: 'export-collection', label: '导出' })
     // 仅子分组（有父分组）可隐藏；顶层分组不受影响
     if (findParentCollection(state.collections, folderId)) {
       items.push({ action: 'hide-collection', label: '隐藏' })
@@ -871,6 +874,31 @@ async function onCtxAction(action: string) {
       }
       break
     }
+    case 'export': {
+      // 单个表情包导出：复用 export_memes（选目录 + 显示名命名）
+      try {
+        const res = await window.pywebview?.api?.export_memes('', [t.memeId], null)
+        if (!res) break
+        if (res.ok) {
+          const skip = res.skipped ? `，${res.skipped} 个文件缺失已跳过` : ''
+          showToast(res.exported ? `已导出 ${res.exported} 个文件到 ${res.dir}${skip}` : '没有可导出的表情包')
+        } else if (!res.cancelled) {
+          showToast(res.error || '导出失败')
+        }
+      } catch {
+        showToast('导出失败')
+      }
+      break
+    }
+    case 'export-collection': {
+      const res = await window.pywebview?.api?.export_memes('', null, t.folderId)
+      if (res?.ok) {
+        showToast(res.exported ? `已导出 ${res.exported} 个文件到 ${res.dir}` : '该分组下没有可导出的表情包')
+      } else if (!res?.cancelled) {
+        showToast(res?.error || '导出失败')
+      }
+      break
+    }
     default:
       if (action.startsWith('subgroup-')) {
         const cid = Number(action.slice('subgroup-'.length))
@@ -917,6 +945,24 @@ async function batchDelete() {
   }
   refreshCollections()
   refreshTags()
+}
+
+// 批量导出选中的表情包（显示名命名 + 目录镜像分组结构）
+async function batchExport() {
+  const ids = [...state.selectedIds]
+  if (ids.length === 0) return
+  try {
+    const res = await window.pywebview?.api?.export_memes('', ids, null)
+    if (!res) return
+    if (res.ok) {
+      const skip = res.skipped ? `，${res.skipped} 个文件缺失已跳过` : ''
+      showToast(res.exported ? `已导出 ${res.exported} 个文件到 ${res.dir}${skip}` : '没有可导出的表情包')
+    } else if (!res.cancelled) {
+      showToast(res.error || '导出失败')
+    }
+  } catch {
+    showToast('导出失败')
+  }
 }
 
 // 批量加入分组：CollectionBuilder 选择模式，追加语义（不覆盖已有成员）
@@ -1510,6 +1556,7 @@ onUnmounted(() => {
           <button class="btn btn-sm btn-secondary" :disabled="state.selectedIds.size === 0" @click="clearSelection">取消选择</button>
           <button class="btn btn-sm" :disabled="state.selectedIds.size === 0" @click="batchAddToCollection">加入分组</button>
           <button class="btn btn-sm" :disabled="state.selectedIds.size === 0" @click="batchTag">打标签</button>
+          <button class="btn btn-sm" :disabled="state.selectedIds.size === 0" @click="batchExport">导出</button>
           <button v-if="state.activeCollection && state.activeCollection > 0" class="btn btn-sm" :disabled="state.selectedIds.size === 0" @click="batchMoveToCollection">移动到分组</button>
           <button class="btn btn-sm btn-danger" :disabled="state.selectedIds.size === 0" @click="batchDelete">批量删除</button>
         </div>

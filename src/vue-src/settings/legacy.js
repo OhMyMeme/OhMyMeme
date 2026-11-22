@@ -2468,7 +2468,7 @@ const ABOUT_URLS = {
   qq: 'https://qm.qq.com/cgi-bin/qm/qr?k=xbstRIkSObzF5ng71yBXEkKZ0v8--KVV&jump_from=webapi&authKey=BEnDuk2KNpPJC0SgkZwCLQHUsbIRyM1iCp8DuPK2hihtVBvLG32WqIYMZ2ej5Gu0'
 };
 function openAboutUrl(kind) {
-  const url = ABOUT_URLS[kind];
+  const url = ABOUT_URLS[kind] || kind;
   if (!url) return;
   const r = api('open_url', url);
   if (!r) { showToast('无法打开链接'); return; }
@@ -2490,7 +2490,7 @@ async function checkUpdate() {
   }
   btn.disabled = false; btn.textContent = '检查更新';
   if (!r) { status.textContent = '检查失败'; return; }
-  document.getElementById('s-ver-current').textContent = '当前版本: ' + (r.current || '--');
+  renderCurrentVersion();
   if (r.error) { status.textContent = '检查失败: ' + r.error; return; }
   if (!r.latest) { status.textContent = '暂无版本信息'; return; }
   if (r.has_update) {
@@ -2937,10 +2937,27 @@ function switchSettingsGroup(group) {
   if (content) content.scrollTop = 0;
 }
 
-async function initVersion() {
+/* 版本号渲染：有 commit sha（构建注入 / 源码运行读本地 git HEAD）时显示 版本@sha 并可点击跳转对应 commit */
+async function renderCurrentVersion() {
   const ver = await api('get_current_version');
+  const sha = await api('get_build_sha');
   const el = document.getElementById('s-ver-current');
-  if (el) el.textContent = '当前版本: ' + (ver || '--');
+  if (!el) return;
+  if (sha) {
+    el.textContent = '当前版本: ' + (ver || '--') + '@' + sha.slice(0, 7);
+    el.style.cursor = 'pointer';
+    el.title = '点击打开对应 commit';
+    el.onclick = () => openAboutUrl(ABOUT_URLS.github + '/commit/' + sha);
+  } else {
+    el.textContent = '当前版本: ' + (ver || '--');
+    el.style.cursor = '';
+    el.title = '';
+    el.onclick = null;
+  }
+}
+
+async function initVersion() {
+  await renderCurrentVersion();
 }
 
 window.__ohmmSettingsLegacyReady = true;

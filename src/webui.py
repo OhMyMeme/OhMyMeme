@@ -1223,14 +1223,15 @@ class JsApi:
             "plugin_buttons": fields.get("plugin_buttons") or [],
             "plugin_button_constraints": fields.get("plugin_button_constraints")
             or {"hide": [], "order": {}},
-            "guide_ok": guide_ok(),
+            "guide_ok": guide_ok() and not getattr(self._webui, "_init_debug", False),
             "agreement_required": getattr(self._webui, "_init_debug", False)
             or not agreement_accepted(),
         }
 
     def complete_guide(self) -> dict:
-        """设置向导完成：写入配置 guide=ok 标记"""
-        set_guide_ok()
+        """设置向导完成：写入配置 guide=ok 标记（虚拟首次运行不落盘）"""
+        if not self._webui._init_debug:
+            set_guide_ok()
         return {"ok": True}
 
     def accept_agreement(self) -> dict:
@@ -1384,6 +1385,118 @@ class JsApi:
         for child in children:
             ids.extend(self._get_collection_ids_recursive(child["id"]))
         return ids
+
+    # ── 表情包导出：显示名命名 + 目录镜像分组树 ──────────────
+
+    def _export_name(self, name) -> str:
+        """导出文件/文件夹名净化：非法字符替换为下划线，去首尾点与空格"""
+        return (
+            re.sub(r'[\\/:*?"<>|\x00-\x1f]', "_", str(name or ""))
+            .strip()
+            .strip(".")
+            .strip()
+        )
+
+    def _export_base_name(self, row) -> str:
+        """表情导出基础名（不含扩展名）：优先显示名，缺失回退原文件名"""
+        name = (row.get("original_name") or "").strip()
+        if not name:
+            name = os.path.splitext(row["filename"])[0]
+        return self._export_name(name) or f"meme_{row['id']}"
+
+    def _export_rows(self, meme_ids, collection_id) -> list:
+        """解析待导出表情：多选 id 或整个分组（含子分组）"""
+        if meme_ids:
+            rows = []
+            for mid in dict.fromkeys(int(x) for x in meme_ids):
+                row = self._db.get_by_id(mid)
+                if row:
+                    rows.append(row)
+            return rows
+        if collection_id is not None:
+            return self._db.search(
+                collection_id=self._get_collection_ids_recursive(collection_id),
+                limit=100000,
+            )
+        return []
+
+    def _export_row_dirs(self, rows) -> dict:
+        """表情 id → 全分组路径（顶级→子级）；多组归属取最深组，未分组为空"""
+        by_id = {r[0]: r for r in self._db.get_collections()}
+
+        def walk(cid):
+            parts = []
+            cur = cid
+            seen = set()
+            while cur is not None and cur in by_id and cur not in seen:
+                seen.add(cur)
+                parts.append(self._export_name(by_id[cur][1]) or str(cur))
+                cur = by_id[cur][2]
+            return parts[::-1]
+
+        ids = [r["id"] for r in rows]
+        members = {}
+        if ids:
+            conn = self._db._get_conn()
+            for i in range(0, len(ids), 500):
+                chunk = ids[i : i + 500]
+                ph = ",".join("?" for _ in chunk)
+                sql = (
+                    "SELECT meme_id, collection_id FROM meme_collections "
+                    "WHERE meme_id IN (" + ph + ")"
+                )
+                for mid, cid in conn.execute(sql, chunk):
+                    members.setdefault(mid, []).append(cid)
+        dirs = {}
+        for r in rows:
+            cids = members.get(r["id"], [])
+            best = min(cids, key=lambda c: (-len(walk(c)), c)) if cids else None
+            dirs[r["id"]] = walk(best) if best is not None else []
+        return dirs
+
+    def export_memes(self, target_dir=None, meme_ids=None, collection_id=None) -> dict:
+        """导出表情包：文件名用显示名，目录结构镜像分组树；target_dir 为空弹目录选择"""
+        if not target_dir:
+            result = self._dialog(webview.FileDialog.FOLDER)
+            if not result:
+                return {"ok": False, "cancelled": True}
+            target_dir = result[0] if isinstance(result, (tuple, list)) else result
+        rows = self._export_rows(meme_ids, collection_id)
+        if not rows:
+            return {"ok": True, "exported": 0, "skipped": 0, "dir": target_dir}
+        file_map = {}
+        for root, _, files in os.walk(self._cfg.cache_dir):
+            for fn in files:
+                file_map.setdefault(fn, os.path.join(root, fn))
+        dirs = self._export_row_dirs(rows)
+        seen = {}
+        exported = 0
+        skipped = 0
+        import shutil
+
+        for row in rows:
+            src = file_map.get(row["filename"], "")
+            if not src or not os.path.isfile(src):
+                skipped += 1
+                continue
+            dest_dir = os.path.join(target_dir, *dirs[row["id"]])
+            try:
+                os.makedirs(dest_dir, exist_ok=True)
+                base = self._export_base_name(row)
+                ext = os.path.splitext(row["filename"])[1]
+                d = seen.setdefault(os.path.normcase(dest_dir), {})
+                k = os.path.normcase(base + ext)
+                if k in d:
+                    d[k] += 1
+                    fname = f"{base} ({d[k]}){ext}"
+                else:
+                    d[k] = 1
+                    fname = base + ext
+                shutil.copy2(src, os.path.join(dest_dir, fname))
+                exported += 1
+            except OSError:
+                skipped += 1
+        return {"ok": True, "exported": exported, "skipped": skipped, "dir": target_dir}
 
     # 虚拟分组（收藏/最近/未分类）计数，含云端贡献
     def _sys_collections(self) -> list:
@@ -3954,6 +4067,27 @@ class SettingsApi:
         from . import __version__
 
         return __version__
+
+    def get_build_sha(self) -> str:
+        """构建注入的 commit sha；空（源码运行）时读本地 git HEAD，失败返回空串"""
+        from . import __build_sha__
+
+        if __build_sha__:
+            return __build_sha__
+        import subprocess
+
+        try:
+            r = subprocess.run(
+                ["git", "rev-parse", "HEAD"],
+                cwd=os.path.dirname(os.path.abspath(__file__)),
+                capture_output=True,
+                text=True,
+                timeout=5,
+            )
+        except Exception:
+            return ""
+        sha = r.stdout.strip() if r.returncode == 0 else ""
+        return sha if re.fullmatch(r"[0-9a-f]{7,40}", sha) else ""
 
     # 非阻塞检查更新：新鲜缓存即返，首次/过期/force 触发后台检查返回 pending
     def check_update(self, debug=False, force=False) -> dict:

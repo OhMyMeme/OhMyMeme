@@ -14,7 +14,7 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 from ftplib import FTP, error_perm
 from pathlib import Path
 from typing import Optional
-from urllib.parse import quote, unquote, urlparse
+from urllib.parse import quote, unquote, urljoin, urlparse
 
 from .config import exceeds_import_limit, get_config
 from .database import get_db
@@ -529,7 +529,14 @@ class _WebDAVBackend(_SyncBackend):
             return self.base_url.rstrip("/") + "/" + encoded
         return self.base_url.rstrip("/")
 
-    def _request(self, method, url, data=None, headers=None):
+    # 无请求体的方法：3xx 重定向可安全按 Location 原样重发
+    # （PUT/POST 的 data 是已打开的文件句柄，重放会读到空，不自动跟）
+    _REDIRECT_OK_METHODS = frozenset(
+        ("GET", "HEAD", "DELETE", "OPTIONS", "PROPFIND", "MKCOL", "COPY", "MOVE")
+    )
+    _MAX_REDIRECTS = 5
+
+    def _request(self, method, url, data=None, headers=None, _redirects=0):
         req = urllib.request.Request(url, data=data, method=method)
         req.add_header("User-Agent", "OhMyMeme")
         if self.auth_header:
@@ -542,9 +549,30 @@ class _WebDAVBackend(_SyncBackend):
             "webdav_allow_insecure", False
         ):
             context = ssl._create_unverified_context()
-        if context is None:
-            return urllib.request.urlopen(req, timeout=self.timeout)
-        return urllib.request.urlopen(req, timeout=self.timeout, context=context)
+        try:
+            if context is None:
+                return urllib.request.urlopen(req, timeout=self.timeout)
+            return urllib.request.urlopen(req, timeout=self.timeout, context=context)
+        except urllib.error.HTTPError as e:
+            # urllib 只自动跟 GET/HEAD 的 3xx；PROPFIND/MKCOL 等打到缺尾斜杠的
+            # 集合时 mod_dav 会 301，这里按 Location 重发（限跳数、防循环）
+            if (
+                300 <= e.code < 400
+                and e.headers.get("Location")
+                and method in self._REDIRECT_OK_METHODS
+                and _redirects < self._MAX_REDIRECTS
+            ):
+                next_url = urljoin(url, e.headers["Location"])
+                if next_url != url:
+                    e.close()
+                    return self._request(
+                        method,
+                        next_url,
+                        data=data,
+                        headers=headers,
+                        _redirects=_redirects + 1,
+                    )
+            raise
 
     def ensure_remote_dir(self, path):
         rel = ""
@@ -642,7 +670,8 @@ class _WebDAVBackend(_SyncBackend):
 
     def test_connection(self):
         """真实网络探测：对 webdav_path 目录发 PROPFIND Depth:0。失败抛 SyncError。"""
-        url = self._url(self.cfg.get("webdav_path", ""))
+        # 目录 URL 带尾斜杠：mod_dav 对缺尾斜杠的集合 301，规范形省一跳
+        url = self._url(self.cfg.get("webdav_path", "")) + "/"
         try:
             with self._request("PROPFIND", url, headers={"Depth": "0"}) as resp:
                 if resp.status not in (200, 207):
@@ -684,7 +713,8 @@ class _WebDAVBackend(_SyncBackend):
     def list_files(self, path):
         import xml.etree.ElementTree as ET
 
-        url = self._url(path)
+        # 目录 URL 带尾斜杠：mod_dav 对缺尾斜杠的集合 301，规范形省一跳
+        url = self._url(path) + "/"
         try:
             with self._request("PROPFIND", url, headers={"Depth": "1"}) as resp:
                 raw = resp.read().decode("utf-8", errors="replace")

@@ -305,7 +305,7 @@ def main():
         "--debug-init",
         action="store_true",
         dest="init_debug",
-        help="模拟首次运行：强制显示用户协议同意弹窗（调试一次性功能用）",
+        help="模拟首次运行：环境检测/用户协议/设置向导均按未完成处理，写入不落盘（虚拟环境，不影响现有数据）",
     )
     parser.add_argument(
         "--env-check-ui",
@@ -314,6 +314,10 @@ def main():
         help=argparse.SUPPRESS,
     )
     args, _ = parser.parse_known_args()
+
+    if args.init_debug:
+        # 虚拟首次运行标记：环境变量随进程传递给 env-check 检测 UI 子进程
+        os.environ["OMM_DEBUG_INIT"] = "1"
 
     # 根 logger 固定 DEBUG（内存缓冲始终收集）；控制台级别按 --debug 调整
     root = logging.getLogger()

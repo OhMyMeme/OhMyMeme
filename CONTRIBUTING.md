@@ -49,7 +49,7 @@ yay -S webkit2gtk   # 依赖 libsoup，通过 yay 安装
 | `--debug-startup` | 输出开机自启检测详情（注册表键、启动文件夹） |
 | `--debug-adb` | 输出 ADB 检测详情及运行时日志（路径、版本、adb 命令） |
 | `--debug-env` | 输出环境检测详情（WebView2/.NET）并强制打开检测窗口 |
-| `--debug-init` | 模拟首次运行：强制显示用户协议同意弹窗（调试一次性功能用） |
+| `--debug-init` | 模拟首次运行：环境检测 / 用户协议 / 设置向导均按未完成处理且写入不落盘（虚拟环境，不影响现有数据） |
 
 ## 代码规范
 
@@ -154,12 +154,12 @@ python scripts/build.py --linux --installer-only --package deb  # Linux 包类�
 ```
 
 - **PyInstaller 不支持交叉编译**，各平台需在对应系统上构建；跨平台构建用 GitHub Actions
-- **构建来源标记**：打包前重写 `src/__init__.py` 的 `__build_source__`（源码运行恒为 `dev`；CI 构建 `github`、nightly 工作流 `nightly`、MSIX 稳定版 `msstore`，nightly MSIX 保持 `nightly`），构建结束恢复 `dev`；`msstore` 构建的更新入口指向 Microsoft Store（见 AGENTS.md「更新」）
+- **构建来源标记**：打包前重写 `src/__init__.py` 的 `__build_source__`（源码运行恒为 `dev`；CI 构建 `github`、nightly 工作流 `nightly`、MSIX 稳定版 `msstore`，nightly MSIX 保持 `nightly`），构建结束恢复 `dev`；打包前 `get_git_sha()` 取最新 commit sha（git rev-parse HEAD）注入 `__build_sha__`（源码运行时保持空，由 `SettingsApi.get_build_sha` 回退读本地 git HEAD，失败返回空串——「关于」页有 sha 时显示为 版本@sha 且点击跳转对应 commit，无 sha 只显示版本号），构建结束恢复为空；`msstore` 构建的更新入口指向 Microsoft Store（见 AGENTS.md「更新」）
 - Windows 安装包需 [InnoSetup 6/7](https://jrsoftware.org/isdl.php)
 - Windows 追加格式（`--msix`，在 `.exe` 之外追加，工具缺失时仅告警跳过）：
   - `--msix`：Windows SDK 的 `makeappx.exe` 生成 `dist/OhMyMeme-<版本>.msix`（Microsoft Store 上架 / 侧载）。模板 `scripts/installer/msix/AppxManifest.xml`，产物不签名（Store 会重签）
   - MSIX 身份信息（`Name`/`Publisher`/`PublisherDisplayName`）来自 Partner Center，模板内已填入本项目 Store 身份（`TNTXZ.OhMyMeme` / `CN=4215BB25-0E28-400F-94EF-AF09583E9BCF` / `TNTXZ`）；**这些是公开标识（每个已发布包内都可见），可安全提交**，非密钥，无法据以冒充发布（发布需 Partner Center 账号 + 签名证书私钥）；CI 可用环境变量覆盖：`OHMYMEME_MSIX_IDENTITY_NAME`/`OHMYMEME_MSIX_PUBLISHER`/`OHMYMEME_MSIX_PUBLISHER_DISPLAY_NAME`
-  - Microsoft Store 上架时的「隐私策略 URL」填写仓库内 [docs/privacy.md](docs/privacy.md) 的公开链接；该文件须与实际网络行为保持一致（新增联网功能时同步更新）
+  - Microsoft Store 上架时的「隐私策略 URL」填写仓库内 [docs/privacy.md](docs/privacy.md) 的公开链接；该文件须与实际网络行为保持一致（新增联网功能时同步更新）；英文版 [docs/privacy-en.md](docs/privacy-en.md) 须与中文版同步更新
 - Linux 包支持 .deb / .rpm / .AppImage，构建机需装 GTK/WebKit 依赖（见 AGENTS.md「Linux 打包（GTK）」）
 - 输出目录: `dist/`
 

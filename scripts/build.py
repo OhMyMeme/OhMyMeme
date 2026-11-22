@@ -321,6 +321,34 @@ def set_build_source(v: str):
     init_py.write_text(new_content, encoding="utf-8")
 
 
+def get_git_sha():
+    """读取当前 HEAD commit sha（非 git 环境/失败返回空串，不阻断构建）"""
+    try:
+        r = subprocess.run(
+            ["git", "rev-parse", "HEAD"],
+            cwd=PROJECT_ROOT,
+            capture_output=True,
+            text=True,
+        )
+    except Exception:
+        return ""
+    sha = r.stdout.strip() if r.returncode == 0 else ""
+    return sha if re.fullmatch(r"[0-9a-f]{7,40}", sha) else ""
+
+
+def set_build_sha(v: str):
+    """临时改写 src/__init__.py 的 __build_sha__（注入构建 commit，构建后恢复空）"""
+    init_py = SRC_DIR / "__init__.py"
+    content = init_py.read_text(encoding="utf-8")
+    new_content = re.sub(
+        r'__build_sha__\s*=\s*"[^"]*"',
+        '__build_sha__ = "%s"' % v,
+        content,
+        count=1,
+    )
+    init_py.write_text(new_content, encoding="utf-8")
+
+
 def build_keyfinder_helper(allow_missing=False):
     """编译 wechat_keyfinder helper（Windows 专用，cmake + MSVC）
 
@@ -1380,6 +1408,7 @@ if __name__ == "__main__":
     if patched:
         set_version(build_version)
     set_build_source(build_source)
+    set_build_sha(get_git_sha())
 
     try:
         if args.installer_only:
@@ -1436,3 +1465,4 @@ if __name__ == "__main__":
         if patched:
             set_version(base_version)
         set_build_source("dev")
+        set_build_sha("")

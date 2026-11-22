@@ -1,55 +1,40 @@
-# wechat_keyfinder Binary Protocol
+# wechat_keyfinder 二进制协议
 
-## Overview
+简体中文（[English](wechat_keyfinder_protocol-en.md)）
 
-`wechat_keyfinder` is a helper binary that performs Windows process memory forensics
-to extract WeChat's database encryption key.
+## 概述
 
-It is **bundled inside the installer** (no runtime download) and reports version
-information in its PE resources so the file is not an unsigned, metadata-less
-binary. Build it with `cmake -S src/wechat_keyfinder -B build/wechat_keyfinder -A x64`
-(MSVC only; there is no OpenSSL dependency — the required SHA-512 primitives are
-implemented in-tree).
+`wechat_keyfinder` 是一个辅助二进制，通过 Windows 进程内存取证提取微信的数据库解密密钥。
 
-Python calls it via subprocess with command-line arguments and reads JSON from stdout.
+该二进制**打包在安装程序内**（运行时无下载），并在 PE 资源中报告版本信息，使文件不是无签名、无元数据的二进制。使用 `cmake -S src/wechat_keyfinder -B build/wechat_keyfinder -A x64` 构建（仅 MSVC；无 OpenSSL 依赖 —— 所需的 SHA-512 原语在库内实现）。
 
-## Invocation
+Python 通过子进程以命令行参数调用它，并从 stdout 读取 JSON。
+
+## 调用
 
 ```console
 wechat_keyfinder --config offsets.json [--db-path <path>] [--pid <pid>]
 ```
 
-### Key Extraction Strategy (priority order)
+### 密钥提取策略（优先级顺序）
 
-1. **Mask recovery** (default) — scans process memory for the 99-byte masked
-   `x'<96hex>'` buffer; the 32-byte XOR mask is recovered from the known DB
-   salt (first 16 bytes of emoticon.db). **No RVA offset needed**, robust across
-   WeChat versions.
-2. Legacy RVA pattern scan (fallback) — uses `cipher_literal_rva`/`mask_offset`
-   from offsets.json.
+1. **掩码恢复**（默认）—— 在进程内存中扫描 99 字节的 `x'<96hex>'` 掩码缓冲；32 字节 XOR 掩码从已知 DB salt（emoticon.db 的前 16 字节）恢复。**无需 RVA 偏移**，跨微信版本稳健。
+2. 旧版 RVA 模式扫描（回退）—— 使用 offsets.json 的 `cipher_literal_rva`/`mask_offset`。
 
-> **Process selection**: when `--pid` is omitted, all matching `Weixin.exe`
-> processes are enumerated and tried in turn. Only the process running the target
-> account holds the key buffer in memory, so mask recovery naturally selects the
-> correct one; `key_not_found` is reported if none yields a key.
+> **进程选择**：省略 `--pid` 时，枚举所有匹配的 `Weixin.exe` 进程并逐一尝试。只有运行目标账号的进程内存中才持有密钥缓冲，因此掩码恢复会自然选中正确的进程；若无任何进程产出密钥则上报 `key_not_found`。
 >
-> **Test-only `--key`**: a verified 64-hex key may be injected via `--key <hex64>`
-> to skip memory forensics for manual verification. Because it passes the key on
-> the command line (visible in the process list), the branch is compiled out of
-> release builds entirely: it exists only when CMake is configured with
-> `-DWKF_ENABLE_TEST_KEY=ON` (default `OFF`). Production callers obtain the key
-> via mask recovery first, then the legacy RVA fallback when mask recovery fails.
+> **仅测试用 `--key`**：可通过 `--key <hex64>` 注入一个已验证的 64 位十六进制密钥以跳过内存取证，用于人工验证。因为它在命令行上传递密钥（在进程列表中可见），该分支在 release 构建中被整体编译移除：仅当 CMake 配置了 `-DWKF_ENABLE_TEST_KEY=ON`（默认 `OFF`）时才存在。生产调用方先经掩码恢复取密钥，掩码恢复失败时再用旧版 RVA 回退。
 
-### Arguments
+### 参数
 
-| Argument | Required | Description |
-|----------|----------|-------------|
-| `--config` | Yes | Path to offsets.json config file |
-| `--db-path` | No | Path to the encrypted `emoticon.db`; when absent no key extraction is attempted |
-| `--pid` | No | WeChat process ID (auto-detected if omitted) |
-| `--key` | No | **Test-only, not present in release builds**: inject a verified 64-hex key directly (requires `-DWKF_ENABLE_TEST_KEY=ON`) |
+| 参数 | 必填 | 说明 |
+|------|------|------|
+| `--config` | 是 | offsets.json 配置文件路径 |
+| `--db-path` | 否 | 加密的 `emoticon.db` 路径；缺省时不尝试密钥提取 |
+| `--pid` | 否 | 微信进程 ID（省略时自动检测） |
+| `--key` | 否 | **仅测试用，release 构建中不存在**：直接注入已验证的 64 位十六进制密钥（需要 `-DWKF_ENABLE_TEST_KEY=ON`） |
 
-### Config File (offsets.json)
+### 配置文件（offsets.json）
 
 ```json
 {
@@ -75,9 +60,9 @@ wechat_keyfinder --config offsets.json [--db-path <path>] [--pid <pid>]
 }
 ```
 
-## Output (stdout, JSON)
+## 输出（stdout，JSON）
 
-### Success
+### 成功
 
 ```json
 {
@@ -90,13 +75,9 @@ wechat_keyfinder --config offsets.json [--db-path <path>] [--pid <pid>]
 }
 ```
 
-Field types: `key`/`salt` are lowercase hex strings (64 hex chars = 32-byte key,
-32 hex chars = 16-byte salt); `pid`/`bytes_scanned` are integers; `module_base`
-is a hex string. The in-memory URL snapshot scan and its `memory_snapshot` /
-`regions_scanned` output fields were removed: no caller ever consumed them and
-the associated string constants were the strongest static signal in the binary.
+字段类型：`key`/`salt` 为小写十六进制字符串（64 位十六进制 = 32 字节密钥，32 位十六进制 = 16 字节 salt）；`pid`/`bytes_scanned` 为整数；`module_base` 为十六进制字符串。内存 URL 快照扫描及其 `memory_snapshot` / `regions_scanned` 输出字段已移除：没有任何调用方消费它们，且相关字符串常量是该二进制中最强的静态特征。
 
-### Error
+### 错误
 
 ```json
 {
@@ -106,67 +87,47 @@ the associated string constants were the strongest static signal in the binary.
 }
 ```
 
-### Error Codes
+### 错误码
 
-| reason | Description |
-|--------|-------------|
-| `missing_config` | `--config` argument not provided |
-| `invalid_pid` | `--pid` is not a number |
-| `invalid_key` | `--key` is not exactly 64 hex characters (test-only builds) |
-| `config_invalid` | Config file missing, malformed, or failed validation |
-| `wechat_not_running` | WeChat process not found |
-| `process_open_failed` | Cannot open process (permission denied) |
-| `key_not_found` | Encryption key not found in memory (exit code 1) |
-| `platform_unsupported` | Not running on Windows |
+| reason | 说明 |
+|--------|------|
+| `missing_config` | 未提供 `--config` 参数 |
+| `invalid_pid` | `--pid` 不是数字 |
+| `invalid_key` | `--key` 不是恰好 64 位十六进制（仅测试构建） |
+| `config_invalid` | 配置文件缺失、格式错误或校验失败 |
+| `wechat_not_running` | 未找到微信进程 |
+| `process_open_failed` | 无法打开进程（权限不足） |
+| `key_not_found` | 内存中未找到解密密钥（退出码 1） |
+| `platform_unsupported` | 非 Windows 平台 |
 
-## Exit Codes
+## 退出码
 
-| Code | Meaning |
+| 码 | 含义 |
 |------|---------|
-| 0 | Success |
-| 1 | Error (see JSON output) |
-| 2 | Invalid arguments |
+| 0 | 成功 |
+| 1 | 错误（见 JSON 输出） |
+| 2 | 参数无效 |
 
-## Security Considerations
+## 安全考虑
 
-1. **Binary integrity**: SHA-256 checksum verified before execution; **fails
-   closed** when no real hash is configured (see below)
-2. **No network access**: Binary makes no network requests; it reads only the
-   target WeChat process memory and the explicitly specified local input files
-   (e.g. the `emoticon.db` salt used by `--db-path` and mask recovery)
-3. **Read-only**: Never writes to WeChat process or files
-4. **Timeout**: Python enforces 90s execution timeout
-5. **No runtime download**: the helper ships inside the installer and is resolved
-   from the bundled resources; the app never fetches an executable at runtime
+1. **二进制完整性**：执行前校验 SHA-256 校验和；未配置真实哈希时**失败即拒绝**（fail closed，见下文）
+2. **无网络访问**：二进制不发起任何网络请求；只读取目标微信进程内存和显式指定的本地输入文件（例如 `--db-path` 与掩码恢复使用的 `emoticon.db` salt）
+3. **只读**：从不写入微信进程或文件
+4. **超时**：Python 强制 90 秒执行超时
+5. **无运行时下载**：辅助程序打包在安装程序内，从内置资源中解析；应用运行期间从不获取可执行文件
 
-## Scan Budgets & Timeouts
+## 扫描预算与超时
 
-| Scope | Limit |
-|-------|-------|
-| Mask-recovery scan (per process) | 30s wall-clock + `max_cipher_scan_bytes` read budget |
-| RVA fallback scan (per process) | 30s wall-clock + `max_cipher_scan_bytes` read budget |
-| Python wrapper | 90s subprocess timeout (bounds the total across all processes) |
+| 范围 | 上限 |
+|-------|------|
+| 掩码恢复扫描（每进程） | 30 秒墙钟 + `max_cipher_scan_bytes` 读取预算 |
+| RVA 回退扫描（每进程） | 30 秒墙钟 + `max_cipher_scan_bytes` 读取预算 |
+| Python 包装层 | 90 秒子进程超时（限定所有进程的总时间） |
 
-`max_cipher_scan_bytes` caps the total bytes read during key scans. Reads are
-bounded to the remaining budget on every chunk (including the final partial
-read); negative or overflowing config values are rejected at load time. The
-default is 512 MiB; lower it if scan latency is a concern. When `--pid` is omitted and multiple
-`Weixin.exe` processes exist, each process receives its own 30s per-phase budget;
-the total time across all processes is bounded by the Python wrapper's 90s
-subprocess timeout.
+`max_cipher_scan_bytes` 限定密钥扫描期间的总读取字节数。每次分块读取（包括最后一次部分读取）都按剩余预算限界；负数或溢出的配置值在加载时即被拒绝。默认 512 MiB；若担心扫描延迟可降低该值。省略 `--pid` 且存在多个 `Weixin.exe` 进程时，每个进程获得各自 30 秒每阶段预算；所有进程的总时间受 Python 包装层 90 秒子进程超时的限定。
 
-## Integrity Verification
+## 完整性校验
 
-Python verifies the helper before execution. The expected hash lives in
-`_WECHAT_KEYFINDER_SHA256` in `src/wechat_probe.py`; a missing or placeholder
-value causes verification to **fail closed** (the helper is refused).
-Development/testing can opt out explicitly via the
-`OHMYMEME_INSECURE_SKIP_HELPER_HASH=1` environment variable.
+Python 在执行前校验辅助程序。期望哈希位于 `src/wechat_probe.py` 的 `_WECHAT_KEYFINDER_SHA256`；缺失或占位值会导致校验**失败即拒绝**（拒绝运行该辅助程序）。开发/测试可通过环境变量 `OHMYMEME_INSECURE_SKIP_HELPER_HASH=1` 显式跳过。
 
-MSVC builds are not reproducible (they embed timestamps), so the hash is pinned
-**at build time** rather than committed by hand: `scripts/build.py` compiles the
-helper, computes the digest of the actual artifact, rewrites
-`_WECHAT_KEYFINDER_SHA256`, runs PyInstaller, and then restores the source file.
-The check therefore protects against tampering after installation, which is what
-it is for — it is not a statement about one particular build. `verify_binary_integrity`
-reads the file in 64 KiB chunks and refuses to run anything that does not match.
+MSVC 构建不可复现（内嵌时间戳），因此哈希在**构建时**固定而非手工提交：`scripts/build.py` 编译辅助程序、计算实际产物的摘要、改写 `_WECHAT_KEYFINDER_SHA256`、运行 PyInstaller，然后恢复源文件。因此该校验防范的是安装后的篡改——这正是它的用途——而非对某一次特定构建的陈述。`verify_binary_integrity` 以 64 KiB 分块读取文件，拒绝运行任何不匹配的文件。

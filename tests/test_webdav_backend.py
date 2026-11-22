@@ -354,6 +354,116 @@ class TestWebDAVEnsureDir(unittest.TestCase):
             bk.ensure_remote_dir("memes")
 
 
+class TestWebDAVRedirects(unittest.TestCase):
+    """3xx 跟跳：mod_dav 对缺尾斜杠的集合 301，客户端按 Location 重发（限跳、防环）"""
+
+    def setUp(self):
+        sync._dav_dirs.clear()
+
+    @patch("src.sync.urllib.request.urlopen")
+    def test_propfind_301_follows_location(self, urlopen):
+        # PROPFIND 缺尾斜杠 → 301 → 按 Location 带尾斜杠重发 → 207
+        def fake_open(req, timeout=30):
+            if not req.full_url.endswith("/"):
+                raise urllib.error.HTTPError(
+                    req.full_url,
+                    301,
+                    "moved",
+                    {"Location": req.full_url + "/"},
+                    None,
+                )
+            return _FakeResp(207)
+
+        urlopen.side_effect = fake_open
+        bk = _make_backend(url="https://host/dav")
+        self.assertTrue(bk.file_exists("memes"))
+        self.assertEqual(urlopen.call_count, 2)
+
+    @patch("src.sync.urllib.request.urlopen")
+    def test_mkcol_301_follows_location(self, urlopen):
+        # MKCOL 打到已存在集合 → 301 → 带尾斜杠重发 → 405 已存在
+        def fake_open(req, timeout=30):
+            if req.method == "MKCOL" and not req.full_url.endswith("/"):
+                raise urllib.error.HTTPError(
+                    req.full_url,
+                    301,
+                    "moved",
+                    {"Location": req.full_url + "/"},
+                    None,
+                )
+            return _FakeResp(405)
+
+        urlopen.side_effect = fake_open
+        bk = _make_backend(url="https://host/dav")
+        self.assertTrue(bk.ensure_remote_dir("memes"))
+        self.assertEqual(urlopen.call_count, 2)
+
+    @patch("src.sync.urllib.request.urlopen")
+    def test_put_301_not_followed(self, urlopen):
+        # PUT 带请求体不自动跟 301（文件句柄已消费），交给调用方处理
+        urlopen.side_effect = urllib.error.HTTPError(
+            "u", 301, "moved", {"Location": "https://host/dav/memes/a.png"}, None
+        )
+        bk = _make_backend(url="https://host/dav")
+        fd, name = tempfile.mkstemp(suffix=".png")
+        os.close(fd)
+        try:
+            self.assertFalse(bk.upload_file(Path(name), "memes/a.png"))
+        finally:
+            os.unlink(name)
+        self.assertEqual(urlopen.call_count, 1)
+
+    @patch("src.sync.urllib.request.urlopen")
+    def test_redirect_to_same_url_raises(self, urlopen):
+        # 防循环：Location 指向自己 → 不重发，直接抛
+        def fake_open(req, timeout=30):
+            raise urllib.error.HTTPError(
+                req.full_url, 301, "moved", {"Location": req.full_url}, None
+            )
+
+        urlopen.side_effect = fake_open
+        bk = _make_backend(url="https://host/dav")
+        with self.assertRaises(SyncError):
+            bk.file_exists("memes/a.png")
+        self.assertEqual(urlopen.call_count, 1)
+
+    @patch("src.sync.urllib.request.urlopen")
+    def test_redirect_max_hops(self, urlopen):
+        # 最多跟 5 跳，之后把 301 原样抛出（不再无限跟）
+        calls = {"n": 0}
+
+        def fake_open(req, timeout=30):
+            calls["n"] += 1
+            raise urllib.error.HTTPError(
+                req.full_url,
+                301,
+                "moved",
+                {"Location": "https://host/dav/h%d" % calls["n"]},
+                None,
+            )
+
+        urlopen.side_effect = fake_open
+        bk = _make_backend(url="https://host/dav")
+        with self.assertRaises(SyncError):
+            bk.file_exists("memes/a.png")
+        self.assertEqual(calls["n"], 1 + _WebDAVBackend._MAX_REDIRECTS)
+
+    @patch("src.sync.urllib.request.urlopen")
+    def test_test_connection_uses_slashed_dir_url(self, urlopen):
+        urlopen.return_value = _FakeResp(207)
+        bk = _make_backend(url="https://host/dav", path="memes")
+        bk.test_connection()
+        self.assertEqual(urlopen.call_args[0][0].full_url, "https://host/dav/memes/")
+
+    @patch("src.sync.urllib.request.urlopen")
+    def test_list_files_uses_slashed_dir_url(self, urlopen):
+        body = b'<?xml version="1.0"?><D:multistatus xmlns:D="DAV:"></D:multistatus>'
+        urlopen.return_value = _FakeResp(207, body)
+        bk = _make_backend(url="https://host/dav")
+        self.assertEqual(bk.list_files("memes"), [])
+        self.assertEqual(urlopen.call_args[0][0].full_url, "https://host/dav/memes/")
+
+
 class TestWebDAVTlsTrust(unittest.TestCase):
     @patch("src.sync.urllib.request.urlopen")
     def test_default_uses_system_verification(self, urlopen):
