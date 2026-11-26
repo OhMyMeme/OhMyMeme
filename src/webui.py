@@ -805,8 +805,8 @@ def _storage_dir_validation(new_dir, old_dir, protected=()):
 def _find_hotkey_window_position(cursor, work_area, width, height):
     """按固定候选顺序选择完整落入工作区的窗口位置。
 
-    所有入参与返回值均为**逻辑像素**（pywebview Window.move() 会再乘以 DPI 缩放），
-    与 GetCursorPos/GetMonitorInfo 的物理像素不可混用。
+    四个入参必须使用同一坐标系（本模块调用方传入物理像素）；返回值与该坐标系
+    一致，再由调用方按 pywebview Window.move() 的 DPI 倍率换算。
     """
     cursor_x, cursor_y = cursor
     left, top, right, bottom = work_area
@@ -835,11 +835,15 @@ def _invoke_on_ui_thread(win, func):
     native = getattr(win, "native", None)
     if native is None:
         return func()
+    if not hasattr(native, "InvokeRequired"):
+        # 非 WinForms 后端（gtk/cocoa）：对话框在调用线程创建即可，保持原路径
+        return func()
     try:
         already_on_ui_thread = not native.InvokeRequired
     except Exception as e:
-        logger.debug("ui-thread check unavailable (%s), calling inline", e)
-        return func()
+        # 无法判断线程归属时不能猜：在 pywebview 工作线程上创建 WinForms 模态框
+        # 正是原挂起路径，宁可报错让前端收到"取消"，也不要再卡死主窗口。
+        raise RuntimeError("无法确认窗口 UI 线程，已放弃打开对话框") from e
     if already_on_ui_thread:
         # 已在 UI 线程，直接执行；func 的异常必须原样冒泡，不能被下面的
         # Invoke 失败兜底误当成"线程检查失败"而重跑一次。
@@ -861,13 +865,27 @@ def _invoke_on_ui_thread(win, func):
     except Exception as e:
         # 仅当 _call 从未跑起来时才回退；若它在 UI 线程内执行过（哪怕随后
         # Invoke 抛出），重跑会让对话框打开两次并重新落回工作线程挂起路径。
-        if not ran:
-            logger.debug("ui-thread invoke unavailable (%s), calling inline", e)
-            return func()
-        raise
+        if ran:
+            raise
+        raise RuntimeError("无法在 UI 线程打开对话框") from e
     if "error" in box:
         raise box["error"]
     return box.get("result")
+
+
+_DIALOG_LOCKS = {}
+_DIALOG_LOCKS_GUARD = threading.Lock()
+
+
+def _dialog_lock(win):
+    """同一窗口同一时刻只允许一个模态对话框：重复点击不应再叠加第二个。"""
+    key = id(win)
+    with _DIALOG_LOCKS_GUARD:
+        lock = _DIALOG_LOCKS.get(key)
+        if lock is None:
+            lock = threading.Lock()
+            _DIALOG_LOCKS[key] = lock
+        return lock
 
 
 def _window_drag_update(win_x, win_y, origin, last_move, dx, dy):
@@ -897,12 +915,18 @@ class JsApi:
         win = webview.windows[0] if webview.windows else None
         if win is None:
             return None
+        lock = _dialog_lock(win)
+        if not lock.acquire(blocking=False):
+            logger.debug("file dialog already open, ignore duplicate request")
+            return None
         try:
             return _invoke_on_ui_thread(win, lambda: win.create_file_dialog(kind, **kw))
         except Exception as e:
             # 不再静默吞掉：参数不合法/平台不支持时前端只会看到"取消"，无从排查
             logger.warning("file dialog error (kind=%s): %s", kind, e)
             return None
+        finally:
+            lock.release()
 
     def _cloud_base(self) -> list:
         """可见云条目（无关键字/标签过滤）；云端直接使用关闭时返回空"""
@@ -3897,6 +3921,10 @@ class SettingsApi:
             win = webview.windows[0] if webview.windows else None
         if win is None:
             return None
+        lock = _dialog_lock(win)
+        if not lock.acquire(blocking=False):
+            logger.debug("file dialog already open, ignore duplicate request")
+            return None
         try:
             result = _invoke_on_ui_thread(
                 win, lambda: win.create_file_dialog(kind, **kw)
@@ -3904,6 +3932,8 @@ class SettingsApi:
         except Exception as e:
             logger.warning("file dialog error (kind=%s): %s", kind, e)
             return None
+        finally:
+            lock.release()
         # 对话框关闭后焦点可能回到主窗口，恢复设置窗口到前台
         try:
             self._webui.focus_settings_window()
@@ -4921,6 +4951,9 @@ class WebUI:
         self._started = False
         self._pending_hide = False
         self._hotkey_session = False
+        # 可见状态代次：每次 show/hide/最小化都自增，用于判断热键定位期间
+        # 是否发生过更新的一次显示/隐藏请求。
+        self._window_state_gen = 0
         self._last_toggle_ms = 0
         self._last_tray_toggle_ms = 0
         self._window_state_lock = threading.Lock()
@@ -4995,6 +5028,35 @@ class WebUI:
             pass
         return 1.0
 
+    def _monitor_dpi_scale(self, monitor) -> float:
+        """光标所在显示器的有效 DPI 比例（1.0 = 100%），失败回退窗口 DPI。"""
+        try:
+            import ctypes
+            from ctypes import wintypes
+
+            shcore = ctypes.WinDLL("shcore")
+            shcore.GetDpiForMonitor.argtypes = (
+                wintypes.HMONITOR,
+                ctypes.c_int,
+                ctypes.POINTER(wintypes.UINT),
+                ctypes.POINTER(wintypes.UINT),
+            )
+            shcore.GetDpiForMonitor.restype = ctypes.c_long
+            dpi_x = wintypes.UINT()
+            dpi_y = wintypes.UINT()
+            # MDT_EFFECTIVE_DPI = 0
+            if (
+                shcore.GetDpiForMonitor(
+                    monitor, 0, ctypes.byref(dpi_x), ctypes.byref(dpi_y)
+                )
+                == 0
+            ):
+                if dpi_x.value:
+                    return dpi_x.value / 96.0
+        except Exception as e:
+            logger.debug("get monitor dpi: %s", e)
+        return self._window_dpi_scale()
+
     def _get_hotkey_window_position(self):
         """获取 Windows 光标所在显示器工作区内的热键窗口位置（逻辑像素）"""
         if platform.system() != "Windows":
@@ -5049,9 +5111,9 @@ class WebUI:
                 raise ctypes.WinError(ctypes.get_last_error())
 
             work = monitor_info.rcWork
-            scale = self._window_dpi_scale() or 1.0
-            # 窗口尺寸取物理矩形后按同一比例折回逻辑像素：既避免 win.width/height
-            # 在缩放屏上量纲不一致，也保证与 move() 的换算方式完全对应。
+            move_scale = self._window_dpi_scale() or 1.0
+            target_scale = self._monitor_dpi_scale(monitor) or move_scale
+            # 逻辑尺寸：物理矩形按 move() 的系数折算（move() 用窗口当前 DPI 做乘法）
             width = self._window.width
             height = self._window.height
             try:
@@ -5062,23 +5124,24 @@ class WebUI:
                 if user32.GetWindowRect(
                     hwnd, ctypes.byref(rect)
                 ) and not user32.IsIconic(hwnd):
-                    rect_w = (rect.right - rect.left) / scale
-                    rect_h = (rect.bottom - rect.top) / scale
+                    rect_w = (rect.right - rect.left) / move_scale
+                    rect_h = (rect.bottom - rect.top) / move_scale
                     if rect_w > 0 and rect_h > 0:
                         width, height = rect_w, rect_h
             except Exception as e:
                 logger.debug("get window rect: %s", e)
-            return _find_hotkey_window_position(
-                (cursor.x / scale, cursor.y / scale),
-                (
-                    work.left / scale,
-                    work.top / scale,
-                    work.right / scale,
-                    work.bottom / scale,
-                ),
-                width,
-                height,
+            # 容纳判断放在工作区物理坐标里做：窗口移到光标所在屏后会按那块屏的
+            # DPI 重新缩放，用 target_scale 估算移动后的物理尺寸才能避免贴边越界；
+            # 结果再除以 move_scale 换回 move() 需要的逻辑坐标。
+            position = _find_hotkey_window_position(
+                (cursor.x, cursor.y),
+                (work.left, work.top, work.right, work.bottom),
+                width * target_scale,
+                height * target_scale,
             )
+            if position is None:
+                return None
+            return (position[0] / move_scale, position[1] / move_scale)
         except Exception as e:
             logger.warning("hotkey window position error: %s", e)
             return None
@@ -5090,6 +5153,7 @@ class WebUI:
             return
         with self._window_state_lock:
             self._visible = True
+            self._window_state_gen += 1
             self._hotkey_session = False
             self._pending_hide = False
             self._show_on_gui()
@@ -5189,6 +5253,7 @@ class WebUI:
         """系统最小化（Win+D/显示桌面）后同步可见状态，使托盘/热键一次即可还原"""
         with self._window_state_lock:
             self._visible = False
+            self._window_state_gen += 1
             self._hotkey_session = False
 
     def hide(self):
@@ -5197,6 +5262,7 @@ class WebUI:
             return
         with self._window_state_lock:
             self._visible = False
+            self._window_state_gen += 1
             self._hotkey_session = False
             self._pending_hide = False
             self._hide_on_gui()
@@ -5244,9 +5310,11 @@ class WebUI:
             self._last_toggle_ms = now
             if self._visible:
                 self._visible = False
+                self._window_state_gen += 1
                 self._hotkey_session = False
                 self._hide_on_gui()
                 return
+            generation = self._window_state_gen
         # 定位放在锁外：_get_hotkey_window_position 会读 WinForms Handle 并调
         # GetDpiForWindow，属于原生调用；持锁时若 UI 线程正需要 _window_state_lock
         # （hide/schedule_hide），会形成"worker 等 UI、UI 等锁"的死锁。
@@ -5257,7 +5325,9 @@ class WebUI:
             except Exception:
                 position = None
         with self._window_state_lock:
-            if self._visible:  # 计算期间已被别处显示，放弃本次热键显示
+            # 计算期间只要发生过任何显示/隐藏（例如"显示后又隐藏"），本次热键
+            # 请求即已过期，必须放弃；否则会把用户刚隐藏的窗口重新弹出来。
+            if self._window_state_gen != generation:
                 return
             if position is not None:
                 try:
@@ -5265,8 +5335,8 @@ class WebUI:
                 except Exception:
                     pass
             self._visible = True
+            self._window_state_gen += 1
             self._show_on_gui()
-            # 在锁内设置 _hotkey_session，避免 show 与 schedule_hide 之间的竞争窗口
             self._hotkey_session = True
             win = self._window
         # 聚焦搜索框放到锁外：evaluate_js 可能阻塞，不能占着窗口状态锁
