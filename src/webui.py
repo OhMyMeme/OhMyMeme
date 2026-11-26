@@ -1,5 +1,6 @@
 """PyWebView 现代化 UI 窗口管理器 + JS API"""
 
+import ctypes
 import io
 import logging
 import math
@@ -822,55 +823,235 @@ def _find_hotkey_window_position(cursor, work_area, width, height):
     return None
 
 
-def _invoke_on_ui_thread(win, func):
-    """在窗口所属的 WinForms UI 线程上执行 func 并返回其结果。
+class _OPENFILENAMEW(ctypes.Structure):
+    _fields_ = (
+        ("lStructSize", ctypes.c_uint32),
+        ("hwndOwner", ctypes.c_void_p),
+        ("hInstance", ctypes.c_void_p),
+        ("lpstrFilter", ctypes.c_wchar_p),
+        ("lpstrCustomFilter", ctypes.c_wchar_p),
+        ("nMaxCustFilter", ctypes.c_uint32),
+        ("nFilterIndex", ctypes.c_uint32),
+        ("lpstrFile", ctypes.c_wchar_p),
+        ("nMaxFile", ctypes.c_uint32),
+        ("lpstrFileTitle", ctypes.c_wchar_p),
+        ("nMaxFileTitle", ctypes.c_uint32),
+        ("lpstrInitialDir", ctypes.c_wchar_p),
+        ("lpstrTitle", ctypes.c_wchar_p),
+        ("Flags", ctypes.c_uint32),
+        ("nFileOffset", ctypes.c_uint16),
+        ("nFileExtension", ctypes.c_uint16),
+        ("lpstrDefExt", ctypes.c_wchar_p),
+        ("lCustData", ctypes.c_void_p),
+        ("lpfnHook", ctypes.c_void_p),
+        ("lpTemplateName", ctypes.c_wchar_p),
+        ("pvReserved", ctypes.c_void_p),
+        ("dwReserved", ctypes.c_uint32),
+        ("FlagsEx", ctypes.c_uint32),
+    )
 
-    pywebview 的 JS API 回调运行在独立工作线程（webview.util.js_bridge_call
-    明确"在单独线程执行以避免阻塞 UI 线程"），而 WinForms 的模态对话框
-    （OpenFileDialog/SaveFileDialog/IFileDialog）必须在创建窗口的那个 STA
-    线程上打开：在工作线程上调用时对话框不出现，主窗口线程随即卡在
-    WM_NULL 超时（表现为"点按钮没反应"、事件日志 AppHang）。
-    因此在 UI 线程上转一手；无法判断线程归属时退回直接调用，保持兼容。
-    """
-    native = getattr(win, "native", None)
-    if native is None:
-        return func()
-    if not hasattr(native, "InvokeRequired"):
-        # 非 WinForms 后端（gtk/cocoa）：对话框在调用线程创建即可，保持原路径
-        return func()
+
+class _BROWSEINFOW(ctypes.Structure):
+    _fields_ = (
+        ("hwndOwner", ctypes.c_void_p),
+        ("pidlRoot", ctypes.c_void_p),
+        ("pszDisplayName", ctypes.c_wchar_p),
+        ("lpszTitle", ctypes.c_wchar_p),
+        ("ulFlags", ctypes.c_uint32),
+        ("lpfn", ctypes.c_void_p),
+        ("lParam", ctypes.c_void_p),
+        ("iImage", ctypes.c_int),
+    )
+
+
+def _window_hwnd(win):
     try:
-        already_on_ui_thread = not native.InvokeRequired
-    except Exception as e:
-        # 无法判断线程归属时不能猜：在 pywebview 工作线程上创建 WinForms 模态框
-        # 正是原挂起路径，宁可报错让前端收到"取消"，也不要再卡死主窗口。
-        raise RuntimeError("无法确认窗口 UI 线程，已放弃打开对话框") from e
-    if already_on_ui_thread:
-        # 已在 UI 线程，直接执行；func 的异常必须原样冒泡，不能被下面的
-        # Invoke 失败兜底误当成"线程检查失败"而重跑一次。
-        return func()
+        return int(win.native.Handle.ToInt64())
+    except Exception:
+        return None
+
+
+def _win32_filter(file_types):
+    """pywebview 风格过滤项 → Win32 通用对话框的双 NUL 过滤器串。"""
+    pairs = []
+    for item in file_types or ():
+        m = re.match(r"^\s*(.*?)\s*\(([^)]*)\)\s*$", str(item))
+        desc, pattern = (m.group(1), m.group(2)) if m else ("文件", str(item))
+        pairs.append("%s (%s)" % (desc, pattern))
+        pairs.append(pattern)
+    if not pairs:
+        pairs = ["所有文件 (*.*)", "*.*"]
+    return "\0".join(pairs) + "\0\0"
+
+
+def _run_on_sta_thread(func):
+    """在专用 STA 线程执行 func（Win32 通用对话框要求 STA 且有自建消息循环）。"""
     box = {}
-    ran = []
 
-    def _call():
-        ran.append(True)
+    def runner():
         try:
-            box["result"] = func()
-        except Exception as e:  # UI 线程内抛出的异常无法跨线程传递
+            ctypes.windll.ole32.CoInitializeEx(None, 0x2)  # COINIT_APARTMENTTHREADED
+        except Exception:
+            pass
+        try:
+            box["value"] = func()
+        except Exception as e:
             box["error"] = e
+        finally:
+            try:
+                ctypes.windll.ole32.CoUninitialize()
+            except Exception:
+                pass
 
-    try:
-        from System import Action
-
-        native.Invoke(Action(_call))
-    except Exception as e:
-        # 仅当 _call 从未跑起来时才回退；若它在 UI 线程内执行过（哪怕随后
-        # Invoke 抛出），重跑会让对话框打开两次并重新落回工作线程挂起路径。
-        if ran:
-            raise
-        raise RuntimeError("无法在 UI 线程打开对话框") from e
+    t = threading.Thread(target=runner, daemon=True)
+    t.start()
+    t.join()
     if "error" in box:
         raise box["error"]
-    return box.get("result")
+    return box.get("value")
+
+
+def _native_file_dialog(
+    kind,
+    parent_hwnd=None,
+    directory="",
+    allow_multiple=False,
+    save_filename="",
+    file_types=(),
+):
+    """用 Win32 通用对话框取路径，返回元组或 None（取消/失败）。
+
+    不走 pywebview：它的对话框要么在 JS API 工作线程创建（WinForms 模态框不显示、
+    主窗口 WM_NULL 超时挂起），要么经 Control.Invoke 回到 UI 线程创建（CLR 回调
+    需要 GIL，与持有 GIL 的 JS 线程互等，实测整窗挂死）。这里自建 STA 线程直接调
+    comdlg32/shell32，不产生任何 CLR→Python 回调，因此不碰 GIL 交互。
+    """
+    open_flags = 0x00080000 | 0x00001000 | 0x00000800 | 0x00000008
+    save_flags = 0x00080000 | 0x00000008 | 0x00000002
+
+    def show():
+        comdlg32 = ctypes.WinDLL("comdlg32", use_last_error=True)
+        if kind == 20:  # webview.FileDialog.FOLDER
+            shell32 = ctypes.WinDLL("shell32", use_last_error=True)
+            ole32 = ctypes.WinDLL("ole32", use_last_error=True)
+            shell32.SHBrowseForFolderW.argtypes = (ctypes.POINTER(_BROWSEINFOW),)
+            shell32.SHBrowseForFolderW.restype = ctypes.c_void_p
+            shell32.SHGetPathFromIDListW.argtypes = (
+                ctypes.c_void_p,
+                ctypes.c_wchar_p,
+            )
+            shell32.SHGetPathFromIDListW.restype = ctypes.c_int
+            ole32.CoTaskMemFree.argtypes = (ctypes.c_void_p,)
+            name_buf = ctypes.create_unicode_buffer(260)
+            info = _BROWSEINFOW()
+            info.hwndOwner = parent_hwnd
+            info.pszDisplayName = ctypes.cast(name_buf, ctypes.c_wchar_p)
+            info.lpszTitle = "选择文件夹"
+            info.ulFlags = 0x1 | 0x40 | 0x10  # RETURNONLYFSDIRS|NEWDIALOGSTYLE|EDITBOX
+            callback = None
+            if directory:
+                # BROWSEINFO 没有 initial-dir 字段：在 BFFM_INITIALIZED 里发
+                # BFFM_SETSELECTIONW 选中传入目录；回调对象必须保持引用到对话框返回。
+                user32 = ctypes.WinDLL("user32", use_last_error=True)
+                user32.SendMessageW.argtypes = (
+                    ctypes.c_void_p,
+                    ctypes.c_uint,
+                    ctypes.c_void_p,
+                    ctypes.c_wchar_p,
+                )
+                user32.SendMessageW.restype = ctypes.c_void_p
+                browse_cb = ctypes.WINFUNCTYPE(
+                    ctypes.c_int,
+                    ctypes.c_void_p,
+                    ctypes.c_uint,
+                    ctypes.c_void_p,
+                    ctypes.c_void_p,
+                )
+
+                def _init_dir(hwnd, msg, lparam, data):
+                    if msg == 1:  # BFFM_INITIALIZED
+                        user32.SendMessageW(
+                            hwnd, 0x0467, True, directory
+                        )  # BFFM_SETSELECTIONW
+                    return 0
+
+                callback = browse_cb(_init_dir)
+                info.lpfn = ctypes.cast(callback, ctypes.c_void_p)
+            pidl = shell32.SHBrowseForFolderW(ctypes.byref(info))
+            if not pidl:
+                return None
+            path_buf = ctypes.create_unicode_buffer(32768)
+            # 优先用 Ex：SHGetPathFromIDListW 自身受 MAX_PATH 限制，给再大的缓冲区
+            # 也拿不到超长路径（用户确认后会被当成取消）。Ex 显式传缓冲区长度。
+            ok = 0
+            try:
+                shell32.SHGetPathFromIDListEx.argtypes = (
+                    ctypes.c_void_p,
+                    ctypes.c_wchar_p,
+                    ctypes.c_uint32,
+                    ctypes.c_uint32,
+                )
+                shell32.SHGetPathFromIDListEx.restype = ctypes.c_int
+                ok = shell32.SHGetPathFromIDListEx(pidl, path_buf, len(path_buf), 0)
+            except AttributeError:
+                ok = shell32.SHGetPathFromIDListW(pidl, path_buf)
+            ole32.CoTaskMemFree(pidl)
+            return (path_buf.value,) if ok and path_buf.value else None
+
+        comdlg32.CommDlgExtendedError.argtypes = ()
+        comdlg32.CommDlgExtendedError.restype = ctypes.c_uint32
+        comdlg32.GetOpenFileNameW.argtypes = (ctypes.POINTER(_OPENFILENAMEW),)
+        comdlg32.GetOpenFileNameW.restype = ctypes.c_int
+        comdlg32.GetSaveFileNameW.argtypes = (ctypes.POINTER(_OPENFILENAMEW),)
+        comdlg32.GetSaveFileNameW.restype = ctypes.c_int
+        call = comdlg32.GetOpenFileNameW if kind == 10 else comdlg32.GetSaveFileNameW
+        m = re.search(r"\*\.(\w+)", " ".join(str(t) for t in file_types or ()))
+
+        def _run(buf_chars):
+            buf = ctypes.create_unicode_buffer(buf_chars)
+            if save_filename:
+                buf.value = save_filename
+            ofn = _OPENFILENAMEW()
+            ofn.lStructSize = ctypes.sizeof(_OPENFILENAMEW)
+            ofn.hwndOwner = parent_hwnd
+            ofn.lpstrFilter = _win32_filter(file_types)
+            ofn.lpstrFile = ctypes.cast(buf, ctypes.c_wchar_p)
+            ofn.nMaxFile = len(buf)
+            ofn.lpstrInitialDir = directory or None
+            if kind == 10:  # OPEN
+                ofn.Flags = open_flags | (0x00000200 if allow_multiple else 0)
+            else:  # SAVE
+                ofn.Flags = save_flags
+                # 补默认扩展名：用户只输入文件名时系统会自动加 .zip/.txt
+                ofn.lpstrDefExt = m.group(1) if m else None
+            if call(ctypes.byref(ofn)):
+                return buf, 0
+            return None, comdlg32.CommDlgExtendedError()
+
+        result, err = _run(32768)
+        # 多选路径总长可能超过初始缓冲区：按 FNERR_BUFFERTOOSMALL 逐级扩容，
+        # 直到成功或达到上限；不要把"缓冲区不足"当成用户取消。
+        for size in (131072, 524288, 1048576):
+            if err != 0x3003:  # FNERR_BUFFERTOOSMALL
+                break
+            result, err = _run(size)
+        if result is None:
+            if err:
+                logger.warning("file dialog failed, CommDlgExtendedError=0x%04x", err)
+            return None
+        buf = result
+        raw = ctypes.string_at(ctypes.addressof(buf), ctypes.sizeof(buf)).decode(
+            "utf-16-le", "ignore"
+        )
+        parts = [p for p in raw.split("\0") if p]
+        if not parts:
+            return None
+        if kind == 10 and allow_multiple and len(parts) > 1:
+            base = parts[0]
+            return tuple(os.path.join(base, name) for name in parts[1:])
+        return (parts[0],)
+
+    return _run_on_sta_thread(show)
 
 
 _DIALOG_LOCKS = {}
@@ -920,7 +1101,16 @@ class JsApi:
             logger.debug("file dialog already open, ignore duplicate request")
             return None
         try:
-            return _invoke_on_ui_thread(win, lambda: win.create_file_dialog(kind, **kw))
+            if platform.system() != "Windows":
+                return win.create_file_dialog(kind, **kw)
+            return _native_file_dialog(
+                int(kind),
+                _window_hwnd(win),
+                directory=kw.get("directory", ""),
+                allow_multiple=kw.get("allow_multiple", False),
+                save_filename=kw.get("save_filename", ""),
+                file_types=kw.get("file_types", ()),
+            )
         except Exception as e:
             # 不再静默吞掉：参数不合法/平台不支持时前端只会看到"取消"，无从排查
             logger.warning("file dialog error (kind=%s): %s", kind, e)
@@ -3658,6 +3848,8 @@ class SettingsApi:
         result = self._dialog(
             webview.FileDialog.SAVE,
             allow_multiple=False,
+            # 给一个默认文件名，否则「另存为」框的文件名为空，点保存会被系统拒绝
+            save_filename=os.path.basename(st["zip_path"]),
             file_types=("ZIP 文件 (*.zip)",),
         )
         if not result:
@@ -3668,7 +3860,11 @@ class SettingsApi:
         if not dst.lower().endswith(".zip"):
             dst += ".zip"
         src = st["zip_path"]
-        shutil.copy2(src, dst)
+        try:
+            shutil.copy2(src, dst)
+        except Exception as e:
+            logger.warning("save qq zip failed: %s -> %s: %s", src, dst, e)
+            return {"ok": False, "error": "保存失败: %s" % e}
         try:
             os.unlink(src)
         except OSError:
@@ -3926,9 +4122,17 @@ class SettingsApi:
             logger.debug("file dialog already open, ignore duplicate request")
             return None
         try:
-            result = _invoke_on_ui_thread(
-                win, lambda: win.create_file_dialog(kind, **kw)
-            )
+            if platform.system() != "Windows":
+                result = win.create_file_dialog(kind, **kw)
+            else:
+                result = _native_file_dialog(
+                    int(kind),
+                    _window_hwnd(win),
+                    directory=kw.get("directory", ""),
+                    allow_multiple=kw.get("allow_multiple", False),
+                    save_filename=kw.get("save_filename", ""),
+                    file_types=kw.get("file_types", ()),
+                )
         except Exception as e:
             logger.warning("file dialog error (kind=%s): %s", kind, e)
             return None
