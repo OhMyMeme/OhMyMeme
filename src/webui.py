@@ -803,7 +803,11 @@ def _storage_dir_validation(new_dir, old_dir, protected=()):
 
 
 def _find_hotkey_window_position(cursor, work_area, width, height):
-    """按固定候选顺序选择完整落入工作区的窗口位置"""
+    """按固定候选顺序选择完整落入工作区的窗口位置。
+
+    所有入参与返回值均为**逻辑像素**（pywebview Window.move() 会再乘以 DPI 缩放），
+    与 GetCursorPos/GetMonitorInfo 的物理像素不可混用。
+    """
     cursor_x, cursor_y = cursor
     left, top, right, bottom = work_area
     candidates = (
@@ -816,6 +820,54 @@ def _find_hotkey_window_position(cursor, work_area, width, height):
         if left <= x and top <= y and x + width <= right and y + height <= bottom:
             return x, y
     return None
+
+
+def _invoke_on_ui_thread(win, func):
+    """在窗口所属的 WinForms UI 线程上执行 func 并返回其结果。
+
+    pywebview 的 JS API 回调运行在独立工作线程（webview.util.js_bridge_call
+    明确"在单独线程执行以避免阻塞 UI 线程"），而 WinForms 的模态对话框
+    （OpenFileDialog/SaveFileDialog/IFileDialog）必须在创建窗口的那个 STA
+    线程上打开：在工作线程上调用时对话框不出现，主窗口线程随即卡在
+    WM_NULL 超时（表现为"点按钮没反应"、事件日志 AppHang）。
+    因此在 UI 线程上转一手；无法判断线程归属时退回直接调用，保持兼容。
+    """
+    native = getattr(win, "native", None)
+    if native is None:
+        return func()
+    try:
+        already_on_ui_thread = not native.InvokeRequired
+    except Exception as e:
+        logger.debug("ui-thread check unavailable (%s), calling inline", e)
+        return func()
+    if already_on_ui_thread:
+        # 已在 UI 线程，直接执行；func 的异常必须原样冒泡，不能被下面的
+        # Invoke 失败兜底误当成"线程检查失败"而重跑一次。
+        return func()
+    box = {}
+    ran = []
+
+    def _call():
+        ran.append(True)
+        try:
+            box["result"] = func()
+        except Exception as e:  # UI 线程内抛出的异常无法跨线程传递
+            box["error"] = e
+
+    try:
+        from System import Action
+
+        native.Invoke(Action(_call))
+    except Exception as e:
+        # 仅当 _call 从未跑起来时才回退；若它在 UI 线程内执行过（哪怕随后
+        # Invoke 抛出），重跑会让对话框打开两次并重新落回工作线程挂起路径。
+        if not ran:
+            logger.debug("ui-thread invoke unavailable (%s), calling inline", e)
+            return func()
+        raise
+    if "error" in box:
+        raise box["error"]
+    return box.get("result")
 
 
 def _window_drag_update(win_x, win_y, origin, last_move, dx, dy):
@@ -846,8 +898,10 @@ class JsApi:
         if win is None:
             return None
         try:
-            return win.create_file_dialog(kind, **kw)
-        except Exception:
+            return _invoke_on_ui_thread(win, lambda: win.create_file_dialog(kind, **kw))
+        except Exception as e:
+            # 不再静默吞掉：参数不合法/平台不支持时前端只会看到"取消"，无从排查
+            logger.warning("file dialog error (kind=%s): %s", kind, e)
             return None
 
     def _cloud_base(self) -> list:
@@ -3772,7 +3826,10 @@ class SettingsApi:
         result = self._dialog(
             webview.FileDialog.OPEN,
             allow_multiple=False,
-            file_types=("INI Files (*.ini);;All Files (*)",),
+            # pywebview 的 file_types 以"每个元素一条过滤项"，且必须匹配
+            # '说明 (*.扩展名)'；Windows 风格用 ";;" 拼成一条会被
+            # webview.util.parse_file_type 判为非法 → ValueError → 对话框不出现
+            file_types=("INI 文件 (*.ini)", "所有文件 (*.*)"),
         )
         if not result:
             return {"ok": False, "cancelled": True}
@@ -3841,8 +3898,11 @@ class SettingsApi:
         if win is None:
             return None
         try:
-            result = win.create_file_dialog(kind, **kw)
-        except Exception:
+            result = _invoke_on_ui_thread(
+                win, lambda: win.create_file_dialog(kind, **kw)
+            )
+        except Exception as e:
+            logger.warning("file dialog error (kind=%s): %s", kind, e)
             return None
         # 对话框关闭后焦点可能回到主窗口，恢复设置窗口到前台
         try:
@@ -4901,8 +4961,42 @@ class WebUI:
 
     # --- 窗口控制（从任何线程调用安全）---
 
+    def _window_dpi_scale(self) -> float:
+        """返回窗口所在显示器的 DPI 缩放（1.0 = 100%）。
+
+        pywebview 的 WinFormsWindow.move() 把入参当作**逻辑像素**并乘以
+        GetDpiForWindow(hwnd)/96 再调用 SetWindowPos。这里必须用同一比例把
+        GetCursorPos/GetMonitorInfo 的**物理像素**换算成逻辑像素，否则 150%
+        缩放下窗口会落到光标相对屏幕原点的 1.5 倍处（125%→1.25 倍）。
+        """
+        import ctypes
+        from ctypes import wintypes
+
+        user32 = ctypes.WinDLL("user32", use_last_error=True)
+        # 必须声明原型：HWND 是 64 位指针，缺省会被 ctypes 当 32 位 int 截断，
+        # GetDpiForWindow 会拿到错句柄并返回 0，整条定位链路随之失效。
+        user32.GetDpiForWindow.argtypes = (wintypes.HWND,)
+        user32.GetDpiForWindow.restype = wintypes.UINT
+        user32.GetDpiForSystem.argtypes = ()
+        user32.GetDpiForSystem.restype = wintypes.UINT
+
+        try:
+            hwnd = self._window.native.Handle.ToInt64()
+            dpi = user32.GetDpiForWindow(hwnd)
+            if dpi:
+                return dpi / 96.0
+        except Exception as e:
+            logger.debug("get window dpi: %s", e)
+        try:
+            dpi = user32.GetDpiForSystem()
+            if dpi:
+                return dpi / 96.0
+        except Exception:
+            pass
+        return 1.0
+
     def _get_hotkey_window_position(self):
-        """获取 Windows 光标所在显示器工作区内的热键窗口位置"""
+        """获取 Windows 光标所在显示器工作区内的热键窗口位置（逻辑像素）"""
         if platform.system() != "Windows":
             return None
         try:
@@ -4938,6 +5032,10 @@ class WebUI:
                 ctypes.POINTER(MONITORINFO),
             )
             user32.GetMonitorInfoW.restype = wintypes.BOOL
+            user32.GetWindowRect.argtypes = (wintypes.HWND, ctypes.POINTER(RECT))
+            user32.GetWindowRect.restype = wintypes.BOOL
+            user32.IsIconic.argtypes = (wintypes.HWND,)
+            user32.IsIconic.restype = wintypes.BOOL
 
             cursor = POINT()
             if not user32.GetCursorPos(ctypes.byref(cursor)):
@@ -4951,11 +5049,35 @@ class WebUI:
                 raise ctypes.WinError(ctypes.get_last_error())
 
             work = monitor_info.rcWork
+            scale = self._window_dpi_scale() or 1.0
+            # 窗口尺寸取物理矩形后按同一比例折回逻辑像素：既避免 win.width/height
+            # 在缩放屏上量纲不一致，也保证与 move() 的换算方式完全对应。
+            width = self._window.width
+            height = self._window.height
+            try:
+                rect = RECT()
+                hwnd = self._window.native.Handle.ToInt64()
+                # 最小化窗口的矩形落在 -32000 附近且宽高未必为 0，必须用 IsIconic
+                # 排除；否则会拿最小化尺寸做"能否完整容纳"的判断，恢复后越界。
+                if user32.GetWindowRect(
+                    hwnd, ctypes.byref(rect)
+                ) and not user32.IsIconic(hwnd):
+                    rect_w = (rect.right - rect.left) / scale
+                    rect_h = (rect.bottom - rect.top) / scale
+                    if rect_w > 0 and rect_h > 0:
+                        width, height = rect_w, rect_h
+            except Exception as e:
+                logger.debug("get window rect: %s", e)
             return _find_hotkey_window_position(
-                (cursor.x, cursor.y),
-                (work.left, work.top, work.right, work.bottom),
-                self._window.width,
-                self._window.height,
+                (cursor.x / scale, cursor.y / scale),
+                (
+                    work.left / scale,
+                    work.top / scale,
+                    work.right / scale,
+                    work.bottom / scale,
+                ),
+                width,
+                height,
             )
         except Exception as e:
             logger.warning("hotkey window position error: %s", e)
@@ -5120,17 +5242,26 @@ class WebUI:
             if now - self._last_toggle_ms < self._HOTKEY_DEBOUNCE_S:
                 return
             self._last_toggle_ms = now
-            visible = self._visible
-            if visible:
+            if self._visible:
                 self._visible = False
                 self._hotkey_session = False
                 self._hide_on_gui()
                 return
-            if self._cfg.get("hotkey_show_at_mouse", False):
+        # 定位放在锁外：_get_hotkey_window_position 会读 WinForms Handle 并调
+        # GetDpiForWindow，属于原生调用；持锁时若 UI 线程正需要 _window_state_lock
+        # （hide/schedule_hide），会形成"worker 等 UI、UI 等锁"的死锁。
+        position = None
+        if self._cfg.get("hotkey_show_at_mouse", False):
+            try:
+                position = self._get_hotkey_window_position()
+            except Exception:
+                position = None
+        with self._window_state_lock:
+            if self._visible:  # 计算期间已被别处显示，放弃本次热键显示
+                return
+            if position is not None:
                 try:
-                    position = self._get_hotkey_window_position()
-                    if position is not None:
-                        self._window.move(*position)
+                    self._window.move(*position)
                 except Exception:
                     pass
             self._visible = True
