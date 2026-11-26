@@ -3860,9 +3860,17 @@ class SettingsApi:
         if not dst.lower().endswith(".zip"):
             dst += ".zip"
         src = st["zip_path"]
+        # 先复制到目标目录内的临时文件再原子替换：复制中途失败时不会留下
+        # 半个目标文件，也不会动到已存在的同名旧文件；源 ZIP 始终保留。
+        tmp = dst + ".part"
         try:
-            shutil.copy2(src, dst)
+            shutil.copy2(src, tmp)
+            os.replace(tmp, dst)
         except Exception as e:
+            try:
+                os.unlink(tmp)
+            except OSError:
+                pass
             logger.warning("save qq zip failed: %s -> %s: %s", src, dst, e)
             return {"ok": False, "error": "保存失败: %s" % e}
         try:
