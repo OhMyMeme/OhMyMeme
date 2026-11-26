@@ -3860,9 +3860,17 @@ class SettingsApi:
         if not dst.lower().endswith(".zip"):
             dst += ".zip"
         src = st["zip_path"]
-        # 先复制到目标目录内的临时文件再原子替换：复制中途失败时不会留下
-        # 半个目标文件，也不会动到已存在的同名旧文件；源 ZIP 始终保留。
-        tmp = dst + ".part"
+        # 用户选的目标就是源文件本身：视为已保存，避免重建后把源删掉。
+        if os.path.abspath(dst) == os.path.abspath(src):
+            adb_util.reset_qq_import()
+            return {"ok": True, "path": dst}
+        # 先复制到目标目录内独占创建的临时文件再原子替换：复制中途失败不会留下
+        # 半个目标文件，也不会覆盖同名旧文件；源 ZIP 始终保留。
+        target_dir = os.path.dirname(os.path.abspath(dst)) or "."
+        fd, tmp = tempfile.mkstemp(
+            dir=target_dir, prefix=os.path.basename(dst) + ".", suffix=".part"
+        )
+        os.close(fd)
         try:
             shutil.copy2(src, tmp)
             os.replace(tmp, dst)
