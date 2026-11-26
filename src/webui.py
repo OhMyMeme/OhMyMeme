@@ -1,5 +1,6 @@
 """PyWebView 现代化 UI 窗口管理器 + JS API"""
 
+import ctypes
 import io
 import logging
 import math
@@ -803,7 +804,11 @@ def _storage_dir_validation(new_dir, old_dir, protected=()):
 
 
 def _find_hotkey_window_position(cursor, work_area, width, height):
-    """按固定候选顺序选择完整落入工作区的窗口位置"""
+    """按固定候选顺序选择完整落入工作区的窗口位置。
+
+    四个入参必须使用同一坐标系（本模块调用方传入物理像素）；返回值与该坐标系
+    一致，再由调用方按 pywebview Window.move() 的 DPI 倍率换算。
+    """
     cursor_x, cursor_y = cursor
     left, top, right, bottom = work_area
     candidates = (
@@ -816,6 +821,252 @@ def _find_hotkey_window_position(cursor, work_area, width, height):
         if left <= x and top <= y and x + width <= right and y + height <= bottom:
             return x, y
     return None
+
+
+class _OPENFILENAMEW(ctypes.Structure):
+    _fields_ = (
+        ("lStructSize", ctypes.c_uint32),
+        ("hwndOwner", ctypes.c_void_p),
+        ("hInstance", ctypes.c_void_p),
+        ("lpstrFilter", ctypes.c_wchar_p),
+        ("lpstrCustomFilter", ctypes.c_wchar_p),
+        ("nMaxCustFilter", ctypes.c_uint32),
+        ("nFilterIndex", ctypes.c_uint32),
+        ("lpstrFile", ctypes.c_wchar_p),
+        ("nMaxFile", ctypes.c_uint32),
+        ("lpstrFileTitle", ctypes.c_wchar_p),
+        ("nMaxFileTitle", ctypes.c_uint32),
+        ("lpstrInitialDir", ctypes.c_wchar_p),
+        ("lpstrTitle", ctypes.c_wchar_p),
+        ("Flags", ctypes.c_uint32),
+        ("nFileOffset", ctypes.c_uint16),
+        ("nFileExtension", ctypes.c_uint16),
+        ("lpstrDefExt", ctypes.c_wchar_p),
+        ("lCustData", ctypes.c_void_p),
+        ("lpfnHook", ctypes.c_void_p),
+        ("lpTemplateName", ctypes.c_wchar_p),
+        ("pvReserved", ctypes.c_void_p),
+        ("dwReserved", ctypes.c_uint32),
+        ("FlagsEx", ctypes.c_uint32),
+    )
+
+
+class _BROWSEINFOW(ctypes.Structure):
+    _fields_ = (
+        ("hwndOwner", ctypes.c_void_p),
+        ("pidlRoot", ctypes.c_void_p),
+        ("pszDisplayName", ctypes.c_wchar_p),
+        ("lpszTitle", ctypes.c_wchar_p),
+        ("ulFlags", ctypes.c_uint32),
+        ("lpfn", ctypes.c_void_p),
+        ("lParam", ctypes.c_void_p),
+        ("iImage", ctypes.c_int),
+    )
+
+
+def _window_hwnd(win):
+    try:
+        return int(win.native.Handle.ToInt64())
+    except Exception:
+        return None
+
+
+def _win32_filter(file_types):
+    """pywebview 风格过滤项 → Win32 通用对话框的双 NUL 过滤器串。"""
+    pairs = []
+    for item in file_types or ():
+        m = re.match(r"^\s*(.*?)\s*\(([^)]*)\)\s*$", str(item))
+        desc, pattern = (m.group(1), m.group(2)) if m else ("文件", str(item))
+        pairs.append("%s (%s)" % (desc, pattern))
+        pairs.append(pattern)
+    if not pairs:
+        pairs = ["所有文件 (*.*)", "*.*"]
+    return "\0".join(pairs) + "\0\0"
+
+
+def _run_on_sta_thread(func):
+    """在专用 STA 线程执行 func（Win32 通用对话框要求 STA 且有自建消息循环）。"""
+    box = {}
+
+    def runner():
+        try:
+            ctypes.windll.ole32.CoInitializeEx(None, 0x2)  # COINIT_APARTMENTTHREADED
+        except Exception:
+            pass
+        try:
+            box["value"] = func()
+        except Exception as e:
+            box["error"] = e
+        finally:
+            try:
+                ctypes.windll.ole32.CoUninitialize()
+            except Exception:
+                pass
+
+    t = threading.Thread(target=runner, daemon=True)
+    t.start()
+    t.join()
+    if "error" in box:
+        raise box["error"]
+    return box.get("value")
+
+
+def _native_file_dialog(
+    kind,
+    parent_hwnd=None,
+    directory="",
+    allow_multiple=False,
+    save_filename="",
+    file_types=(),
+):
+    """用 Win32 通用对话框取路径，返回元组或 None（取消/失败）。
+
+    不走 pywebview：它的对话框要么在 JS API 工作线程创建（WinForms 模态框不显示、
+    主窗口 WM_NULL 超时挂起），要么经 Control.Invoke 回到 UI 线程创建（CLR 回调
+    需要 GIL，与持有 GIL 的 JS 线程互等，实测整窗挂死）。这里自建 STA 线程直接调
+    comdlg32/shell32，不产生任何 CLR→Python 回调，因此不碰 GIL 交互。
+    """
+    open_flags = 0x00080000 | 0x00001000 | 0x00000800 | 0x00000008
+    save_flags = 0x00080000 | 0x00000008 | 0x00000002
+
+    def show():
+        comdlg32 = ctypes.WinDLL("comdlg32", use_last_error=True)
+        if kind == 20:  # webview.FileDialog.FOLDER
+            shell32 = ctypes.WinDLL("shell32", use_last_error=True)
+            ole32 = ctypes.WinDLL("ole32", use_last_error=True)
+            shell32.SHBrowseForFolderW.argtypes = (ctypes.POINTER(_BROWSEINFOW),)
+            shell32.SHBrowseForFolderW.restype = ctypes.c_void_p
+            shell32.SHGetPathFromIDListW.argtypes = (
+                ctypes.c_void_p,
+                ctypes.c_wchar_p,
+            )
+            shell32.SHGetPathFromIDListW.restype = ctypes.c_int
+            ole32.CoTaskMemFree.argtypes = (ctypes.c_void_p,)
+            name_buf = ctypes.create_unicode_buffer(260)
+            info = _BROWSEINFOW()
+            info.hwndOwner = parent_hwnd
+            info.pszDisplayName = ctypes.cast(name_buf, ctypes.c_wchar_p)
+            info.lpszTitle = "选择文件夹"
+            info.ulFlags = 0x1 | 0x40 | 0x10  # RETURNONLYFSDIRS|NEWDIALOGSTYLE|EDITBOX
+            callback = None
+            if directory:
+                # BROWSEINFO 没有 initial-dir 字段：在 BFFM_INITIALIZED 里发
+                # BFFM_SETSELECTIONW 选中传入目录；回调对象必须保持引用到对话框返回。
+                user32 = ctypes.WinDLL("user32", use_last_error=True)
+                user32.SendMessageW.argtypes = (
+                    ctypes.c_void_p,
+                    ctypes.c_uint,
+                    ctypes.c_void_p,
+                    ctypes.c_wchar_p,
+                )
+                user32.SendMessageW.restype = ctypes.c_void_p
+                browse_cb = ctypes.WINFUNCTYPE(
+                    ctypes.c_int,
+                    ctypes.c_void_p,
+                    ctypes.c_uint,
+                    ctypes.c_void_p,
+                    ctypes.c_void_p,
+                )
+
+                def _init_dir(hwnd, msg, lparam, data):
+                    if msg == 1:  # BFFM_INITIALIZED
+                        user32.SendMessageW(
+                            hwnd, 0x0467, True, directory
+                        )  # BFFM_SETSELECTIONW
+                    return 0
+
+                callback = browse_cb(_init_dir)
+                info.lpfn = ctypes.cast(callback, ctypes.c_void_p)
+            pidl = shell32.SHBrowseForFolderW(ctypes.byref(info))
+            if not pidl:
+                return None
+            path_buf = ctypes.create_unicode_buffer(32768)
+            # 优先用 Ex：SHGetPathFromIDListW 自身受 MAX_PATH 限制，给再大的缓冲区
+            # 也拿不到超长路径（用户确认后会被当成取消）。Ex 显式传缓冲区长度。
+            ok = 0
+            try:
+                shell32.SHGetPathFromIDListEx.argtypes = (
+                    ctypes.c_void_p,
+                    ctypes.c_wchar_p,
+                    ctypes.c_uint32,
+                    ctypes.c_uint32,
+                )
+                shell32.SHGetPathFromIDListEx.restype = ctypes.c_int
+                ok = shell32.SHGetPathFromIDListEx(pidl, path_buf, len(path_buf), 0)
+            except AttributeError:
+                ok = shell32.SHGetPathFromIDListW(pidl, path_buf)
+            ole32.CoTaskMemFree(pidl)
+            return (path_buf.value,) if ok and path_buf.value else None
+
+        comdlg32.CommDlgExtendedError.argtypes = ()
+        comdlg32.CommDlgExtendedError.restype = ctypes.c_uint32
+        comdlg32.GetOpenFileNameW.argtypes = (ctypes.POINTER(_OPENFILENAMEW),)
+        comdlg32.GetOpenFileNameW.restype = ctypes.c_int
+        comdlg32.GetSaveFileNameW.argtypes = (ctypes.POINTER(_OPENFILENAMEW),)
+        comdlg32.GetSaveFileNameW.restype = ctypes.c_int
+        call = comdlg32.GetOpenFileNameW if kind == 10 else comdlg32.GetSaveFileNameW
+        m = re.search(r"\*\.(\w+)", " ".join(str(t) for t in file_types or ()))
+
+        def _run(buf_chars):
+            buf = ctypes.create_unicode_buffer(buf_chars)
+            if save_filename:
+                buf.value = save_filename
+            ofn = _OPENFILENAMEW()
+            ofn.lStructSize = ctypes.sizeof(_OPENFILENAMEW)
+            ofn.hwndOwner = parent_hwnd
+            ofn.lpstrFilter = _win32_filter(file_types)
+            ofn.lpstrFile = ctypes.cast(buf, ctypes.c_wchar_p)
+            ofn.nMaxFile = len(buf)
+            ofn.lpstrInitialDir = directory or None
+            if kind == 10:  # OPEN
+                ofn.Flags = open_flags | (0x00000200 if allow_multiple else 0)
+            else:  # SAVE
+                ofn.Flags = save_flags
+                # 补默认扩展名：用户只输入文件名时系统会自动加 .zip/.txt
+                ofn.lpstrDefExt = m.group(1) if m else None
+            if call(ctypes.byref(ofn)):
+                return buf, 0
+            return None, comdlg32.CommDlgExtendedError()
+
+        result, err = _run(32768)
+        # 多选路径总长可能超过初始缓冲区：按 FNERR_BUFFERTOOSMALL 逐级扩容，
+        # 直到成功或达到上限；不要把"缓冲区不足"当成用户取消。
+        for size in (131072, 524288, 1048576):
+            if err != 0x3003:  # FNERR_BUFFERTOOSMALL
+                break
+            result, err = _run(size)
+        if result is None:
+            if err:
+                logger.warning("file dialog failed, CommDlgExtendedError=0x%04x", err)
+            return None
+        buf = result
+        raw = ctypes.string_at(ctypes.addressof(buf), ctypes.sizeof(buf)).decode(
+            "utf-16-le", "ignore"
+        )
+        parts = [p for p in raw.split("\0") if p]
+        if not parts:
+            return None
+        if kind == 10 and allow_multiple and len(parts) > 1:
+            base = parts[0]
+            return tuple(os.path.join(base, name) for name in parts[1:])
+        return (parts[0],)
+
+    return _run_on_sta_thread(show)
+
+
+_DIALOG_LOCKS = {}
+_DIALOG_LOCKS_GUARD = threading.Lock()
+
+
+def _dialog_lock(win):
+    """同一窗口同一时刻只允许一个模态对话框：重复点击不应再叠加第二个。"""
+    key = id(win)
+    with _DIALOG_LOCKS_GUARD:
+        lock = _DIALOG_LOCKS.get(key)
+        if lock is None:
+            lock = threading.Lock()
+            _DIALOG_LOCKS[key] = lock
+        return lock
 
 
 def _window_drag_update(win_x, win_y, origin, last_move, dx, dy):
@@ -845,10 +1096,27 @@ class JsApi:
         win = webview.windows[0] if webview.windows else None
         if win is None:
             return None
-        try:
-            return win.create_file_dialog(kind, **kw)
-        except Exception:
+        lock = _dialog_lock(win)
+        if not lock.acquire(blocking=False):
+            logger.debug("file dialog already open, ignore duplicate request")
             return None
+        try:
+            if platform.system() != "Windows":
+                return win.create_file_dialog(kind, **kw)
+            return _native_file_dialog(
+                int(kind),
+                _window_hwnd(win),
+                directory=kw.get("directory", ""),
+                allow_multiple=kw.get("allow_multiple", False),
+                save_filename=kw.get("save_filename", ""),
+                file_types=kw.get("file_types", ()),
+            )
+        except Exception as e:
+            # 不再静默吞掉：参数不合法/平台不支持时前端只会看到"取消"，无从排查
+            logger.warning("file dialog error (kind=%s): %s", kind, e)
+            return None
+        finally:
+            lock.release()
 
     def _cloud_base(self) -> list:
         """可见云条目（无关键字/标签过滤）；云端直接使用关闭时返回空"""
@@ -3580,6 +3848,8 @@ class SettingsApi:
         result = self._dialog(
             webview.FileDialog.SAVE,
             allow_multiple=False,
+            # 给一个默认文件名，否则「另存为」框的文件名为空，点保存会被系统拒绝
+            save_filename=os.path.basename(st["zip_path"]),
             file_types=("ZIP 文件 (*.zip)",),
         )
         if not result:
@@ -3590,7 +3860,27 @@ class SettingsApi:
         if not dst.lower().endswith(".zip"):
             dst += ".zip"
         src = st["zip_path"]
-        shutil.copy2(src, dst)
+        # 用户选的目标就是源文件本身：视为已保存，避免重建后把源删掉。
+        if os.path.abspath(dst) == os.path.abspath(src):
+            adb_util.reset_qq_import()
+            return {"ok": True, "path": dst}
+        # 先复制到目标目录内独占创建的临时文件再原子替换：复制中途失败不会留下
+        # 半个目标文件，也不会覆盖同名旧文件；源 ZIP 始终保留。
+        target_dir = os.path.dirname(os.path.abspath(dst)) or "."
+        fd, tmp = tempfile.mkstemp(
+            dir=target_dir, prefix=os.path.basename(dst) + ".", suffix=".part"
+        )
+        os.close(fd)
+        try:
+            shutil.copy2(src, tmp)
+            os.replace(tmp, dst)
+        except Exception as e:
+            try:
+                os.unlink(tmp)
+            except OSError:
+                pass
+            logger.warning("save qq zip failed: %s -> %s: %s", src, dst, e)
+            return {"ok": False, "error": "保存失败: %s" % e}
         try:
             os.unlink(src)
         except OSError:
@@ -3772,7 +4062,10 @@ class SettingsApi:
         result = self._dialog(
             webview.FileDialog.OPEN,
             allow_multiple=False,
-            file_types=("INI Files (*.ini);;All Files (*)",),
+            # pywebview 的 file_types 以"每个元素一条过滤项"，且必须匹配
+            # '说明 (*.扩展名)'；Windows 风格用 ";;" 拼成一条会被
+            # webview.util.parse_file_type 判为非法 → ValueError → 对话框不出现
+            file_types=("INI 文件 (*.ini)", "所有文件 (*.*)"),
         )
         if not result:
             return {"ok": False, "cancelled": True}
@@ -3840,10 +4133,27 @@ class SettingsApi:
             win = webview.windows[0] if webview.windows else None
         if win is None:
             return None
-        try:
-            result = win.create_file_dialog(kind, **kw)
-        except Exception:
+        lock = _dialog_lock(win)
+        if not lock.acquire(blocking=False):
+            logger.debug("file dialog already open, ignore duplicate request")
             return None
+        try:
+            if platform.system() != "Windows":
+                result = win.create_file_dialog(kind, **kw)
+            else:
+                result = _native_file_dialog(
+                    int(kind),
+                    _window_hwnd(win),
+                    directory=kw.get("directory", ""),
+                    allow_multiple=kw.get("allow_multiple", False),
+                    save_filename=kw.get("save_filename", ""),
+                    file_types=kw.get("file_types", ()),
+                )
+        except Exception as e:
+            logger.warning("file dialog error (kind=%s): %s", kind, e)
+            return None
+        finally:
+            lock.release()
         # 对话框关闭后焦点可能回到主窗口，恢复设置窗口到前台
         try:
             self._webui.focus_settings_window()
@@ -4861,6 +5171,9 @@ class WebUI:
         self._started = False
         self._pending_hide = False
         self._hotkey_session = False
+        # 可见状态代次：每次 show/hide/最小化都自增，用于判断热键定位期间
+        # 是否发生过更新的一次显示/隐藏请求。
+        self._window_state_gen = 0
         self._last_toggle_ms = 0
         self._last_tray_toggle_ms = 0
         self._window_state_lock = threading.Lock()
@@ -4901,8 +5214,71 @@ class WebUI:
 
     # --- 窗口控制（从任何线程调用安全）---
 
+    def _window_dpi_scale(self) -> float:
+        """返回窗口所在显示器的 DPI 缩放（1.0 = 100%）。
+
+        pywebview 的 WinFormsWindow.move() 把入参当作**逻辑像素**并乘以
+        GetDpiForWindow(hwnd)/96 再调用 SetWindowPos。这里必须用同一比例把
+        GetCursorPos/GetMonitorInfo 的**物理像素**换算成逻辑像素，否则 150%
+        缩放下窗口会落到光标相对屏幕原点的 1.5 倍处（125%→1.25 倍）。
+        """
+        import ctypes
+        from ctypes import wintypes
+
+        user32 = ctypes.WinDLL("user32", use_last_error=True)
+        # 必须声明原型：HWND 是 64 位指针，缺省会被 ctypes 当 32 位 int 截断，
+        # GetDpiForWindow 会拿到错句柄并返回 0，整条定位链路随之失效。
+        user32.GetDpiForWindow.argtypes = (wintypes.HWND,)
+        user32.GetDpiForWindow.restype = wintypes.UINT
+        user32.GetDpiForSystem.argtypes = ()
+        user32.GetDpiForSystem.restype = wintypes.UINT
+
+        try:
+            hwnd = self._window.native.Handle.ToInt64()
+            dpi = user32.GetDpiForWindow(hwnd)
+            if dpi:
+                return dpi / 96.0
+        except Exception as e:
+            logger.debug("get window dpi: %s", e)
+        try:
+            dpi = user32.GetDpiForSystem()
+            if dpi:
+                return dpi / 96.0
+        except Exception:
+            pass
+        return 1.0
+
+    def _monitor_dpi_scale(self, monitor) -> float:
+        """光标所在显示器的有效 DPI 比例（1.0 = 100%），失败回退窗口 DPI。"""
+        try:
+            import ctypes
+            from ctypes import wintypes
+
+            shcore = ctypes.WinDLL("shcore")
+            shcore.GetDpiForMonitor.argtypes = (
+                wintypes.HMONITOR,
+                ctypes.c_int,
+                ctypes.POINTER(wintypes.UINT),
+                ctypes.POINTER(wintypes.UINT),
+            )
+            shcore.GetDpiForMonitor.restype = ctypes.c_long
+            dpi_x = wintypes.UINT()
+            dpi_y = wintypes.UINT()
+            # MDT_EFFECTIVE_DPI = 0
+            if (
+                shcore.GetDpiForMonitor(
+                    monitor, 0, ctypes.byref(dpi_x), ctypes.byref(dpi_y)
+                )
+                == 0
+            ):
+                if dpi_x.value:
+                    return dpi_x.value / 96.0
+        except Exception as e:
+            logger.debug("get monitor dpi: %s", e)
+        return self._window_dpi_scale()
+
     def _get_hotkey_window_position(self):
-        """获取 Windows 光标所在显示器工作区内的热键窗口位置"""
+        """获取 Windows 光标所在显示器工作区内的热键窗口位置（逻辑像素）"""
         if platform.system() != "Windows":
             return None
         try:
@@ -4938,6 +5314,10 @@ class WebUI:
                 ctypes.POINTER(MONITORINFO),
             )
             user32.GetMonitorInfoW.restype = wintypes.BOOL
+            user32.GetWindowRect.argtypes = (wintypes.HWND, ctypes.POINTER(RECT))
+            user32.GetWindowRect.restype = wintypes.BOOL
+            user32.IsIconic.argtypes = (wintypes.HWND,)
+            user32.IsIconic.restype = wintypes.BOOL
 
             cursor = POINT()
             if not user32.GetCursorPos(ctypes.byref(cursor)):
@@ -4951,12 +5331,37 @@ class WebUI:
                 raise ctypes.WinError(ctypes.get_last_error())
 
             work = monitor_info.rcWork
-            return _find_hotkey_window_position(
+            move_scale = self._window_dpi_scale() or 1.0
+            target_scale = self._monitor_dpi_scale(monitor) or move_scale
+            # 逻辑尺寸：物理矩形按 move() 的系数折算（move() 用窗口当前 DPI 做乘法）
+            width = self._window.width
+            height = self._window.height
+            try:
+                rect = RECT()
+                hwnd = self._window.native.Handle.ToInt64()
+                # 最小化窗口的矩形落在 -32000 附近且宽高未必为 0，必须用 IsIconic
+                # 排除；否则会拿最小化尺寸做"能否完整容纳"的判断，恢复后越界。
+                if user32.GetWindowRect(
+                    hwnd, ctypes.byref(rect)
+                ) and not user32.IsIconic(hwnd):
+                    rect_w = (rect.right - rect.left) / move_scale
+                    rect_h = (rect.bottom - rect.top) / move_scale
+                    if rect_w > 0 and rect_h > 0:
+                        width, height = rect_w, rect_h
+            except Exception as e:
+                logger.debug("get window rect: %s", e)
+            # 容纳判断放在工作区物理坐标里做：窗口移到光标所在屏后会按那块屏的
+            # DPI 重新缩放，用 target_scale 估算移动后的物理尺寸才能避免贴边越界；
+            # 结果再除以 move_scale 换回 move() 需要的逻辑坐标。
+            position = _find_hotkey_window_position(
                 (cursor.x, cursor.y),
                 (work.left, work.top, work.right, work.bottom),
-                self._window.width,
-                self._window.height,
+                width * target_scale,
+                height * target_scale,
             )
+            if position is None:
+                return None
+            return (position[0] / move_scale, position[1] / move_scale)
         except Exception as e:
             logger.warning("hotkey window position error: %s", e)
             return None
@@ -4968,6 +5373,7 @@ class WebUI:
             return
         with self._window_state_lock:
             self._visible = True
+            self._window_state_gen += 1
             self._hotkey_session = False
             self._pending_hide = False
             self._show_on_gui()
@@ -5067,6 +5473,7 @@ class WebUI:
         """系统最小化（Win+D/显示桌面）后同步可见状态，使托盘/热键一次即可还原"""
         with self._window_state_lock:
             self._visible = False
+            self._window_state_gen += 1
             self._hotkey_session = False
 
     def hide(self):
@@ -5075,6 +5482,7 @@ class WebUI:
             return
         with self._window_state_lock:
             self._visible = False
+            self._window_state_gen += 1
             self._hotkey_session = False
             self._pending_hide = False
             self._hide_on_gui()
@@ -5120,22 +5528,35 @@ class WebUI:
             if now - self._last_toggle_ms < self._HOTKEY_DEBOUNCE_S:
                 return
             self._last_toggle_ms = now
-            visible = self._visible
-            if visible:
+            if self._visible:
                 self._visible = False
+                self._window_state_gen += 1
                 self._hotkey_session = False
                 self._hide_on_gui()
                 return
-            if self._cfg.get("hotkey_show_at_mouse", False):
+            generation = self._window_state_gen
+        # 定位放在锁外：_get_hotkey_window_position 会读 WinForms Handle 并调
+        # GetDpiForWindow，属于原生调用；持锁时若 UI 线程正需要 _window_state_lock
+        # （hide/schedule_hide），会形成"worker 等 UI、UI 等锁"的死锁。
+        position = None
+        if self._cfg.get("hotkey_show_at_mouse", False):
+            try:
+                position = self._get_hotkey_window_position()
+            except Exception:
+                position = None
+        with self._window_state_lock:
+            # 计算期间只要发生过任何显示/隐藏（例如"显示后又隐藏"），本次热键
+            # 请求即已过期，必须放弃；否则会把用户刚隐藏的窗口重新弹出来。
+            if self._window_state_gen != generation:
+                return
+            if position is not None:
                 try:
-                    position = self._get_hotkey_window_position()
-                    if position is not None:
-                        self._window.move(*position)
+                    self._window.move(*position)
                 except Exception:
                     pass
             self._visible = True
+            self._window_state_gen += 1
             self._show_on_gui()
-            # 在锁内设置 _hotkey_session，避免 show 与 schedule_hide 之间的竞争窗口
             self._hotkey_session = True
             win = self._window
         # 聚焦搜索框放到锁外：evaluate_js 可能阻塞，不能占着窗口状态锁
