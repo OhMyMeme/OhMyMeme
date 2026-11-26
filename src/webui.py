@@ -3867,18 +3867,20 @@ class SettingsApi:
         # 先复制到目标目录内独占创建的临时文件再原子替换：复制中途失败不会留下
         # 半个目标文件，也不会覆盖同名旧文件；源 ZIP 始终保留。
         target_dir = os.path.dirname(os.path.abspath(dst)) or "."
-        fd, tmp = tempfile.mkstemp(
-            dir=target_dir, prefix=os.path.basename(dst) + ".", suffix=".part"
-        )
-        os.close(fd)
+        tmp = None
         try:
+            fd, tmp = tempfile.mkstemp(
+                dir=target_dir, prefix=os.path.basename(dst) + ".", suffix=".part"
+            )
+            os.close(fd)
             shutil.copy2(src, tmp)
             os.replace(tmp, dst)
         except Exception as e:
-            try:
-                os.unlink(tmp)
-            except OSError:
-                pass
+            if tmp:
+                try:
+                    os.unlink(tmp)
+                except OSError:
+                    pass
             logger.warning("save qq zip failed: %s -> %s: %s", src, dst, e)
             return {"ok": False, "error": "保存失败: %s" % e}
         try:
