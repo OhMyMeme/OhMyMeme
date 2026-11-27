@@ -3,6 +3,7 @@
 import re
 import sqlite3
 import threading
+from functools import lru_cache
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple
 
@@ -62,7 +63,10 @@ _RESTORE_REQUIRED_COLUMNS = {
 
 
 # 名称自然排序键：数字段按整数（1,2,10），其余段按拼音（pypinyin 缺失时退回原串小写）
-def _name_sort_key(name):
+# 拼音转换是排序的主要开销（2000 个名称约 50ms），按名称串缓存后重复排序近乎免费；
+# 键只由名称串决定，缓存永不过期，上限丢弃最旧项即可
+@lru_cache(maxsize=20000)
+def _name_sort_key_cached(name: str):
     global _lazy_pinyin
     key = []
     for part in re.split(r"(\d+)", str(name)):
@@ -83,7 +87,11 @@ def _name_sort_key(name):
         else:
             text = part.lower()
         key.append((1, text))
-    return key
+    return tuple(key)
+
+
+def _name_sort_key(name):
+    return list(_name_sort_key_cached(str(name)))
 
 
 # 拼音检索文本缓存（原文 → 全拼 + 首字母）；超限整体清空，避免极端名称撑爆内存

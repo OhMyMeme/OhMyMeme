@@ -25,8 +25,8 @@ except ImportError:
     HAS_PYPERCLIP = False
 
 
-def _is_animated(path: str) -> bool:
-    """检测文件是否为动图（GIF / WebP）"""
+def _animated_or_none(path):
+    """动图判定；读不出文件头时返回 None，与「判定为静态」区分"""
     try:
         with open(path, "rb") as f:
             header = f.read(50)
@@ -38,7 +38,12 @@ def _is_animated(path: str) -> bool:
             return b"ANIM" in header
         return False
     except Exception:
-        return False
+        return None
+
+
+def _is_animated(path: str) -> bool:
+    """检测文件是否为动图（GIF / WebP）"""
+    return _animated_or_none(path) is True
 
 
 def _has_alpha(img) -> bool:
