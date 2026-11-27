@@ -1392,3 +1392,219 @@ def test_cloud_rows_match_pinyin_keyword(js):
         rows = js.api.search_memes(keyword, None, None, 0, 10)
         assert [r["filename"] for r in rows] == ["x.png"]
     assert js.api.count_memes(keyword="bqb") == 1
+
+
+# ─── 性能回归：2000 张时的逐行文件系统调用 ───
+
+
+def test_find_meme_file_prefers_direct_path(js, monkeypatch):
+    """直连路径命中时不再递归遍历缓存目录（翻页逐行调用，递归代价极高）"""
+    name = "direct.webp"
+    (js.cfg.cache_dir / name).write_bytes(b"x")
+    walked = []
+    monkeypatch.setattr(
+        "src.webui.os.walk", lambda *a, **k: walked.append(a) or iter(())
+    )
+
+    assert js.api._find_meme_file(name) == str(js.cfg.cache_dir / name)
+    assert walked == []
+
+
+def test_find_meme_file_falls_back_to_subdir(js):
+    """直连路径不存在时仍能找到子目录里的遗留文件"""
+    sub = js.cfg.cache_dir / "sub"
+    sub.mkdir()
+    (sub / "nested.webp").write_bytes(b"x")
+
+    assert js.api._find_meme_file("nested.webp") == str(sub / "nested.webp")
+
+
+def test_find_meme_file_rejects_unsafe_names(js):
+    """路径穿越/绝对路径的文件名不参与拼接（否则会读写缓存目录外的文件）"""
+    outside = js.data_dir / "secret.png"
+    outside.write_bytes(b"x")
+
+    for bad in ("../secret.png", "..\\secret.png", str(outside), "/etc/passwd"):
+        assert js.api._find_meme_file(bad) == ""
+        assert js.api._anim_flag(bad, "", js.cfg.cache_dir) is False
+
+
+def test_find_meme_file_ignores_directory_with_same_name(js):
+    """同名目录不算命中（要继续走递归回退）"""
+    (js.cfg.cache_dir / "dir.webp").mkdir()
+
+    assert js.api._find_meme_file("dir.webp") == ""
+
+
+def test_file_cache_follows_storage_switch(js):
+    """切换存储目录后不返回旧目录里仍存在的路径"""
+    sub = js.cfg.cache_dir / "sub"
+    sub.mkdir()
+    (sub / "nested.webp").write_bytes(b"x")
+    assert js.api._find_meme_file("nested.webp") == str(sub / "nested.webp")
+
+    new_dir = js.data_dir / "cache2"
+    new_dir.mkdir()
+    js.cfg.set("cache_dir", str(new_dir))
+
+    assert js.api._find_meme_file("nested.webp") == ""
+
+
+def _anim_webp(name, js):
+    """写一个带 ANIM 块的 WebP 并返回文件名"""
+    (js.cfg.cache_dir / name).write_bytes(
+        b"RIFF\x24\x00\x00\x00WEBPVP8 ANIM" + b"\x00" * 24
+    )
+    return name
+
+
+def _spy_probe(monkeypatch, webui_module):
+    """包一层动图探测，记录调用次数"""
+    calls = []
+    real = webui_module._animated_or_none
+    monkeypatch.setattr(
+        webui_module, "_animated_or_none", lambda p: calls.append(p) or real(p)
+    )
+    return calls
+
+
+def test_anim_flag_cached_by_filename_and_hash(js, monkeypatch):
+    """动图判定按「文件名 + 内容哈希」缓存：第二次翻页不再开文件"""
+    from src import webui as webui_module
+
+    name = _anim_webp("anim.webp", js)
+    webui_module._anim_cache.clear()
+    calls = _spy_probe(monkeypatch, webui_module)
+
+    assert js.api._anim_flag(name, "hash-a", js.cfg.cache_dir) is True
+    assert js.api._anim_flag(name, "hash-a", js.cfg.cache_dir) is True
+    assert len(calls) == 1
+
+
+def test_anim_flag_reprobes_when_hash_changes(js, monkeypatch):
+    """同名文件内容被替换（哈希变化）时重新判定，不沿用旧结果"""
+    from src import webui as webui_module
+
+    name = _anim_webp("swap.webp", js)
+    webui_module._anim_cache.clear()
+    calls = _spy_probe(monkeypatch, webui_module)
+
+    assert js.api._anim_flag(name, "hash-a", js.cfg.cache_dir) is True
+    (js.cfg.cache_dir / name).write_bytes(b"RIFF\x24\x00\x00\x00WEBPVP8 ")
+    assert js.api._anim_flag(name, "hash-b", js.cfg.cache_dir) is False
+    assert len(calls) == 2
+
+
+def test_anim_flag_static_webp_cached_as_false(js, monkeypatch):
+    """静态 WebP 的 False 也要缓存（否则每页仍会重开每个文件）"""
+    from src import webui as webui_module
+
+    (js.cfg.cache_dir / "still.webp").write_bytes(b"RIFF\x24\x00\x00\x00WEBPVP8 ")
+    webui_module._anim_cache.clear()
+    calls = _spy_probe(monkeypatch, webui_module)
+
+    assert js.api._anim_flag("still.webp", "h", js.cfg.cache_dir) is False
+    assert js.api._anim_flag("still.webp", "h", js.cfg.cache_dir) is False
+    assert len(calls) == 1
+
+
+def test_anim_flag_missing_file_not_cached(js):
+    """文件缺失时不写缓存：同步补传/存储迁移补齐后仍能重新判定为动图"""
+    from src import webui as webui_module
+
+    webui_module._anim_cache.clear()
+    assert js.api._anim_flag("later.webp", "h", js.cfg.cache_dir) is False
+    _anim_webp("later.webp", js)
+    assert js.api._anim_flag("later.webp", "h", js.cfg.cache_dir) is True
+
+
+def test_anim_flag_read_failure_not_cached(js, monkeypatch):
+    """读取失败（瞬时占用/IO 错误）不写 False 缓存，恢复后仍能判定为动图"""
+    from src import webui as webui_module
+
+    name = _anim_webp("locked.webp", js)
+    webui_module._anim_cache.clear()
+    real = webui_module._animated_or_none
+    monkeypatch.setattr(webui_module, "_animated_or_none", lambda p: None)
+
+    assert js.api._anim_flag(name, "h", js.cfg.cache_dir) is False
+    assert webui_module._anim_cache == {}
+
+    monkeypatch.setattr(webui_module, "_animated_or_none", real)
+    assert js.api._anim_flag(name, "h", js.cfg.cache_dir) is True
+
+
+def test_legacy_thumb_index_groups_by_id(js):
+    """旧版 {id}_* 缩略图按 id 归组，且不误伤 {sha256}.webp"""
+    thumb_dir = js.cfg.thumbnail_dir
+    (thumb_dir / "7_thumb.png").write_bytes(b"t")
+    (thumb_dir / "7_hover.png").write_bytes(b"t")
+    (thumb_dir / "21_thumb.png").write_bytes(b"t")
+    (thumb_dir / ("a" * 64 + ".webp")).write_bytes(b"t")
+
+    index = js.api._legacy_thumb_index(thumb_dir)
+    assert sorted(index) == [7, 21]
+    assert len(index[7]) == 2
+
+
+def test_delete_memes_removes_legacy_thumbs(js):
+    """批量删除仍清掉每个 id 的旧版缩略图"""
+    ids = _add_local(js, "a.png", "b.png")
+    thumb_dir = js.cfg.thumbnail_dir
+    legacy = {}
+    for name, mid in ids.items():
+        (js.cfg.cache_dir / name).write_bytes(b"x")
+        legacy[mid] = thumb_dir / f"{mid}_thumb.png"
+        legacy[mid].write_bytes(b"t")
+
+    assert js.api.delete_memes(list(ids.values()))["deleted"] == 2
+    assert not any(p.exists() for p in legacy.values())
+
+
+def test_batch_delete_does_not_glob_per_meme(js, monkeypatch):
+    """批量删除只扫一次缩略图目录（旧实现每个 id 一次 glob）"""
+    from pathlib import Path
+
+    ids = _add_local(js, "a.png", "b.png", "c.png")
+    globs = []
+    monkeypatch.setattr(Path, "glob", lambda self, pat: globs.append(pat) or iter(()))
+
+    assert js.api.delete_memes(list(ids.values()))["deleted"] == 3
+    assert globs == []
+
+
+def test_manifest_build_reads_mtime_from_single_scan(js, monkeypatch):
+    """清单 mtime 取自一次性目录扫描；文件缺失的条目留空；不逐行 stat/exists"""
+    import src.manifest as manifest_module
+    from src.manifest import INDEX_FILENAME
+
+    ids = _add_local(js, "has.png", "gone.png")
+    path = js.cfg.cache_dir / "has.png"
+    path.write_bytes(b"x")
+    expected = str(int(path.stat().st_mtime))
+
+    exists_calls = []
+    stat_calls = []
+    real_exists, real_stat = Path.exists, Path.stat
+
+    def counting_exists(path_self):
+        exists_calls.append(path_self.name)
+        return real_exists(path_self)
+
+    def counting_stat(path_self, **kwargs):
+        stat_calls.append(path_self.name)
+        return real_stat(path_self, **kwargs)
+
+    monkeypatch.setattr(Path, "exists", counting_exists)
+    monkeypatch.setattr(Path, "stat", counting_stat)
+    manifest_module.build()
+
+    # 逐行 exists()/stat() 会让这里出现过表情文件名（目录自身的建立检查不算）
+    assert {"has.png", "gone.png"}.isdisjoint(exists_calls)
+    assert {"has.png", "gone.png"}.isdisjoint(stat_calls)
+
+    written = json.loads((js.cfg.data_dir / INDEX_FILENAME).read_text(encoding="utf-8"))
+    by_name = {m["filename"]: m for m in written["memes"]}
+    assert by_name["has.png"]["mtime"] == expected
+    assert by_name["gone.png"]["mtime"] == ""
+    assert len(ids) == 2

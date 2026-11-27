@@ -49,6 +49,23 @@ def _write(data: Dict) -> None:
         logger.warning(f"manifest write failed: {e}")
 
 
+def _cache_mtimes(cache_dir):
+    """缓存目录内「文件名 → mtime」映射（单次 scandir，避免逐文件 stat）"""
+    out = {}
+    try:
+        with os.scandir(str(cache_dir)) as it:
+            for entry in it:
+                try:
+                    if not entry.is_file():
+                        continue
+                    out[entry.name] = str(int(entry.stat().st_mtime))
+                except OSError:
+                    continue
+    except OSError:
+        pass
+    return out
+
+
 def build() -> List[Dict]:
     """从数据库重建完整索引并写入磁盘"""
     db = get_db()
@@ -67,23 +84,16 @@ def build() -> List[Dict]:
     tags_map = db.get_tags_map() if include_tags else {}
 
     memes = []
-    cache_dir = get_config().cache_dir
+    mtimes = _cache_mtimes(get_config().cache_dir)
 
     for r in rows:
         fname = r["filename"]
-        fpath = cache_dir / fname
-        mtime = ""
-        if fpath.exists():
-            try:
-                mtime = str(int(fpath.stat().st_mtime))
-            except Exception:
-                pass
         entry = {
             "filename": fname,
             "name": r.get("original_name", os.path.splitext(fname)[0]),
             "sha256": r.get("file_hash", ""),
             "file_size": r.get("file_size", 0),
-            "mtime": mtime,
+            "mtime": mtimes.get(fname, ""),
         }
         if include_tags:
             entry["tags"] = tags_map.get(fname, [])

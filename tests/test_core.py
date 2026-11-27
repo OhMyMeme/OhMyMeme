@@ -224,6 +224,64 @@ class TestConfig(unittest.TestCase):
         self.assertEqual(cfg.cache_dir, (self.tmp_dir / "my_memes").resolve())
         self.assertTrue((self.tmp_dir / "my_memes").exists())
 
+    def test_custom_cache_dir_resolved_once(self):
+        """自定义目录只 resolve 一次（单次约 0.6ms，逐行读属性时同样上千次）"""
+        cfg = Config(self.config_path)
+        custom = self.tmp_dir / "my_memes"
+        cfg.set("cache_dir", str(custom))
+        calls = []
+        real_resolve = Path.resolve
+
+        def counting_resolve(path_self, *args, **kwargs):
+            calls.append(str(path_self))
+            return real_resolve(path_self, *args, **kwargs)
+
+        with mock.patch.object(Path, "resolve", counting_resolve):
+            first = cfg.cache_dir
+            self.assertEqual(cfg.cache_dir, first)
+            self.assertEqual(cfg.cache_dir, first)
+
+        self.assertEqual(first, custom)
+        self.assertEqual(len(calls), 1)
+
+    def test_dir_properties_mkdir_once(self):
+        """同路径只 mkdir 一次：逐行读取 cache_dir 曾每张表情一次系统调用"""
+        cfg = Config(self.config_path)
+        cfg.set("cache_dir", str(self.tmp_dir / "cache"))
+        calls = []
+        real_mkdir = Path.mkdir
+
+        def counting_mkdir(path_self, *args, **kwargs):
+            calls.append(str(path_self))
+            return real_mkdir(path_self, *args, **kwargs)
+
+        with mock.patch("src.config._get_data_dir", return_value=self.tmp_dir / "d"):
+            with mock.patch.object(Path, "mkdir", counting_mkdir):
+                first = cfg.cache_dir
+                self.assertEqual(cfg.cache_dir, first)
+                thumb = cfg.thumbnail_dir
+                self.assertEqual(cfg.thumbnail_dir, thumb)
+
+        self.assertEqual(len(calls), len(set(calls)))  # 每个目录只建一次
+        self.assertIn(str(first), calls)
+        self.assertIn(str(thumb), calls)
+
+    def test_ensure_dir_recreates_after_removal(self):
+        """目录被外部删除后，超过复查间隔会重建；间隔内沿用缓存（避免逐行 mkdir）"""
+        cfg = Config(self.config_path)
+        with mock.patch("src.config._get_data_dir", return_value=self.tmp_dir / "d2"):
+            d = cfg.cache_dir
+            self.assertTrue(d.is_dir())
+
+            shutil.rmtree(d)
+            self.assertEqual(cfg.cache_dir, d)  # 复查间隔内直接返回
+            self.assertFalse(d.exists())
+
+            later = time.monotonic() + 60
+            with mock.patch("src.config.time.monotonic", lambda: later):
+                self.assertEqual(cfg.cache_dir, d)
+            self.assertTrue(d.is_dir())
+
 
 class TestDatabase(unittest.TestCase):
     def setUp(self):
@@ -248,6 +306,31 @@ class TestDatabase(unittest.TestCase):
         mid = self.db.add_meme("test.png")
         self.db.delete_meme(mid)
         self.assertIsNone(self.db.get_by_id(mid))
+
+    def test_name_sort_key_is_cached_and_numeric(self):
+        """排序键按名称串缓存：重复调用不再重算（数字段仍按数值比较）"""
+        from src import database as db_module
+        from src.database import _name_sort_key, _name_sort_key_cached
+
+        _name_sort_key_cached.cache_clear()
+        splits = []
+        real_split = db_module.re.split
+
+        def counting_split(*args, **kwargs):
+            splits.append(args)
+            return real_split(*args, **kwargs)
+
+        with mock.patch.object(db_module.re, "split", counting_split):
+            first = _name_sort_key("键盘猫10")
+            after_first = len(splits)
+            second = _name_sort_key("键盘猫10")
+            after_second = len(splits)
+
+        self.assertIsInstance(first, list)
+        self.assertEqual(first, second)
+        self.assertGreaterEqual(after_first, 1)
+        self.assertEqual(after_second, after_first)
+        self.assertLess(_name_sort_key("表情2"), _name_sort_key("表情10"))
 
     def test_delete_memes(self):
         m1 = self.db.add_meme("a.png", tags=["shared", "only1"])

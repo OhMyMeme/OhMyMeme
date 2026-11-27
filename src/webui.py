@@ -62,7 +62,7 @@ except ImportError:
 from . import adb_util, backup, qqnt_extract, tg_stickers, updater
 from . import sync as sync_module
 from .clipboard_util import (
-    _is_animated,
+    _animated_or_none,
     convert_avoid_webp,
     convert_image_mode_1,
     convert_image_mode_2,
@@ -329,6 +329,12 @@ _SORT_MODES = ("manifest", "manifest_desc", "name_asc", "name_desc")
 # 本地清单顺序缓存（按文件 mtime+size 失效），避免每次排序查询都重解析 JSON
 _local_manifest_cache = {"key": None, "order": []}
 _local_manifest_lock = threading.Lock()
+
+# 动图标记缓存（文件名 → 是否动图）：清单序/名称序排序会取回全部行，
+# 逐行开文件判定动图在 2000 张时每次翻页近 200ms；文件名由内容哈希生成、
+# 从不原地改写，故可长期缓存（字典读写受 GIL 保护，上限后整体清空）
+_anim_cache = {}
+_ANIM_CACHE_MAX = 20000
 
 
 def _local_manifest_order():
@@ -1302,16 +1308,18 @@ class JsApi:
             pass
         auto_gif = self._cfg.get("auto_play_gif", True)
         hover_play = self._cfg.get("hover_to_play", False)
+        cache_dir = self._cfg.cache_dir
         result = []
         for r in rows:
             fname = r["filename"].lower()
             is_gif = r.get("mime_type", "").endswith("gif") or fname.endswith(".gif")
-            # 动画检测：GIF 或 WebP 动图
+            # 动画检测：GIF 或 WebP 动图（直连路径优先，结果按文件名缓存）
             if is_gif:
                 is_animated = True
             elif fname.endswith(".webp"):
-                path = self._find_meme_file(r["filename"])
-                is_animated = _is_animated(path) if path else False
+                is_animated = self._anim_flag(
+                    r["filename"], r.get("file_hash", ""), cache_dir
+                )
             else:
                 is_animated = False
             oname = r.get("original_name", "")
@@ -1596,8 +1604,24 @@ class JsApi:
             logging.getLogger(__name__).error(f"rename error: {e}")
             return False
 
-    def _delete_meme_files(self, meme_id) -> bool:
-        """删除磁盘原图+缩略图+file_cache 条目；id 不存在返回 False"""
+    def _legacy_thumb_index(self, thumb_dir):
+        """旧版 {id}_* 缩略图索引：id → 路径列表（一次目录扫描）"""
+        index = {}
+        try:
+            with os.scandir(str(thumb_dir)) as it:
+                for entry in it:
+                    head, sep, _ = entry.name.partition("_")
+                    if sep and head.isdigit():
+                        index.setdefault(int(head), []).append(entry.path)
+        except OSError:
+            pass
+        return index
+
+    def _delete_meme_files(self, meme_id, legacy_thumbs=None) -> bool:
+        """删除磁盘原图+缩略图+file_cache 条目；id 不存在返回 False
+
+        legacy_thumbs 传入 _legacy_thumb_index() 结果时复用同一次扫描（批量删除）。
+        """
         import os
 
         row = self._db.get_by_id(meme_id)
@@ -1618,13 +1642,19 @@ class JsApi:
                     thumb.unlink()
                 except Exception:
                     pass
-        for f in thumb_dir.glob(f"{meme_id}_*"):
+        if legacy_thumbs is None:
+            legacy_glob = [str(f) for f in thumb_dir.glob(f"{meme_id}_*")]
+        else:
+            legacy_glob = legacy_thumbs.get(meme_id, ())
+        for f in legacy_glob:
             try:
-                f.unlink()
+                os.remove(f)
             except Exception:
                 pass
         if hasattr(self._webui, "_file_cache"):
             self._webui._file_cache.pop(row["filename"], None)
+        if hasattr(self, "_file_cache"):
+            self._file_cache.pop(row["filename"], None)
         return True
 
     def delete_meme(self, meme_id: int) -> bool:
@@ -1637,9 +1667,12 @@ class JsApi:
     def delete_memes(self, meme_ids: list) -> dict:
         """批量删除，返回 {ok, deleted}"""
         ids = list(dict.fromkeys(int(x) for x in (meme_ids or [])))
+        if not ids:
+            return {"ok": True, "deleted": 0}
         deleted = 0
+        legacy_thumbs = self._legacy_thumb_index(self._cfg.thumbnail_dir)
         for mid in ids:
-            if self._delete_meme_files(mid):
+            if self._delete_meme_files(mid, legacy_thumbs=legacy_thumbs):
                 deleted += 1
         if deleted:
             self._db.delete_memes(ids)
@@ -2899,11 +2932,46 @@ class JsApi:
     def hide_window(self):
         self._webui.hide()
 
+    def _anim_flag(self, filename, file_hash, cache_dir):
+        """WebP 动图判定：按「文件名 + 内容哈希」缓存，缺失或读失败不缓存"""
+        key = (filename, file_hash)
+        cached = _anim_cache.get(key)
+        if cached is not None:
+            return cached
+        if not _safe_serve_filename(filename):
+            return False
+        path = cache_dir / filename
+        if not path.is_file():
+            path = self._find_meme_file(filename)
+        if not path:
+            return False
+        flag = _animated_or_none(str(path))
+        if flag is None:
+            return False
+        if len(_anim_cache) >= _ANIM_CACHE_MAX:
+            _anim_cache.clear()
+        _anim_cache[key] = flag
+        return flag
+
     def _find_meme_file(self, filename: str) -> str:
+        """解析表情真实路径：直连优先，未命中才递归搜索缓存目录"""
+        if not _safe_serve_filename(filename):
+            return ""
         cache_dir = self._cfg.cache_dir
+        direct = cache_dir / filename
+        if direct.is_file():
+            return str(direct)
+        if not hasattr(self, "_file_cache") or self._file_cache_dir != cache_dir:
+            self._file_cache = {}
+            self._file_cache_dir = cache_dir
+        cached = self._file_cache.get(filename)
+        if cached and os.path.exists(cached):
+            return cached
         for root, _, files in os.walk(cache_dir):
             if filename in files:
-                return os.path.join(root, filename)
+                full = os.path.join(root, filename)
+                self._file_cache[filename] = full
+                return full
         return ""
 
 

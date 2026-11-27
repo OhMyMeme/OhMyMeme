@@ -4,12 +4,16 @@ import json
 import os
 import platform
 import threading
+import time
 from pathlib import Path
 
 from . import __version__
 from .crypto_util import decrypt_data, encrypt_data
 
 APP_NAME = "OhMyMeme"
+
+# 目录存在性复查间隔：逐行读目录属性时避免每次 mkdir，同时容忍运行期被外部删除
+_DIR_RECHECK_S = 5.0
 
 # 当前配置文件版本（与软件版本同步，用于数据迁移）
 _CONFIG_VERSION = __version__
@@ -186,6 +190,8 @@ class Config:
         self._data = dict(self.DEFAULTS)
         self._dirty = False
         self._lock = threading.Lock()
+        self._dirs_ready = {}  # 已确保存在的目录，避免每次读属性都 mkdir
+        self._cache_dir_memo = (None, None)  # (配置原值, 解析后的路径)
         self._load()
 
     # --- 公开属性访问 ---
@@ -309,27 +315,38 @@ class Config:
     def config_dir(self) -> Path:
         return self._path.parent
 
+    def _ensure_dir(self, d):
+        """确保目录存在（同一路径最多每 _DIR_RECHECK_S 复查一次，兼顾自愈与开销）"""
+        last = self._dirs_ready.get(d)
+        now = time.monotonic()
+        if last is not None and now - last < _DIR_RECHECK_S:
+            return d
+        d.mkdir(parents=True, exist_ok=True)
+        self._dirs_ready[d] = now
+        return d
+
     @property
     def data_dir(self) -> Path:
-        d = _get_data_dir()
-        d.mkdir(parents=True, exist_ok=True)
-        return d
+        return self._ensure_dir(_get_data_dir())
 
     @property
     def cache_dir(self) -> Path:
         custom = self.get("cache_dir")
         if custom:
-            d = Path(custom).expanduser().resolve()
+            # 自定义目录每次 resolve() 都要几次系统调用（约 0.6ms），
+            # 逐行读属性时同样要上千次；配置值不变就复用解析结果
+            raw, resolved = self._cache_dir_memo
+            if raw != custom:
+                resolved = Path(custom).expanduser().resolve()
+                self._cache_dir_memo = (custom, resolved)
+            d = resolved
         else:
             d = self.data_dir / "cache"
-        d.mkdir(parents=True, exist_ok=True)
-        return d
+        return self._ensure_dir(d)
 
     @property
     def thumbnail_dir(self) -> Path:
-        d = self.data_dir / "thumbnails"
-        d.mkdir(parents=True, exist_ok=True)
-        return d
+        return self._ensure_dir(self.data_dir / "thumbnails")
 
     @property
     def db_path(self) -> Path:
